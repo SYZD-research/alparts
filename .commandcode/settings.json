@@ -1,0 +1,33 @@
+{
+  "permissions": {
+    "allow": [
+      "Shell(pnpm:*)",
+      "Shell(which:*)",
+      "Shell(node --version 2 >& 1)",
+      "Shell(npm:*)",
+      "Shell(cd:*)",
+      "Shell(sleep:*)",
+      "Shell(head:*)",
+      "Shell(pkill -f \"tsx watch\" 2>/dev/null; pkill -f \"vite\" 2>/dev/null; echo \"done\")",
+      "Shell(lsof -ti:3000 | xargs kill -9 2>/dev/null; echo \"done\")",
+      "Shell(fuser -k 3000/tcp 2>/dev/null; pkill -f \"tsx watch\" 2>/dev/null; pkill -f \"node.*server\" 2>/dev/null; sleep 1; echo \"cleared\")",
+      "Shell(fuser -k 3000/tcp 2>/dev/null; fuser -k 5173/tcp 2>/dev/null; fuser -k 5174/tcp 2>/dev/null; sleep 1; echo \"cleared\")",
+      "Shell(docker-compose:*)",
+      "Shell(docker:*)",
+      "Shell(psql:*)",
+      "Shell(ss:*)",
+      "Shell(grep:*)",
+      "Shell(sudo -u postgres psql -c SELECT 1 2 >& 1)",
+      "Shell(curl -s http://localhost:3000/health 2>&1)",
+      "Shell(curl -s -X POST http://localhost:3000/api/auth/register -H \"Content-Type: application/json\" -d '{\"email\":\"test@test.com\",\"password\":\"test1234\",\"displayName\":\"Test\"}' 2>&1)",
+      "Shell(curl -s -X POST http://localhost:3000/api/auth/login -H \"Content-Type: application/json\" -d '{\"email\":\"test@test.com\",\"password\":\"test1234\"}' 2>&1)",
+      "Shell(TOKEN=\"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiJlNjI0ZTY0OS0wODJmLTRhZTctYjIwYi0yYTQ2MzFlMWE0YWUiLCJzZXNzaW9uSWQiOiI0N2E4OTc5YS04NTgxLTQwMmMtYmE1NS1lZWRjZTgyZDNiMTgiLCJpYXQiOjE3ODY3MTA0OTksImV4cCI6MTc4NzMxNTI5OX0.lO-ZBxxbwDplacqlgyb8Fum9rglz_YgZujUNSOuK6JM\" curl -s -X POST http://localhost:3000/api/workspaces -H \"Content-Type: application/json\" -H \"Authorization: Bearer $TOKEN\" -d '{\"name\":\"Test Workspace\"}' 2>&1)",
+      "Shell(TOKEN=\"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiJlNjI0ZTY0OS0wODJmLTRhZTctYjIwYi0yYTQ2MzFlMWE0YWUiLCJzZXNzaW9uSWQiOiI0N2E4OTc5YS04NTgxLTQwMmMtYmE1NS1lZWRjZTgyZDNiMTgiLCJpYXQiOjE3ODY3MTA0OTksImV4cCI6MTc4NzMxNTI5OX0.lO-ZBxxbwDplacqlgyb8Fum9rglz_YgZujUNSOuK6JM\" curl -s \"http://localhost:3000/api/workspaces/45b59521-e7db-4f21-802c-e4168e1165e8/categories\" -H \"Authorization: Bearer $TOKEN\" 2>&1)",
+      "Shell(TOKEN=$(curl -s -X POST http://localhost:3000/api/auth/login -H \"Content-Type: application/json\" -d '{\"email\":\"test@test.com\",\"password\":\"test1234\"}' | grep -o '\"token\":\"[^\"]*' | cut -d'\"' -f4) WORKSPACE_ID=$(curl -s http://localhost:3000/api/workspaces -H \"Authorization: Bearer $TOKEN\" | grep -o '\"id\":\"[^\"]*' | head -1 | cut -d'\"' -f4) CHANNEL_ID=$(curl -s \"http://localhost:3000/api/workspaces/$WORKSPACE_ID/channels\" -H \"Authorization: Bearer $TOKEN\" | grep -o '\"id\":\"[^\"]*' | head -1 | cut -d'\"' -f4) echo \"Token: ${TOKEN:0:20}...\" echo \"Workspace: $WORKSPACE_ID\" echo \"Channel: $CHANNEL_ID\" curl -s -X POST \"http://localhost:3000/api/channels/$CHANNEL_ID/messages\" \\ -H \"Content-Type: application/json\" \\ -H \"Authorization: Bearer $TOKEN\" \\ -d \"{\\\"encryptedContent\\\":\\\"test\\\",\\\"contentNonce\\\":\\\"nonce\\\",\\\"idempotencyKey\\\":\\\"test-$(date +%s)\\\"}\" 2>&1)",
+      "Shell(TOKEN=$(curl -s -X POST http://localhost:3000/api/auth/login -H \"Content-Type: application/json\" -d '{\"email\":\"test@test.com\",\"password\":\"test1234\"}' | grep -o '\"token\":\"[^\"]*' | cut -d'\"' -f4) WORKSPACE_ID=$(curl -s http://localhost:3000/api/workspaces -H \"Authorization: Bearer $TOKEN\" | grep -o '\"id\":\"[^\"]*' | head -1 | cut -d'\"' -f4) CHANNEL_ID=$(curl -s \"http://localhost:3000/api/workspaces/$WORKSPACE_ID/channels\" -H \"Authorization: Bearer $TOKEN\" | grep -o '\"id\":\"[^\"]*' | head -1 | cut -d'\"' -f4) echo \"Channel: $CHANNEL_ID\" curl -s -X POST \"http://localhost:3000/api/channels/$CHANNEL_ID/messages\" \\ -H \"Content-Type: application/json\" \\ -H \"Authorization: Bearer $TOKEN\" \\ -d '{\"encryptedContent\":\"test message\",\"contentNonce\":\"nonce123\",\"idempotencyKey\":\"test-key-001\"}' 2>&1)",
+      "Shell(pkill -f \"tsx watch\" 2>/dev/null; fuser -k 3000/tcp 2>/dev/null)"
+    ],
+    "deny": [],
+    "defaultMode": "default"
+  }
+}

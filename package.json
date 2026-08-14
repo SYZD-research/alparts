@@ -1,0 +1,14 @@
+{
+  "name": "alparts",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Secure communications platform",
+  "scripts": {
+    "dev": "pnpm -r --parallel run dev",
+    "dev:server": "pnpm --filter @alparts/server run dev",
+    "dev:client": "pnpm --filter @alparts/client run dev",
+    "build": "pnpm -r run build",
+    "typecheck": "pnpm -r run typecheck",
+    "lint": "pnpm -r run lint"
+  }
+}
