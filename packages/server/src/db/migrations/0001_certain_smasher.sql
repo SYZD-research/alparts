@@ -1,0 +1,1 @@
+ALTER TABLE "channels" ADD COLUMN "key_rotation_required" boolean DEFAULT false NOT NULL;

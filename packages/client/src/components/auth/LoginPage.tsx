@@ -1,24 +1,28 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../../stores/auth.store';
+import { safeMessageReturnPath } from '../../stores/permalink-model';
 
 export function LoginPage() {
   const [isRegister, setIsRegister] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [displayName, setDisplayName] = useState('');
+  const [inviteToken, setInviteToken] = useState('');
   const { login, register, isLoading, error } = useAuthStore();
   const navigate = useNavigate();
+  const location = useLocation();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
       if (isRegister) {
-        await register(email, password, displayName);
+        await register(email, password, displayName, inviteToken);
       } else {
         await login(email, password);
       }
-      navigate('/');
+      const returnTo = readSafeReturnPath(location.state);
+      navigate(returnTo, { replace: true });
     } catch {
       // Error handled in store
     }
@@ -36,6 +40,7 @@ export function LoginPage() {
 
         <form onSubmit={handleSubmit} className="space-y-4">
           {isRegister && (
+            <>
             <div>
               <label className="block text-xs font-bold text-discord-muted uppercase mb-2">
                 表示名
@@ -48,6 +53,20 @@ export function LoginPage() {
                 required
               />
             </div>
+            <div>
+              <label className="block text-xs font-bold text-discord-muted uppercase mb-2">
+                招待トークン
+              </label>
+              <input
+                type="password"
+                value={inviteToken}
+                onChange={(e) => setInviteToken(e.target.value)}
+                className="w-full px-3 py-2.5 bg-discord-bg rounded text-discord-text outline-none focus:ring-2 focus:ring-discord-accent"
+                required
+                autoComplete="one-time-code"
+              />
+            </div>
+            </>
           )}
 
           <div>
@@ -73,7 +92,8 @@ export function LoginPage() {
               onChange={(e) => setPassword(e.target.value)}
               className="w-full px-3 py-2.5 bg-discord-bg rounded text-discord-text outline-none focus:ring-2 focus:ring-discord-accent"
               required
-              minLength={8}
+              minLength={12}
+              maxLength={72}
             />
           </div>
 
@@ -102,4 +122,11 @@ export function LoginPage() {
       </div>
     </div>
   );
+}
+
+function readSafeReturnPath(state: unknown): string {
+  if (!state || typeof state !== 'object') return '/';
+  const returnTo = (state as { returnTo?: unknown }).returnTo;
+  if (typeof returnTo !== 'string') return '/';
+  return safeMessageReturnPath(returnTo);
 }

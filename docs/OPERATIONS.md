@@ -1,0 +1,124 @@
+# Phase 1 Prototype operations
+
+最終更新: 2026-08-27
+
+この文書はWeb / single-node / basic per-channel key / text中心＋最大8人P2P音声のprototypeだけを対象とする。Embargoed vulnerability、credential、その他のhigh-impact secretを扱うproduction approvalではない。
+
+## Startup contract
+
+1. PostgreSQLとMinIOへ独立したleast-privilege credentialを用意し、remote接続ではauthenticated TLSを使う。
+2. Secretは`*_FILE`、systemd credential、またはdeployment secret managerから渡す。値をrepository、image、command line、logへ入れない。
+3. Migrationはapplication runtimeとは別のdeployment identityで、application writeを停止した状態で実行する。不可逆変更の前は後述のbackup gateを通す。
+4. Processをnon-root userで起動し、public TLSは信頼するreverse proxyで終端する。PostgreSQL、MinIO、probe、management endpointをpublic networkへ出さない。
+5. Probeを別々にrouteする。
+
+   - `/health/startup`: startupが完了したか。
+   - `/health/live`: process event loopがHTTPを処理できるか。
+   - `/health/ready`: drain中ではなく、PostgreSQL、configured MinIO bucket、audit checkpointが利用可能か。
+
+Processはlisten前にaudit HMAC chainを全件検証する。失敗はsecurity incidentである。起動させる目的でaudit rowやcheckpointを書き換えたり削除したりしない。
+
+Serverのlisten addressはIP literalだけを受理し、`BIND_HOST` 未設定時は `127.0.0.1` に限定する。Example systemd unitもloopbackへ固定する。Container imageだけはcontainer networkからreverse proxyへ到達できるよう `BIND_HOST=0.0.0.0` を明示するため、host portをpublic interfaceへ直接publishせず、TLS reverse proxyとnetwork policyの背後で使う。MinIO requestは `MINIO_REQUEST_TIMEOUT_MS`（既定10秒）の期限を持ち、長時間応答しないobject storageでAPI/DB resourceが無期限に占有されないようにする。
+
+音声通話は `VOICE_ICE_SERVERS_JSON` に最大4件のoperator-controlled STUN/TURNをJSONで設定できる。既定の空配列は第三者serviceへ接続しない代わりに、direct candidateで到達できないNAT間の通話を保証しない。TURN credentialは通話参加clientへ渡るため、service管理者credentialを流用せず、短命・最小権限のcredentialを発行する。TURNはauthenticated TLS（`turns:`）を優先し、public Internetへ無制限relayとして開放しない。P2P meshは最大8人であり、media serverとして水平scaleする構成ではない。
+
+AttachmentのDB rowとMinIO objectは分散transactionではない。Upload statusはDB内で認可とchunk metadataをsnapshotした後、DB connection/lockを解放してからMinIO objectを照合する。その後のchunk PUT/finalizeは改めてlockと認可を取得する。DB失敗後に残るobjectは期限切れcleanupで回収し、download開始後に失権しても送信開始済みciphertext streamは途中回収できない。これらをatomic cross-store commitまたはremote erasureと説明しない。
+
+## Audit checkpoint
+
+Newest database audit rowの削除を検出するには、`AUDIT_CHECKPOINT_PATH` をPostgreSQL operatorとはwrite/delete authorityを分離したmountまたはstorageへ置く。FileはHMAC認証され、audit commit後にatomic updateされる。初回deploymentではserverを停止したまま、productionと同じdatabase、`AUDIT_INTEGRITY_KEY`、checkpoint pathを設定して `pnpm --filter @alparts/server audit:checkpoint:init` を一度だけ実行する。その後 `AUDIT_CHECKPOINT_REQUIRED=true` でserverを起動する。既存checkpointがある場合、このcommandは上書きしない。
+
+Required modeでは空chainを含むcheckpoint欠落、参照row/hashの不一致、rollback、tail切断、checkpoint read/write失敗をstartup/readiness/通常writeでfail closedにする。通常appendとcheckpoint更新は同じPostgreSQL advisory lock内で現在anchorのHMACとDB tailへのdescendant関係を検証し、外部fileは比較対象が変わっていない場合だけatomicに置換する。Integrity failureはprocess内でstickyになり、通常のserver起動やaudit appendは欠落checkpointまたは切断されたsuffixを再作成・再署名しない。欠落時に再provisionすると切断後のchainを新しい正史として承認してしまうため、incident responseで独立保管したcheckpoint/backupと照合するまで実行しない。
+
+Local systemd `StateDirectory` は事故によるDB row削除の検出を改善するが、同一host/operatorがdatabaseとfileを削除できるならoperator separationではない。独立mountを使わない配置で「operator-independent audit」を主張しない。
+
+`AUDIT_INTEGRITY_KEY` はaudit chainとcheckpointの検証に必要である。Database dumpと同じcredentialまたは同じ暗号化containerへだけ保存せず、別のencrypted assetとして復旧可能にする。
+
+## systemd
+
+Built repositoryを `/opt/alparts` に配置し、`deploy/alparts.service` を `/etc/systemd/system` へinstallする。Example unitはNode.js 24以降を `/usr/bin/node` に要求する。別の場所へinstallした場合は、起動前に`ExecStart`をその検証済みabsolute pathへ変更し、`systemd-analyze verify /etc/systemd/system/alparts.service`を実行する。Root-ownedのcredential fileを `/etc/alparts/credentials` に1 secretずつ置き、non-secret endpoint/policyだけを `/etc/alparts/alparts.env` に置く。Example unitが作る `/var/lib/alparts-audit` は、database operatorから分離するclaimを行う前に独立保護先へbind mountする。
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now alparts.service
+systemctl status alparts.service
+curl --fail http://127.0.0.1:3000/health/ready
+```
+
+## Migration safety sequence
+
+Migration scriptとbackup scriptは互いを自動実行しない。Operatorが次の順序を明示的に管理する。
+
+1. Deploy対象revisionのtypecheck/test/buildと、fresh disposable databaseへのmigrationを先に検証する。
+2. Applicationをdrain/stopし、DB/MinIOへのwriteを停止する。Backup中にwriteがないことをoperatorが保証する。
+3. Age recipient、backup DB read identity、MinIO read identity、output destinationを設定し、migration label付きgateを実行する。
+
+   ```bash
+   export ALPARTS_BACKUP_QUIESCED=YES_WRITES_ARE_STOPPED
+   scripts/pre-migration-backup.sh 0006_example_change
+   ```
+
+4. 出力されたartifactを、productionとは別の空DB/空bucketへ `scripts/restore-verify.sh` で復元検証する。`VERIFIED <run-id>` が得られない場合はmigrationへ進まない。
+5. Backup artifactのdigestとverification resultを独立した変更記録へ残す。
+6. Application runtimeとは別のdeployment identityでmigrationを実行する。
+
+   ```bash
+   pnpm --filter @alparts/server db:migrate
+   ```
+
+7. Applicationを起動し、startup/live/ready、audit integrity、target schema versionを確認する。Rollback/restoreが必要なら新しい隔離環境で原因を確認してから、承認済みrunbookを使う。
+
+`pre-migration-backup.sh` はmigration、service停止、restore、cleanupを実行しない。`restore-verify.sh` は既存schemaをdropせず、既存bucketをclearせず、productionらしいtarget名を拒否する。Environmentと全手順は [BACKUP.md](./BACKUP.md) を参照する。
+
+## Graceful shutdown
+
+`SIGTERM` と `SIGINT` はreadinessを直ちに失敗させ、新規API workを拒否し、realtime clientをdisconnectし、background cleanupを停止し、HTTP connectionを最大25秒drainしてdatabase poolを閉じる。Systemd unitは強制終了まで30秒を許容する。
+
+Shutdownをbackupのquiesce mechanismとして暗黙に扱わない。Database、MinIO、管理toolを含めてwrite sourceが停止したことを別途確認する。
+
+## Backup / restore boundary
+
+Backup toolingは次を一つのrun IDへ収集する。
+
+- `--format=custom --serializable-deferrable` のPostgreSQL logical dump。
+- Configured MinIO bucket内の最新object byte。
+- Table count、attachment/object reference、object inventory、SHA-256 checksum、manifest、tool version。
+
+Plaintext stagingはmode `0700`の`mktemp`配下だけに作りtrapで削除し、published artifactはage recipient public keyへ暗号化する。Output既存fileを置換しない。PostgreSQLとMinIOの間に共通transactionはないため、quiesceしないbackupは整合snapshotではない。
+
+Restore verifierは次を強制する。
+
+- `alparts_restore_*` / `alparts_verify_*` databaseと `alparts-restore-*` / `alparts-verify-*` bucketだけを許可し、production-like名とsource/default bucketを拒否する。
+- Non-system schema/objectがないDB、objectがないbucketだけを許可する。
+- Restore ownerが `NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS` で、危険なbuilt-in roleを継承できないことを確認する。
+- Filesystem extraction前にarchive entry数、regular fileごとのlogical byte、aggregate expanded byteを設定上限と照合する。GNU tarが示すexpanded sizeを使い、compact sparse/unsupported metadataを検出できる場合は拒否する。
+- Decrypt→archive/path/type validation→checksum→single-transaction `pg_restore`→object copy→全table count・attachment reference・object key/size/SHAの再download比較を行う。
+
+PostgreSQL接続はmode `0600`のlibpq service fileとsection名で渡し、MinIO credentialはmode `0700`の一時`mc` configへstdin importする。Password、access key、secret keyをchild process argvまたはenvironmentへ渡さない。Restoreのexpanded-byte上限は、保護されたstaging filesystemのquotaと安全な空き容量以下へ設定する。
+
+### 確認済みroundtrip
+
+2026-08-26に既存DB/bucket/volumeを使わない一意なPostgreSQL 16/MinIO環境で、`backup.sh` から非特権の空verify DB/空bucketへの `restore-verify.sh` を完走した。
+
+- Run ID: `20260826T144441Z-c50148de2d3e`
+- Database: 4 tableのsource/restore count一致
+- Object: 2 object、合計144 bytes
+- Verification: manifest、payload checksum、attachment reference、object inventory、再download SHAが一致
+
+この結果は、そのartifactのDB rowと最新encrypted object byteを検証targetへ再現できたことだけを示す。Application startup、original audit keyでのchain verification、browser device keyによるfixture decrypt、client attachment full flow、RTO/RPOは検証していない。
+
+### Backupに含まれない資産
+
+- `AUDIT_INTEGRITY_KEY`、age identity、deployment/MinIO/PostgreSQL credential。
+- Reverse proxy、systemd、environment/policy configuration。
+- External audit checkpoint fileと、その独立保管先の記録。
+- Browser device private key、channel keyのclient-side recovery material。
+- MinIO version history、bucket policy、lifecycle、tag、すべてのobject metadata。
+
+これらは必要性とauthorityを分離して別々に暗号化・保管する。Browser device private keyをserver backupへ追加してE2EE recoveryを装わない。
+
+## 未提供の運用保証
+
+このrepositoryは、PITR/continuous WAL archive、WORM/object lock、automatic off-site replication、retention rotation、scheduled automatic restore、full application automatic recovery、failover、HA、quarterly DR、RTO/RPO、72-hour soakを提供しない。Auditのexternal SIEM/WORM転送、data retention/export、signed update/release provenanceも未実装である。
+
+これらは [LIMITATIONS.md](../LIMITATIONS.md) のformal release blockerであり、manual backup roundtrip成功で解除されない。

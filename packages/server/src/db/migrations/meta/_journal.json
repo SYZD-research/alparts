@@ -1,0 +1,97 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1786868407773,
+      "tag": "0000_certain_tyrannus",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1786868698446,
+      "tag": "0001_certain_smasher",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1787748787990,
+      "tag": "0002_phase1_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1787750200371,
+      "tag": "0003_management_invitations",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1787752095331,
+      "tag": "0004_phase1_user_state",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1787752905547,
+      "tag": "0005_phase1_attachment_chunks",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1787755028678,
+      "tag": "0006_authorization_overrides",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1787756800354,
+      "tag": "0007_authorization_snapshot_sync",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1787757681376,
+      "tag": "0008_attachment_signatures",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1787800000000,
+      "tag": "0009_committed_channel_keys",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1787800100000,
+      "tag": "0010_compact_reactions",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1787800200000,
+      "tag": "0011_security_protocol_state",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1787828938360,
+      "tag": "0012_two_phase_channel_keys",
+      "breakpoints": true
+    }
+  ]
+}

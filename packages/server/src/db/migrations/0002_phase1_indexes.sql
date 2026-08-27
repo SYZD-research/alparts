@@ -1,0 +1,25 @@
+CREATE INDEX "attachment_uploads_message_id_idx" ON "attachment_uploads" USING btree ("message_id");--> statement-breakpoint
+CREATE INDEX "attachment_uploads_uploader_id_idx" ON "attachment_uploads" USING btree ("uploader_id");--> statement-breakpoint
+CREATE INDEX "attachment_uploads_expires_at_idx" ON "attachment_uploads" USING btree ("expires_at");--> statement-breakpoint
+CREATE INDEX "attachments_message_id_idx" ON "attachments" USING btree ("message_id");--> statement-breakpoint
+CREATE INDEX "audit_logs_created_at_idx" ON "audit_logs" USING btree ("created_at","id");--> statement-breakpoint
+CREATE INDEX "categories_workspace_position_idx" ON "categories" USING btree ("workspace_id","position");--> statement-breakpoint
+CREATE INDEX "channel_keys_channel_version_idx" ON "channel_keys" USING btree ("channel_id","version");--> statement-breakpoint
+CREATE INDEX "channel_keys_device_id_idx" ON "channel_keys" USING btree ("device_id");--> statement-breakpoint
+CREATE INDEX "channel_members_user_id_idx" ON "channel_members" USING btree ("user_id");--> statement-breakpoint
+CREATE INDEX "channels_workspace_position_idx" ON "channels" USING btree ("workspace_id","position");--> statement-breakpoint
+CREATE INDEX "channels_category_position_idx" ON "channels" USING btree ("category_id","position");--> statement-breakpoint
+CREATE INDEX "devices_user_id_idx" ON "devices" USING btree ("user_id");--> statement-breakpoint
+CREATE INDEX "dm_members_user_id_idx" ON "dm_members" USING btree ("user_id");--> statement-breakpoint
+CREATE INDEX "member_roles_role_id_idx" ON "member_roles" USING btree ("role_id");--> statement-breakpoint
+CREATE INDEX "message_pins_message_id_idx" ON "message_pins" USING btree ("message_id");--> statement-breakpoint
+CREATE INDEX "messages_channel_created_idx" ON "messages" USING btree ("channel_id","created_at","id");--> statement-breakpoint
+CREATE INDEX "messages_reference_type_idx" ON "messages" USING btree ("ref_message_id","type");--> statement-breakpoint
+CREATE INDEX "messages_author_id_idx" ON "messages" USING btree ("author_id");--> statement-breakpoint
+CREATE INDEX "read_positions_channel_id_idx" ON "read_positions" USING btree ("channel_id");--> statement-breakpoint
+CREATE INDEX "roles_workspace_id_idx" ON "roles" USING btree ("workspace_id");--> statement-breakpoint
+CREATE INDEX "sessions_user_id_idx" ON "sessions" USING btree ("user_id");--> statement-breakpoint
+CREATE INDEX "sessions_device_id_idx" ON "sessions" USING btree ("device_id");--> statement-breakpoint
+CREATE INDEX "sessions_expires_at_idx" ON "sessions" USING btree ("expires_at");--> statement-breakpoint
+CREATE INDEX "workspace_members_user_id_idx" ON "workspace_members" USING btree ("user_id");--> statement-breakpoint
+ALTER TABLE "roles" ADD CONSTRAINT "roles_workspace_name_unique" UNIQUE("workspace_id","name");

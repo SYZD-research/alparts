@@ -1,30 +1,117 @@
+import { and, desc, eq, gt, inArray, isNotNull, isNull, lt, or, sql } from 'drizzle-orm';
+import { Permissions, MESSAGES_PER_PAGE, type SignedMessageEnvelope } from '@alparts/shared';
 import { db } from '../db/index.js';
-import { messages, messagePins, readPositions, users } from '../db/schema.js';
-import { eq, and, desc, lt, sql } from 'drizzle-orm';
-import { MESSAGES_PER_PAGE } from '@alparts/shared';
-import { audit } from '../middleware/audit.js';
+import {
+  channelKeyEpochRecipients,
+  channelKeyEpochs,
+  channels,
+  devices,
+  messagePins,
+  messageReactions,
+  messages,
+  readPositions,
+  users,
+} from '../db/schema.js';
+import { verifyMessageEnvelopeSignature } from '../security/message.js';
+import { getAttachmentsForMessages } from './file.service.js';
+import {
+  getChannelAuthorizationFromStore,
+  isVisibleChannelAuthorization,
+  lockWorkspaceForAuthorization,
+} from './authorization.service.js';
 
-export async function getChannelMessages(
-  channelId: string,
-  options?: { cursor?: string; limit?: number },
-) {
-  const limit = options?.limit || MESSAGES_PER_PAGE;
+interface CryptoEventInput {
+  deviceId: string;
+  encryptedContent: string;
+  contentNonce: string;
+  keyVersion: number;
+  idempotencyKey: string;
+  signature: string;
+  broadcastMention: boolean;
+}
 
-  let query = db.query.messages.findMany({
-    where: eq(messages.channelId, channelId),
-    orderBy: [desc(messages.createdAt)],
+interface ReactionRow {
+  messageId: string;
+  emoji: string;
+  userId: string;
+}
+
+type CryptoEventType = 'message' | 'edit' | 'delete';
+export const MAX_REACTION_EMOJIS_PER_MESSAGE = 20;
+export const MAX_REACTIONS_PER_USER_PER_MESSAGE = 20;
+
+export async function getChannelMessages(channelId: string, options?: { cursor?: string; limit?: number }) {
+  const limit = Math.min(Math.max(options?.limit ?? MESSAGES_PER_PAGE, 1), 100);
+  let cursorCondition;
+  if (options?.cursor) {
+    const cursor = await db.query.messages.findFirst({
+      columns: { id: true, channelId: true, createdAt: true },
+      where: and(eq(messages.id, options.cursor), eq(messages.channelId, channelId)),
+    });
+    if (!cursor) throw new Error('INVALID_CURSOR');
+    cursorCondition = or(
+      lt(messages.createdAt, cursor.createdAt),
+      and(eq(messages.createdAt, cursor.createdAt), lt(messages.id, cursor.id)),
+    );
+  }
+
+  const results = await db.query.messages.findMany({
+    where: cursorCondition
+      ? and(eq(messages.channelId, channelId), cursorCondition)
+      : eq(messages.channelId, channelId),
+    orderBy: [desc(messages.createdAt), desc(messages.id)],
     limit: limit + 1,
     with: {
-      author: true,
+      author: {
+        columns: {
+          id: true,
+          displayName: true,
+          avatarUrl: true,
+          status: true,
+          createdAt: true,
+        },
+      },
     },
   });
-
-  const results = await query;
   const hasMore = results.length > limit;
   const data = results.slice(0, limit);
-
+  const baseMessageIds = data
+    .filter((message) => message.type === 'message')
+    .map((message) => message.id);
+  const [pins, reactionRows] = baseMessageIds.length > 0
+    ? await Promise.all([
+        db.query.messagePins.findMany({
+          columns: { messageId: true },
+          where: inArray(messagePins.messageId, baseMessageIds),
+        }),
+        db.query.messageReactions.findMany({
+          columns: {
+            messageId: true,
+            emoji: true,
+            userId: true,
+          },
+          where: inArray(messageReactions.messageId, baseMessageIds),
+        }),
+      ])
+    : [[], []];
+  const pinnedMessageIds = new Set(pins.map((pin) => pin.messageId));
+  const attachmentsByMessage = await getAttachmentsForMessages(baseMessageIds);
+  const reactionsByMessage = new Map<string, ReactionRow[]>();
+  for (const reaction of reactionRows) {
+    const grouped = reactionsByMessage.get(reaction.messageId) || [];
+    grouped.push(reaction);
+    reactionsByMessage.set(reaction.messageId, grouped);
+  }
   return {
-    data: data.map(m => formatMessage(m)),
+    data: data.map((message) => ({
+      ...formatMessage(message, message.type === 'message'
+        ? {
+            isPinned: pinnedMessageIds.has(message.id),
+            reactions: summarizeReactions(reactionsByMessage.get(message.id) || []),
+          }
+        : undefined),
+      attachments: message.type === 'message' ? attachmentsByMessage.get(message.id) || [] : [],
+    })),
     hasMore,
     cursor: hasMore ? data[data.length - 1]?.id : null,
   };
@@ -33,237 +120,516 @@ export async function getChannelMessages(
 export async function createMessage(
   channelId: string,
   authorId: string,
-  deviceId: string,
-  content: string,
-  contentNonce: string,
-  idempotencyKey: string,
+  input: CryptoEventInput,
   refMessageId?: string,
-  type: string = 'message',
 ) {
-  // Check for duplicate (idempotency)
-  if (idempotencyKey) {
-    const existing = await db.query.messages.findFirst({
-      where: and(
-        eq(messages.channelId, channelId),
-        eq(messages.idempotencyKey, idempotencyKey),
-      ),
-    });
-    if (existing) {
-      return formatMessage({ ...existing, author: await getUserForMessage(existing.authorId) });
+  return db.transaction(async (transaction) => {
+    await lockAndAuthorizeCryptoWrite(
+      transaction,
+      channelId,
+      authorId,
+      input,
+      Permissions.SEND_MESSAGES,
+      'message',
+      refMessageId,
+    );
+    if (refMessageId) await assertReferenceInChannel(transaction, refMessageId, channelId);
+    return insertCryptoEvent(transaction, channelId, authorId, input, 'message', refMessageId);
+  });
+}
+
+export async function editMessage(messageId: string, authorId: string, input: CryptoEventInput) {
+  const location = await getOriginalMessage(messageId);
+  return db.transaction(async (transaction) => {
+    await lockAndAuthorizeCryptoWrite(
+      transaction,
+      location.channelId,
+      authorId,
+      input,
+      Permissions.EDIT_MESSAGES,
+      'edit',
+      messageId,
+    );
+    const original = await lockActiveBaseMessage(transaction, messageId, 'share');
+    if (original.channelId !== location.channelId || original.authorId !== authorId || original.type !== 'message') {
+      throw new Error('NOT_AUTHORIZED');
     }
-  }
-
-  const [message] = await db.insert(messages).values({
-    channelId,
-    authorId,
-    deviceId,
-    content,
-    contentNonce,
-    type,
-    refMessageId: refMessageId || null,
-    idempotencyKey,
-  }).returning();
-
-  const author = await getUserForMessage(authorId);
-
-  return formatMessage({ ...message, author });
+    return insertCryptoEvent(transaction, original.channelId, authorId, input, 'edit', messageId);
+  });
 }
 
-export async function editMessage(
-  messageId: string,
-  authorId: string,
-  content: string,
-  contentNonce: string,
-) {
-  // Append as a new edit event (MSG-16: non-destructive)
-  const original = await db.query.messages.findFirst({
-    where: eq(messages.id, messageId),
+export async function deleteMessage(messageId: string, userId: string, input: CryptoEventInput) {
+  const deleteInput = { ...input, encryptedContent: '', contentNonce: '' };
+  const location = await getOriginalMessage(messageId);
+  return db.transaction(async (transaction) => {
+    const authorization = await lockAndAuthorizeCryptoWrite(
+      transaction,
+      location.channelId,
+      userId,
+      deleteInput,
+      Permissions.DELETE_MESSAGES,
+      'delete',
+      messageId,
+    );
+    const original = await lockBaseMessage(transaction, messageId, 'update');
+    if (original.channelId !== location.channelId || original.type !== 'message') throw new Error('MESSAGE_NOT_FOUND');
+    if (original.authorId !== userId && (authorization.permissions & Permissions.MANAGE_CHANNELS) !== Permissions.MANAGE_CHANNELS) {
+      throw new Error('NOT_AUTHORIZED');
+    }
+    const priorDelete = await findDeleteEvent(transaction, messageId);
+    if (priorDelete) {
+      const expectedKey = scopedIdempotencyKey(userId, deleteInput.idempotencyKey);
+      if (priorDelete.idempotencyKey !== expectedKey) throw new Error('MESSAGE_NOT_FOUND');
+    }
+    const storedEvent = await insertCryptoEvent(transaction, original.channelId, userId, deleteInput, 'delete', messageId);
+    return {
+      messageId,
+      channelId: original.channelId,
+      event: storedEvent.event,
+      isNewEvent: storedEvent.isNewEvent,
+    };
   });
-  if (!original) throw new Error('MESSAGE_NOT_FOUND');
-  if (original.authorId !== authorId) throw new Error('NOT_AUTHORIZED');
-
-  const [editEvent] = await db.insert(messages).values({
-    channelId: original.channelId,
-    authorId,
-    deviceId: original.deviceId,
-    content,
-    contentNonce,
-    type: 'edit',
-    refMessageId: messageId,
-    idempotencyKey: `edit-${messageId}-${Date.now()}`,
-  }).returning();
-
-  const author = await getUserForMessage(authorId);
-  return formatMessage({ ...editEvent, author });
-}
-
-export async function deleteMessage(messageId: string, userId: string) {
-  const original = await db.query.messages.findFirst({
-    where: eq(messages.id, messageId),
-  });
-  if (!original) throw new Error('MESSAGE_NOT_FOUND');
-
-  // Append delete event
-  const [deleteEvent] = await db.insert(messages).values({
-    channelId: original.channelId,
-    authorId: userId,
-    deviceId: original.deviceId,
-    content: '',
-    contentNonce: '',
-    type: 'delete',
-    refMessageId: messageId,
-    idempotencyKey: `delete-${messageId}-${Date.now()}`,
-  }).returning();
-
-  return { messageId, channelId: original.channelId };
 }
 
 export async function toggleReaction(messageId: string, userId: string, emoji: string) {
-  // For simplicity, reactions are stored as system messages referencing the original
-  const original = await db.query.messages.findFirst({
-    where: eq(messages.id, messageId),
+  return db.transaction(async (transaction) => {
+    const original = await lockAndAuthorizeMessageMutation(
+      transaction,
+      messageId,
+      userId,
+      Permissions.ADD_REACTIONS,
+    );
+    const existingReaction = await transaction.query.messageReactions.findFirst({
+      where: and(
+        eq(messageReactions.messageId, messageId),
+        eq(messageReactions.userId, userId),
+        eq(messageReactions.emoji, emoji),
+      ),
+    });
+    const currentlyAdded = Boolean(existingReaction);
+    const reactionAction = currentlyAdded ? 'remove' as const : 'add' as const;
+    const action = currentlyAdded ? 'removed' as const : 'added' as const;
+    if (currentlyAdded) {
+      await transaction.delete(messageReactions).where(and(
+        eq(messageReactions.messageId, messageId),
+        eq(messageReactions.userId, userId),
+        eq(messageReactions.emoji, emoji),
+      ));
+    } else {
+      const [counts] = await transaction.select({
+        distinctEmojiCount: sql<number>`count(distinct ${messageReactions.emoji})::int`,
+        userReactionCount: sql<number>`count(*) filter (where ${messageReactions.userId} = ${userId})::int`,
+        emojiExists: sql<boolean>`coalesce(bool_or(${messageReactions.emoji} = ${emoji}), false)`,
+      }).from(messageReactions).where(eq(messageReactions.messageId, messageId));
+      if (
+        Number(counts?.userReactionCount ?? 0) >= MAX_REACTIONS_PER_USER_PER_MESSAGE
+        || (!counts?.emojiExists && Number(counts?.distinctEmojiCount ?? 0) >= MAX_REACTION_EMOJIS_PER_MESSAGE)
+      ) throw new Error('REACTION_LIMIT_REACHED');
+      await transaction.insert(messageReactions).values({ messageId, userId, emoji });
+    }
+    const currentReactions = await transaction.query.messageReactions.findMany({
+      columns: {
+        messageId: true,
+        emoji: true,
+        userId: true,
+      },
+      where: eq(messageReactions.messageId, messageId),
+    });
+    return {
+      messageId,
+      channelId: original.channelId,
+      userId,
+      action,
+      reactionAction,
+      emoji,
+      reactions: summarizeReactions(currentReactions),
+    };
   });
-  if (!original) throw new Error('MESSAGE_NOT_FOUND');
-
-  // Check if reaction already exists
-  const existingReaction = await db.query.messages.findFirst({
-    where: and(
-      eq(messages.refMessageId, messageId),
-      eq(messages.authorId, userId),
-      eq(messages.type, 'reaction'),
-      sql`${messages.content} = ${emoji}`,
-    ),
-  });
-
-  if (existingReaction) {
-    // Remove reaction
-    await db.delete(messages).where(eq(messages.id, existingReaction.id));
-    return { action: 'removed', emoji };
-  }
-
-  // Add reaction
-  await db.insert(messages).values({
-    channelId: original.channelId,
-    authorId: userId,
-    deviceId: 'system',
-    content: emoji,
-    contentNonce: '',
-    type: 'reaction',
-    refMessageId: messageId,
-    idempotencyKey: `reaction-${messageId}-${userId}-${emoji}`,
-  });
-
-  return { action: 'added', emoji };
 }
 
 export async function getReactions(messageId: string) {
-  const reactions = await db.query.messages.findMany({
-    where: and(
-      eq(messages.refMessageId, messageId),
-      eq(messages.type, 'reaction'),
-    ),
+  const reactions = await db.query.messageReactions.findMany({
+    columns: {
+      messageId: true,
+      emoji: true,
+      userId: true,
+    },
+    where: eq(messageReactions.messageId, messageId),
   });
-
-  const grouped = new Map<string, string[]>();
-  for (const r of reactions) {
-    const existing = grouped.get(r.content) || [];
-    existing.push(r.authorId);
-    grouped.set(r.content, existing);
-  }
-
-  return Array.from(grouped.entries()).map(([emoji, userIds]) => ({
-    emoji,
-    count: userIds.length,
-    userIds,
-  }));
+  return summarizeReactions(reactions);
 }
 
-export async function pinMessage(messageId: string, channelId: string, userId: string) {
-  const existing = await db.query.messagePins.findFirst({
-    where: and(
-      eq(messagePins.messageId, messageId),
-      eq(messagePins.channelId, channelId),
-    ),
-  });
-
-  if (existing) {
-    // Unpin
-    await db.delete(messagePins).where(
-      and(
-        eq(messagePins.messageId, messageId),
-        eq(messagePins.channelId, channelId),
-      ),
+export async function pinMessage(messageId: string, userId: string) {
+  return db.transaction(async (transaction) => {
+    const original = await lockAndAuthorizeMessageMutation(
+      transaction,
+      messageId,
+      userId,
+      Permissions.PIN_MESSAGES,
     );
-    return { pinned: false };
-  }
-
-  await db.insert(messagePins).values({
-    channelId,
-    messageId,
-    pinnedBy: userId,
+    const existing = await transaction.query.messagePins.findFirst({
+      where: and(eq(messagePins.messageId, messageId), eq(messagePins.channelId, original.channelId)),
+    });
+    if (existing) {
+      await transaction.delete(messagePins).where(and(
+        eq(messagePins.messageId, messageId),
+        eq(messagePins.channelId, original.channelId),
+      ));
+      return { messageId, channelId: original.channelId, userId, pinned: false };
+    }
+    await transaction.insert(messagePins)
+      .values({ channelId: original.channelId, messageId, pinnedBy: userId });
+    return { messageId, channelId: original.channelId, userId, pinned: true };
   });
-
-  return { pinned: true };
 }
 
 export async function getPinnedMessages(channelId: string) {
-  const pins = await db.query.messagePins.findMany({
-    where: eq(messagePins.channelId, channelId),
-    with: {
-      // message: true,
-    },
-  });
-  return pins;
+  return db.query.messagePins.findMany({ where: eq(messagePins.channelId, channelId) });
 }
 
 export async function updateReadPosition(userId: string, channelId: string, messageId: string) {
-  await db.insert(readPositions)
-    .values({ userId, channelId, lastReadMessageId: messageId })
-    .onConflictDoUpdate({
-      target: [readPositions.userId, readPositions.channelId],
-      set: { lastReadMessageId: messageId, updatedAt: new Date() },
+  return db.transaction(async (transaction) => {
+    const channel = await transaction.query.channels.findFirst({ where: eq(channels.id, channelId) });
+    if (!channel) throw new Error('MESSAGE_NOT_FOUND');
+    await lockWorkspaceForAuthorization(transaction, channel.workspaceId, 'share');
+    const authorization = await getChannelAuthorizationFromStore(transaction, userId, channel);
+    if (!isVisibleChannelAuthorization(authorization)) throw new Error('MESSAGE_NOT_FOUND');
+    await transaction.execute(
+      sql`select pg_advisory_xact_lock(hashtext(${`read:${userId}:${channelId}`})::bigint)`,
+    );
+    const message = await lockActiveBaseMessage(transaction, messageId, 'share');
+    if (message.channelId !== channelId) throw new Error('MESSAGE_NOT_FOUND');
+    const existing = await transaction.query.readPositions.findFirst({
+      where: and(eq(readPositions.userId, userId), eq(readPositions.channelId, channelId)),
     });
+    if (existing?.lastReadMessageId) {
+      const previous = await transaction.query.messages.findFirst({
+        columns: { id: true, createdAt: true },
+        where: and(eq(messages.id, existing.lastReadMessageId), eq(messages.channelId, channelId)),
+      });
+      if (previous && (
+        previous.createdAt > message.createdAt
+        || (previous.createdAt.getTime() === message.createdAt.getTime() && previous.id >= message.id)
+      )) {
+        return formatReadPosition(existing);
+      }
+    }
+    const updatedAt = new Date();
+    const [position] = await transaction.insert(readPositions)
+      .values({ userId, channelId, lastReadMessageId: messageId, updatedAt })
+      .onConflictDoUpdate({
+        target: [readPositions.userId, readPositions.channelId],
+        set: { lastReadMessageId: messageId, updatedAt },
+      })
+      .returning();
+    return formatReadPosition(position);
+  });
 }
 
 export async function getReadPositions(userId: string, channelId: string) {
   return db.query.readPositions.findFirst({
-    where: and(
-      eq(readPositions.userId, userId),
-      eq(readPositions.channelId, channelId),
-    ),
+    where: and(eq(readPositions.userId, userId), eq(readPositions.channelId, channelId)),
   });
 }
 
-async function getUserForMessage(userId: string) {
-  const user = await db.query.users.findFirst({
+function formatReadPosition(position: typeof readPositions.$inferSelect) {
+  return {
+    userId: position.userId,
+    channelId: position.channelId,
+    lastReadMessageId: position.lastReadMessageId,
+    updatedAt: position.updatedAt.toISOString(),
+  };
+}
+
+async function insertCryptoEvent(
+  store: any,
+  channelId: string,
+  authorId: string,
+  input: CryptoEventInput,
+  type: CryptoEventType,
+  refMessageId?: string,
+) {
+  const storedIdempotencyKey = scopedIdempotencyKey(authorId, input.idempotencyKey);
+  // PostgreSQL timestamps may contain microseconds while JavaScript Date and
+  // the wire format expose milliseconds. Persist millisecond precision so the
+  // client and cursor can use the same deterministic (createdAt, id) order.
+  const createdAt = new Date();
+  const inserted = await store.insert(messages).values({
+    channelId,
+    authorId,
+    deviceId: input.deviceId,
+    content: input.encryptedContent,
+    contentNonce: input.contentNonce,
+    keyVersion: input.keyVersion,
+    signature: input.signature,
+    broadcastMention: input.broadcastMention,
+    type,
+    refMessageId: refMessageId || null,
+    idempotencyKey: storedIdempotencyKey,
+    createdAt,
+  }).onConflictDoNothing().returning();
+
+  const event = inserted[0] || await store.query.messages.findFirst({
+    where: and(eq(messages.channelId, channelId), eq(messages.idempotencyKey, storedIdempotencyKey)),
+  });
+  if (!event || event.authorId !== authorId || !sameCryptoEvent(event, input, type, refMessageId)) {
+    throw new Error('IDEMPOTENCY_CONFLICT');
+  }
+  return {
+    event: formatMessage({ ...event, author: await getUserForMessage(event.authorId, store) }),
+    isNewEvent: inserted.length > 0,
+  };
+}
+
+function sameCryptoEvent(
+  event: typeof messages.$inferSelect,
+  input: CryptoEventInput,
+  type: CryptoEventType,
+  refMessageId?: string,
+): boolean {
+  return event.deviceId === input.deviceId
+    && event.content === input.encryptedContent
+    && event.contentNonce === input.contentNonce
+    && event.keyVersion === input.keyVersion
+    && event.signature === input.signature
+    && event.broadcastMention === input.broadcastMention
+    && event.type === type
+    && event.refMessageId === (refMessageId || null);
+}
+
+async function lockAndAuthorizeCryptoWrite(
+  store: any,
+  channelId: string,
+  userId: string,
+  input: CryptoEventInput,
+  permission: number,
+  type: CryptoEventType,
+  refMessageId?: string,
+) {
+  const channelLocation = await store.query.channels.findFirst({
+    columns: { workspaceId: true },
+    where: eq(channels.id, channelId),
+  });
+  if (!channelLocation) throw new Error('CHANNEL_NOT_FOUND');
+
+  // Membership, role and key-epoch changes take UPDATE on this workspace row.
+  // Holding SHARE until the ciphertext event commits prevents authorization
+  // from changing between validation and durable acknowledgement.
+  await lockWorkspaceForAuthorization(store, channelLocation.workspaceId, 'share');
+
+  // Revocation takes UPDATE on this row. PostgreSQL rechecks revoked_at after
+  // a conflicting lock wait, so a revoked sender cannot pass a stale check.
+  const [device] = await store.select()
+    .from(devices)
+    .where(and(eq(devices.id, input.deviceId), eq(devices.userId, userId), isNull(devices.revokedAt)))
+    .for('share');
+  if (!device) throw new Error('INVALID_DEVICE');
+
+  const channel = await store.query.channels.findFirst({
+    where: eq(channels.id, channelId),
+  });
+  if (!channel || channel.workspaceId !== channelLocation.workspaceId) throw new Error('CHANNEL_NOT_FOUND');
+  const authorization = await getChannelAuthorizationFromStore(store, userId, channel);
+  if (!isVisibleChannelAuthorization(authorization)) throw new Error('CHANNEL_NOT_FOUND');
+  if ((authorization.permissions & permission) !== permission) throw new Error('NOT_AUTHORIZED');
+  if (
+    input.broadcastMention
+    && (authorization.permissions & Permissions.MENTION_EVERYONE) !== Permissions.MENTION_EVERYONE
+  ) throw new Error('BROADCAST_MENTION_FORBIDDEN');
+  if (channel.keyRotationRequired) throw new Error('KEY_ROTATION_REQUIRED');
+
+  const epoch = await store.query.channelKeyEpochs.findFirst({
+    columns: { version: true },
+    where: and(
+      eq(channelKeyEpochs.channelId, channelId),
+      eq(channelKeyEpochs.version, input.keyVersion),
+      eq(channelKeyEpochs.status, 'active'),
+    ),
+  });
+  if (!epoch) throw new Error('INVALID_KEY_VERSION');
+  const recipient = await store.query.channelKeyEpochRecipients.findFirst({
+    columns: { acceptedDeliveryId: true },
+    where: and(
+      eq(channelKeyEpochRecipients.channelId, channelId),
+      eq(channelKeyEpochRecipients.version, input.keyVersion),
+      eq(channelKeyEpochRecipients.deviceId, input.deviceId),
+      eq(channelKeyEpochRecipients.userId, userId),
+      isNotNull(channelKeyEpochRecipients.acceptedDeliveryId),
+    ),
+  });
+  if (!recipient?.acceptedDeliveryId) throw new Error('INVALID_KEY_VERSION');
+  const envelope: SignedMessageEnvelope = {
+    channelId,
+    authorId: userId,
+    deviceId: input.deviceId,
+    encryptedContent: input.encryptedContent,
+    contentNonce: input.contentNonce,
+    keyVersion: input.keyVersion,
+    idempotencyKey: input.idempotencyKey,
+    refMessageId: refMessageId || null,
+    broadcastMention: input.broadcastMention,
+    type,
+  };
+  if (!verifyMessageEnvelopeSignature(device.identityKey, envelope, input.signature)) {
+    throw new Error('INVALID_SIGNATURE');
+  }
+  return authorization;
+}
+
+async function assertReferenceInChannel(store: any, messageId: string, channelId: string) {
+  try {
+    const reference = await lockActiveBaseMessage(store, messageId, 'share');
+    if (reference.channelId !== channelId) throw new Error('INVALID_REFERENCE');
+  } catch (error: any) {
+    if (error?.message === 'MESSAGE_NOT_FOUND') throw new Error('INVALID_REFERENCE');
+    throw error;
+  }
+}
+
+async function getOriginalMessage(messageId: string, store: any = db) {
+  const original = await store.query.messages.findFirst({ where: eq(messages.id, messageId) });
+  if (!original) throw new Error('MESSAGE_NOT_FOUND');
+  return original;
+}
+
+/**
+ * Serialize a stateful message mutation with membership and role changes.
+ * Workspace management takes UPDATE on the workspace row, so a SHARE lock
+ * keeps the authorization decision valid until this transaction commits.
+ */
+async function lockAndAuthorizeMessageMutation(
+  store: any,
+  messageId: string,
+  userId: string,
+  permission: number,
+) {
+  const location = await store.query.messages.findFirst({
+    columns: { channelId: true },
+    where: eq(messages.id, messageId),
+  });
+  if (!location) throw new Error('MESSAGE_NOT_FOUND');
+  const channelLocation = await store.query.channels.findFirst({
+    columns: { workspaceId: true },
+    where: eq(channels.id, location.channelId),
+  });
+  if (!channelLocation) throw new Error('MESSAGE_NOT_FOUND');
+  await lockWorkspaceForAuthorization(store, channelLocation.workspaceId, 'share');
+  const original = await lockActiveBaseMessage(store, messageId, 'update');
+  if (original.channelId !== location.channelId) throw new Error('MESSAGE_NOT_FOUND');
+  const channel = await store.query.channels.findFirst({ where: eq(channels.id, original.channelId) });
+  if (!channel || channel.workspaceId !== channelLocation.workspaceId) throw new Error('MESSAGE_NOT_FOUND');
+  const authorization = await getChannelAuthorizationFromStore(store, userId, channel);
+  if (!isVisibleChannelAuthorization(authorization)) throw new Error('MESSAGE_NOT_FOUND');
+  if ((authorization.permissions & permission) !== permission) throw new Error('NOT_AUTHORIZED');
+  return original;
+}
+
+async function getUserForMessage(userId: string, store: any = db) {
+  const user = await store.query.users.findFirst({
+    columns: {
+      id: true,
+      displayName: true,
+      avatarUrl: true,
+      status: true,
+      createdAt: true,
+    },
     where: eq(users.id, userId),
   });
-  if (!user) return { id: userId, displayName: 'Unknown', avatarUrl: null, status: 'offline', email: '', createdAt: new Date().toISOString() };
+  if (!user) return { id: userId, displayName: 'Unknown', avatarUrl: null, status: 'offline', createdAt: new Date(0).toISOString() };
   return {
     id: user.id,
     displayName: user.displayName,
     avatarUrl: user.avatarUrl,
     status: user.status,
-    email: user.email,
     createdAt: user.createdAt.toISOString(),
   };
 }
 
-function formatMessage(m: any) {
+function scopedIdempotencyKey(userId: string, key: string): string {
+  return `${userId}:${key}`;
+}
+
+function formatMessage(message: any, state?: { reactions: ReturnType<typeof summarizeReactions>; isPinned: boolean }) {
+  const prefix = `${message.authorId}:`;
+  const idempotencyKey = typeof message.idempotencyKey === 'string' && message.idempotencyKey.startsWith(prefix)
+    ? message.idempotencyKey.slice(prefix.length)
+    : message.idempotencyKey;
   return {
-    id: m.id,
-    channelId: m.channelId,
-    authorId: m.authorId,
-    author: m.author,
-    deviceId: m.deviceId,
-    content: m.content,
-    encryptedContent: m.content,
-    contentNonce: m.contentNonce,
-    type: m.type,
-    refMessageId: m.refMessageId,
-    reactions: [],
-    isPinned: false,
-    idempotencyKey: m.idempotencyKey,
-    createdAt: m.createdAt.toISOString(),
+    id: message.id,
+    channelId: message.channelId,
+    authorId: message.authorId,
+    author: message.author ? formatMessageAuthor(message.author) : undefined,
+    deviceId: message.deviceId,
+    content: '',
+    encryptedContent: message.content,
+    contentNonce: message.contentNonce,
+    keyVersion: message.keyVersion,
+    signature: message.signature,
+    broadcastMention: message.broadcastMention ?? null,
+    type: message.type,
+    reactionAction: message.reactionAction ?? null,
+    refMessageId: message.refMessageId,
+    reactions: state?.reactions || [],
+    isPinned: state?.isPinned || false,
+    idempotencyKey,
+    createdAt: message.createdAt.toISOString(),
+  };
+}
+
+function summarizeReactions(reactions: ReactionRow[]) {
+  const grouped = new Map<string, Set<string>>();
+  for (const reaction of reactions) {
+    const userIds = grouped.get(reaction.emoji) || new Set<string>();
+    userIds.add(reaction.userId);
+    grouped.set(reaction.emoji, userIds);
+  }
+  return [...grouped.entries()]
+    .map(([emoji, userIds]) => {
+      const sortedUserIds = [...userIds].sort();
+      return { emoji, count: sortedUserIds.length, userIds: sortedUserIds };
+    })
+    .sort((left, right) => left.emoji < right.emoji ? -1 : left.emoji > right.emoji ? 1 : 0);
+}
+
+export async function lockActiveBaseMessage(
+  store: any,
+  messageId: string,
+  lock: 'share' | 'update' = 'share',
+) {
+  const [original] = await store.select()
+    .from(messages)
+    .where(eq(messages.id, messageId))
+    .for(lock);
+  if (!original || original.type !== 'message') throw new Error('MESSAGE_NOT_FOUND');
+  if (await findDeleteEvent(store, messageId)) throw new Error('MESSAGE_NOT_FOUND');
+  return original;
+}
+
+async function lockBaseMessage(store: any, messageId: string, lock: 'share' | 'update') {
+  const [original] = await store.select().from(messages).where(eq(messages.id, messageId)).for(lock);
+  if (!original || original.type !== 'message') throw new Error('MESSAGE_NOT_FOUND');
+  return original;
+}
+
+async function findDeleteEvent(store: any, messageId: string) {
+  return store.query.messages.findFirst({
+    where: and(eq(messages.refMessageId, messageId), eq(messages.type, 'delete')),
+    orderBy: [desc(messages.createdAt), desc(messages.id)],
+  });
+}
+
+function formatMessageAuthor(author: {
+  id: string;
+  displayName: string;
+  avatarUrl: string | null;
+  status: string;
+  createdAt: Date | string;
+}) {
+  return {
+    id: author.id,
+    displayName: author.displayName,
+    avatarUrl: author.avatarUrl,
+    status: author.status,
+    createdAt: author.createdAt instanceof Date ? author.createdAt.toISOString() : author.createdAt,
   };
 }

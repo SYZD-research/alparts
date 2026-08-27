@@ -1,31 +1,83 @@
 services:
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16.10-alpine3.22
     ports:
-      - "5433:5432"
+      - "127.0.0.1:${POSTGRES_PORT:-5433}:5432"
     environment:
-      POSTGRES_USER: alparts
-      POSTGRES_PASSWORD: alparts_dev
-      POSTGRES_DB: alparts
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER must be set}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+      POSTGRES_DB: ${POSTGRES_DB:-alparts}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U alparts"]
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 5s
       timeout: 5s
       retries: 5
 
   minio:
-    image: minio/minio:latest
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "127.0.0.1:${MINIO_PORT:-9000}:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
     environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER must be set}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD must be set}
     volumes:
       - minio_data:/data
     command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    security_opt:
+      - no-new-privileges:true
+
+  minio-init:
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER must be set}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD must be set}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:?MINIO_ACCESS_KEY must be set}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:?MINIO_SECRET_KEY must be set}
+      MINIO_BUCKET: ${MINIO_BUCKET:-alparts}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        attempt=0
+        until mc alias set local http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}" >/dev/null 2>&1; do
+          attempt=$$((attempt + 1))
+          [ "$${attempt}" -lt 60 ] || { echo "MinIO authentication timed out" >&2; exit 1; }
+          sleep 1
+        done
+        mc mb --ignore-existing "local/$${MINIO_BUCKET}"
+        cat > /tmp/alparts-app-policy.json <<EOF
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": ["s3:GetBucketLocation", "s3:ListBucket", "s3:ListBucketMultipartUploads"],
+              "Resource": ["arn:aws:s3:::$${MINIO_BUCKET}"]
+            },
+            {
+              "Effect": "Allow",
+              "Action": ["s3:AbortMultipartUpload", "s3:DeleteObject", "s3:GetObject", "s3:ListMultipartUploadParts", "s3:PutObject"],
+              "Resource": ["arn:aws:s3:::$${MINIO_BUCKET}/*"]
+            }
+          ]
+        }
+        EOF
+        mc admin user info local "$${MINIO_ACCESS_KEY}" >/dev/null 2>&1 || mc admin user add local "$${MINIO_ACCESS_KEY}" "$${MINIO_SECRET_KEY}"
+        mc admin policy create local alparts-app /tmp/alparts-app-policy.json
+        mc admin policy detach local readwrite --user "$${MINIO_ACCESS_KEY}" >/dev/null 2>&1 || true
+        mc admin policy attach local alparts-app --user "$${MINIO_ACCESS_KEY}"
+    security_opt:
+      - no-new-privileges:true
 
 volumes:
   postgres_data:

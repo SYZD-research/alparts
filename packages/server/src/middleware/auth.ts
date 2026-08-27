@@ -1,47 +1,60 @@
-import { Request, Response, NextFunction } from 'express';
-import jwt from 'jsonwebtoken';
+import type { NextFunction, Request, Response } from 'express';
 import { config } from '../config/index.js';
-import { db } from '../db/index.js';
-import { sessions, users } from '../db/schema.js';
-import { eq, and, gt } from 'drizzle-orm';
+import { readCookie } from '../security/cookies.js';
+import { verifySessionToken } from '../security/session.js';
+import { updateLastActive } from '../services/device.service.js';
 
 export interface AuthRequest extends Request {
+  params: Record<string, string>;
   userId?: string;
   sessionId?: string;
+  deviceId?: string | null;
+  sessionTokenHash?: string;
+  authTransport?: 'cookie' | 'bearer';
 }
 
-export function authMiddleware(req: AuthRequest, res: Response, next: NextFunction) {
-  const authHeader = req.headers.authorization;
-  if (!authHeader?.startsWith('Bearer ')) {
-    res.status(401).json({ error: 'UNAUTHORIZED', message: 'Missing or invalid token', statusCode: 401 });
-    return;
-  }
+function requestToken(req: Request): { token: string; transport: 'cookie' | 'bearer' } | null {
+  const cookieToken = readCookie(req.headers.cookie, config.auth.cookieName);
+  if (cookieToken) return { token: cookieToken, transport: 'cookie' };
 
-  const token = authHeader.slice(7);
+  const header = req.headers.authorization;
+  if (header?.startsWith('Bearer ') && header.length <= 4103) {
+    return { token: header.slice(7), transport: 'bearer' };
+  }
+  return null;
+}
+
+async function authenticate(req: AuthRequest): Promise<boolean> {
+  const candidate = requestToken(req);
+  if (!candidate) return false;
+  const session = await verifySessionToken(candidate.token);
+  if (!session) return false;
+  req.userId = session.userId;
+  req.sessionId = session.sessionId;
+  req.deviceId = session.deviceId;
+  req.sessionTokenHash = session.tokenHash;
+  req.authTransport = candidate.transport;
+  if (session.deviceId) void updateLastActive(session.deviceId).catch(() => undefined);
+  return true;
+}
+
+export async function authMiddleware(req: AuthRequest, res: Response, next: NextFunction) {
   try {
-    const payload = jwt.verify(token, config.jwt.secret) as { userId: string; sessionId: string };
-    req.userId = payload.userId;
-    req.sessionId = payload.sessionId;
+    if (!await authenticate(req)) {
+      res.status(401).json({ error: 'UNAUTHORIZED', message: 'Authentication required', statusCode: 401 });
+      return;
+    }
     next();
   } catch {
-    res.status(401).json({ error: 'UNAUTHORIZED', message: 'Invalid or expired token', statusCode: 401 });
+    res.status(401).json({ error: 'UNAUTHORIZED', message: 'Authentication required', statusCode: 401 });
   }
 }
 
-export function optionalAuth(req: AuthRequest, _res: Response, next: NextFunction) {
-  const authHeader = req.headers.authorization;
-  if (!authHeader?.startsWith('Bearer ')) {
-    next();
-    return;
-  }
-
-  const token = authHeader.slice(7);
+export async function optionalAuth(req: AuthRequest, _res: Response, next: NextFunction) {
   try {
-    const payload = jwt.verify(token, config.jwt.secret) as { userId: string; sessionId: string };
-    req.userId = payload.userId;
-    req.sessionId = payload.sessionId;
+    await authenticate(req);
   } catch {
-    // Ignore invalid token for optional auth
+    // Optional authentication deliberately continues without an identity.
   }
   next();
 }

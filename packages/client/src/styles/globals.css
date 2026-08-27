@@ -24,4 +24,25 @@
   ::-webkit-scrollbar-thumb:hover {
     @apply bg-discord-hover;
   }
+
+  :focus-visible {
+    outline: 2px solid #aeb5ff;
+    outline-offset: 2px;
+  }
+
+  [data-permalink-highlight='true'] {
+    background-color: rgb(88 101 242 / 0.28);
+    box-shadow: inset 3px 0 0 #aeb5ff;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      scroll-behavior: auto !important;
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
 }

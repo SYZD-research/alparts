@@ -1,24 +1,72 @@
+import { useState } from 'react';
 import { useWorkspaceStore } from '../../stores/workspace.store';
 import { useAuthStore } from '../../stores/auth.store';
+import { useUiStore } from '../../stores/ui.store';
+import { Dialog } from '../ui/Dialog';
+import { useUserStateStore } from '../../stores/user-state.store';
+import { summarizeWorkspaceUnread } from '../../stores/workspace-unread-model';
 
 export function WorkspaceSidebar() {
   const { workspaces, activeWorkspaceId, setActiveWorkspace, createWorkspace } = useWorkspaceStore();
   const { logout } = useAuthStore();
+  const openDmComposer = useUiStore((state) => state.openDmComposer);
+  const openAccountSecurity = useUiStore((state) => state.openAccountSecurity);
+  const openSavedMessages = useUiStore((state) => state.openSavedMessages);
+  const [isCreateOpen, setIsCreateOpen] = useState(false);
+  const [workspaceName, setWorkspaceName] = useState('');
+  const [isCreating, setIsCreating] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
+  const channelStatesByWorkspace = useUserStateStore((state) => state.channelStatesByWorkspace);
+  const channelStateErrors = useUserStateStore((state) => state.errorsByWorkspace);
+  const channelStateLoading = useUserStateStore((state) => state.loadingByWorkspace);
 
-  const handleCreateWorkspace = () => {
-    const name = prompt('ワークスペース名を入力してください:');
-    if (name?.trim()) {
-      createWorkspace(name.trim());
+  const handleOpenDm = async () => {
+    const workspaceId = activeWorkspaceId || workspaces[0]?.id;
+    if (!workspaceId) return;
+    if (activeWorkspaceId !== workspaceId) await setActiveWorkspace(workspaceId);
+    openDmComposer(workspaceId);
+  };
+
+  const handleCreateWorkspace = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!workspaceName.trim() || isCreating) return;
+    setIsCreating(true);
+    setCreateError(null);
+    try {
+      await createWorkspace(workspaceName.trim());
+      setWorkspaceName('');
+      setIsCreateOpen(false);
+    } catch (error) {
+      setCreateError(error instanceof Error ? error.message : 'ワークスペースを作成できませんでした');
+    } finally {
+      setIsCreating(false);
     }
   };
 
   return (
     <div className="w-[72px] bg-discord-sidebar flex flex-col items-center py-3 gap-2 overflow-y-auto">
+      <p id="workspace-unread-semantics" className="sr-only">
+        ワークスペース未読バッジはミュート中と非表示のチャンネルも含みます。ミュートは通知だけを抑え、非表示は一覧から隠すだけです。E2EEのためワークスペース単位の正確なメンション件数は不明で、@? と表示します。
+      </p>
+      <Dialog open={isCreateOpen} onClose={() => { if (!isCreating) setIsCreateOpen(false); }} title="ワークスペースを作成" size="sm">
+        <form onSubmit={handleCreateWorkspace} className="space-y-4">
+          {createError && <div role="alert" className="rounded bg-discord-red/15 px-3 py-2 text-sm text-discord-red">{createError}</div>}
+          <label className="block text-sm text-discord-text">
+            名前
+            <input autoFocus required maxLength={100} value={workspaceName} onChange={(event) => setWorkspaceName(event.target.value)} className="mt-1 w-full rounded bg-discord-input px-3 py-2" />
+          </label>
+          <div className="flex justify-end gap-2">
+            <button type="button" onClick={() => setIsCreateOpen(false)} className="rounded px-3 py-2 text-sm text-discord-muted hover:bg-discord-hover">キャンセル</button>
+            <button type="submit" disabled={isCreating || !workspaceName.trim()} className="rounded bg-discord-accent px-4 py-2 text-sm text-white disabled:opacity-40">{isCreating ? '作成中…' : '作成'}</button>
+          </div>
+        </form>
+      </Dialog>
       {/* Home / DM button */}
       <button
-        onClick={() => {}}
+        onClick={() => { void handleOpenDm(); }}
         className="w-12 h-12 rounded-2xl bg-discord-bg hover:bg-discord-accent hover:rounded-xl flex items-center justify-center transition-all duration-200 text-discord-muted hover:text-white"
-        title="DM"
+        title="DMを開始"
+        aria-label="DMを開始"
       >
         <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
           <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
@@ -28,24 +76,55 @@ export function WorkspaceSidebar() {
       <div className="w-8 h-0.5 bg-discord-bg rounded-full mx-auto" />
 
       {/* Workspace list */}
-      {workspaces.map((ws) => (
-        <button
-          key={ws.id}
-          onClick={() => setActiveWorkspace(ws.id)}
-          className={`w-12 h-12 rounded-2xl hover:rounded-xl flex items-center justify-center transition-all duration-200 font-bold text-lg ${
-            activeWorkspaceId === ws.id
-              ? 'bg-discord-accent text-white rounded-xl'
-              : 'bg-discord-bg hover:bg-discord-accent text-discord-muted hover:text-white'
-          }`}
-          title={ws.name}
-        >
-          {ws.name.slice(0, 2).toUpperCase()}
-        </button>
-      ))}
+      {workspaces.map((ws) => {
+        const loaded = Object.prototype.hasOwnProperty.call(channelStatesByWorkspace, ws.id);
+        const summary = summarizeWorkspaceUnread(
+          channelStatesByWorkspace[ws.id],
+          loaded,
+          channelStateErrors[ws.id],
+        );
+        const unreadDescription = summary.status === 'error'
+          ? '未読状態を取得できませんでした'
+          : summary.status === 'loading' || (channelStateLoading[ws.id] && !loaded)
+            ? '未読状態を読み込み中'
+            : `未読${summary.total}件（ミュート・非表示を含む）${summary.mentionStatus === 'unknown' ? '、メンション件数は未確定' : ''}`;
+        return (
+          <div key={ws.id} className="relative">
+            <button
+              type="button"
+              onClick={() => { void setActiveWorkspace(ws.id); }}
+              aria-describedby="workspace-unread-semantics"
+              aria-label={`${ws.name}、${unreadDescription}`}
+              className={`w-12 h-12 rounded-2xl hover:rounded-xl flex items-center justify-center transition-all duration-200 font-bold text-lg ${
+                activeWorkspaceId === ws.id
+                  ? 'bg-discord-accent text-white rounded-xl'
+                  : 'bg-discord-bg hover:bg-discord-accent text-discord-muted hover:text-white'
+              }`}
+              title={`${ws.name} — ${unreadDescription}`}
+            >
+              {ws.name.slice(0, 2).toUpperCase()}
+            </button>
+            {summary.badge && (
+              <span
+                aria-hidden="true"
+                className={`absolute -right-2 -top-1 min-w-5 rounded-full px-1 text-center text-[10px] font-bold text-white ${summary.status === 'error' ? 'bg-discord-yellow' : 'bg-discord-red'}`}
+              >
+                {summary.badge}
+              </span>
+            )}
+            {summary.mentionStatus === 'unknown' && (
+              <span aria-hidden="true" className="absolute -bottom-1 -right-2 rounded bg-discord-sidebar px-0.5 text-[9px] text-discord-muted">@?</span>
+            )}
+            {!loaded && !channelStateErrors[ws.id] && channelStateLoading[ws.id] && (
+              <span aria-hidden="true" className="absolute -right-1 -top-1 text-[10px] text-discord-muted">…</span>
+            )}
+          </div>
+        );
+      })}
 
       {/* Add workspace */}
       <button
-        onClick={handleCreateWorkspace}
+        onClick={() => { setCreateError(null); setIsCreateOpen(true); }}
         className="w-12 h-12 rounded-2xl bg-discord-bg hover:bg-discord-green hover:rounded-xl flex items-center justify-center transition-all duration-200 text-discord-green hover:text-white"
         title="ワークスペースを追加"
       >
@@ -59,7 +138,24 @@ export function WorkspaceSidebar() {
 
       {/* Logout */}
       <button
-        onClick={logout}
+        type="button"
+        onClick={openSavedMessages}
+        className="w-12 h-12 rounded-2xl bg-discord-bg hover:bg-discord-accent hover:rounded-xl flex items-center justify-center transition-all duration-200 text-discord-muted hover:text-white"
+        title="保存済みメッセージ"
+        aria-label="保存済みメッセージを開く"
+      >
+        <span aria-hidden="true">🔖</span>
+      </button>
+      <button
+        onClick={openAccountSecurity}
+        className="w-12 h-12 rounded-2xl bg-discord-bg hover:bg-discord-accent hover:rounded-xl flex items-center justify-center transition-all duration-200 text-discord-muted hover:text-white"
+        title="アカウントのセキュリティ"
+        aria-label="アカウントのセキュリティ"
+      >
+        <span aria-hidden="true">🛡</span>
+      </button>
+      <button
+        onClick={() => { void logout(); }}
         className="w-12 h-12 rounded-2xl bg-discord-bg hover:bg-discord-red hover:rounded-xl flex items-center justify-center transition-all duration-200 text-discord-muted hover:text-white"
         title="ログアウト"
       >

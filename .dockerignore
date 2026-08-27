@@ -1,0 +1,13 @@
+.git
+.commandcode
+.env*
+**/.env*
+**/node_modules
+**/dist
+**/*.tsbuildinfo
+*.age
+*.dump
+backups
+coverage
+playwright-report
+test-results

@@ -1,0 +1,11 @@
+ALTER TABLE "category_role_permission_overrides" DROP CONSTRAINT "category_role_permission_overrides_allow_mask_check";--> statement-breakpoint
+ALTER TABLE "category_role_permission_overrides" DROP CONSTRAINT "category_role_permission_overrides_deny_mask_check";--> statement-breakpoint
+ALTER TABLE "channel_role_permission_overrides" DROP CONSTRAINT "channel_role_permission_overrides_allow_mask_check";--> statement-breakpoint
+ALTER TABLE "channel_role_permission_overrides" DROP CONSTRAINT "channel_role_permission_overrides_deny_mask_check";--> statement-breakpoint
+CREATE INDEX "audit_logs_target_created_idx" ON "audit_logs" USING btree ("target_type","target_id","created_at" DESC NULLS LAST,"id" DESC NULLS LAST);--> statement-breakpoint
+CREATE INDEX "audit_logs_workspace_details_created_idx" ON "audit_logs" USING btree (("details"->>'workspaceId'),"created_at" DESC NULLS LAST,"id" DESC NULLS LAST);--> statement-breakpoint
+ALTER TABLE "category_role_permission_overrides" ADD CONSTRAINT "category_role_permission_overrides_allow_mask_check" CHECK ("category_role_permission_overrides"."allow_mask" >= 0 and ("category_role_permission_overrides"."allow_mask" & -16512) = 0);--> statement-breakpoint
+ALTER TABLE "category_role_permission_overrides" ADD CONSTRAINT "category_role_permission_overrides_deny_mask_check" CHECK ("category_role_permission_overrides"."deny_mask" >= 0 and ("category_role_permission_overrides"."deny_mask" & -16512) = 0);--> statement-breakpoint
+ALTER TABLE "channel_role_permission_overrides" ADD CONSTRAINT "channel_role_permission_overrides_allow_mask_check" CHECK ("channel_role_permission_overrides"."allow_mask" >= 0 and ("channel_role_permission_overrides"."allow_mask" & -16512) = 0);--> statement-breakpoint
+ALTER TABLE "channel_role_permission_overrides" ADD CONSTRAINT "channel_role_permission_overrides_deny_mask_check" CHECK ("channel_role_permission_overrides"."deny_mask" >= 0 and ("channel_role_permission_overrides"."deny_mask" & -16512) = 0);--> statement-breakpoint
+ALTER TABLE "messages" ADD CONSTRAINT "messages_reaction_action_check" CHECK ("messages"."reaction_action" is null or "messages"."reaction_action" in ('add', 'remove'));

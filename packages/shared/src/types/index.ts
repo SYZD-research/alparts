@@ -9,6 +9,9 @@ export interface User {
   createdAt: string;
 }
 
+/** Public profile fields safe to embed in channel message payloads. */
+export type PublicUser = Omit<User, 'email'>;
+
 export type UserStatusType = 'online' | 'idle' | 'dnd' | 'offline';
 
 // === Auth ===
@@ -26,7 +29,6 @@ export interface RegisterRequest {
 }
 
 export interface AuthResponse {
-  token: string;
   user: User;
 }
 
@@ -36,7 +38,7 @@ export interface Device {
   id: string;
   userId: string;
   name: string;
-  identityKey: string; // RSA public key (PEM)
+  identityKey: string; // versioned JSON bundle: RSA-OAEP encryption + P-256 signing JWKs
   createdAt: string;
   lastActiveAt: string | null;
   revokedAt: string | null;
@@ -66,7 +68,7 @@ export interface WorkspaceMember {
   id: string;
   workspaceId: string;
   userId: string;
-  user: User;
+  user: PublicUser;
   roles: Role[];
   joinedAt: string;
 }
@@ -105,6 +107,7 @@ export interface Channel {
   name: string;
   type: 'text' | 'dm' | 'announcement';
   isPrivate: boolean;
+  keyRotationRequired?: boolean;
   topic: string | null;
   position: number;
   createdAt: string;
@@ -123,7 +126,7 @@ export interface ChannelCreateRequest {
 
 export interface ChannelUpdateRequest {
   name?: string;
-  categoryId?: string;
+  categoryId?: string | null;
   topic?: string;
   position?: number;
   isPrivate?: boolean;
@@ -135,16 +138,21 @@ export interface Message {
   id: string;
   channelId: string;
   authorId: string;
-  author: User;
-  deviceId: string;
+  author: PublicUser;
+  deviceId: string | null;
   content: string; // decrypted plaintext (client-side)
   encryptedContent: string; // base64 encrypted
   contentNonce: string;
+  keyVersion: number;
+  signature: string | null;
+  /** Authenticated for protocol v3; null identifies legacy v2 envelopes. */
+  broadcastMention?: boolean | null;
   type: 'message' | 'edit' | 'delete' | 'reaction' | 'system';
   refMessageId: string | null;
   refMessage?: Message;
   reactions: Reaction[];
   isPinned: boolean;
+  attachments?: Attachment[];
   idempotencyKey: string;
   createdAt: string;
 }
@@ -153,6 +161,10 @@ export interface MessageCreateRequest {
   content: string; // plaintext (will be encrypted client-side)
   encryptedContent: string;
   contentNonce: string;
+  deviceId: string;
+  keyVersion: number;
+  signature: string;
+  broadcastMention: boolean;
   refMessageId?: string;
   idempotencyKey: string;
   type?: 'message' | 'edit' | 'delete' | 'reaction' | 'system';
@@ -180,11 +192,35 @@ export interface ReactionRequest {
 export interface Attachment {
   id: string;
   messageId: string;
+  /** Nullable only while reading legacy rows; clients must reject missing sender metadata. */
+  channelId: string | null;
+  keyVersion: number | null;
+  deviceId: string | null;
+  signature: string | null;
   filenameEnc: string;
   mimeType: string;
+  dangerousMime: boolean;
+  downloadPolicy: 'attachment-only';
   sizeBytes: number;
-  storageKey: string;
-  encryptionKey: string; // encrypted with channel key
+  ciphertextSizeBytes: number;
+  plaintextSizeBytes: number | null;
+  chunkCount: number;
+  wrappedKey: string; // file key encrypted with the channel key
+  contentNonce: string;
+  cryptoManifest: {
+    version: 1;
+    algorithm: 'AES-256-GCM';
+    nonceStrategy: 'prefix-counter-be32';
+    noncePrefix: string;
+    aadVersion: 1;
+    plaintextSize: number;
+    chunkPlaintextBytes: number;
+    authenticationTagBytes: number;
+    chunkCount: number;
+    uploadId: string;
+    messageId: string;
+    aadFormat: string;
+  };
   thumbnailKey: string | null;
   createdAt: string;
 }
@@ -197,14 +233,19 @@ export interface ChannelKey {
   version: number;
   encryptedKey: string; // encrypted with device public key
   deviceId: string;
+  keyCommitment: string;
+  distributorDeviceId: string;
+  signature: string;
   createdAt: string;
 }
 
 export interface ChannelKeyDistributeRequest {
   channelId: string;
+  keyCommitment: string;
   keys: Array<{
     deviceId: string;
     encryptedKey: string;
+    signature: string;
   }>;
   version: number;
 }
@@ -216,6 +257,29 @@ export interface ReadPosition {
   channelId: string;
   lastReadMessageId: string | null;
   updatedAt: string;
+}
+
+export type NotificationLevel = 'all' | 'mentions' | 'none';
+
+export interface ChannelPreference {
+  channelId: string;
+  favorite: boolean;
+  muted: boolean;
+  hidden: boolean;
+  notificationLevel: NotificationLevel;
+  updatedAt: string | null;
+}
+
+export interface ChannelReadState extends ChannelPreference {
+  lastReadMessageId: string | null;
+  latestMessageId: string | null;
+  unreadCount: number;
+}
+
+export interface MessageBookmark {
+  messageId: string;
+  channelId: string;
+  createdAt: string;
 }
 
 // === DM ===

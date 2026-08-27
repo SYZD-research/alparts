@@ -1,175 +1,995 @@
+import type {
+  Attachment,
+  Category,
+  Channel,
+  ChannelPreference,
+  ChannelReadState,
+  Device,
+  Message,
+  MessageBookmark,
+  NotificationLevel,
+  ReadPosition,
+  Reaction,
+  User,
+  UserStatusType,
+  Workspace,
+  WorkspaceMember,
+} from '@alparts/shared';
+import { withExpectedAuthorizationRevision } from './role-authorization-revision';
+
 const API_BASE = '/api';
 
-class ApiService {
-  private token: string | null = null;
+interface ApiErrorPayload {
+  error?: string;
+  message?: string;
+  statusCode?: number;
+}
 
-  setToken(token: string | null) {
-    this.token = token;
+export class ApiError extends Error {
+  readonly status: number;
+  readonly code: string | null;
+
+  constructor(message: string, status: number, code?: string) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.code = code || null;
+  }
+}
+
+export interface AuthSession {
+  id: string;
+  deviceId: string | null;
+  deviceInfo: Record<string, unknown> | null;
+  createdAt: string;
+  expiresAt: string;
+  current: boolean;
+}
+
+export interface DirectMessageMember {
+  id: string;
+  displayName: string;
+  avatarUrl: string | null;
+  status: UserStatusType;
+  createdAt: string;
+}
+
+export interface DirectMessageConversation {
+  id: string;
+  channelId: string;
+  workspaceId: string;
+  createdAt: string;
+  members: DirectMessageMember[];
+}
+
+export interface ChannelMemberSummary {
+  id: string;
+  displayName: string;
+  avatarUrl: string | null;
+  status: UserStatusType;
+}
+
+export interface ChannelMutationInput {
+  name?: string;
+  topic?: string;
+  categoryId?: string | null;
+  position?: number;
+  isPrivate?: boolean;
+}
+
+export interface CategoryMutationInput {
+  name?: string;
+  position?: number;
+}
+
+export interface WorkspaceRole {
+  id: string;
+  workspaceId: string;
+  name: string;
+  permissions: string;
+  permissionMask: number;
+  position: number;
+  standard: boolean;
+  createdAt: string;
+}
+
+export type InvitationStatus = 'active' | 'used' | 'revoked' | 'expired';
+
+export interface WorkspaceInvitation {
+  id: string;
+  workspaceId: string;
+  role: Pick<WorkspaceRole, 'id' | 'name' | 'permissions' | 'position'> | null;
+  email: string | null;
+  createdBy: string;
+  expiresAt: string;
+  usedAt: string | null;
+  usedBy: string | null;
+  revokedAt: string | null;
+  revokedBy: string | null;
+  createdAt: string;
+  status: InvitationStatus;
+}
+
+export interface CreatedWorkspaceInvitation extends WorkspaceInvitation {
+  token: string;
+}
+
+export interface AcceptedInvitation {
+  invitationId: string;
+  workspaceId: string;
+  roleId: string;
+}
+
+export type ChannelKeyEpochStatus = 'pending' | 'active' | 'retired' | 'aborted';
+
+export interface ChannelKeyDelivery {
+  deliveryId: string;
+  version: number;
+  encryptedKey: string;
+  keyCommitment: string;
+  distributorDeviceId: string;
+  distributorIdentityKey: string;
+  signature: string;
+  epochStatus: ChannelKeyEpochStatus;
+  confirmedAt: string | null;
+  createdAt: string;
+}
+
+export interface ChannelKeyRecipientState {
+  /** Currently active, writable epoch. Zero means no active epoch exists. */
+  currentVersion: number;
+  keyCommitment: string | null;
+  /** A pending epoch is never writable until the server activates it. */
+  pendingVersion: number | null;
+  pendingKeyCommitment: string | null;
+  nextVersion: number;
+  rotationRequired: boolean;
+  canRotate: boolean;
+  canAbortPending: boolean;
+  distributedDeviceIds: string[];
+  pendingAcknowledgedDeviceIds: string[];
+  recipients: Array<{ deviceId: string; userId: string; identityKey: string }>;
+}
+
+export interface PermissionReason {
+  source: 'role';
+  roleId: string;
+  roleName: string;
+}
+
+export interface PermissionDetail {
+  permission: string;
+  value: number;
+  allowed: boolean;
+  reasons: PermissionReason[];
+}
+
+export interface EffectivePermissions {
+  workspaceId: string;
+  userId: string;
+  permissionMask: number;
+  effectivePermissions: string;
+  roles: WorkspaceRole[];
+  permissionDetails: PermissionDetail[];
+}
+
+export interface AffectedRoleMember {
+  userId: string;
+  before: EffectivePermissions;
+  after: EffectivePermissions;
+  gained: string[];
+  lost: string[];
+}
+
+export type RolePreviewInput =
+  | { operation: 'role.update'; roleId: string; permissions: number }
+  | { operation: 'role.delete'; roleId: string }
+  | { operation: 'role.assign'; roleId: string; userId: string }
+  | { operation: 'role.unassign'; roleId: string; userId: string };
+
+export interface RoleChangePreview {
+  workspaceId: string;
+  operation: RolePreviewInput['operation'];
+  authorizationRevision: string;
+  affectedMembers: AffectedRoleMember[];
+  affectedUserIds: string[];
+  lostAccessUserIds: string[];
+  gainedAccessUserIds: string[];
+  requiresKeyRotation: boolean;
+}
+
+export interface RoleUpdateResult {
+  role: WorkspaceRole;
+  affectedMembers: AffectedRoleMember[];
+  lostAccessUserIds: string[];
+  gainedAccessUserIds: string[];
+  allChannelIds: string[];
+  keyedChannelIds: string[];
+}
+
+export interface RoleAssignmentResult {
+  workspaceId: string;
+  userId: string;
+  roleId: string;
+  action: 'assign' | 'unassign';
+  changed: boolean;
+  before: EffectivePermissions;
+  after: EffectivePermissions;
+  lostAccessUserIds: string[];
+  gainedAccessUserIds: string[];
+  allChannelIds: string[];
+  keyedChannelIds: string[];
+}
+
+export type PermissionOverrideTarget = 'category' | 'channel';
+
+export interface PermissionOverride {
+  workspaceId: string;
+  targetId: string;
+  roleId: string;
+  allowMask: number;
+  denyMask: number;
+  revision: number;
+  updatedAt: string;
+}
+
+export interface PermissionOverridePreviewValue {
+  workspaceId: string;
+  targetId: string;
+  roleId: string;
+  allowMask: number;
+  denyMask: number;
+  revision: number;
+}
+
+export interface ChannelViewerEffect {
+  channelId: string;
+  lostUserIds: string[];
+  gainedUserIds: string[];
+  rotationRequired: boolean;
+}
+
+export type PermissionOverridePreviewInput =
+  | { operation: 'upsert'; roleId: string; allowMask: number; denyMask: number }
+  | { operation: 'delete'; roleId: string };
+
+export interface PermissionOverridePreview {
+  target: PermissionOverrideTarget;
+  workspaceId: string;
+  targetId: string;
+  roleId: string;
+  operation: PermissionOverridePreviewInput['operation'];
+  currentRevision: number;
+  authorizationRevision: string;
+  before: PermissionOverride | null;
+  after: PermissionOverridePreviewValue | null;
+  roomEffects: ChannelViewerEffect[];
+}
+
+export interface PermissionOverrideWriteInput {
+  allowMask: number;
+  denyMask: number;
+  expectedRevision: number;
+  expectedAuthorizationRevision: string;
+}
+
+export interface PermissionOverrideDeleteInput {
+  expectedRevision: number;
+  expectedAuthorizationRevision: string;
+}
+
+export interface PermissionOverrideMutationResult {
+  override: PermissionOverride;
+  authorizationRevision: string;
+  roomEffects: ChannelViewerEffect[];
+}
+
+export interface PermissionOverrideDeleteResult {
+  workspaceId: string;
+  target: PermissionOverrideTarget;
+  targetId: string;
+  roleId: string;
+  deleted: true;
+  authorizationRevision: string;
+  roomEffects: ChannelViewerEffect[];
+}
+
+export type ChannelPermissionReason =
+  | { source: 'role'; effect: 'allow'; roleId: string; roleName: string }
+  | { source: 'category' | 'channel'; effect: 'allow' | 'deny'; roleId: string }
+  | { source: 'workspace-owner'; effect: 'allow' }
+  | { source: string; effect?: string; roleId?: string; roleName?: string };
+
+export interface ChannelEffectivePermissions {
+  workspaceId: string;
+  channelId: string;
+  userId: string;
+  effectivePermissions: string;
+  permissionMask: number;
+  workspacePermissionMask: number;
+  visible: boolean;
+  privateMembershipRequired: boolean;
+  privateMember: boolean;
+  ownerProtected: boolean;
+  roles: Array<{ id: string; name: string; permissions: number; position: number }>;
+  permissionDetails: Array<{
+    permission: string;
+    value: number;
+    allowed: boolean;
+    reasons: ChannelPermissionReason[];
+  }>;
+}
+
+export interface AttachmentUploadReservation {
+  uploadId: string;
+  reused: boolean;
+  expiresAt: string;
+  chunkPlaintextBytes: number;
+  chunkCiphertextBytes: number;
+  authenticationTagBytes: number;
+  maxPlaintextBytes: number;
+  maxChunkCount: number;
+  crypto: {
+    version: 1;
+    algorithm: 'AES-256-GCM';
+    nonceStrategy: 'prefix-counter-be32';
+    noncePrefixBytes: number;
+    aadVersion: 1;
+    aadFormat: string;
+  };
+}
+
+export interface AttachmentUploadCreateInput {
+  messageId: string;
+  filenameEnc: string;
+  mimeType: string;
+  idempotencyKey: string;
+}
+
+export interface AttachmentUploadStatus {
+  uploadId: string;
+  messageId: string;
+  expiresAt: string;
+  uploadedIndexes: number[];
+  chunks: Array<{ index: number; ciphertextSizeBytes: number }>;
+}
+
+export interface AttachmentChunkUploadResult {
+  uploadId: string;
+  index: number;
+  ciphertextSizeBytes: number;
+  replaced: boolean;
+}
+
+export interface AttachmentFinalizeInput {
+  deviceId: string;
+  keyVersion: number;
+  signature: string;
+  chunkCount: number;
+  wrappedKey: string;
+  cryptoManifest: {
+    version: 1;
+    algorithm: 'AES-256-GCM';
+    nonceStrategy: 'prefix-counter-be32';
+    noncePrefix: string;
+    aadVersion: 1;
+    plaintextSize: number;
+  };
+}
+
+export interface AttachmentUploadCancellation {
+  uploadId: string;
+  cancelled: true;
+  alreadyAbsent: boolean;
+  workspaceId?: string;
+  messageId?: string;
+}
+
+export interface AuditLogEntry {
+  id: string;
+  actorId: string | null;
+  action: string;
+  targetType: string | null;
+  targetId: string | null;
+  details: Record<string, unknown> | null;
+  prevHash: string | null;
+  hash: string;
+  createdAt: string;
+}
+
+export interface AuditLogPage {
+  data: AuditLogEntry[];
+  hasMore: boolean;
+  cursor: string | null;
+}
+
+export interface AuditIntegrityStatus {
+  valid: boolean;
+}
+
+interface SuccessResponse {
+  success: true;
+}
+
+function browserSessionInfo(): Record<string, string> {
+  if (typeof navigator === 'undefined') return {};
+  const nav = navigator as Navigator & { userAgentData?: { platform?: string } };
+  return {
+    platform: (nav.userAgentData?.platform || navigator.platform || 'Web').slice(0, 80),
+    browser: navigator.userAgent.slice(0, 200),
+    language: navigator.language.slice(0, 32),
+  };
+}
+
+class ApiService {
+  private unauthorizedHandler: (() => void) | null = null;
+
+  setUnauthorizedHandler(handler: () => void): void {
+    this.unauthorizedHandler = handler;
   }
 
-  private async request<T>(path: string, options: RequestInit = {}): Promise<T> {
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-      ...(options.headers as Record<string, string>),
-    };
-
-    if (this.token) {
-      headers['Authorization'] = `Bearer ${this.token}`;
+  private async fetchResponse(path: string, options: RequestInit = {}): Promise<Response> {
+    const headers = new Headers(options.headers);
+    if (options.body !== undefined && !headers.has('Content-Type')) {
+      headers.set('Content-Type', 'application/json');
     }
-
     const response = await fetch(`${API_BASE}${path}`, {
       ...options,
       headers,
+      credentials: 'same-origin',
     });
 
     if (!response.ok) {
-      const error = await response.json().catch(() => ({ message: 'Request failed' }));
-      throw new Error(error.message || `HTTP ${response.status}`);
+      if (response.status === 401 && path !== '/auth/login') {
+        queueMicrotask(() => this.unauthorizedHandler?.());
+      }
+      const raw = await response.json().catch(() => null) as unknown;
+      const error: ApiErrorPayload = raw && typeof raw === 'object' ? raw as ApiErrorPayload : {};
+      throw new ApiError(
+        typeof error.message === 'string' ? error.message : `HTTP ${response.status}`,
+        response.status,
+        typeof error.error === 'string' ? error.error : undefined,
+      );
     }
 
-    return response.json();
+    return response;
+  }
+
+  private async request<T>(path: string, options: RequestInit = {}): Promise<T> {
+    const response = await this.fetchResponse(path, options);
+    return response.json() as Promise<T>;
+  }
+
+  private async requestArrayBuffer(path: string, options: RequestInit = {}): Promise<ArrayBuffer> {
+    const response = await this.fetchResponse(path, options);
+    return response.arrayBuffer();
   }
 
   // Auth
-  async register(email: string, password: string, displayName: string) {
-    return this.request<any>('/auth/register', {
+  async register(email: string, password: string, displayName: string, inviteToken: string) {
+    return this.request<User>('/auth/register', {
       method: 'POST',
-      body: JSON.stringify({ email, password, displayName }),
+      body: JSON.stringify({ email, password, displayName, inviteToken }),
     });
   }
 
   async login(email: string, password: string) {
-    return this.request<any>('/auth/login', {
+    return this.request<{ user: User }>('/auth/login', {
       method: 'POST',
-      body: JSON.stringify({ email, password }),
+      body: JSON.stringify({ email, password, deviceInfo: browserSessionInfo() }),
     });
   }
 
   async logout() {
-    return this.request<any>('/auth/logout', { method: 'POST' });
+    return this.request<SuccessResponse>('/auth/logout', { method: 'POST' });
   }
 
   async getMe() {
-    return this.request<any>('/auth/me');
+    return this.request<User>('/auth/me');
+  }
+
+  async getSessions() {
+    return this.request<AuthSession[]>('/auth/sessions');
+  }
+
+  async revokeSession(id: string) {
+    return this.request<SuccessResponse>(`/auth/sessions/${id}`, { method: 'DELETE' });
+  }
+
+  async revokeAllSessions() {
+    return this.request<SuccessResponse & { revoked: number }>('/auth/sessions', { method: 'DELETE' });
   }
 
   // Workspaces
   async getWorkspaces() {
-    return this.request<any[]>('/workspaces');
+    return this.request<Workspace[]>('/workspaces');
   }
 
   async createWorkspace(name: string) {
-    return this.request<any>('/workspaces', {
+    return this.request<Workspace>('/workspaces', {
       method: 'POST',
       body: JSON.stringify({ name }),
     });
   }
 
   async getWorkspace(id: string) {
-    return this.request<any>(`/workspaces/${id}`);
+    return this.request<Workspace>(`/workspaces/${id}`);
   }
 
   async getWorkspaceMembers(id: string) {
-    return this.request<any[]>(`/workspaces/${id}/members`);
+    return this.request<WorkspaceMember[]>(`/workspaces/${id}/members`);
+  }
+
+  async getWorkspaceChannelState(workspaceId: string) {
+    return this.request<ChannelReadState[]>(`/workspaces/${workspaceId}/channel-state`);
+  }
+
+  async getWorkspaceAuditLogs(workspaceId: string, cursor?: string, limit = 50) {
+    const params = new URLSearchParams({ limit: String(limit) });
+    if (cursor) params.set('cursor', cursor);
+    return this.request<AuditLogPage>(`/workspaces/${workspaceId}/audit-logs?${params.toString()}`, { method: 'POST' });
+  }
+
+  async getWorkspaceAuditIntegrity(workspaceId: string) {
+    return this.request<AuditIntegrityStatus>(`/workspaces/${workspaceId}/audit-integrity`, { method: 'POST' });
+  }
+
+  // Invitations
+  async getInvitations(workspaceId: string) {
+    return this.request<WorkspaceInvitation[]>(`/workspaces/${workspaceId}/invitations`);
+  }
+
+  async createInvitation(workspaceId: string, input: {
+    email?: string;
+    roleId?: string;
+    expiresInSeconds: number;
+  }) {
+    return this.request<CreatedWorkspaceInvitation>(`/workspaces/${workspaceId}/invitations`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  }
+
+  async revokeInvitation(workspaceId: string, invitationId: string) {
+    return this.request<WorkspaceInvitation>(`/workspaces/${workspaceId}/invitations/${invitationId}`, {
+      method: 'DELETE',
+    });
+  }
+
+  async acceptInvitation(token: string) {
+    return this.request<AcceptedInvitation>('/invitations/accept', {
+      method: 'POST',
+      body: JSON.stringify({ token }),
+    });
+  }
+
+  // Roles and effective permissions
+  async getRoles(workspaceId: string) {
+    return this.request<WorkspaceRole[]>(`/workspaces/${workspaceId}/roles`);
+  }
+
+  async createRole(workspaceId: string, input: { name: string; permissions: number; position: number }) {
+    return this.request<WorkspaceRole>(`/workspaces/${workspaceId}/roles`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  }
+
+  async updateRole(workspaceId: string, roleId: string, input: {
+    name?: string;
+    permissions?: number;
+    position?: number;
+  }, authorizationRevision: string) {
+    return this.request<RoleUpdateResult>(`/workspaces/${workspaceId}/roles/${roleId}`, {
+      method: 'PUT',
+      body: JSON.stringify(withExpectedAuthorizationRevision(input, authorizationRevision)),
+    });
+  }
+
+  async deleteRole(workspaceId: string, roleId: string, authorizationRevision: string) {
+    return this.request<{ roleId: string; workspaceId: string }>(`/workspaces/${workspaceId}/roles/${roleId}`, {
+      method: 'DELETE',
+      body: JSON.stringify(withExpectedAuthorizationRevision({}, authorizationRevision)),
+    });
+  }
+
+  async previewRoleChange(workspaceId: string, input: RolePreviewInput) {
+    return this.request<RoleChangePreview>(`/workspaces/${workspaceId}/roles/preview`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  }
+
+  async assignRole(workspaceId: string, userId: string, roleId: string, authorizationRevision: string) {
+    return this.request<RoleAssignmentResult>(`/workspaces/${workspaceId}/members/${userId}/roles/${roleId}`, {
+      method: 'POST',
+      body: JSON.stringify(withExpectedAuthorizationRevision({}, authorizationRevision)),
+    });
+  }
+
+  async unassignRole(workspaceId: string, userId: string, roleId: string, authorizationRevision: string) {
+    return this.request<RoleAssignmentResult>(`/workspaces/${workspaceId}/members/${userId}/roles/${roleId}`, {
+      method: 'DELETE',
+      body: JSON.stringify(withExpectedAuthorizationRevision({}, authorizationRevision)),
+    });
+  }
+
+  async getMemberPermissions(workspaceId: string, userId: string) {
+    return this.request<EffectivePermissions>(`/workspaces/${workspaceId}/members/${userId}/permissions`);
   }
 
   // Categories
   async getCategories(workspaceId: string) {
-    return this.request<any[]>(`/workspaces/${workspaceId}/categories`);
+    return this.request<Category[]>(`/workspaces/${workspaceId}/categories`);
   }
 
-  async createCategory(workspaceId: string, name: string) {
-    return this.request<any>(`/workspaces/${workspaceId}/categories`, {
+  async createCategory(workspaceId: string, name: string, position?: number) {
+    return this.request<Category>(`/workspaces/${workspaceId}/categories`, {
       method: 'POST',
-      body: JSON.stringify({ name }),
+      body: JSON.stringify({ name, ...(position === undefined ? {} : { position }) }),
     });
+  }
+
+  async updateCategory(workspaceId: string, categoryId: string, data: CategoryMutationInput) {
+    return this.request<Category>(`/workspaces/${workspaceId}/categories/${categoryId}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async deleteCategory(workspaceId: string, categoryId: string) {
+    return this.request<{ categoryId: string; workspaceId: string; movedChannelIds: string[] }>(
+      `/workspaces/${workspaceId}/categories/${categoryId}`,
+      { method: 'DELETE' },
+    );
   }
 
   // Channels
   async getChannels(workspaceId: string) {
-    return this.request<any[]>(`/workspaces/${workspaceId}/channels`);
+    return this.request<Channel[]>(`/workspaces/${workspaceId}/channels`);
   }
 
-  async createChannel(workspaceId: string, name: string, options?: { categoryId?: string; isPrivate?: boolean; topic?: string }) {
-    return this.request<any>(`/workspaces/${workspaceId}/channels`, {
+  async createChannel(workspaceId: string, name: string, options?: {
+    categoryId?: string;
+    type?: 'text' | 'announcement';
+    isPrivate?: boolean;
+    topic?: string;
+    position?: number;
+  }) {
+    return this.request<Channel>(`/workspaces/${workspaceId}/channels`, {
       method: 'POST',
       body: JSON.stringify({ name, ...options }),
     });
   }
 
   async getChannel(id: string) {
-    return this.request<any>(`/channels/${id}`);
+    return this.request<Channel>(`/channels/${id}`);
   }
 
   async getChannelMembers(id: string) {
-    return this.request<any[]>(`/channels/${id}/members`);
+    return this.request<ChannelMemberSummary[]>(`/channels/${id}/members`);
+  }
+
+  async updateChannel(id: string, data: ChannelMutationInput) {
+    return this.request<Channel>(`/channels/${id}`, { method: 'PUT', body: JSON.stringify(data) });
+  }
+
+  async updateChannelPreference(channelId: string, updates: {
+    favorite?: boolean;
+    muted?: boolean;
+    hidden?: boolean;
+    notificationLevel?: NotificationLevel;
+  }) {
+    return this.request<ChannelPreference>(`/channels/${channelId}/preferences`, {
+      method: 'PATCH',
+      body: JSON.stringify(updates),
+    });
+  }
+
+  async deleteChannel(id: string) {
+    return this.request<SuccessResponse>(`/channels/${id}`, { method: 'DELETE' });
+  }
+
+  async addChannelMember(channelId: string, userId: string) {
+    return this.request<{ channelId: string; userId: string }>(`/channels/${channelId}/members`, {
+      method: 'POST',
+      body: JSON.stringify({ userId }),
+    });
+  }
+
+  async removeChannelMember(channelId: string, userId: string) {
+    return this.request<SuccessResponse>(`/channels/${channelId}/members/${userId}`, { method: 'DELETE' });
+  }
+
+  async getPermissionOverrides(target: PermissionOverrideTarget, workspaceId: string, targetId: string) {
+    return this.request<PermissionOverride[]>(permissionOverridePath(target, workspaceId, targetId));
+  }
+
+  async previewPermissionOverride(
+    target: PermissionOverrideTarget,
+    workspaceId: string,
+    targetId: string,
+    input: PermissionOverridePreviewInput,
+  ) {
+    return this.request<PermissionOverridePreview>(`${permissionOverridePath(target, workspaceId, targetId)}/preview`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  }
+
+  async upsertPermissionOverride(
+    target: PermissionOverrideTarget,
+    workspaceId: string,
+    targetId: string,
+    roleId: string,
+    input: PermissionOverrideWriteInput,
+  ) {
+    return this.request<PermissionOverrideMutationResult>(`${permissionOverridePath(target, workspaceId, targetId)}/${roleId}`, {
+      method: 'PUT',
+      body: JSON.stringify(input),
+    });
+  }
+
+  async deletePermissionOverride(
+    target: PermissionOverrideTarget,
+    workspaceId: string,
+    targetId: string,
+    roleId: string,
+    input: PermissionOverrideDeleteInput,
+  ) {
+    return this.request<PermissionOverrideDeleteResult>(`${permissionOverridePath(target, workspaceId, targetId)}/${roleId}`, {
+      method: 'DELETE',
+      body: JSON.stringify(input),
+    });
+  }
+
+  async getEffectiveChannelPermissions(workspaceId: string, channelId: string, userId: string) {
+    return this.request<ChannelEffectivePermissions>(
+      `/workspaces/${workspaceId}/channels/${channelId}/permissions/effective?userId=${encodeURIComponent(userId)}`,
+    );
+  }
+
+  async getDms(workspaceId: string) {
+    return this.request<DirectMessageConversation[]>(`/workspaces/${workspaceId}/dms`);
+  }
+
+  async createDm(workspaceId: string, memberIds: string[]) {
+    return this.request<DirectMessageConversation>(`/workspaces/${workspaceId}/dms`, {
+      method: 'POST',
+      body: JSON.stringify({ memberIds }),
+    });
   }
 
   // Messages
   async getMessages(channelId: string, cursor?: string) {
     const params = cursor ? `?cursor=${cursor}` : '';
-    return this.request<any>(`/channels/${channelId}/messages${params}`);
+    return this.request<{ data: Message[]; hasMore: boolean; cursor: string | null }>(`/channels/${channelId}/messages${params}`);
   }
 
   async sendMessage(channelId: string, data: {
     encryptedContent: string;
     contentNonce: string;
+    deviceId: string;
+    keyVersion: number;
     idempotencyKey: string;
+    signature: string;
+    broadcastMention: boolean;
     refMessageId?: string;
   }) {
-    return this.request<any>(`/channels/${channelId}/messages`, {
+    return this.request<Message>(`/channels/${channelId}/messages`, {
       method: 'POST',
       body: JSON.stringify(data),
     });
   }
 
-  async editMessage(messageId: string, data: { encryptedContent: string; contentNonce: string }) {
-    return this.request<any>(`/messages/${messageId}`, {
+  async editMessage(messageId: string, data: {
+    encryptedContent: string;
+    contentNonce: string;
+    deviceId: string;
+    keyVersion: number;
+    idempotencyKey: string;
+    signature: string;
+    broadcastMention: boolean;
+  }) {
+    return this.request<Message>(`/messages/${messageId}`, {
       method: 'PUT',
       body: JSON.stringify(data),
     });
   }
 
-  async deleteMessage(messageId: string) {
-    return this.request<any>(`/messages/${messageId}`, { method: 'DELETE' });
+  async deleteMessage(messageId: string, data: {
+    deviceId: string;
+    keyVersion: number;
+    idempotencyKey: string;
+    signature: string;
+  }) {
+    return this.request<{ messageId: string; channelId: string; event?: Message }>(`/messages/${messageId}`, { method: 'DELETE', body: JSON.stringify(data) });
   }
 
   async toggleReaction(messageId: string, emoji: string) {
-    return this.request<any>(`/messages/${messageId}/reactions`, {
+    return this.request<{
+      messageId: string;
+      channelId: string;
+      userId: string;
+      action: 'added' | 'removed';
+      emoji: string;
+      reactions: Reaction[];
+    }>(`/messages/${messageId}/reactions`, {
       method: 'POST',
       body: JSON.stringify({ emoji }),
     });
   }
 
-  async pinMessage(messageId: string, channelId: string) {
-    return this.request<any>(`/messages/${messageId}/pin`, {
+  async pinMessage(messageId: string) {
+    return this.request<{ messageId: string; channelId: string; userId: string; pinned: boolean }>(`/messages/${messageId}/pin`, {
       method: 'POST',
-      body: JSON.stringify({ channelId }),
+      body: JSON.stringify({}),
     });
   }
 
   async updateReadPosition(channelId: string, messageId: string) {
-    return this.request<any>(`/channels/${channelId}/read`, {
+    return this.request<ReadPosition>(`/channels/${channelId}/read`, {
       method: 'POST',
       body: JSON.stringify({ messageId }),
     });
   }
 
-  // Devices
-  async registerDevice(name: string, identityKey: string) {
-    return this.request<any>('/devices', {
+  async toggleMessageBookmark(messageId: string) {
+    return this.request<{
+      messageId: string;
+      channelId: string;
+      bookmarked: boolean;
+      createdAt: string | null;
+    }>(`/messages/${messageId}/bookmark`, {
       method: 'POST',
-      body: JSON.stringify({ name, identityKey }),
+      body: JSON.stringify({}),
+    });
+  }
+
+  async getMessageBookmarks(limit = 100) {
+    return this.request<MessageBookmark[]>(`/bookmarks?limit=${encodeURIComponent(String(limit))}`);
+  }
+
+  // E2EE attachments
+  async createAttachmentUpload(input: AttachmentUploadCreateInput, signal?: AbortSignal) {
+    return this.request<AttachmentUploadReservation>('/files/uploads', {
+      method: 'POST',
+      body: JSON.stringify(input),
+      signal,
+    });
+  }
+
+  async getAttachmentUploadStatus(uploadId: string, signal?: AbortSignal) {
+    return this.request<AttachmentUploadStatus>(`/files/uploads/${uploadId}`, { signal });
+  }
+
+  async putAttachmentChunk(uploadId: string, index: number, ciphertext: ArrayBuffer, signal?: AbortSignal) {
+    return this.request<AttachmentChunkUploadResult>(`/files/uploads/${uploadId}/chunks/${index}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: ciphertext,
+      signal,
+    });
+  }
+
+  async finalizeAttachmentUpload(uploadId: string, input: AttachmentFinalizeInput, signal?: AbortSignal) {
+    return this.request<Attachment>(`/files/uploads/${uploadId}/finalize`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+      signal,
+    });
+  }
+
+  async cancelAttachmentUpload(uploadId: string, signal?: AbortSignal) {
+    return this.request<AttachmentUploadCancellation>(`/files/uploads/${uploadId}`, {
+      method: 'DELETE',
+      signal,
+    });
+  }
+
+  async getAttachmentMetadata(attachmentId: string, signal?: AbortSignal) {
+    return this.request<Attachment>(`/files/${attachmentId}`, { signal });
+  }
+
+  async getAttachmentChunk(attachmentId: string, index: number, signal?: AbortSignal) {
+    return this.requestArrayBuffer(`/files/${attachmentId}/chunks/${index}`, { signal });
+  }
+
+  // Devices
+  async getDeviceChallenge() {
+    return this.request<{ challenge: string }>('/devices/challenge', { method: 'POST' });
+  }
+
+  async registerDevice(
+    name: string,
+    identityKey: string,
+    challenge: string,
+    proof: string,
+    currentPassword?: string,
+  ) {
+    return this.request<Device>('/devices', {
+      method: 'POST',
+      body: JSON.stringify({ name, identityKey, challenge, proof, currentPassword }),
     });
   }
 
   async getDevices() {
-    return this.request<any[]>('/devices');
+    return this.request<Device[]>('/devices');
   }
 
   async revokeDevice(id: string) {
-    return this.request<any>(`/devices/${id}`, { method: 'DELETE' });
+    return this.request<SuccessResponse>(`/devices/${id}`, { method: 'DELETE' });
+  }
+
+  async bindDevice(id: string, challenge: string, proof: string) {
+    return this.request<Device>(`/devices/${id}/bind`, {
+      method: 'POST',
+      body: JSON.stringify({ challenge, proof }),
+    });
+  }
+
+  async getChannelKeys(channelId: string) {
+    return this.request<ChannelKeyDelivery[]>(`/channels/${channelId}/keys`);
+  }
+
+  async getKeyRecipients(channelId: string) {
+    return this.request<ChannelKeyRecipientState>(`/channels/${channelId}/key-recipients`);
+  }
+
+  async getChannelDeviceDirectory(channelId: string) {
+    return this.request<Array<{ deviceId: string; userId: string; identityKey: string }>>(
+      `/channels/${channelId}/device-directory`,
+    );
+  }
+
+  async distributeChannelKeys(
+    channelId: string,
+    version: number,
+    keyCommitment: string,
+    keys: Array<{ deviceId: string; encryptedKey: string; signature: string }>,
+  ) {
+    return this.request(`/channels/${channelId}/keys`, {
+      method: 'POST',
+      body: JSON.stringify({ version, keyCommitment, keys }),
+    });
+  }
+
+  async acknowledgeChannelKey(
+    channelId: string,
+    deliveryId: string,
+    signature: string,
+  ) {
+    return this.request<{
+      version: number;
+      status: ChannelKeyEpochStatus;
+      activated: boolean;
+      confirmedAt: string;
+    }>(`/channels/${channelId}/keys/acknowledge`, {
+      method: 'POST',
+      body: JSON.stringify({ deliveryId, signature }),
+    });
+  }
+
+  async abortChannelKeyEpoch(
+    channelId: string,
+    version: number,
+    keyCommitment: string,
+    signature: string,
+  ) {
+    return this.request<{ version: number; status: 'aborted' }>(`/channels/${channelId}/keys/abort`, {
+      method: 'POST',
+      body: JSON.stringify({ version, keyCommitment, signature }),
+    });
   }
 }
 
 export const api = new ApiService();
+
+function permissionOverridePath(
+  target: PermissionOverrideTarget,
+  workspaceId: string,
+  targetId: string,
+): string {
+  const collection = target === 'category' ? 'categories' : 'channels';
+  return `/workspaces/${workspaceId}/${collection}/${targetId}/permission-overrides`;
+}

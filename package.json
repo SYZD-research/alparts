@@ -2,13 +2,22 @@
   "name": "alparts",
   "version": "0.1.0",
   "private": true,
+  "license": "UNLICENSED",
+  "packageManager": "pnpm@11.21.0",
+  "engines": {
+    "node": ">=24",
+    "pnpm": ">=11.21.0"
+  },
   "description": "Secure communications platform",
   "scripts": {
-    "dev": "pnpm -r --parallel run dev",
-    "dev:server": "pnpm --filter @alparts/server run dev",
-    "dev:client": "pnpm --filter @alparts/client run dev",
+    "build:shared": "pnpm --filter @alparts/shared run build",
+    "dev": "pnpm run build:shared && pnpm -r --parallel run dev",
+    "dev:server": "pnpm run build:shared && pnpm --filter @alparts/server run dev",
+    "dev:client": "pnpm run build:shared && pnpm --filter @alparts/client run dev",
     "build": "pnpm -r run build",
     "typecheck": "pnpm -r run typecheck",
-    "lint": "pnpm -r run lint"
+    "test": "pnpm run build:shared && pnpm -r --if-present run test",
+    "test:backup-security": "bash scripts/tests/backup-security.test.sh",
+    "lint": "pnpm -r --if-present run lint"
   }
 }

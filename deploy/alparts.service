@@ -1,0 +1,55 @@
+[Unit]
+Description=alparts Phase 1 secure communication server
+After=network-online.target postgresql.service
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+DynamicUser=yes
+WorkingDirectory=/opt/alparts
+Environment=NODE_ENV=production
+EnvironmentFile=-/etc/alparts/alparts.env
+Environment=BIND_HOST=127.0.0.1
+LoadCredential=database_url:/etc/alparts/credentials/database_url
+LoadCredential=minio_access_key:/etc/alparts/credentials/minio_access_key
+LoadCredential=minio_secret_key:/etc/alparts/credentials/minio_secret_key
+LoadCredential=jwt_secret:/etc/alparts/credentials/jwt_secret
+LoadCredential=audit_integrity_key:/etc/alparts/credentials/audit_integrity_key
+Environment=DATABASE_URL_FILE=%d/database_url
+Environment=MINIO_ACCESS_KEY_FILE=%d/minio_access_key
+Environment=MINIO_SECRET_KEY_FILE=%d/minio_secret_key
+Environment=JWT_SECRET_FILE=%d/jwt_secret
+Environment=AUDIT_INTEGRITY_KEY_FILE=%d/audit_integrity_key
+Environment=AUDIT_CHECKPOINT_PATH=/var/lib/alparts-audit/checkpoint.json
+Environment=AUDIT_CHECKPOINT_REQUIRED=true
+ExecStart=/usr/bin/node /opt/alparts/packages/server/dist/index.js
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=30s
+KillSignal=SIGTERM
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+UMask=0077
+StateDirectory=alparts-audit
+StateDirectoryMode=0700
+
+[Install]
+WantedBy=multi-user.target

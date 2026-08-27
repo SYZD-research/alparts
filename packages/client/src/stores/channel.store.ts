@@ -1,34 +1,95 @@
 import { create } from 'zustand';
 import { api } from '../services/api';
 import type { Channel } from '@alparts/shared';
+import { restoreChannelKeyScope } from '../services/crypto.service';
 
 interface ChannelState {
   activeChannelId: string | null;
-  setActiveChannel: (id: string) => void;
+  workspaceId: string | null;
+  setActiveChannel: (id: string | null) => void;
   channels: Channel[];
-  loadChannels: (workspaceId: string) => Promise<void>;
+  error: string | null;
+  loadChannels: (workspaceId: string) => Promise<Channel[]>;
   createChannel: (workspaceId: string, name: string, options?: { categoryId?: string; isPrivate?: boolean }) => Promise<void>;
+  removeChannel: (channelId: string, workspaceId?: string) => void;
+  reset: () => void;
 }
+
+let channelRequestGeneration = 0;
+let channelRequestWorkspaceId: string | null = null;
 
 export const useChannelStore = create<ChannelState>((set) => ({
   activeChannelId: null,
+  workspaceId: null,
   channels: [],
+  error: null,
 
   setActiveChannel: (id) => {
     set({ activeChannelId: id });
   },
 
   loadChannels: async (workspaceId) => {
+    const generation = ++channelRequestGeneration;
+    channelRequestWorkspaceId = workspaceId;
     try {
       const channels = await api.getChannels(workspaceId);
-      set({ channels });
-    } catch {
-      // ignore
+      if (generation === channelRequestGeneration) {
+        await Promise.all(channels.map((channel) => restoreChannelKeyScope(channel.id)));
+        if (generation !== channelRequestGeneration) return [];
+        set((state) => {
+          const activeStillVisible = state.workspaceId === workspaceId
+            && Boolean(state.activeChannelId)
+            && channels.some((channel) => channel.id === state.activeChannelId);
+          const firstChannel = channels.find((channel) => channel.type === 'text') ?? channels[0] ?? null;
+          return {
+            channels,
+            workspaceId,
+            activeChannelId: activeStillVisible ? state.activeChannelId : firstChannel?.id ?? null,
+            error: null,
+          };
+        });
+        channelRequestWorkspaceId = null;
+        return channels;
+      }
+      // Never expose an authorization list that was invalidated by a direct
+      // revoke/removal while the request was in flight.
+      return [];
+    } catch (error) {
+      if (generation === channelRequestGeneration) {
+        channelRequestWorkspaceId = null;
+        set({ channels: [], activeChannelId: null, workspaceId, error: error instanceof Error ? error.message : 'チャンネルを読み込めませんでした' });
+      }
+      return [];
     }
   },
 
   createChannel: async (workspaceId, name, options) => {
     await api.createChannel(workspaceId, name, options);
     await useChannelStore.getState().loadChannels(workspaceId);
+  },
+
+  removeChannel: (channelId, workspaceId) => {
+    const current = useChannelStore.getState();
+    if (
+      workspaceId === undefined
+      || current.workspaceId === workspaceId
+      || channelRequestWorkspaceId === workspaceId
+    ) {
+      channelRequestGeneration += 1;
+      channelRequestWorkspaceId = null;
+    }
+    set((state) => {
+      const channels = state.channels.filter((channel) => channel.id !== channelId);
+      const nextActive = state.activeChannelId === channelId
+        ? (channels.find((channel) => channel.type === 'text') ?? channels[0] ?? null)?.id ?? null
+        : state.activeChannelId;
+      return { channels, activeChannelId: nextActive };
+    });
+  },
+
+  reset: () => {
+    channelRequestGeneration += 1;
+    channelRequestWorkspaceId = null;
+    set({ activeChannelId: null, workspaceId: null, channels: [], error: null });
   },
 }));

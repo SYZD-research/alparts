@@ -1,77 +1,104 @@
 import { create } from 'zustand';
-import { api } from '../services/api';
-import { connectSocket, disconnectSocket } from '../services/socket';
 import type { User } from '@alparts/shared';
+import { api } from '../services/api';
+import { clearActiveDevice, ensureDeviceSession } from '../services/crypto.service';
+import { connectSocket, disconnectSocket, setSocketUnauthorizedHandler } from '../services/socket';
+import { resetAuthenticatedState } from './reset';
 
 interface AuthState {
   user: User | null;
-  token: string | null;
   isLoading: boolean;
+  isInitialized: boolean;
   error: string | null;
   login: (email: string, password: string) => Promise<void>;
-  register: (email: string, password: string, displayName: string) => Promise<void>;
-  logout: () => void;
+  register: (email: string, password: string, displayName: string, inviteToken: string) => Promise<void>;
+  logout: () => Promise<void>;
   loadUser: () => Promise<void>;
+}
+
+async function initializeAuthenticatedClient(user: User, stepUpPassword?: string): Promise<void> {
+  await ensureDeviceSession(user, stepUpPassword);
+  connectSocket();
+}
+
+function authErrorMessage(error: unknown): string {
+  return error instanceof Error && error.message ? error.message : '認証に失敗しました';
 }
 
 export const useAuthStore = create<AuthState>((set, get) => ({
   user: null,
-  token: localStorage.getItem('token'),
   isLoading: false,
+  isInitialized: false,
   error: null,
 
   login: async (email, password) => {
     set({ isLoading: true, error: null });
     try {
       const result = await api.login(email, password);
-      localStorage.setItem('token', result.token);
-      api.setToken(result.token);
-      connectSocket(result.token);
-      set({ user: result.user, token: result.token, isLoading: false });
-    } catch (err: any) {
-      set({ error: err.message, isLoading: false });
-      throw err;
+      if (get().user?.id && get().user?.id !== result.user.id) {
+        clearActiveDevice();
+        resetAuthenticatedState();
+      }
+      await initializeAuthenticatedClient(result.user, password);
+      set({ user: result.user, isLoading: false, isInitialized: true });
+    } catch (error) {
+      await api.logout().catch(() => undefined);
+      resetAuthenticatedState();
+      clearActiveDevice();
+      set({ user: null, error: authErrorMessage(error), isLoading: false, isInitialized: true });
+      throw error;
     }
   },
 
-  register: async (email, password, displayName) => {
+  register: async (email, password, displayName, inviteToken) => {
     set({ isLoading: true, error: null });
     try {
-      await api.register(email, password, displayName);
-      // Auto-login after registration
+      await api.register(email, password, displayName, inviteToken);
       await get().login(email, password);
-    } catch (err: any) {
-      set({ error: err.message, isLoading: false });
-      throw err;
+    } catch (error) {
+      set({ error: authErrorMessage(error), isLoading: false, isInitialized: true });
+      throw error;
     }
   },
 
-  logout: () => {
-    const token = get().token;
-    if (token) {
-      api.logout().catch(() => {});
-    }
-    localStorage.removeItem('token');
-    api.setToken(null);
+  logout: async () => {
+    await api.logout().catch(() => undefined);
     disconnectSocket();
-    set({ user: null, token: null });
+    clearActiveDevice();
+    resetAuthenticatedState();
+    set({ user: null, error: null, isInitialized: true });
   },
 
   loadUser: async () => {
-    const token = get().token;
-    if (!token) return;
-
     set({ isLoading: true });
     try {
-      api.setToken(token);
       const user = await api.getMe();
-      connectSocket(token);
-      set({ user, isLoading: false });
+      if (get().user?.id && get().user?.id !== user.id) {
+        clearActiveDevice();
+        resetAuthenticatedState();
+      }
+      await initializeAuthenticatedClient(user);
+      set({ user, isLoading: false, isInitialized: true });
     } catch {
-      // Token invalid
-      localStorage.removeItem('token');
-      api.setToken(null);
-      set({ user: null, token: null, isLoading: false });
+      disconnectSocket();
+      clearActiveDevice();
+      resetAuthenticatedState();
+      set({ user: null, isLoading: false, isInitialized: true });
     }
   },
 }));
+
+function invalidateExpiredSession(): void {
+  disconnectSocket();
+  clearActiveDevice();
+  resetAuthenticatedState();
+  useAuthStore.setState({
+    user: null,
+    isLoading: false,
+    isInitialized: true,
+    error: 'セッションの有効期限が切れたか、失効されました。再度ログインしてください。',
+  });
+}
+
+api.setUnauthorizedHandler(invalidateExpiredSession);
+setSocketUnauthorizedHandler(invalidateExpiredSession);

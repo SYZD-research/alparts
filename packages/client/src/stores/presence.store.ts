@@ -7,6 +7,8 @@ interface PresenceState {
 
   setStatus: (userId: string, status: UserStatusType) => void;
   setTyping: (channelId: string, userId: string, isTyping: boolean) => void;
+  clearChannel: (channelId: string) => void;
+  reset: () => void;
 }
 
 export const usePresenceStore = create<PresenceState>((set) => ({
@@ -20,14 +22,24 @@ export const usePresenceStore = create<PresenceState>((set) => ({
   },
 
   setTyping: (channelId, userId, isTyping) => {
-    set(state => ({
-      typingUsers: {
-        ...state.typingUsers,
-        [channelId]: {
-          ...(state.typingUsers[channelId] || {}),
-          [userId]: isTyping,
-        },
-      },
-    }));
+    set(state => {
+      const channelTyping = { ...(state.typingUsers[channelId] || {}) };
+      if (isTyping) channelTyping[userId] = true;
+      else delete channelTyping[userId];
+
+      const typingUsers = { ...state.typingUsers };
+      if (Object.keys(channelTyping).length > 0) typingUsers[channelId] = channelTyping;
+      else delete typingUsers[channelId];
+      return { typingUsers };
+    });
   },
+
+  clearChannel: (channelId) => set((state) => {
+    if (!(channelId in state.typingUsers)) return state;
+    const typingUsers = { ...state.typingUsers };
+    delete typingUsers[channelId];
+    return { typingUsers };
+  }),
+
+  reset: () => set({ statuses: {}, typingUsers: {} }),
 }));

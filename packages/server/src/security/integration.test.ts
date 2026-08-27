@@ -1,0 +1,2522 @@
+import assert from 'node:assert/strict';
+import {
+  constants,
+  createCipheriv,
+  createDecipheriv,
+  createHash,
+  createPublicKey,
+  generateKeyPairSync,
+  privateDecrypt,
+  publicEncrypt,
+  randomBytes,
+  randomUUID,
+  sign,
+} from 'node:crypto';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { after, before, describe, it } from 'node:test';
+import { eq } from 'drizzle-orm';
+import {
+  Permissions,
+  serializeAttachmentEnvelope,
+  serializeChannelKeyAcknowledgement,
+  serializeChannelKeyEpochAbort,
+  serializeChannelKeyWrap,
+  serializeDeviceChallengeProof,
+  serializeMessageAad,
+  serializeMessageEnvelope,
+  serializeVoiceSignalEnvelope,
+  type SignedAttachmentEnvelope,
+  type SignedMessageEnvelope,
+  type SignedVoiceSignalEnvelope,
+} from '@alparts/shared';
+
+const enabled = process.env.RUN_INTEGRATION === '1';
+
+describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
+  let baseUrl = '';
+  let httpServer: import('node:http').Server;
+  let verifyAuditChain: typeof import('../middleware/audit.js').verifyAuditChain;
+  let closeDb: typeof import('../db/index.js').closeDb;
+  let auditCheckpointDirectory = '';
+  let auditCheckpointPath = '';
+  const sockets: Array<{ disconnect(): void }> = [];
+
+  before(async () => {
+    auditCheckpointDirectory = await mkdtemp(join(tmpdir(), 'alparts-integration-audit-'));
+    auditCheckpointPath = join(auditCheckpointDirectory, 'checkpoint.json');
+    process.env.AUDIT_CHECKPOINT_PATH = auditCheckpointPath;
+    process.env.AUDIT_CHECKPOINT_REQUIRED = 'true';
+    const auditModule = await import('../middleware/audit.js');
+    closeDb = (await import('../db/index.js')).closeDb;
+    verifyAuditChain = auditModule.verifyAuditChain;
+    await auditModule.provisionAuditCheckpoint();
+    const startupAudit = await verifyAuditChain();
+    assert.equal(startupAudit.valid, true);
+    const appModule = await import('../app.js');
+    const created = appModule.createApp();
+    httpServer = created.httpServer;
+    await new Promise<void>((resolve) => httpServer.listen(0, '127.0.0.1', resolve));
+    const address = httpServer.address();
+    if (!address || typeof address === 'string') throw new Error('Server did not bind a TCP port');
+    baseUrl = `http://127.0.0.1:${address.port}`;
+  });
+
+  after(async () => {
+    for (const socket of sockets) socket.disconnect();
+    await new Promise<void>((resolve, reject) => httpServer.close((error) => error ? reject(error) : resolve()));
+    await closeDb();
+    if (auditCheckpointDirectory) await rm(auditCheckpointDirectory, { recursive: true, force: true });
+  });
+
+  it('enforces authorization, E2EE envelopes, WebSocket rooms, and session revocation', async () => {
+    const bootstrapToken = process.env.REGISTRATION_INVITE_SECRET!;
+    const alice = await createAccount('alice@example.test', 'Correct-Horse-Battery-1!', 'Alice', bootstrapToken);
+
+    const invalidInvite = await request('/api/auth/register', {
+      method: 'POST',
+      body: { email: 'blocked@example.test', password: 'Correct-Horse-Battery-4!', displayName: 'Blocked', inviteToken: 'invalid' },
+    });
+    assert.equal(invalidInvite.status, 403);
+
+    const reusedBootstrap = await request('/api/auth/register', {
+      method: 'POST',
+      body: { email: 'bootstrap-reuse@example.test', password: 'Correct-Horse-Battery-5!', displayName: 'Blocked', inviteToken: bootstrapToken },
+    });
+    assert.equal(reusedBootstrap.status, 403);
+
+    const aliceKeys = deviceFixture();
+    const aliceDevice = await registerDevice(alice, aliceKeys, 'Alice test device');
+
+    const workspaceResponse = await request('/api/workspaces', {
+      method: 'POST', cookie: alice.cookie, body: { name: 'Security Test' },
+    });
+    assert.equal(workspaceResponse.status, 201);
+    const workspace = await json<{ id: string }>(workspaceResponse);
+
+    const bobInvitation = await createWorkspaceInvitation(workspace.id, alice.cookie, 'bob@example.test');
+    const invitationsResponse = await request(`/api/workspaces/${workspace.id}/invitations`, { cookie: alice.cookie });
+    assert.equal(invitationsResponse.status, 200);
+    const invitationList = await json<Array<Record<string, unknown>>>(invitationsResponse);
+    assert.equal(Object.hasOwn(invitationList[0], 'token'), false);
+    assert.equal(Object.hasOwn(invitationList[0], 'tokenHash'), false);
+    const bob = await createAccount('bob@example.test', 'Correct-Horse-Battery-2!', 'Bob', bobInvitation.token);
+    const reusedInvitation = await request('/api/auth/register', {
+      method: 'POST',
+      body: { email: 'bob-reuse@example.test', password: 'Correct-Horse-Battery-6!', displayName: 'Blocked', inviteToken: bobInvitation.token },
+    });
+    assert.equal(reusedInvitation.status, 403);
+    const unboundInvitation = await createWorkspaceInvitation(workspace.id, alice.cookie);
+    const existingEmailRegistration = await request('/api/auth/register', {
+      method: 'POST',
+      body: { email: 'alice@example.test', password: 'Correct-Horse-Battery-8!', displayName: 'Probe', inviteToken: unboundInvitation.token },
+    });
+    assert.equal(existingEmailRegistration.status, invalidInvite.status);
+    assert.equal((await json<{ error: string }>(existingEmailRegistration)).error, 'INVITE_REQUIRED');
+    const unboundRegistration = await request('/api/auth/register', {
+      method: 'POST',
+      body: { email: 'unbound@example.test', password: 'Correct-Horse-Battery-9!', displayName: 'Unbound', inviteToken: unboundInvitation.token },
+    });
+    assert.equal(unboundRegistration.status, 201);
+    const retryDeviceInvitation = await createWorkspaceInvitation(workspace.id, alice.cookie, 'device-retry@example.test');
+    const retryDeviceAccount = await createAccount(
+      'device-retry@example.test',
+      'Correct-Horse-Battery-10!',
+      'Device Retry',
+      retryDeviceInvitation.token,
+    );
+    const retryDeviceKeys = deviceFixture();
+    const firstDeviceRegistration = await request('/api/devices', {
+      method: 'POST', cookie: retryDeviceAccount.cookie,
+      body: await deviceRegistrationBody(retryDeviceAccount, retryDeviceKeys, 'Retry identity'),
+    });
+    assert.equal(firstDeviceRegistration.status, 201);
+    const firstRetryDevice = await json<{ id: string }>(firstDeviceRegistration);
+    const repeatedDeviceRegistration = await request('/api/devices', {
+      method: 'POST', cookie: retryDeviceAccount.cookie,
+      body: await deviceRegistrationBody(retryDeviceAccount, retryDeviceKeys, 'Retry identity renamed'),
+    });
+    assert.equal(repeatedDeviceRegistration.status, 200);
+    assert.equal((await json<{ id: string }>(repeatedDeviceRegistration)).id, firstRetryDevice.id);
+    const postRevocationAttempt = await deviceRegistrationBody(
+      retryDeviceAccount,
+      retryDeviceKeys,
+      'Retry identity',
+    );
+    assert.equal((await request(`/api/devices/${firstRetryDevice.id}`, {
+      method: 'DELETE', cookie: retryDeviceAccount.cookie,
+    })).status, 200);
+    const revokedIdentityRetry = await request('/api/devices', {
+      method: 'POST', cookie: retryDeviceAccount.cookie,
+      body: postRevocationAttempt,
+    });
+    assert.equal(revokedIdentityRetry.status, 401, 'revoking the bound device invalidates its session');
+    const retryLogin = await request('/api/auth/login', {
+      method: 'POST',
+      body: { email: 'device-retry@example.test', password: 'Correct-Horse-Battery-10!' },
+    });
+    assert.equal(retryLogin.status, 200);
+    const retryLoginCookie = retryLogin.headers.get('set-cookie')!.split(';', 1)[0];
+    const revokedIdentityWithFreshSession = await request('/api/devices', {
+      method: 'POST', cookie: retryLoginCookie,
+      body: await deviceRegistrationBody(retryDeviceAccount, retryDeviceKeys, 'Retry identity', retryLoginCookie),
+    });
+    assert.equal(revokedIdentityWithFreshSession.status, 409);
+    assert.equal((await json<{ error: string }>(revokedIdentityWithFreshSession)).error, 'IDENTITY_REVOKED');
+
+    const outsiderWorkspaceResponse = await request('/api/workspaces', {
+      method: 'POST', cookie: alice.cookie, body: { name: 'Outsider Test' },
+    });
+    assert.equal(outsiderWorkspaceResponse.status, 201);
+    const outsiderWorkspace = await json<{ id: string }>(outsiderWorkspaceResponse);
+    const existingAccountInvitation = await createWorkspaceInvitation(outsiderWorkspace.id, alice.cookie, 'bob@example.test');
+    const acceptExisting = await request('/api/invitations/accept', {
+      method: 'POST', cookie: bob.cookie, body: { token: existingAccountInvitation.token },
+    });
+    assert.equal(acceptExisting.status, 200);
+    const reuseExisting = await request('/api/invitations/accept', {
+      method: 'POST', cookie: bob.cookie, body: { token: existingAccountInvitation.token },
+    });
+    assert.equal(reuseExisting.status, 403);
+    const malloryInvitation = await createWorkspaceInvitation(outsiderWorkspace.id, alice.cookie, 'mallory@example.test');
+    const mallory = await createAccount('mallory@example.test', 'Correct-Horse-Battery-3!', 'Mallory', malloryInvitation.token);
+
+    const revokedInvitation = await createWorkspaceInvitation(workspace.id, alice.cookie, 'revoked@example.test');
+    const revokeResponse = await request(`/api/workspaces/${workspace.id}/invitations/${revokedInvitation.id}`, {
+      method: 'DELETE', cookie: alice.cookie,
+    });
+    assert.equal(revokeResponse.status, 200);
+    const revokedRegistration = await request('/api/auth/register', {
+      method: 'POST',
+      body: { email: 'revoked@example.test', password: 'Correct-Horse-Battery-7!', displayName: 'Revoked', inviteToken: revokedInvitation.token },
+    });
+    assert.equal(revokedRegistration.status, 403);
+
+    const bobKeys = deviceFixture();
+    const malloryKeys = deviceFixture();
+    const bobDevice = await registerDevice(bob, bobKeys, 'Bob test device');
+    await registerDevice(mallory, malloryKeys, 'Mallory test device');
+
+    const membersResponse = await request(`/api/workspaces/${workspace.id}/members`, { cookie: alice.cookie });
+    assert.equal(membersResponse.status, 200);
+    const memberDtos = await json<Array<{ user: Record<string, unknown> }>>(membersResponse);
+    for (const member of memberDtos) {
+      assert.equal(Object.hasOwn(member.user, 'email'), false);
+      assert.equal(Object.hasOwn(member.user, 'passwordHash'), false);
+      assert.equal(Object.hasOwn(member.user, 'password_hash'), false);
+    }
+
+    const selfOnlyDm = await request(`/api/workspaces/${workspace.id}/dms`, {
+      method: 'POST', cookie: bob.cookie, body: { memberIds: [bob.user.id] },
+    });
+    assert.equal(selfOnlyDm.status, 400, 'a DM must retain another distinct participant');
+    const dmResponse = await request(`/api/workspaces/${workspace.id}/dms`, {
+      method: 'POST', cookie: alice.cookie, body: { memberIds: [bob.user.id] },
+    });
+    assert.equal(dmResponse.status, 201);
+    const dm = await json<{ channelId: string; members: Array<{ id: string }> }>(dmResponse);
+    assert.deepEqual(new Set(dm.members.map((member) => member.id)), new Set([alice.user.id, bob.user.id]));
+    assert.equal((await request(`/api/channels/${dm.channelId}`, {
+      method: 'PUT', cookie: alice.cookie, body: { isPrivate: false },
+    })).status, 404);
+    assert.equal((await request(`/api/channels/${dm.channelId}/members`, {
+      method: 'POST', cookie: alice.cookie, body: { userId: retryDeviceAccount.user.id },
+    })).status, 404);
+    assert.equal((await request(`/api/channels/${dm.channelId}/members/${bob.user.id}`, {
+      method: 'DELETE', cookie: alice.cookie,
+    })).status, 404);
+    assert.equal((await request(`/api/workspaces/${workspace.id}/channels/${dm.channelId}/permission-overrides`, {
+      cookie: alice.cookie,
+    })).status, 404);
+    assert.equal((await request(`/api/channels/${dm.channelId}`, {
+      method: 'DELETE', cookie: alice.cookie,
+    })).status, 404);
+    const dmAfterRejectedMutations = await request(`/api/workspaces/${workspace.id}/dms`, { cookie: alice.cookie });
+    assert.equal(dmAfterRejectedMutations.status, 200);
+    const dmRows = await json<Array<{ channelId: string; members: Array<{ id: string }> }>>(dmAfterRejectedMutations);
+    assert.deepEqual(
+      new Set(dmRows.find((row) => row.channelId === dm.channelId)?.members.map((member) => member.id)),
+      new Set([alice.user.id, bob.user.id]),
+    );
+
+    // A provisional epoch is never writable after only the proposer's ACK.
+    // A poisoned immutable delivery cannot be overwritten; another eligible
+    // participant can abort it and retry with a strictly higher version.
+    const dmRecipientsResponse = await request(`/api/channels/${dm.channelId}/key-recipients`, {
+      cookie: alice.cookie,
+    });
+    assert.equal(dmRecipientsResponse.status, 200);
+    const dmRecipients = await json<{
+      recipients: Array<{ deviceId: string; identityKey: string }>;
+    }>(dmRecipientsResponse);
+    const dmAliceRecipient = dmRecipients.recipients.find((recipient) => recipient.deviceId === aliceDevice.id);
+    const dmBobRecipient = dmRecipients.recipients.find((recipient) => recipient.deviceId === bobDevice.id);
+    assert.ok(dmAliceRecipient && dmBobRecipient);
+    const provisionalDmKey = randomBytes(32);
+    const provisionalDmCommitment = createHash('sha256').update(provisionalDmKey).digest('base64url');
+    const provisionalAliceWrap = signedChannelKeyWrap({
+      channelId: dm.channelId,
+      version: 1,
+      keyCommitment: provisionalDmCommitment,
+      rawKey: provisionalDmKey,
+      recipient: dmAliceRecipient,
+      senderKeys: aliceKeys,
+    });
+    const provisionalBobWrap = signedChannelKeyWrap({
+      channelId: dm.channelId,
+      version: 1,
+      keyCommitment: provisionalDmCommitment,
+      rawKey: randomBytes(32),
+      recipient: dmBobRecipient,
+      senderKeys: aliceKeys,
+    });
+    assert.equal((await request(`/api/channels/${dm.channelId}/keys`, {
+      method: 'POST',
+      cookie: alice.cookie,
+      body: {
+        version: 1,
+        keyCommitment: provisionalDmCommitment,
+        keys: [provisionalAliceWrap, provisionalBobWrap],
+      },
+    })).status, 201);
+    const provisionalAliceAcknowledgement = await acknowledgeChannelKeyDelivery({
+      channelId: dm.channelId,
+      version: 1,
+      keyCommitment: provisionalDmCommitment,
+      encryptedKey: provisionalAliceWrap.encryptedKey,
+      deviceId: aliceDevice.id,
+      cookie: alice.cookie,
+      keys: aliceKeys,
+    });
+    assert.equal(provisionalAliceAcknowledgement.status, 'pending');
+    assert.equal(provisionalAliceAcknowledgement.activated, false);
+    assert.equal((await request(`/api/channels/${dm.channelId}/messages`, {
+      method: 'POST',
+      cookie: alice.cookie,
+      body: encryptedMessage(
+        dm.channelId,
+        alice.user.id,
+        aliceDevice.id,
+        aliceKeys.signingPrivateKey,
+        provisionalDmKey,
+        'a self-acknowledged pending epoch must not be writable',
+      ).body,
+    })).status, 400);
+
+    const changedBobWrap = signedChannelKeyWrap({
+      channelId: dm.channelId,
+      version: 1,
+      keyCommitment: provisionalDmCommitment,
+      rawKey: provisionalDmKey,
+      recipient: dmBobRecipient,
+      senderKeys: aliceKeys,
+    });
+    assert.equal((await request(`/api/channels/${dm.channelId}/keys`, {
+      method: 'POST',
+      cookie: alice.cookie,
+      body: { version: 1, keyCommitment: provisionalDmCommitment, keys: [changedBobWrap] },
+    })).status, 409, 'one distributor cannot replace its immutable delivery candidate');
+    assert.notEqual(
+      createHash('sha256')
+        .update(unwrapKey(provisionalBobWrap.encryptedKey, bobKeys.encryptionPrivateKey))
+        .digest('base64url'),
+      provisionalDmCommitment,
+      'the malicious candidate is intentionally undecryptable to the committed key',
+    );
+
+    const abortSignature = sign('sha256', Buffer.from(serializeChannelKeyEpochAbort({
+      channelId: dm.channelId,
+      keyVersion: 1,
+      keyCommitment: provisionalDmCommitment,
+      deviceId: bobDevice.id,
+    })), {
+      key: bobKeys.signingPrivateKey,
+      dsaEncoding: 'ieee-p1363',
+    }).toString('base64');
+    const abortResponse = await request(`/api/channels/${dm.channelId}/keys/abort`, {
+      method: 'POST',
+      cookie: bob.cookie,
+      body: { version: 1, keyCommitment: provisionalDmCommitment, signature: abortSignature },
+    });
+    assert.equal(abortResponse.status, 200);
+    assert.deepEqual(await json<{ version: number; status: string }>(abortResponse), {
+      version: 1,
+      status: 'aborted',
+    });
+    const dmAfterAbort = await json<{
+      currentVersion: number;
+      pendingVersion: number | null;
+      nextVersion: number;
+      canRotate: boolean;
+      canAbortPending: boolean;
+    }>(await request(`/api/channels/${dm.channelId}/key-recipients`, { cookie: bob.cookie }));
+    assert.equal(dmAfterAbort.currentVersion, 0);
+    assert.equal(dmAfterAbort.pendingVersion, null);
+    assert.equal(dmAfterAbort.nextVersion, 2);
+    assert.equal(dmAfterAbort.canRotate, true);
+    assert.equal(dmAfterAbort.canAbortPending, false);
+    assert.deepEqual(
+      await json<unknown[]>(await request(`/api/channels/${dm.channelId}/keys`, { cookie: bob.cookie })),
+      [],
+      'aborted provisional delivery material is removed',
+    );
+
+    const activeDmKey = randomBytes(32);
+    await distributeAndAcknowledgeChannelKey({
+      channelId: dm.channelId,
+      version: 2,
+      rawKey: activeDmKey,
+      senderCookie: bob.cookie,
+      senderKeys: bobKeys,
+      recipients: dmRecipients.recipients,
+      acknowledgements: [
+        { deviceId: bobDevice.id, cookie: bob.cookie, keys: bobKeys },
+        { deviceId: aliceDevice.id, cookie: alice.cookie, keys: aliceKeys },
+      ],
+    });
+    const forbiddenVersionThreeKey = randomBytes(32);
+    const forbiddenVersionThreeCommitment = createHash('sha256')
+      .update(forbiddenVersionThreeKey)
+      .digest('base64url');
+    const forbiddenVersionThreeWraps = dmRecipients.recipients.map((recipient) => signedChannelKeyWrap({
+      channelId: dm.channelId,
+      version: 3,
+      keyCommitment: forbiddenVersionThreeCommitment,
+      rawKey: forbiddenVersionThreeKey,
+      recipient,
+      senderKeys: aliceKeys,
+    }));
+    assert.equal((await request(`/api/channels/${dm.channelId}/keys`, {
+      method: 'POST',
+      cookie: alice.cookie,
+      body: {
+        version: 3,
+        keyCommitment: forbiddenVersionThreeCommitment,
+        keys: forbiddenVersionThreeWraps,
+      },
+    })).status, 409, 'a DM participant cannot rotate a healthy active epoch');
+    const healthyDmState = await json<{
+      currentVersion: number;
+      pendingVersion: number | null;
+      rotationRequired: boolean;
+    }>(await request(`/api/channels/${dm.channelId}/key-recipients`, { cookie: alice.cookie }));
+    assert.equal(healthyDmState.currentVersion, 2);
+    assert.equal(healthyDmState.pendingVersion, null);
+    assert.equal(healthyDmState.rotationRequired, false);
+
+    const forbiddenWorkspace = await request(`/api/workspaces/${workspace.id}`, { cookie: mallory.cookie });
+    assert.notEqual(forbiddenWorkspace.status, 200);
+    const unauthorizedInvite = await request(`/api/workspaces/${workspace.id}/invite`, {
+      method: 'POST', cookie: bob.cookie, body: { userId: mallory.user.id },
+    });
+    assert.equal(unauthorizedInvite.status, 404, 'legacy direct-add endpoint must not exist');
+
+    const categoryResponse = await request(`/api/workspaces/${workspace.id}/categories`, {
+      method: 'POST', cookie: alice.cookie, body: { name: 'Temporary', position: 7 },
+    });
+    assert.equal(categoryResponse.status, 201);
+    const category = await json<{ id: string }>(categoryResponse);
+    const forbiddenCategoryUpdate = await request(`/api/workspaces/${workspace.id}/categories/${category.id}`, {
+      method: 'PUT', cookie: bob.cookie, body: { position: 8 },
+    });
+    assert.equal(forbiddenCategoryUpdate.status, 403);
+    const categoryUpdate = await request(`/api/workspaces/${workspace.id}/categories/${category.id}`, {
+      method: 'PUT', cookie: alice.cookie, body: { name: 'Temporary Updated', position: 8 },
+    });
+    assert.equal(categoryUpdate.status, 200);
+    const categorizedChannelResponse = await request(`/api/workspaces/${workspace.id}/channels`, {
+      method: 'POST', cookie: alice.cookie, body: { name: 'temporary-channel', categoryId: category.id, position: 100 },
+    });
+    assert.equal(categorizedChannelResponse.status, 201);
+    const categorizedChannel = await json<{ id: string }>(categorizedChannelResponse);
+    const categoryDelete = await request(`/api/workspaces/${workspace.id}/categories/${category.id}`, {
+      method: 'DELETE', cookie: alice.cookie,
+    });
+    assert.equal(categoryDelete.status, 200);
+    assert.equal((await json<{ movedChannelIds: string[] }>(categoryDelete)).movedChannelIds.includes(categorizedChannel.id), true);
+    const movedChannelResponse = await request(`/api/channels/${categorizedChannel.id}`, { cookie: alice.cookie });
+    assert.equal(movedChannelResponse.status, 200);
+    assert.equal((await json<{ categoryId: string | null }>(movedChannelResponse)).categoryId, null);
+    const makePrivate = await request(`/api/channels/${categorizedChannel.id}`, {
+      method: 'PUT', cookie: alice.cookie, body: { isPrivate: true },
+    });
+    assert.equal(makePrivate.status, 200);
+    assert.equal((await request(`/api/channels/${categorizedChannel.id}`, { cookie: bob.cookie })).status, 404);
+    const makePublic = await request(`/api/channels/${categorizedChannel.id}`, {
+      method: 'PUT', cookie: alice.cookie, body: { isPrivate: false },
+    });
+    assert.equal(makePublic.status, 200);
+    assert.equal((await request(`/api/channels/${categorizedChannel.id}`, { cookie: bob.cookie })).status, 200);
+
+    const rolesResponse = await request(`/api/workspaces/${workspace.id}/roles`, { cookie: alice.cookie });
+    assert.equal(rolesResponse.status, 200);
+    const workspaceRoles = await json<Array<{ id: string; name: string; permissionMask: number }>>(rolesResponse);
+    const ownerRole = workspaceRoles.find((role) => role.name === 'Owner');
+    const memberRole = workspaceRoles.find((role) => role.name === 'Member');
+    assert.ok(ownerRole);
+    assert.ok(memberRole);
+    const ownerProtectionRevisionResponse = await request(`/api/workspaces/${workspace.id}/roles/preview`, {
+      method: 'POST', cookie: alice.cookie,
+      body: { operation: 'role.update', roleId: memberRole.id, permissions: memberRole.permissionMask },
+    });
+    assert.equal(ownerProtectionRevisionResponse.status, 200);
+    const ownerProtectionRevision = (await json<{ authorizationRevision: string }>(ownerProtectionRevisionResponse)).authorizationRevision;
+    const ownerDelete = await request(`/api/workspaces/${workspace.id}/roles/${ownerRole.id}`, {
+      method: 'DELETE', cookie: alice.cookie, body: { expectedAuthorizationRevision: ownerProtectionRevision },
+    });
+    assert.equal(ownerDelete.status, 409);
+    const invalidRole = await request(`/api/workspaces/${workspace.id}/roles`, {
+      method: 'POST', cookie: alice.cookie, body: { name: 'Unknown Bit', permissions: 1 << 20, position: 10 },
+    });
+    assert.equal(invalidRole.status, 400);
+    const reviewerRoleResponse = await request(`/api/workspaces/${workspace.id}/roles`, {
+      method: 'POST', cookie: alice.cookie, body: { name: 'Reviewer', permissions: Permissions.VIEW_AUDIT_LOG, position: 10 },
+    });
+    assert.equal(reviewerRoleResponse.status, 201);
+    const reviewerRole = await json<{ id: string }>(reviewerRoleResponse);
+    assert.equal((await request(`/api/workspaces/${workspace.id}/audit-logs`, {
+      method: 'POST', cookie: bob.cookie, body: {},
+    })).status, 403);
+    assert.equal((await request(`/api/workspaces/${workspace.id}/audit-integrity`, {
+      method: 'POST', cookie: bob.cookie, body: {},
+    })).status, 403);
+    const assignmentPreview = await request(`/api/workspaces/${workspace.id}/roles/preview`, {
+      method: 'POST',
+      cookie: alice.cookie,
+      body: { operation: 'role.assign', roleId: reviewerRole.id, userId: bob.user.id },
+    });
+    assert.equal(assignmentPreview.status, 200);
+    const assignmentPreviewBody = await json<{ affectedUserIds: string[]; authorizationRevision: string }>(assignmentPreview);
+    assert.equal(assignmentPreviewBody.affectedUserIds.includes(bob.user.id), true);
+    const revisionBump = await request(`/api/workspaces/${workspace.id}/roles`, {
+      method: 'POST', cookie: alice.cookie,
+      body: { name: 'Revision Bump', permissions: Permissions.VIEW_CHANNELS, position: 9 },
+    });
+    assert.equal(revisionBump.status, 201);
+    const revisionBumpRole = await json<{ id: string }>(revisionBump);
+    const staleAssignment = await request(`/api/workspaces/${workspace.id}/members/${bob.user.id}/roles/${reviewerRole.id}`, {
+      method: 'POST', cookie: alice.cookie,
+      body: { expectedAuthorizationRevision: assignmentPreviewBody.authorizationRevision },
+    });
+    assert.equal(staleAssignment.status, 409);
+    assert.equal((await json<{ error: string }>(staleAssignment)).error, 'STALE_PREVIEW');
+    const freshAssignmentPreview = await request(`/api/workspaces/${workspace.id}/roles/preview`, {
+      method: 'POST', cookie: alice.cookie,
+      body: { operation: 'role.assign', roleId: reviewerRole.id, userId: bob.user.id },
+    });
+    assert.equal(freshAssignmentPreview.status, 200);
+    const freshAuthorizationRevision = (await json<{ authorizationRevision: string }>(freshAssignmentPreview)).authorizationRevision;
+    const assignment = await request(`/api/workspaces/${workspace.id}/members/${bob.user.id}/roles/${reviewerRole.id}`, {
+      method: 'POST', cookie: alice.cookie, body: { expectedAuthorizationRevision: freshAuthorizationRevision },
+    });
+    assert.equal(assignment.status, 200);
+    const memberManagerResponse = await request(`/api/workspaces/${workspace.id}/roles`, {
+      method: 'POST', cookie: alice.cookie,
+      body: { name: 'Member Manager Without Kick', permissions: Permissions.MANAGE_MEMBERS, position: 60 },
+    });
+    assert.equal(memberManagerResponse.status, 201);
+    const memberManager = await json<{ id: string }>(memberManagerResponse);
+    await assignWorkspaceRole(workspace.id, alice.cookie, memberManager.id, bob.user.id);
+    assert.equal((await request(`/api/workspaces/${workspace.id}/members/${retryDeviceAccount.user.id}`, {
+      method: 'DELETE', cookie: bob.cookie,
+    })).status, 403, 'MANAGE_MEMBERS must not imply KICK_MEMBERS');
+
+    const kickerRoleResponse = await request(`/api/workspaces/${workspace.id}/roles`, {
+      method: 'POST', cookie: alice.cookie,
+      body: { name: 'Limited Kicker', permissions: Permissions.KICK_MEMBERS, position: 61 },
+    });
+    assert.equal(kickerRoleResponse.status, 201);
+    const kickerRole = await json<{ id: string }>(kickerRoleResponse);
+    const protectedRoleResponse = await request(`/api/workspaces/${workspace.id}/roles`, {
+      method: 'POST', cookie: alice.cookie,
+      body: { name: 'Protected Member', permissions: 0, position: 70 },
+    });
+    assert.equal(protectedRoleResponse.status, 201);
+    const protectedRole = await json<{ id: string }>(protectedRoleResponse);
+    await assignWorkspaceRole(workspace.id, alice.cookie, kickerRole.id, bob.user.id);
+    await assignWorkspaceRole(workspace.id, alice.cookie, protectedRole.id, retryDeviceAccount.user.id);
+    assert.equal((await request(`/api/workspaces/${workspace.id}/members/${retryDeviceAccount.user.id}`, {
+      method: 'DELETE', cookie: bob.cookie,
+    })).status, 403, 'a kicker must not remove an equal-or-higher ranked member');
+    const blockedDeletePreview = await request(`/api/workspaces/${workspace.id}/roles/preview`, {
+      method: 'POST', cookie: alice.cookie, body: { operation: 'role.delete', roleId: reviewerRole.id },
+    });
+    assert.equal(blockedDeletePreview.status, 409);
+    const effectiveResponse = await request(`/api/workspaces/${workspace.id}/members/${bob.user.id}/permissions`, { cookie: alice.cookie });
+    assert.equal(effectiveResponse.status, 200);
+    const effective = await json<{ permissionDetails: Array<{ permission: string; allowed: boolean; reasons: Array<{ roleId: string }> }> }>(effectiveResponse);
+    const auditPermission = effective.permissionDetails.find((permission) => permission.permission === 'VIEW_AUDIT_LOG');
+    assert.equal(auditPermission?.allowed, true);
+    assert.equal(auditPermission?.reasons.some((reason) => reason.roleId === reviewerRole.id), true);
+    const firstAuditView = await request(`/api/workspaces/${workspace.id}/audit-logs?limit=100`, {
+      method: 'POST', cookie: bob.cookie, body: {},
+    });
+    assert.equal(firstAuditView.status, 200);
+    const firstAuditBody = await json<{ data: Array<{ action: string; targetId: string | null; details: Record<string, unknown> | null }> }>(firstAuditView);
+    assert.equal(firstAuditBody.data.some((entry) => entry.targetId === outsiderWorkspace.id), false);
+    assert.equal(firstAuditBody.data.some((entry) => entry.details?.workspaceId === outsiderWorkspace.id), false);
+    const secondAuditView = await request(`/api/workspaces/${workspace.id}/audit-logs?limit=100`, {
+      method: 'POST', cookie: bob.cookie, body: {},
+    });
+    assert.equal(secondAuditView.status, 200);
+    assert.equal((await json<{ data: Array<{ action: string }> }>(secondAuditView)).data.some((entry) => entry.action === 'audit.view'), true);
+    const integrityResponse = await request(`/api/workspaces/${workspace.id}/audit-integrity`, {
+      method: 'POST', cookie: bob.cookie, body: {},
+    });
+    assert.equal(integrityResponse.status, 200);
+    assert.equal((await json<{ valid: boolean }>(integrityResponse)).valid, true);
+    const outsiderRoles = await json<Array<{ id: string }>>(await request(`/api/workspaces/${outsiderWorkspace.id}/roles`, { cookie: alice.cookie }));
+    const crossWorkspacePreview = await request(`/api/workspaces/${workspace.id}/roles/preview`, {
+      method: 'POST', cookie: alice.cookie,
+      body: { operation: 'role.assign', roleId: reviewerRole.id, userId: bob.user.id },
+    });
+    const crossWorkspaceRevision = (await json<{ authorizationRevision: string }>(crossWorkspacePreview)).authorizationRevision;
+    const crossWorkspaceAssignment = await request(`/api/workspaces/${workspace.id}/members/${bob.user.id}/roles/${outsiderRoles[0].id}`, {
+      method: 'POST', cookie: alice.cookie, body: { expectedAuthorizationRevision: crossWorkspaceRevision },
+    });
+    assert.equal(crossWorkspaceAssignment.status, 404);
+
+    const channelsResponse = await request(`/api/workspaces/${workspace.id}/channels`, { cookie: alice.cookie });
+    const channels = await json<Array<{ id: string; type: string }>>(channelsResponse);
+    const normalChannel = channels.find((channel) => channel.type !== 'dm');
+    assert.ok(normalChannel);
+    const channelId = normalChannel.id;
+    assert.equal((await request(`/api/channels/${channelId}/messages`, { cookie: mallory.cookie })).status, 404);
+
+    const privateChannelResponse = await request(`/api/workspaces/${workspace.id}/channels`, {
+      method: 'POST', cookie: alice.cookie, body: { name: 'private', isPrivate: true },
+    });
+    assert.equal(privateChannelResponse.status, 201);
+    const privateChannel = await json<{ id: string }>(privateChannelResponse);
+    assert.equal((await request(`/api/channels/${privateChannel.id}`, { cookie: bob.cookie })).status, 404);
+    const lastPrivateMemberRemoval = await request(`/api/channels/${privateChannel.id}/members/${alice.user.id}`, {
+      method: 'DELETE', cookie: alice.cookie,
+    });
+    assert.equal(lastPrivateMemberRemoval.status, 409);
+    assert.equal((await json<{ error: string }>(lastPrivateMemberRemoval)).error, 'LAST_PRIVATE_MEMBER');
+
+    const { io } = await import('socket.io-client');
+    const aliceSocket = io(baseUrl, {
+      transports: ['websocket'],
+      extraHeaders: { Cookie: alice.cookie, Origin: 'http://localhost:5173' },
+    });
+    const mallorySocket = io(baseUrl, {
+      transports: ['websocket'],
+      extraHeaders: { Cookie: mallory.cookie, Origin: 'http://localhost:5173' },
+    });
+    sockets.push(aliceSocket, mallorySocket);
+    await Promise.all([onceConnected(aliceSocket), onceConnected(mallorySocket)]);
+    assert.equal(await joinChannel(aliceSocket, privateChannel.id), true);
+    assert.equal(await joinChannel(mallorySocket, privateChannel.id), false);
+    assert.equal(await joinChannel(aliceSocket, channelId), true);
+
+    const recipientsResponse = await request(`/api/channels/${channelId}/key-recipients`, { cookie: alice.cookie });
+    assert.equal(recipientsResponse.status, 200);
+    const recipients = await json<{ recipients: Array<{ deviceId: string; identityKey: string }> }>(recipientsResponse);
+    const rawChannelKey = randomBytes(32);
+    const legacyUnsignedDistribution = await request(`/api/channels/${channelId}/keys`, {
+      method: 'POST',
+      cookie: alice.cookie,
+      body: {
+        version: 1,
+        keys: recipients.recipients.map((recipient) => ({
+          deviceId: recipient.deviceId,
+          encryptedKey: wrapKey(rawChannelKey, recipient.identityKey),
+        })),
+      },
+    });
+    assert.equal(legacyUnsignedDistribution.status, 400);
+    const committedDistribution = await distributeAndAcknowledgeChannelKey({
+      channelId,
+      version: 1,
+      rawKey: rawChannelKey,
+      senderCookie: alice.cookie,
+      senderKeys: aliceKeys,
+      recipients: recipients.recipients,
+      acknowledgements: [
+        { deviceId: aliceDevice.id, cookie: alice.cookie, keys: aliceKeys },
+        { deviceId: bobDevice.id, cookie: bob.cookie, keys: bobKeys },
+      ],
+    });
+    const aliceRecipient = recipients.recipients.find((recipient) => recipient.deviceId === aliceDevice.id);
+    assert.ok(aliceRecipient);
+    const poisonEncryptedKey = wrapKey(randomBytes(32), aliceRecipient.identityKey);
+    const poisonSignature = sign('sha256', Buffer.from(serializeChannelKeyWrap({
+      channelId,
+      keyVersion: 1,
+      keyCommitment: committedDistribution.keyCommitment,
+      recipientDeviceId: aliceDevice.id,
+      encryptedKey: poisonEncryptedKey,
+    })), {
+      key: bobKeys.signingPrivateKey,
+      dsaEncoding: 'ieee-p1363',
+    }).toString('base64');
+    const confirmedWrapOverwrite = await request(`/api/channels/${channelId}/keys`, {
+      method: 'POST',
+      cookie: bob.cookie,
+      body: {
+        version: 1,
+        keyCommitment: committedDistribution.keyCommitment,
+        keys: [{ deviceId: aliceDevice.id, encryptedKey: poisonEncryptedKey, signature: poisonSignature }],
+      },
+    });
+    assert.equal(confirmedWrapOverwrite.status, 409, 'a confirmed recipient wrap is immutable');
+
+    const messageRequest = encryptedMessage(
+      channelId,
+      alice.user.id,
+      aliceDevice.id,
+      aliceKeys.signingPrivateKey,
+      rawChannelKey,
+      'server must never see this plaintext',
+    );
+    const createdRealtime = onceSocketEvent<{ message: Record<string, unknown> }>(aliceSocket, 'message:new');
+    const messageResponse = await request(`/api/channels/${channelId}/messages`, {
+      method: 'POST', cookie: alice.cookie, body: messageRequest.body,
+    });
+    assert.equal(messageResponse.status, 201);
+    const message = await json<{ id: string; channelId: string; content: string; encryptedContent: string; author: Record<string, unknown> }>(messageResponse);
+    assert.equal(message.content, '');
+    assert.notEqual(message.encryptedContent, 'server must never see this plaintext');
+    assert.deepEqual((await createdRealtime).message, message);
+    assert.equal(Object.hasOwn(message.author, 'passwordHash'), false);
+
+    let replayBroadcast = false;
+    const onReplayBroadcast = () => { replayBroadcast = true; };
+    aliceSocket.on('message:new', onReplayBroadcast);
+    const replayResponse = await request(`/api/channels/${channelId}/messages`, {
+      method: 'POST', cookie: alice.cookie, body: messageRequest.body,
+    });
+    assert.equal(replayResponse.status, 201);
+    assert.deepEqual(await json(replayResponse), message);
+    await delay(75);
+    aliceSocket.off('message:new', onReplayBroadcast);
+    assert.equal(replayBroadcast, false);
+
+    const conflictingReplay = encryptedMessage(
+      channelId,
+      alice.user.id,
+      aliceDevice.id,
+      aliceKeys.signingPrivateKey,
+      rawChannelKey,
+      'a different but valid encrypted envelope',
+      messageRequest.body.idempotencyKey,
+    );
+    const conflictingReplayResponse = await request(`/api/channels/${channelId}/messages`, {
+      method: 'POST', cookie: alice.cookie, body: conflictingReplay.body,
+    });
+    assert.equal(conflictingReplayResponse.status, 409);
+    assert.equal((await json<{ error: string }>(conflictingReplayResponse)).error, 'IDEMPOTENCY_CONFLICT');
+
+    const historyResponse = await request(`/api/channels/${channelId}/messages`, { cookie: alice.cookie });
+    assert.equal(historyResponse.status, 200);
+    const history = await json<{ data: Array<{ author: Record<string, unknown> }> }>(historyResponse);
+    assert.equal(history.data.length, 1);
+    assert.equal(Object.hasOwn(history.data[0].author, 'passwordHash'), false);
+    assert.equal(Object.hasOwn(history.data[0].author, 'password_hash'), false);
+    assert.equal(Object.hasOwn(history.data[0].author, 'email'), false);
+
+    const initialChannelStateResponse = await request(`/api/workspaces/${workspace.id}/channel-state`, { cookie: alice.cookie });
+    assert.equal(initialChannelStateResponse.status, 200);
+    const initialChannelState = await json<Array<{
+      channelId: string;
+      unreadCount: number;
+      latestMessageId: string | null;
+      favorite: boolean;
+      muted: boolean;
+      notificationLevel: string;
+    }>>(initialChannelStateResponse);
+    const initialPublicState = initialChannelState.find((state) => state.channelId === channelId);
+    assert.ok(initialPublicState);
+    assert.equal(initialPublicState.unreadCount, 1);
+    assert.equal(initialPublicState.latestMessageId, message.id);
+
+    const preferenceResponse = await request(`/api/channels/${channelId}/preferences`, {
+      method: 'PATCH',
+      cookie: alice.cookie,
+      body: { favorite: true, muted: true, notificationLevel: 'mentions' },
+    });
+    assert.equal(preferenceResponse.status, 200);
+    assert.deepEqual(
+      pick(await json<Record<string, unknown>>(preferenceResponse), ['channelId', 'favorite', 'muted', 'notificationLevel']),
+      { channelId, favorite: true, muted: true, notificationLevel: 'mentions' },
+    );
+
+    const bookmarkResponse = await request(`/api/messages/${message.id}/bookmark`, {
+      method: 'POST', cookie: alice.cookie, body: {},
+    });
+    assert.equal(bookmarkResponse.status, 200);
+    assert.equal((await json<{ bookmarked: boolean }>(bookmarkResponse)).bookmarked, true);
+    const bookmarksResponse = await request('/api/bookmarks', { cookie: alice.cookie });
+    assert.equal(bookmarksResponse.status, 200);
+    const bookmarks = await json<Array<{ messageId: string; channelId: string }>>(bookmarksResponse);
+    assert.equal(bookmarks.some((bookmark) => bookmark.messageId === message.id && bookmark.channelId === channelId), true);
+
+    const bobMessageResponse = await request(`/api/channels/${channelId}/messages`, {
+      method: 'POST', cookie: bob.cookie,
+      body: encryptedMessage(
+        channelId,
+        bob.user.id,
+        bobDevice.id,
+        bobKeys.signingPrivateKey,
+        rawChannelKey,
+        'bob attachment authorization boundary',
+      ).body,
+    });
+    assert.equal(bobMessageResponse.status, 201);
+    const bobMessage = await json<{ id: string }>(bobMessageResponse);
+    const bobUploadRequest = {
+      idempotencyKey: randomUUID(),
+      messageId: bobMessage.id,
+      filenameEnc: Buffer.alloc(32, 0x22).toString('base64'),
+      mimeType: 'application/octet-stream',
+    };
+    const bobUploadResponse = await request('/api/files/uploads', {
+      method: 'POST', cookie: bob.cookie,
+      body: bobUploadRequest,
+    });
+    assert.equal(bobUploadResponse.status, 201);
+    const bobUpload = await json<{ uploadId: string }>(bobUploadResponse);
+    const emptyCiphertextChunk = Buffer.alloc(16, 0x33);
+    assert.equal((await request(`/api/files/uploads/${bobUpload.uploadId}/chunks/0`, {
+      method: 'PUT', cookie: bob.cookie, body: emptyCiphertextChunk,
+    })).status, 201);
+    const bobNoncePrefix = Buffer.alloc(8, 0x44);
+    const bobWrappedKey = wrapKey(randomBytes(32), bobKeys.identityKey);
+    const bobAttachmentResponse = await request(`/api/files/uploads/${bobUpload.uploadId}/finalize`, {
+      method: 'POST', cookie: bob.cookie,
+      body: signedAttachmentFinalizeBody({
+        uploadId: bobUpload.uploadId,
+        messageId: bobMessage.id,
+        channelId,
+        authorId: bob.user.id,
+        deviceId: bobDevice.id,
+        privateKey: bobKeys.signingPrivateKey,
+        filenameEnc: bobUploadRequest.filenameEnc,
+        mimeType: bobUploadRequest.mimeType,
+        keyVersion: 1,
+        chunkCount: 1,
+        wrappedKey: bobWrappedKey,
+        cryptoManifest: {
+          version: 1,
+          algorithm: 'AES-256-GCM',
+          nonceStrategy: 'prefix-counter-be32',
+          noncePrefix: bobNoncePrefix.toString('base64'),
+          aadVersion: 1,
+          plaintextSize: 0,
+        },
+      }),
+    });
+    assert.equal(bobAttachmentResponse.status, 201);
+    const bobAttachment = await json<{ id: string }>(bobAttachmentResponse);
+
+    const privateRecipientsResponse = await request(`/api/channels/${privateChannel.id}/key-recipients`, { cookie: alice.cookie });
+    assert.equal(privateRecipientsResponse.status, 200);
+    const privateRecipients = await json<{ recipients: Array<{ deviceId: string; identityKey: string }> }>(privateRecipientsResponse);
+    const rawPrivateChannelKey = randomBytes(32);
+    await distributeAndAcknowledgeChannelKey({
+      channelId: privateChannel.id,
+      version: 1,
+      rawKey: rawPrivateChannelKey,
+      senderCookie: alice.cookie,
+      senderKeys: aliceKeys,
+      recipients: privateRecipients.recipients,
+      acknowledgements: [{ deviceId: aliceDevice.id, cookie: alice.cookie, keys: aliceKeys }],
+    });
+    const privateMessageResponse = await request(`/api/channels/${privateChannel.id}/messages`, {
+      method: 'POST',
+      cookie: alice.cookie,
+      body: encryptedMessage(
+        privateChannel.id,
+        alice.user.id,
+        aliceDevice.id,
+        aliceKeys.signingPrivateKey,
+        rawPrivateChannelKey,
+        'private boundary message',
+      ).body,
+    });
+    assert.equal(privateMessageResponse.status, 201);
+    const privateMessage = await json<{ id: string }>(privateMessageResponse);
+    const privatePreferenceProbe = await request(`/api/channels/${privateChannel.id}/preferences`, {
+      method: 'PATCH', cookie: bob.cookie, body: { favorite: true },
+    });
+    assert.equal(privatePreferenceProbe.status, 404);
+    const privateBookmarkProbe = await request(`/api/messages/${privateMessage.id}/bookmark`, {
+      method: 'POST', cookie: bob.cookie, body: {},
+    });
+    assert.equal(privateBookmarkProbe.status, 404);
+
+    const reactionRealtime = onceSocketEvent<Record<string, unknown>>(aliceSocket, 'message:reaction');
+    const reactionResponse = await request(`/api/messages/${message.id}/reactions`, {
+      method: 'POST', cookie: alice.cookie, body: { emoji: '👍' },
+    });
+    assert.equal(reactionResponse.status, 200);
+    const reaction = await json<{
+      messageId: string;
+      channelId: string;
+      userId: string;
+      action: string;
+      emoji: string;
+      reactions: Array<{ emoji: string; count: number; userIds: string[] }>;
+    }>(reactionResponse);
+    assert.deepEqual(await reactionRealtime, reaction);
+    assert.equal(reaction.messageId, message.id);
+    assert.equal(reaction.channelId, channelId);
+    assert.equal(reaction.userId, alice.user.id);
+    assert.equal(reaction.action, 'added');
+    assert.deepEqual(reaction.reactions, [{ emoji: '👍', count: 1, userIds: [alice.user.id] }]);
+
+    const pinRealtime = onceSocketEvent<Record<string, unknown>>(aliceSocket, 'message:pinned');
+    const pinResponse = await request(`/api/messages/${message.id}/pin`, {
+      method: 'POST', cookie: alice.cookie, body: {},
+    });
+    assert.equal(pinResponse.status, 200);
+    const pin = await json<{ messageId: string; channelId: string; userId: string; pinned: boolean }>(pinResponse);
+    assert.deepEqual(await pinRealtime, pin);
+    assert.deepEqual(pin, {
+      messageId: message.id,
+      channelId,
+      userId: alice.user.id,
+      pinned: true,
+    });
+
+    const enrichedHistoryResponse = await request(`/api/channels/${channelId}/messages`, { cookie: alice.cookie });
+    assert.equal(enrichedHistoryResponse.status, 200);
+    const enrichedHistory = await json<{ data: Array<{
+      id: string;
+      type: string;
+      refMessageId: string | null;
+      reactions: Array<{ emoji: string; count: number; userIds: string[] }>;
+      isPinned: boolean;
+      createdAt: string;
+      author: Record<string, unknown>;
+    }> }>(enrichedHistoryResponse);
+    const baseMessage = enrichedHistory.data.find((event) => event.id === message.id);
+    const rawReaction = enrichedHistory.data.find((event) => event.type === 'reaction' && event.refMessageId === message.id);
+    assert.ok(baseMessage);
+    assert.equal(rawReaction, undefined, 'reaction state must not create durable message events');
+    assert.equal(baseMessage.isPinned, true);
+    assert.deepEqual(baseMessage.reactions, reaction.reactions);
+    for (const event of enrichedHistory.data) {
+      assert.equal(Object.hasOwn(event.author, 'passwordHash'), false);
+      assert.equal(Object.hasOwn(event.author, 'password_hash'), false);
+      assert.equal(Object.hasOwn(event.author, 'email'), false);
+    }
+    assertNewestFirst(enrichedHistory.data);
+
+    const reactionRemovedRealtime = onceSocketEvent<Record<string, unknown>>(aliceSocket, 'message:reaction');
+    const reactionRemovedResponse = await request(`/api/messages/${message.id}/reactions`, {
+      method: 'POST', cookie: alice.cookie, body: { emoji: '👍' },
+    });
+    assert.equal(reactionRemovedResponse.status, 200);
+    const reactionRemoved = await json<{ action: string; reactionAction: string; reactions: unknown[] }>(reactionRemovedResponse);
+    assert.deepEqual(await reactionRemovedRealtime, reactionRemoved);
+    assert.equal(reactionRemoved.action, 'removed');
+    assert.equal(reactionRemoved.reactionAction, 'remove');
+    assert.deepEqual(reactionRemoved.reactions, []);
+    const compactReactionHistory = await json<{ data: Array<{
+      type: string;
+      refMessageId: string | null;
+      reactionAction: string | null;
+      reactions: unknown[];
+    }> }>(await request(`/api/channels/${channelId}/messages`, { cookie: alice.cookie }));
+    const rawReactionEvents = compactReactionHistory.data.filter(
+      (event) => event.type === 'reaction' && event.refMessageId === message.id,
+    );
+    assert.equal(rawReactionEvents.length, 0);
+    assert.deepEqual(
+      compactReactionHistory.data.find((event: any) => event.id === message.id)?.reactions,
+      [],
+    );
+
+    const forgedType = await request(`/api/channels/${channelId}/messages`, {
+      method: 'POST', cookie: alice.cookie, body: { ...messageRequest.body, type: 'system', idempotencyKey: randomUUID() },
+    });
+    assert.equal(forgedType.status, 400);
+
+    const bobDeleteEnvelope: SignedMessageEnvelope = {
+      type: 'delete',
+      channelId,
+      authorId: bob.user.id,
+      deviceId: bobDevice.id,
+      keyVersion: 1,
+      idempotencyKey: randomUUID(),
+      refMessageId: message.id,
+      encryptedContent: '',
+      contentNonce: '',
+      broadcastMention: false,
+    };
+    const bobDelete = await request(`/api/messages/${message.id}`, {
+      method: 'DELETE',
+      cookie: bob.cookie,
+      body: {
+        deviceId: bobDevice.id,
+        keyVersion: 1,
+        idempotencyKey: bobDeleteEnvelope.idempotencyKey,
+        signature: signEnvelope(bobDeleteEnvelope, bobKeys.signingPrivateKey),
+      },
+    });
+    assert.equal(bobDelete.status, 403);
+
+    const unauthorizedUpload = await request('/api/files/uploads', {
+      method: 'POST',
+      cookie: bob.cookie,
+      body: {
+        idempotencyKey: randomUUID(),
+        messageId: message.id,
+        filenameEnc: Buffer.alloc(32, 1).toString('base64'),
+        mimeType: 'text/plain',
+      },
+    });
+    assert.equal(unauthorizedUpload.status, 403);
+
+    const uploadRequest = {
+      idempotencyKey: randomUUID(),
+      messageId: message.id,
+      filenameEnc: Buffer.alloc(32, 2).toString('base64'),
+      mimeType: 'text/html',
+    };
+    const uploadResponse = await request('/api/files/uploads', {
+      method: 'POST',
+      cookie: alice.cookie,
+      body: uploadRequest,
+    });
+    assert.equal(uploadResponse.status, 201);
+    const upload = await json<{
+      uploadId: string;
+      chunkPlaintextBytes: number;
+      chunkCiphertextBytes: number;
+      maxChunkCount: number;
+      crypto: { version: number; algorithm: string; nonceStrategy: string; noncePrefixBytes: number; aadVersion: number };
+    }>(uploadResponse);
+    assert.equal(Object.hasOwn(upload, 'url'), false);
+    assert.equal(Object.hasOwn(upload, 'fields'), false);
+    assert.equal(Object.hasOwn(upload, 'storageKey'), false);
+    assert.equal(upload.chunkPlaintextBytes, 5 * 1024 * 1024);
+    assert.equal(upload.chunkCiphertextBytes, 5 * 1024 * 1024 + 16);
+    assert.equal(upload.uploadId, uploadRequest.idempotencyKey);
+    const uploadReplay = await request('/api/files/uploads', {
+      method: 'POST', cookie: alice.cookie, body: uploadRequest,
+    });
+    assert.equal(uploadReplay.status, 200);
+    assert.equal((await json<{ uploadId: string }>(uploadReplay)).uploadId, upload.uploadId);
+    const uploadConflict = await request('/api/files/uploads', {
+      method: 'POST', cookie: alice.cookie,
+      body: { ...uploadRequest, mimeType: 'application/octet-stream' },
+    });
+    assert.equal(uploadConflict.status, 409);
+    assert.equal((await json<{ error: string }>(uploadConflict)).error, 'IDEMPOTENCY_CONFLICT');
+
+    const unauthorizedUploadStatus = await request(`/api/files/uploads/${upload.uploadId}`, { cookie: mallory.cookie });
+    assert.equal(unauthorizedUploadStatus.status, 404);
+    const unauthorizedChunk = await request(`/api/files/uploads/${upload.uploadId}/chunks/0`, {
+      method: 'PUT', cookie: mallory.cookie, body: Buffer.alloc(17),
+    });
+    assert.equal(unauthorizedChunk.status, 404);
+
+    const attachmentKey = randomBytes(32);
+    const noncePrefix = randomBytes(8);
+    const firstPlaintextChunk = Buffer.alloc(upload.chunkPlaintextBytes, 0x41);
+    const finalPlaintextChunk = Buffer.from('resumable encrypted attachment tail', 'utf8');
+    const attachmentPlaintextSize = firstPlaintextChunk.length + finalPlaintextChunk.length;
+    const attachmentChunkCount = 2;
+    const { attachmentChunkAad } = await import('../services/file.service.js');
+    const firstCiphertextChunk = encryptAttachmentChunk(
+      attachmentKey,
+      noncePrefix,
+      0,
+      attachmentChunkAad(upload.uploadId, message.id, 0, attachmentChunkCount, attachmentPlaintextSize),
+      firstPlaintextChunk,
+    );
+    const finalCiphertextChunk = encryptAttachmentChunk(
+      attachmentKey,
+      noncePrefix,
+      1,
+      attachmentChunkAad(upload.uploadId, message.id, 1, attachmentChunkCount, attachmentPlaintextSize),
+      finalPlaintextChunk,
+    );
+    const finalChunkUpload = await request(`/api/files/uploads/${upload.uploadId}/chunks/1`, {
+      method: 'PUT', cookie: alice.cookie, body: finalCiphertextChunk,
+    });
+    assert.equal(finalChunkUpload.status, 201);
+    const partialStatusResponse = await request(`/api/files/uploads/${upload.uploadId}`, { cookie: alice.cookie });
+    assert.equal(partialStatusResponse.status, 200);
+    assert.deepEqual((await json<{ uploadedIndexes: number[] }>(partialStatusResponse)).uploadedIndexes, [1]);
+    const firstChunkUpload = await request(`/api/files/uploads/${upload.uploadId}/chunks/0`, {
+      method: 'PUT', cookie: alice.cookie, body: firstCiphertextChunk,
+    });
+    assert.equal(firstChunkUpload.status, 201);
+    const completeStatusResponse = await request(`/api/files/uploads/${upload.uploadId}`, { cookie: alice.cookie });
+    assert.equal(completeStatusResponse.status, 200);
+    assert.deepEqual((await json<{ uploadedIndexes: number[] }>(completeStatusResponse)).uploadedIndexes, [0, 1]);
+
+    const finalizeBody = signedAttachmentFinalizeBody({
+      uploadId: upload.uploadId,
+      messageId: message.id,
+      channelId,
+      authorId: alice.user.id,
+      deviceId: aliceDevice.id,
+      privateKey: aliceKeys.signingPrivateKey,
+      filenameEnc: uploadRequest.filenameEnc,
+      mimeType: uploadRequest.mimeType,
+      keyVersion: 1,
+      chunkCount: attachmentChunkCount,
+      wrappedKey: wrapKey(attachmentKey, aliceKeys.identityKey),
+      cryptoManifest: {
+        version: 1,
+        algorithm: 'AES-256-GCM',
+        nonceStrategy: 'prefix-counter-be32',
+        noncePrefix: noncePrefix.toString('base64'),
+        aadVersion: 1,
+        plaintextSize: attachmentPlaintextSize,
+      },
+    });
+    const forgedAttachmentFinalize = await request(`/api/files/uploads/${upload.uploadId}/finalize`, {
+      method: 'POST', cookie: alice.cookie,
+      body: { ...finalizeBody, signature: Buffer.alloc(64).toString('base64') },
+    });
+    assert.equal(forgedAttachmentFinalize.status, 400);
+    let attachmentBroadcastCount = 0;
+    const onAttachmentCreated = () => { attachmentBroadcastCount += 1; };
+    aliceSocket.on('attachment:created', onAttachmentCreated);
+    const attachmentRealtime = onceSocketEvent<Record<string, unknown>>(aliceSocket, 'attachment:created');
+    const concurrentFinalizes = await Promise.all([
+      request(`/api/files/uploads/${upload.uploadId}/finalize`, {
+        method: 'POST', cookie: alice.cookie, body: finalizeBody,
+      }),
+      request(`/api/files/uploads/${upload.uploadId}/finalize`, {
+        method: 'POST', cookie: alice.cookie, body: finalizeBody,
+      }),
+    ]);
+    assert.deepEqual(concurrentFinalizes.map((response) => response.status).sort((left, right) => left - right), [201, 409]);
+    const finalizedResponse = concurrentFinalizes.find((response) => response.status === 201)!;
+    const conflictFinalizeResponse = concurrentFinalizes.find((response) => response.status === 409)!;
+    const attachment = await json<{
+      id: string;
+      messageId: string;
+      channelId: string;
+      deviceId: string;
+      keyVersion: number;
+      signature: string;
+      mimeType: string;
+      dangerousMime: boolean;
+      chunkCount: number;
+      ciphertextSizeBytes: number;
+      plaintextSizeBytes: number;
+      cryptoManifest: Record<string, unknown>;
+    }>(finalizedResponse);
+    assert.equal((await json<{ error: string }>(conflictFinalizeResponse)).error, 'UPLOAD_ALREADY_COMPLETED');
+    assert.deepEqual(await attachmentRealtime, attachment);
+    await delay(75);
+    aliceSocket.off('attachment:created', onAttachmentCreated);
+    assert.equal(attachmentBroadcastCount, 1);
+    assert.equal(attachment.messageId, message.id);
+    assert.equal(attachment.channelId, channelId);
+    assert.equal(attachment.deviceId, aliceDevice.id);
+    assert.equal(attachment.keyVersion, 1);
+    assert.equal(attachment.signature, finalizeBody.signature);
+    assert.equal(attachment.mimeType, 'text/html');
+    assert.equal(attachment.dangerousMime, true);
+    assert.equal(attachment.chunkCount, 2);
+    assert.equal(attachment.plaintextSizeBytes, attachmentPlaintextSize);
+    assert.equal(attachment.ciphertextSizeBytes, firstCiphertextChunk.length + finalCiphertextChunk.length);
+
+    const metadataResponse = await request(`/api/files/${attachment.id}`, { cookie: alice.cookie });
+    assert.equal(metadataResponse.status, 200);
+    const metadata = await json<Record<string, unknown>>(metadataResponse);
+    assert.equal(Object.hasOwn(metadata, 'url'), false);
+    assert.equal(Object.hasOwn(metadata, 'storageKey'), false);
+    assert.equal(metadata.downloadPolicy, 'attachment-only');
+    assert.equal(metadata.dangerousMime, true);
+    const chunkDownloadResponse = await request(`/api/files/${attachment.id}/chunks/1`, { cookie: alice.cookie });
+    assert.equal(chunkDownloadResponse.status, 200);
+    assert.equal(chunkDownloadResponse.headers.get('content-type'), 'application/octet-stream');
+    assert.equal(chunkDownloadResponse.headers.get('cache-control'), 'no-store');
+    assert.equal(chunkDownloadResponse.headers.get('x-content-type-options'), 'nosniff');
+    assert.match(chunkDownloadResponse.headers.get('content-disposition') || '', /^attachment;/);
+    const downloadedFinalChunk = Buffer.from(await chunkDownloadResponse.arrayBuffer());
+    assert.deepEqual(downloadedFinalChunk, finalCiphertextChunk);
+    const firstChunkDownloadResponse = await request(`/api/files/${attachment.id}/chunks/0`, { cookie: alice.cookie });
+    assert.equal(firstChunkDownloadResponse.status, 200);
+    const downloadedFirstChunk = Buffer.from(await firstChunkDownloadResponse.arrayBuffer());
+    const downloadedPlaintext = Buffer.concat([
+      decryptAttachmentChunk(
+        attachmentKey,
+        noncePrefix,
+        0,
+        attachmentChunkAad(upload.uploadId, message.id, 0, attachmentChunkCount, attachmentPlaintextSize),
+        downloadedFirstChunk,
+      ),
+      decryptAttachmentChunk(
+        attachmentKey,
+        noncePrefix,
+        1,
+        attachmentChunkAad(upload.uploadId, message.id, 1, attachmentChunkCount, attachmentPlaintextSize),
+        downloadedFinalChunk,
+      ),
+    ]);
+    const originalPlaintext = Buffer.concat([firstPlaintextChunk, finalPlaintextChunk]);
+    assert.equal(
+      createHash('sha256').update(downloadedPlaintext).digest('hex'),
+      createHash('sha256').update(originalPlaintext).digest('hex'),
+    );
+    assert.equal((await request(`/api/files/${attachment.id}`, { cookie: mallory.cookie })).status, 404);
+    assert.equal((await request(`/api/files/${attachment.id}/chunks/1`, { cookie: mallory.cookie })).status, 404);
+
+    const attachmentHistoryResponse = await request(`/api/channels/${channelId}/messages`, { cookie: alice.cookie });
+    assert.equal(attachmentHistoryResponse.status, 200);
+    const attachmentHistory = await json<{ data: Array<{ id: string; type: string; attachments: Array<{ id: string }> }> }>(attachmentHistoryResponse);
+    const attachedBaseMessage = attachmentHistory.data.find((event) => event.id === message.id);
+    assert.ok(attachedBaseMessage);
+    assert.deepEqual(attachedBaseMessage.attachments.map((item) => item.id), [attachment.id]);
+    for (const event of attachmentHistory.data.filter((item) => item.type !== 'message')) {
+      assert.deepEqual(event.attachments, []);
+    }
+
+    const newerMessageRequest = encryptedMessage(
+      channelId,
+      alice.user.id,
+      aliceDevice.id,
+      aliceKeys.signingPrivateKey,
+      rawChannelKey,
+      'newer read-position boundary',
+    );
+    const newerMessageResponse = await request(`/api/channels/${channelId}/messages`, {
+      method: 'POST', cookie: alice.cookie, body: newerMessageRequest.body,
+    });
+    assert.equal(newerMessageResponse.status, 201);
+    const newerMessage = await json<{ id: string }>(newerMessageResponse);
+    const readNewerResponse = await request(`/api/channels/${channelId}/read`, {
+      method: 'POST', cookie: alice.cookie, body: { messageId: newerMessage.id },
+    });
+    assert.equal(readNewerResponse.status, 200);
+    assert.equal((await json<{ lastReadMessageId: string }>(readNewerResponse)).lastReadMessageId, newerMessage.id);
+    const readOlderResponse = await request(`/api/channels/${channelId}/read`, {
+      method: 'POST', cookie: alice.cookie, body: { messageId: message.id },
+    });
+    assert.equal(readOlderResponse.status, 200);
+    assert.equal((await json<{ lastReadMessageId: string }>(readOlderResponse)).lastReadMessageId, newerMessage.id);
+    const readChannelStateResponse = await request(`/api/workspaces/${workspace.id}/channel-state`, { cookie: alice.cookie });
+    assert.equal(readChannelStateResponse.status, 200);
+    const readChannelState = (await json<Array<{
+      channelId: string;
+      unreadCount: number;
+      latestMessageId: string | null;
+      lastReadMessageId: string | null;
+      favorite: boolean;
+      muted: boolean;
+      notificationLevel: string;
+    }>>(readChannelStateResponse)).find((state) => state.channelId === channelId);
+    assert.ok(readChannelState);
+    assert.equal(readChannelState.latestMessageId, newerMessage.id);
+    assert.equal(readChannelState.lastReadMessageId, newerMessage.id);
+    assert.equal(readChannelState.unreadCount, 0);
+    assert.equal(readChannelState.favorite, true);
+    assert.equal(readChannelState.muted, true);
+    assert.equal(readChannelState.notificationLevel, 'mentions');
+
+    const orphanReservationRequest = {
+      idempotencyKey: randomUUID(),
+      messageId: message.id,
+      filenameEnc: Buffer.alloc(32, 3).toString('base64'),
+      mimeType: 'application/octet-stream',
+    };
+    const orphanReservationResponse = await request('/api/files/uploads', {
+      method: 'POST',
+      cookie: alice.cookie,
+      body: orphanReservationRequest,
+    });
+    assert.equal(orphanReservationResponse.status, 201);
+    const orphanReservation = await json<{ uploadId: string }>(orphanReservationResponse);
+    const orphanChunkUpload = await request(`/api/files/uploads/${orphanReservation.uploadId}/chunks/0`, {
+      method: 'PUT', cookie: alice.cookie, body: Buffer.alloc(17, 0x7f),
+    });
+    assert.equal(orphanChunkUpload.status, 201);
+    const [{ db: integrationDb }, schema, drizzle, Minio, fileService] = await Promise.all([
+      import('../db/index.js'),
+      import('../db/schema.js'),
+      import('drizzle-orm'),
+      import('minio'),
+      import('../services/file.service.js'),
+    ]);
+    const attachmentOnlyKeys = deviceFixture();
+    const [attachmentOnlyDevice] = await integrationDb.insert(schema.devices).values({
+      userId: bob.user.id,
+      name: 'Revoked attachment-only signer',
+      identityKey: attachmentOnlyKeys.identityKey,
+      revokedAt: new Date(),
+    }).returning({ id: schema.devices.id });
+    await integrationDb.insert(schema.attachments).values({
+      messageId: bobMessage.id,
+      channelId,
+      signerDeviceId: attachmentOnlyDevice.id,
+      keyVersion: 1,
+      signature: Buffer.alloc(64).toString('base64'),
+      filenameEnc: Buffer.alloc(32, 0x7a).toString('base64'),
+      mimeType: 'application/octet-stream',
+      sizeBytes: 16,
+      storageKey: `integration/attachment-only/${randomUUID()}`,
+      chunkCount: 1,
+      wrappedKey: Buffer.alloc(32, 0x7b).toString('base64'),
+      contentNonce: Buffer.alloc(8, 0x7c).toString('base64'),
+      cryptoManifest: {
+        version: 1,
+        algorithm: 'AES-256-GCM',
+        nonceStrategy: 'prefix-counter-be32',
+        noncePrefix: Buffer.alloc(8, 0x7c).toString('base64'),
+        aadVersion: 1,
+        plaintextSize: 0,
+        chunkPlaintextBytes: 5 * 1024 * 1024,
+        authenticationTagBytes: 16,
+        chunkCount: 1,
+        uploadId: randomUUID(),
+        messageId: bobMessage.id,
+        aadFormat: 'test-fixture',
+      },
+    });
+    const orphanChunkRow = await integrationDb.query.attachmentUploadChunks.findFirst({
+      where: drizzle.and(
+        drizzle.eq(schema.attachmentUploadChunks.uploadId, orphanReservation.uploadId),
+        drizzle.eq(schema.attachmentUploadChunks.chunkIndex, 0),
+      ),
+    });
+    assert.ok(orphanChunkRow);
+    await integrationDb.update(schema.attachmentUploads)
+      .set({ expiresAt: new Date(0) })
+      .where(drizzle.eq(schema.attachmentUploads.id, orphanReservation.uploadId));
+    const expiredReservationReplay = await request('/api/files/uploads', {
+      method: 'POST', cookie: alice.cookie, body: orphanReservationRequest,
+    });
+    assert.equal(expiredReservationReplay.status, 410);
+    assert.equal((await json<{ error: string }>(expiredReservationReplay)).error, 'UPLOAD_EXPIRED');
+    assert.equal(await fileService.cleanupExpiredUploads(), 1);
+    assert.equal(await integrationDb.query.attachmentUploads.findFirst({
+      where: drizzle.eq(schema.attachmentUploads.id, orphanReservation.uploadId),
+    }), undefined);
+    assert.equal(await integrationDb.query.attachmentUploadChunks.findFirst({
+      where: drizzle.eq(schema.attachmentUploadChunks.uploadId, orphanReservation.uploadId),
+    }), undefined);
+    const storageClient = new Minio.Client({
+      endPoint: process.env.MINIO_ENDPOINT || 'localhost',
+      port: Number(process.env.MINIO_PORT || 9000),
+      useSSL: process.env.MINIO_USE_SSL === 'true',
+      accessKey: process.env.MINIO_ACCESS_KEY!,
+      secretKey: process.env.MINIO_SECRET_KEY!,
+    });
+    await assert.rejects(
+      storageClient.statObject(process.env.MINIO_BUCKET || 'alparts', orphanChunkRow.storageKey),
+      (error: any) => error?.code === 'NotFound' || error?.code === 'NoSuchKey',
+    );
+
+    const cancellableUploadId = randomUUID();
+    assert.equal((await request('/api/files/uploads', {
+      method: 'POST', cookie: alice.cookie,
+      body: {
+        idempotencyKey: cancellableUploadId,
+        messageId: message.id,
+        filenameEnc: Buffer.alloc(32, 0x54).toString('base64'),
+        mimeType: 'application/octet-stream',
+      },
+    })).status, 201);
+    assert.equal((await request(`/api/files/uploads/${cancellableUploadId}`, {
+      method: 'DELETE', cookie: alice.cookie,
+    })).status, 200);
+    assert.equal((await request(`/api/files/uploads/${cancellableUploadId}`, {
+      method: 'DELETE', cookie: alice.cookie,
+    })).status, 200);
+    assert.equal((await request(`/api/files/uploads/${cancellableUploadId}`, { cookie: alice.cookie })).status, 404);
+
+    const pendingAtDeleteRequest = {
+      idempotencyKey: randomUUID(),
+      messageId: message.id,
+      filenameEnc: Buffer.alloc(32, 0x55).toString('base64'),
+      mimeType: 'application/octet-stream',
+    };
+    const pendingAtDeleteResponse = await request('/api/files/uploads', {
+      method: 'POST', cookie: alice.cookie,
+      body: pendingAtDeleteRequest,
+    });
+    assert.equal(pendingAtDeleteResponse.status, 201);
+    const pendingAtDelete = await json<{ uploadId: string }>(pendingAtDeleteResponse);
+    const fillerUploadIds = [randomUUID(), randomUUID()];
+    for (const [index, fillerUploadId] of fillerUploadIds.entries()) {
+      assert.equal((await request('/api/files/uploads', {
+        method: 'POST', cookie: alice.cookie,
+        body: {
+          idempotencyKey: fillerUploadId,
+          messageId: message.id,
+          filenameEnc: Buffer.alloc(32, 0x60 + index).toString('base64'),
+          mimeType: 'application/octet-stream',
+        },
+      })).status, 201);
+    }
+    const overAttachmentLimit = await request('/api/files/uploads', {
+      method: 'POST', cookie: alice.cookie,
+      body: {
+        idempotencyKey: randomUUID(),
+        messageId: message.id,
+        filenameEnc: Buffer.alloc(32, 0x69).toString('base64'),
+        mimeType: 'application/octet-stream',
+      },
+    });
+    assert.equal(overAttachmentLimit.status, 409);
+    assert.equal((await json<{ error: string }>(overAttachmentLimit)).error, 'ATTACHMENT_LIMIT_EXCEEDED');
+    for (const fillerUploadId of fillerUploadIds) {
+      assert.equal((await request(`/api/files/uploads/${fillerUploadId}`, {
+        method: 'DELETE', cookie: alice.cookie,
+      })).status, 200);
+    }
+
+    const editRequest = encryptedEdit(
+      channelId,
+      message.id,
+      alice.user.id,
+      aliceDevice.id,
+      aliceKeys.signingPrivateKey,
+      rawChannelKey,
+      'edited plaintext',
+    );
+    const editedRealtime = onceSocketEvent<{ message: Record<string, unknown> }>(aliceSocket, 'message:edited');
+    const editResponse = await request(`/api/messages/${message.id}`, {
+      method: 'PUT', cookie: alice.cookie, body: editRequest.body,
+    });
+    assert.equal(editResponse.status, 200);
+    const editEvent = await json<Record<string, unknown>>(editResponse);
+    assert.deepEqual((await editedRealtime).message, editEvent);
+
+    const deleteEnvelope: SignedMessageEnvelope = {
+      type: 'delete',
+      channelId,
+      authorId: alice.user.id,
+      deviceId: aliceDevice.id,
+      keyVersion: 1,
+      idempotencyKey: randomUUID(),
+      refMessageId: message.id,
+      encryptedContent: '',
+      contentNonce: '',
+      broadcastMention: false,
+    };
+    const deleteSignature = signEnvelope(deleteEnvelope, aliceKeys.signingPrivateKey);
+    const deletedRealtime = onceSocketEvent<Record<string, unknown>>(aliceSocket, 'message:deleted');
+    const deleteResponse = await request(`/api/messages/${message.id}`, {
+      method: 'DELETE',
+      cookie: alice.cookie,
+      body: {
+        deviceId: aliceDevice.id,
+        keyVersion: 1,
+        idempotencyKey: deleteEnvelope.idempotencyKey,
+        signature: deleteSignature,
+      },
+    });
+    assert.equal(deleteResponse.status, 200);
+    const deleteResult = await json<Record<string, unknown>>(deleteResponse);
+    assert.deepEqual(await deletedRealtime, deleteResult);
+    assert.equal(Object.hasOwn(deleteResult, 'isNewEvent'), false);
+
+    const deleteReplayResponse = await request(`/api/messages/${message.id}`, {
+      method: 'DELETE',
+      cookie: alice.cookie,
+      body: {
+        deviceId: aliceDevice.id,
+        keyVersion: 1,
+        idempotencyKey: deleteEnvelope.idempotencyKey,
+        signature: deleteSignature,
+      },
+    });
+    assert.equal(deleteReplayResponse.status, 200);
+    assert.deepEqual(await json(deleteReplayResponse), deleteResult);
+    assert.equal((await request(`/api/messages/${message.id}`, {
+      method: 'PUT', cookie: alice.cookie, body: editRequest.body,
+    })).status, 404);
+    assert.equal((await request(`/api/messages/${message.id}/reactions`, {
+      method: 'POST', cookie: alice.cookie, body: { emoji: 'after' },
+    })).status, 404);
+    assert.equal((await request(`/api/messages/${message.id}/pin`, {
+      method: 'POST', cookie: alice.cookie, body: {},
+    })).status, 404);
+    assert.equal((await request('/api/files/uploads', {
+      method: 'POST', cookie: alice.cookie,
+      body: {
+        idempotencyKey: randomUUID(),
+        messageId: message.id,
+        filenameEnc: Buffer.alloc(32, 0x66).toString('base64'),
+        mimeType: 'application/octet-stream',
+      },
+    })).status, 404);
+    assert.equal((await request(`/api/files/uploads/${pendingAtDelete.uploadId}/finalize`, {
+      method: 'POST', cookie: alice.cookie,
+      body: signedAttachmentFinalizeBody({
+        uploadId: pendingAtDelete.uploadId,
+        messageId: message.id,
+        channelId,
+        authorId: alice.user.id,
+        deviceId: aliceDevice.id,
+        privateKey: aliceKeys.signingPrivateKey,
+        filenameEnc: pendingAtDeleteRequest.filenameEnc,
+        mimeType: pendingAtDeleteRequest.mimeType,
+        keyVersion: 1,
+        chunkCount: 1,
+        wrappedKey: wrapKey(randomBytes(32), aliceKeys.identityKey),
+        cryptoManifest: {
+          version: 1,
+          algorithm: 'AES-256-GCM',
+          nonceStrategy: 'prefix-counter-be32',
+          noncePrefix: Buffer.alloc(8, 0x77).toString('base64'),
+          aadVersion: 1,
+          plaintextSize: 0,
+        },
+      }),
+    })).status, 404);
+    assert.equal((await request(`/api/files/${attachment.id}`, { cookie: alice.cookie })).status, 404);
+    assert.equal((await request(`/api/files/${attachment.id}/chunks/0`, { cookie: alice.cookie })).status, 404);
+
+    const unreadDeletedRequest = encryptedMessage(
+      channelId,
+      alice.user.id,
+      aliceDevice.id,
+      aliceKeys.signingPrivateKey,
+      rawChannelKey,
+      'unread message removed from channel state',
+    );
+    const unreadDeletedResponse = await request(`/api/channels/${channelId}/messages`, {
+      method: 'POST', cookie: alice.cookie, body: unreadDeletedRequest.body,
+    });
+    assert.equal(unreadDeletedResponse.status, 201);
+    const unreadDeletedMessage = await json<{ id: string }>(unreadDeletedResponse);
+    const unreadBeforeDelete = (await json<Array<{ channelId: string; unreadCount: number; latestMessageId: string | null }>>(
+      await request(`/api/workspaces/${workspace.id}/channel-state`, { cookie: alice.cookie }),
+    )).find((state) => state.channelId === channelId);
+    assert.equal(unreadBeforeDelete?.unreadCount, 1);
+    assert.equal(unreadBeforeDelete?.latestMessageId, unreadDeletedMessage.id);
+    const unreadDeleteEnvelope: SignedMessageEnvelope = {
+      type: 'delete',
+      channelId,
+      authorId: alice.user.id,
+      deviceId: aliceDevice.id,
+      keyVersion: 1,
+      idempotencyKey: randomUUID(),
+      refMessageId: unreadDeletedMessage.id,
+      encryptedContent: '',
+      contentNonce: '',
+      broadcastMention: false,
+    };
+    assert.equal((await request(`/api/messages/${unreadDeletedMessage.id}`, {
+      method: 'DELETE', cookie: alice.cookie,
+      body: {
+        deviceId: aliceDevice.id,
+        keyVersion: 1,
+        idempotencyKey: unreadDeleteEnvelope.idempotencyKey,
+        signature: signEnvelope(unreadDeleteEnvelope, aliceKeys.signingPrivateKey),
+      },
+    })).status, 200);
+    const unreadAfterDelete = (await json<Array<{ channelId: string; unreadCount: number; latestMessageId: string | null }>>(
+      await request(`/api/workspaces/${workspace.id}/channel-state`, { cookie: alice.cookie }),
+    )).find((state) => state.channelId === channelId);
+    assert.equal(unreadAfterDelete?.unreadCount, 0);
+    assert.equal(unreadAfterDelete?.latestMessageId, newerMessage.id);
+
+    const overrideTarget = await json<{ categoryId: string | null }>(
+      await request(`/api/channels/${channelId}`, { cookie: alice.cookie }),
+    );
+    assert.ok(overrideTarget.categoryId);
+    const bobSocket = io(baseUrl, {
+      transports: ['websocket'],
+      extraHeaders: { Cookie: bob.cookie, Origin: 'http://localhost:5173' },
+    });
+    sockets.push(bobSocket);
+    await onceConnected(bobSocket);
+    assert.equal(await joinChannel(bobSocket, channelId), true);
+
+    const aliceVoiceJoin = await joinVoice(aliceSocket, channelId);
+    assert.equal(aliceVoiceJoin.ok, true);
+    assert.equal(aliceVoiceJoin.self?.deviceId, aliceDevice.id);
+    assert.deepEqual(aliceVoiceJoin.participants, []);
+    const bobJoinedVoice = onceSocketEvent<{ participantId: string; deviceId: string }>(
+      aliceSocket,
+      'voice:participant-joined',
+    );
+    const bobVoiceJoin = await joinVoice(bobSocket, channelId);
+    assert.equal(bobVoiceJoin.ok, true);
+    assert.equal(bobVoiceJoin.self?.deviceId, bobDevice.id);
+    assert.deepEqual(
+      bobVoiceJoin.participants?.map((participant) => participant.participantId),
+      [aliceVoiceJoin.self!.participantId],
+    );
+    assert.deepEqual(await bobJoinedVoice, bobVoiceJoin.self);
+    const unauthorizedVoiceJoin = await joinVoice(mallorySocket, channelId);
+    assert.deepEqual(unauthorizedVoiceJoin, { ok: false, error: 'FORBIDDEN' });
+
+    const voiceEnvelope: SignedVoiceSignalEnvelope = {
+      type: 'voice-signal',
+      signalId: randomUUID(),
+      sequence: 1,
+      channelId,
+      senderParticipantId: aliceVoiceJoin.self!.participantId,
+      senderDeviceId: aliceDevice.id,
+      targetParticipantId: bobVoiceJoin.self!.participantId,
+      kind: 'offer',
+      descriptionType: 'offer',
+      sdp: 'v=0\r\na=fingerprint:sha-256 AA:BB\r\n',
+      candidate: null,
+      sdpMid: null,
+      sdpMLineIndex: null,
+      usernameFragment: null,
+    };
+    const voiceSignature = sign('sha256', Buffer.from(serializeVoiceSignalEnvelope(voiceEnvelope)), {
+      key: aliceKeys.signingPrivateKey,
+      dsaEncoding: 'ieee-p1363',
+    }).toString('base64');
+    const relayedVoiceSignal = onceSocketEvent<{ envelope: SignedVoiceSignalEnvelope; signature: string }>(
+      bobSocket,
+      'voice:signal',
+    );
+    assert.deepEqual(
+      await emitSocketAck(aliceSocket, 'voice:signal', { ...voiceEnvelope, signature: voiceSignature }),
+      { ok: true },
+    );
+    assert.deepEqual(await relayedVoiceSignal, { envelope: voiceEnvelope, signature: voiceSignature });
+    assert.deepEqual(await emitSocketAck(bobSocket, 'voice:signal', {
+      ...voiceEnvelope,
+      signalId: randomUUID(),
+      sequence: 2,
+      senderParticipantId: aliceVoiceJoin.self!.participantId,
+      senderDeviceId: bobDevice.id,
+      targetParticipantId: aliceVoiceJoin.self!.participantId,
+      signature: voiceSignature,
+    }), { ok: false }, 'a participant cannot spoof another signaling sender');
+
+    const aliceVoiceState = onceSocketEvent<{ participantId: string; muted: boolean; speaking: boolean }>(
+      bobSocket,
+      'voice:participant-updated',
+    );
+    aliceSocket.emit('voice:state', { channelId, muted: true, speaking: true });
+    assert.deepEqual(await aliceVoiceState, {
+      ...aliceVoiceJoin.self!,
+      muted: true,
+      speaking: false,
+    });
+
+    const disposableChannelResponse = await request(`/api/workspaces/${workspace.id}/channels`, {
+      method: 'POST',
+      cookie: alice.cookie,
+      body: { name: 'delete-notification-check' },
+    });
+    assert.equal(disposableChannelResponse.status, 201);
+    const disposableChannel = await json<{ id: string; workspaceId: string }>(disposableChannelResponse);
+    assert.equal(await joinChannel(bobSocket, disposableChannel.id), true);
+    const channelDeletedDirect = onceSocketEvent<{ workspaceId: string; channelId: string }>(
+      bobSocket,
+      'channel:deleted',
+    );
+    assert.equal((await request(`/api/channels/${disposableChannel.id}`, {
+      method: 'DELETE',
+      cookie: alice.cookie,
+    })).status, 200);
+    assert.deepEqual(await channelDeletedDirect, {
+      workspaceId: workspace.id,
+      channelId: disposableChannel.id,
+    });
+    assert.equal(await joinChannel(bobSocket, disposableChannel.id), false);
+
+    // Bob receives a wrapped key but deliberately creates no message, read
+    // position, preference, or bookmark in this channel. The historical key
+    // row is the only durable evidence that the channel is known to him.
+    const keyOnlyChannelResponse = await request(`/api/workspaces/${workspace.id}/channels`, {
+      method: 'POST',
+      cookie: alice.cookie,
+      body: { name: 'key-only-known-channel' },
+    });
+    assert.equal(keyOnlyChannelResponse.status, 201);
+    const keyOnlyChannel = await json<{ id: string }>(keyOnlyChannelResponse);
+    const keyOnlyRecipientsResponse = await request(`/api/channels/${keyOnlyChannel.id}/key-recipients`, {
+      cookie: alice.cookie,
+    });
+    assert.equal(keyOnlyRecipientsResponse.status, 200);
+    const keyOnlyRecipients = await json<{ recipients: Array<{ deviceId: string; identityKey: string }> }>(
+      keyOnlyRecipientsResponse,
+    );
+    assert.equal(keyOnlyRecipients.recipients.some((recipient) => recipient.deviceId === bobDevice.id), true);
+    const keyOnlyMaterial = randomBytes(32);
+    await distributeAndAcknowledgeChannelKey({
+      channelId: keyOnlyChannel.id,
+      version: 1,
+      rawKey: keyOnlyMaterial,
+      senderCookie: alice.cookie,
+      senderKeys: aliceKeys,
+      recipients: keyOnlyRecipients.recipients,
+      acknowledgements: [
+        { deviceId: aliceDevice.id, cookie: alice.cookie, keys: aliceKeys },
+        { deviceId: bobDevice.id, cookie: bob.cookie, keys: bobKeys },
+      ],
+    });
+
+    const categoryOverridePreviewResponse = await request(
+      `/api/workspaces/${workspace.id}/categories/${overrideTarget.categoryId}/permission-overrides/preview`,
+      {
+        method: 'POST', cookie: alice.cookie,
+        body: { operation: 'upsert', roleId: memberRole.id, allowMask: 0, denyMask: Permissions.VIEW_CHANNELS },
+      },
+    );
+    assert.equal(categoryOverridePreviewResponse.status, 200);
+    const categoryOverridePreview = await json<{
+      currentRevision: number;
+      authorizationRevision: string;
+      roomEffects: Array<{ channelId: string }>;
+    }>(categoryOverridePreviewResponse);
+    assert.equal(categoryOverridePreview.currentRevision, 0);
+    assert.equal(categoryOverridePreview.roomEffects.some((effect) => effect.channelId === channelId), true);
+    const invalidGlobalOverride = await request(
+      `/api/workspaces/${workspace.id}/categories/${overrideTarget.categoryId}/permission-overrides/${memberRole.id}`,
+      {
+        method: 'PUT', cookie: alice.cookie,
+        body: {
+          allowMask: Permissions.MANAGE_CHANNELS,
+          denyMask: 0,
+          expectedRevision: 0,
+          expectedAuthorizationRevision: categoryOverridePreview.authorizationRevision,
+        },
+      },
+    );
+    assert.equal(invalidGlobalOverride.status, 400);
+    const crossWorkspaceOverride = await request(
+      `/api/workspaces/${workspace.id}/categories/${overrideTarget.categoryId}/permission-overrides/${outsiderRoles[0].id}`,
+      {
+        method: 'PUT', cookie: alice.cookie,
+        body: {
+          allowMask: Permissions.VIEW_CHANNELS,
+          denyMask: 0,
+          expectedRevision: 0,
+          expectedAuthorizationRevision: categoryOverridePreview.authorizationRevision,
+        },
+      },
+    );
+    assert.equal(crossWorkspaceOverride.status, 404);
+    const rolePreviewBeforeOverride = await request(`/api/workspaces/${workspace.id}/roles/preview`, {
+      method: 'POST', cookie: alice.cookie,
+      body: { operation: 'role.update', roleId: memberRole.id, permissions: memberRole.permissionMask },
+    });
+    assert.equal(rolePreviewBeforeOverride.status, 200);
+    const roleRevisionBeforeOverride = (
+      await json<{ authorizationRevision: string }>(rolePreviewBeforeOverride)
+    ).authorizationRevision;
+    const channelAccessRevoked = onceSocketEvent<{ workspaceId: string; channelId: string }>(
+      bobSocket,
+      'channel:access-revoked',
+    );
+    const bobRemovedFromVoice = onceSocketEvent<{ channelId: string; participantId: string }>(
+      aliceSocket,
+      'voice:participant-left',
+    );
+    let receivedRevokedRoomBroadcast = false;
+    const onRevokedRoomBroadcast = () => { receivedRevokedRoomBroadcast = true; };
+    bobSocket.once('channel:permissions-updated', onRevokedRoomBroadcast);
+    const categoryOverrideApply = await request(
+      `/api/workspaces/${workspace.id}/categories/${overrideTarget.categoryId}/permission-overrides/${memberRole.id}`,
+      {
+        method: 'PUT', cookie: alice.cookie,
+        body: {
+          allowMask: 0,
+          denyMask: Permissions.VIEW_CHANNELS,
+          expectedRevision: 0,
+          expectedAuthorizationRevision: categoryOverridePreview.authorizationRevision,
+        },
+      },
+    );
+    assert.equal(categoryOverrideApply.status, 200);
+    assert.deepEqual(await channelAccessRevoked, { workspaceId: workspace.id, channelId });
+    assert.deepEqual(await bobRemovedFromVoice, {
+      channelId,
+      participantId: bobVoiceJoin.self!.participantId,
+    });
+    await delay(50);
+    bobSocket.off('channel:permissions-updated', onRevokedRoomBroadcast);
+    assert.equal(receivedRevokedRoomBroadcast, false, 'revoked sockets must not receive later channel-room broadcasts');
+    const categoryApplyBody = await json<{
+      authorizationRevision: string;
+      roomEffects: Array<{ channelId: string; rotationRequired: boolean }>;
+    }>(categoryOverrideApply);
+    const staleRoleAfterOverride = await request(`/api/workspaces/${workspace.id}/roles/${memberRole.id}`, {
+      method: 'PUT', cookie: alice.cookie,
+      body: {
+        permissions: memberRole.permissionMask,
+        expectedAuthorizationRevision: roleRevisionBeforeOverride,
+      },
+    });
+    assert.equal(staleRoleAfterOverride.status, 409);
+    assert.equal((await json<{ error: string }>(staleRoleAfterOverride)).error, 'STALE_PREVIEW');
+    assert.equal(categoryApplyBody.roomEffects.some((effect) => effect.channelId === channelId && effect.rotationRequired), true);
+    assert.equal((await request(`/api/channels/${channelId}/messages`, { cookie: bob.cookie })).status, 404);
+    assert.equal((await request(`/api/channels/${channelId}/key-recipients`, { cookie: bob.cookie })).status, 404);
+    assert.equal((await request(`/api/files/${bobAttachment.id}`, { cookie: bob.cookie })).status, 404);
+    const bobCategoriesAfterDeny = await request(`/api/workspaces/${workspace.id}/categories`, { cookie: bob.cookie });
+    assert.equal(bobCategoriesAfterDeny.status, 200);
+    assert.equal(
+      (await json<Array<{ id: string }>>(bobCategoriesAfterDeny)).some((item) => item.id === overrideTarget.categoryId),
+      false,
+    );
+    assert.equal(
+      (await json<Array<{ id: string }>>(await request(`/api/workspaces/${workspace.id}/categories`, { cookie: alice.cookie })))
+        .some((item) => item.id === overrideTarget.categoryId),
+      true,
+    );
+    assert.equal(await joinChannel(bobSocket, channelId), false);
+    assert.equal((await request(`/api/channels/${channelId}/messages`, { cookie: alice.cookie })).status, 200, 'owner cannot be override-locked out');
+
+    const staleAuthorizationOverride = await request(
+      `/api/workspaces/${workspace.id}/channels/${channelId}/permission-overrides/${memberRole.id}`,
+      {
+        method: 'PUT', cookie: alice.cookie,
+        body: {
+          allowMask: Permissions.VIEW_CHANNELS,
+          denyMask: 0,
+          expectedRevision: 0,
+          expectedAuthorizationRevision: categoryOverridePreview.authorizationRevision,
+        },
+      },
+    );
+    assert.equal(staleAuthorizationOverride.status, 409);
+    assert.equal((await json<{ error: string }>(staleAuthorizationOverride)).error, 'STALE_PREVIEW');
+
+    const channelOverrideApply = await request(
+      `/api/workspaces/${workspace.id}/channels/${channelId}/permission-overrides/${memberRole.id}`,
+      {
+        method: 'PUT', cookie: alice.cookie,
+        body: {
+          allowMask: Permissions.VIEW_CHANNELS,
+          denyMask: 0,
+          expectedRevision: 0,
+          expectedAuthorizationRevision: categoryApplyBody.authorizationRevision,
+        },
+      },
+    );
+    assert.equal(channelOverrideApply.status, 200);
+    const channelApplyBody = await json<{ authorizationRevision: string }>(channelOverrideApply);
+    assert.equal((await request(`/api/channels/${channelId}/messages`, { cookie: bob.cookie })).status, 200);
+    assert.equal(await joinChannel(bobSocket, channelId), true);
+
+    const rotatedRecipientsResponse = await request(`/api/channels/${channelId}/key-recipients`, { cookie: alice.cookie });
+    assert.equal(rotatedRecipientsResponse.status, 200);
+    const rotatedRecipients = await json<{ recipients: Array<{ deviceId: string; identityKey: string }> }>(rotatedRecipientsResponse);
+    const rotatedChannelKey = randomBytes(32);
+    await distributeAndAcknowledgeChannelKey({
+      channelId,
+      version: 2,
+      rawKey: rotatedChannelKey,
+      senderCookie: alice.cookie,
+      senderKeys: aliceKeys,
+      recipients: rotatedRecipients.recipients,
+      acknowledgements: [
+        { deviceId: aliceDevice.id, cookie: alice.cookie, keys: aliceKeys },
+        { deviceId: bobDevice.id, cookie: bob.cookie, keys: bobKeys },
+      ],
+    });
+
+    const staleChannelOverride = await request(
+      `/api/workspaces/${workspace.id}/channels/${channelId}/permission-overrides/${memberRole.id}`,
+      {
+        method: 'PUT', cookie: alice.cookie,
+        body: {
+          allowMask: Permissions.VIEW_CHANNELS,
+          denyMask: Permissions.SEND_MESSAGES | Permissions.ATTACH_FILES,
+          expectedRevision: 0,
+          expectedAuthorizationRevision: channelApplyBody.authorizationRevision,
+        },
+      },
+    );
+    assert.equal(staleChannelOverride.status, 409);
+    const channelOverridePreviewResponse = await request(
+      `/api/workspaces/${workspace.id}/channels/${channelId}/permission-overrides/preview`,
+      {
+        method: 'POST', cookie: alice.cookie,
+        body: {
+          operation: 'upsert',
+          roleId: memberRole.id,
+          allowMask: Permissions.VIEW_CHANNELS,
+          denyMask: Permissions.SEND_MESSAGES | Permissions.ATTACH_FILES,
+        },
+      },
+    );
+    assert.equal(channelOverridePreviewResponse.status, 200);
+    const channelOverridePreview = await json<{ currentRevision: number; authorizationRevision: string }>(channelOverridePreviewResponse);
+    assert.equal(channelOverridePreview.currentRevision, 1);
+    const channelOverrideUpdate = await request(
+      `/api/workspaces/${workspace.id}/channels/${channelId}/permission-overrides/${memberRole.id}`,
+      {
+        method: 'PUT', cookie: alice.cookie,
+        body: {
+          allowMask: Permissions.VIEW_CHANNELS,
+          denyMask: Permissions.SEND_MESSAGES | Permissions.ATTACH_FILES,
+          expectedRevision: 1,
+          expectedAuthorizationRevision: channelOverridePreview.authorizationRevision,
+        },
+      },
+    );
+    assert.equal(channelOverrideUpdate.status, 200);
+    const channelUpdateBody = await json<{ authorizationRevision: string }>(channelOverrideUpdate);
+    const deniedSend = await request(`/api/channels/${channelId}/messages`, {
+      method: 'POST', cookie: bob.cookie,
+      body: encryptedMessage(
+        channelId,
+        bob.user.id,
+        bobDevice.id,
+        bobKeys.signingPrivateKey,
+        rotatedChannelKey,
+        'must be denied by channel override',
+      ).body,
+    });
+    assert.equal(deniedSend.status, 403);
+    assert.equal((await request('/api/files/uploads', {
+      method: 'POST', cookie: bob.cookie,
+      body: {
+        idempotencyKey: randomUUID(),
+        messageId: bobMessage.id,
+        filenameEnc: Buffer.alloc(32, 0x78).toString('base64'),
+        mimeType: 'application/octet-stream',
+      },
+    })).status, 403);
+    const effectiveChannelResponse = await request(
+      `/api/workspaces/${workspace.id}/channels/${channelId}/permissions/effective?userId=${bob.user.id}`,
+      { cookie: alice.cookie },
+    );
+    assert.equal(effectiveChannelResponse.status, 200);
+    const effectiveChannel = await json<{
+      permissionDetails: Array<{ permission: string; allowed: boolean; reasons: Array<{ source: string; effect: string }> }>;
+    }>(effectiveChannelResponse);
+    const viewDetail = effectiveChannel.permissionDetails.find((detail) => detail.permission === 'VIEW_CHANNELS');
+    assert.equal(viewDetail?.allowed, true);
+    assert.equal(viewDetail?.reasons.some((reason) => reason.source === 'category' && reason.effect === 'deny'), true);
+    assert.equal(viewDetail?.reasons.some((reason) => reason.source === 'channel' && reason.effect === 'allow'), true);
+    assert.equal(effectiveChannel.permissionDetails.find((detail) => detail.permission === 'SEND_MESSAGES')?.allowed, false);
+    assert.equal(effectiveChannel.permissionDetails.find((detail) => detail.permission === 'ATTACH_FILES')?.allowed, false);
+
+    const roleOverrideApply = await request(
+      `/api/workspaces/${workspace.id}/channels/${channelId}/permission-overrides/${revisionBumpRole.id}`,
+      {
+        method: 'PUT', cookie: alice.cookie,
+        body: {
+          allowMask: Permissions.SEND_MESSAGES,
+          denyMask: 0,
+          expectedRevision: 0,
+          expectedAuthorizationRevision: channelUpdateBody.authorizationRevision,
+        },
+      },
+    );
+    assert.equal(roleOverrideApply.status, 200);
+    const roleOverrideApplyBody = await json<{ authorizationRevision: string }>(roleOverrideApply);
+    assert.equal((await request(`/api/workspaces/${workspace.id}/roles/preview`, {
+      method: 'POST', cookie: alice.cookie,
+      body: { operation: 'role.delete', roleId: revisionBumpRole.id },
+    })).status, 409);
+    const roleOverrideDelete = await request(
+      `/api/workspaces/${workspace.id}/channels/${channelId}/permission-overrides/${revisionBumpRole.id}`,
+      {
+        method: 'DELETE', cookie: alice.cookie,
+        body: {
+          expectedRevision: 1,
+          expectedAuthorizationRevision: roleOverrideApplyBody.authorizationRevision,
+        },
+      },
+    );
+    assert.equal(roleOverrideDelete.status, 200);
+    const roleOverrideDeleteBody = await json<{ authorizationRevision: string }>(roleOverrideDelete);
+
+    const channelOverrideDelete = await request(
+      `/api/workspaces/${workspace.id}/channels/${channelId}/permission-overrides/${memberRole.id}`,
+      {
+        method: 'DELETE', cookie: alice.cookie,
+        body: {
+          expectedRevision: 2,
+          expectedAuthorizationRevision: roleOverrideDeleteBody.authorizationRevision,
+        },
+      },
+    );
+    assert.equal(channelOverrideDelete.status, 200);
+    assert.equal((await request(`/api/channels/${channelId}/messages`, { cookie: bob.cookie })).status, 404);
+    assert.equal((await request(`/api/channels/${channelId}/key-recipients`, { cookie: bob.cookie })).status, 404);
+    assert.equal((await request(`/api/files/${bobAttachment.id}`, { cookie: bob.cookie })).status, 404);
+    assert.equal((await request(`/api/files/${bobAttachment.id}`, { cookie: alice.cookie })).status, 200);
+    assert.equal(await joinChannel(bobSocket, channelId), false);
+
+    const inUseChannelDelete = await request(`/api/channels/${channelId}`, {
+      method: 'DELETE', cookie: alice.cookie,
+    });
+    assert.equal(inUseChannelDelete.status, 409);
+
+    const removalPreview = await request(`/api/workspaces/${workspace.id}/roles/preview`, {
+      method: 'POST', cookie: alice.cookie,
+      body: { operation: 'role.unassign', roleId: memberRole.id, userId: bob.user.id },
+    });
+    assert.equal(removalPreview.status, 200);
+    const removalRevision = (await json<{ authorizationRevision: string }>(removalPreview)).authorizationRevision;
+    const workspacePermissionsUpdated = onceSocketEvent<{ workspaceId: string; membershipRemoved: boolean }>(
+      bobSocket,
+      'workspace:permissions-updated',
+    );
+    const removeMemberRole = await request(`/api/workspaces/${workspace.id}/members/${bob.user.id}/roles/${memberRole.id}`, {
+      method: 'DELETE', cookie: alice.cookie, body: { expectedAuthorizationRevision: removalRevision },
+    });
+    assert.equal(removeMemberRole.status, 200);
+    assert.deepEqual(await workspacePermissionsUpdated, { workspaceId: workspace.id, membershipRemoved: false });
+    const selfPermissions = await request(`/api/workspaces/${workspace.id}/members/${bob.user.id}/permissions`, { cookie: bob.cookie });
+    assert.equal(selfPermissions.status, 200);
+    const selfPermissionBody = await json<{ permissionDetails: Array<{ permission: string; allowed: boolean }> }>(selfPermissions);
+    assert.equal(selfPermissionBody.permissionDetails.find((permission) => permission.permission === 'VIEW_CHANNELS')?.allowed, false);
+    const workspaceAccessRevoked = onceSocketEvent<{ workspaceId: string; membershipRemoved: boolean; channelIds: string[] }>(
+      bobSocket,
+      'workspace:access-revoked',
+    );
+    const removeBobWorkspaceMember = await request(`/api/workspaces/${workspace.id}/members/${bob.user.id}`, {
+      method: 'DELETE', cookie: alice.cookie,
+    });
+    assert.equal(removeBobWorkspaceMember.status, 200);
+    const workspaceAccessRevokedPayload = await workspaceAccessRevoked;
+    assert.equal(workspaceAccessRevokedPayload.workspaceId, workspace.id);
+    assert.equal(workspaceAccessRevokedPayload.membershipRemoved, true);
+    assert.equal(workspaceAccessRevokedPayload.channelIds.includes(channelId), true);
+    assert.equal(
+      workspaceAccessRevokedPayload.channelIds.includes(keyOnlyChannel.id),
+      true,
+      'historical wrapped-key delivery is sufficient proof that the removed member knew the channel',
+    );
+    const recipientsAfterRemovalResponse = await request(`/api/channels/${channelId}/key-recipients`, { cookie: alice.cookie });
+    assert.equal(recipientsAfterRemovalResponse.status, 200);
+    const recipientsAfterRemoval = await json<{
+      recipients: Array<{ deviceId: string; identityKey: string }>;
+    }>(recipientsAfterRemovalResponse);
+    assert.equal(recipientsAfterRemoval.recipients.some((recipient) => recipient.deviceId === bobDevice.id), false);
+    assert.equal(recipientsAfterRemoval.recipients.some((recipient) => recipient.deviceId === attachmentOnlyDevice.id), false);
+    await distributeAndAcknowledgeChannelKey({
+      channelId,
+      version: 3,
+      rawKey: randomBytes(32),
+      senderCookie: alice.cookie,
+      senderKeys: aliceKeys,
+      recipients: recipientsAfterRemoval.recipients,
+      acknowledgements: [{ deviceId: aliceDevice.id, cookie: alice.cookie, keys: aliceKeys }],
+    });
+    assert.equal((await request(`/api/devices/${bobDevice.id}`, {
+      method: 'DELETE', cookie: bob.cookie,
+    })).status, 200);
+    const afterFormerMemberRevoke = await json<{ rotationRequired: boolean }>(
+      await request(`/api/channels/${channelId}/key-recipients`, { cookie: alice.cookie }),
+    );
+    assert.equal(
+      afterFormerMemberRevoke.rotationRequired,
+      false,
+      'revoking a former member device must not stale the current epoch',
+    );
+    const historicalDirectoryResponse = await request(`/api/channels/${channelId}/device-directory`, { cookie: alice.cookie });
+    assert.equal(historicalDirectoryResponse.status, 200);
+    const historicalDirectory = await json<Array<{ deviceId: string }>>(historicalDirectoryResponse);
+    assert.equal(
+      historicalDirectory.some((device) => device.deviceId === bobDevice.id),
+      true,
+      'historical signing keys remain available after the author leaves',
+    );
+    assert.equal(
+      historicalDirectory.some((device) => device.deviceId === attachmentOnlyDevice.id),
+      true,
+      'attachment-only historical signer keys remain available after revocation and membership loss',
+    );
+
+    const disconnected = new Promise<void>((resolve) => aliceSocket.once('disconnect', () => resolve()));
+    const logout = await request('/api/auth/logout', { method: 'POST', cookie: alice.cookie, body: {} });
+    assert.equal(logout.status, 200);
+    await disconnected;
+    assert.equal((await request('/api/auth/me', { cookie: alice.cookie })).status, 401);
+
+    mallorySocket.disconnect();
+    const audit = await verifyAuditChain();
+    assert.equal(audit.valid, true);
+    assert.ok(audit.checked > 0);
+  });
+
+  it('never re-signs a shortened audit chain after the external checkpoint anchor is deleted', async () => {
+    const auditModule = await import('../middleware/audit.js');
+    const { db } = await import('../db/index.js');
+    const { auditLogs, users } = await import('../db/schema.js');
+    await auditModule.flushAuditCheckpoint();
+    const checkpointBefore = await readFile(auditCheckpointPath, 'utf8');
+    const checkpoint = JSON.parse(checkpointBefore) as { logId: string };
+    await db.delete(auditLogs).where(eq(auditLogs.id, checkpoint.logId));
+    const rowsAfterTruncation = await db.select({ id: auditLogs.id }).from(auditLogs);
+    const target = await db.query.users.findFirst();
+    assert.ok(target);
+    const originalDisplayName = target.displayName;
+
+    await assert.rejects(auditModule.auditedTransaction(async (transaction) => {
+      await transaction.update(users).set({ displayName: 'must-roll-back' }).where(eq(users.id, target.id));
+      return null;
+    }, () => ({
+      actorId: target.id,
+      action: 'security.audit.truncation-control',
+      targetType: 'user',
+      targetId: target.id,
+    })), /checkpoint|audit/i);
+
+    assert.equal((await db.query.users.findFirst({ where: eq(users.id, target.id) }))?.displayName, originalDisplayName);
+    assert.equal((await db.select({ id: auditLogs.id }).from(auditLogs)).length, rowsAfterTruncation.length);
+    assert.equal(await readFile(auditCheckpointPath, 'utf8'), checkpointBefore);
+    await assert.rejects(auditModule.checkAuditCheckpoint(), /checkpoint|audit/i);
+  });
+
+  async function createAccount(email: string, password: string, displayName: string, inviteToken: string) {
+    const registration = await request('/api/auth/register', {
+      method: 'POST', body: { email, password, displayName, inviteToken },
+    });
+    assert.equal(registration.status, 201);
+    const login = await request('/api/auth/login', { method: 'POST', body: { email, password } });
+    assert.equal(login.status, 200);
+    const setCookie = login.headers.get('set-cookie');
+    assert.ok(setCookie?.includes('HttpOnly'));
+    assert.ok(setCookie?.includes('SameSite=Strict'));
+    return {
+      cookie: setCookie!.split(';', 1)[0],
+      user: (await json<{ user: { id: string } }>(login)).user,
+      password,
+    };
+  }
+
+  async function createWorkspaceInvitation(workspaceId: string, cookie: string, email?: string) {
+    const response = await request(`/api/workspaces/${workspaceId}/invitations`, {
+      method: 'POST',
+      cookie,
+      body: { ...(email ? { email } : {}), expiresInSeconds: 3_600 },
+    });
+    assert.equal(response.status, 201);
+    return json<{ id: string; token: string }>(response);
+  }
+
+  async function assignWorkspaceRole(workspaceId: string, cookie: string, roleId: string, userId: string) {
+    const preview = await request(`/api/workspaces/${workspaceId}/roles/preview`, {
+      method: 'POST', cookie, body: { operation: 'role.assign', roleId, userId },
+    });
+    assert.equal(preview.status, 200);
+    const { authorizationRevision } = await json<{ authorizationRevision: string }>(preview);
+    const assignment = await request(`/api/workspaces/${workspaceId}/members/${userId}/roles/${roleId}`, {
+      method: 'POST', cookie, body: { expectedAuthorizationRevision: authorizationRevision },
+    });
+    assert.equal(assignment.status, 200);
+  }
+
+  async function deviceRegistrationBody(
+    account: { cookie: string; user: { id: string }; password: string },
+    keys: ReturnType<typeof deviceFixture>,
+    name: string,
+    cookie = account.cookie,
+  ) {
+    const challengeResponse = await request('/api/devices/challenge', { method: 'POST', cookie, body: {} });
+    assert.equal(challengeResponse.status, 200);
+    const { challenge } = await json<{ challenge: string }>(challengeResponse);
+    const proof = sign('sha256', Buffer.from(serializeDeviceChallengeProof(account.user.id, challenge)), {
+      key: keys.signingPrivateKey,
+      dsaEncoding: 'ieee-p1363',
+    }).toString('base64');
+    return {
+      name,
+      identityKey: keys.identityKey,
+      challenge,
+      proof,
+      currentPassword: account.password,
+    };
+  }
+
+  async function registerDevice(
+    account: { cookie: string; user: { id: string }; password: string },
+    keys: ReturnType<typeof deviceFixture>,
+    name: string,
+  ) {
+    const response = await request('/api/devices', {
+      method: 'POST',
+      cookie: account.cookie,
+      body: await deviceRegistrationBody(account, keys, name),
+    });
+    assert.equal(response.status, 201);
+    return json<{ id: string }>(response);
+  }
+
+  async function distributeAndAcknowledgeChannelKey(input: {
+    channelId: string;
+    version: number;
+    rawKey: Buffer;
+    senderCookie: string;
+    senderKeys: ReturnType<typeof deviceFixture>;
+    recipients: Array<{ deviceId: string; identityKey: string }>;
+    acknowledgements: Array<{
+      deviceId: string;
+      cookie: string;
+      keys: ReturnType<typeof deviceFixture>;
+    }>;
+  }) {
+    const keyCommitment = createHash('sha256').update(input.rawKey).digest('base64url');
+    const keys = input.recipients.map((recipient) => signedChannelKeyWrap({
+      channelId: input.channelId,
+      version: input.version,
+      keyCommitment,
+      rawKey: input.rawKey,
+      recipient,
+      senderKeys: input.senderKeys,
+    }));
+    const distribution = await request(`/api/channels/${input.channelId}/keys`, {
+      method: 'POST',
+      cookie: input.senderCookie,
+      body: { version: input.version, keyCommitment, keys },
+    });
+    assert.equal(distribution.status, 201);
+
+    for (const acknowledgement of input.acknowledgements) {
+      const wrapped = keys.find((key) => key.deviceId === acknowledgement.deviceId);
+      assert.ok(wrapped, `missing wrap for ${acknowledgement.deviceId}`);
+      const unwrapped = unwrapKey(wrapped.encryptedKey, acknowledgement.keys.encryptionPrivateKey);
+      assert.deepEqual(unwrapped, input.rawKey);
+      assert.equal(createHash('sha256').update(unwrapped).digest('base64url'), keyCommitment);
+      await acknowledgeChannelKeyDelivery({
+        channelId: input.channelId,
+        version: input.version,
+        keyCommitment,
+        encryptedKey: wrapped.encryptedKey,
+        deviceId: acknowledgement.deviceId,
+        cookie: acknowledgement.cookie,
+        keys: acknowledgement.keys,
+      });
+    }
+    return { keyCommitment, keys };
+  }
+
+  function signedChannelKeyWrap(input: {
+    channelId: string;
+    version: number;
+    keyCommitment: string;
+    rawKey: Buffer;
+    recipient: { deviceId: string; identityKey: string };
+    senderKeys: ReturnType<typeof deviceFixture>;
+  }) {
+    const encryptedKey = wrapKey(input.rawKey, input.recipient.identityKey);
+    const signature = sign('sha256', Buffer.from(serializeChannelKeyWrap({
+      channelId: input.channelId,
+      keyVersion: input.version,
+      keyCommitment: input.keyCommitment,
+      recipientDeviceId: input.recipient.deviceId,
+      encryptedKey,
+    })), {
+      key: input.senderKeys.signingPrivateKey,
+      dsaEncoding: 'ieee-p1363',
+    }).toString('base64');
+    return { deviceId: input.recipient.deviceId, encryptedKey, signature };
+  }
+
+  async function acknowledgeChannelKeyDelivery(input: {
+    channelId: string;
+    version: number;
+    keyCommitment: string;
+    encryptedKey: string;
+    deviceId: string;
+    cookie: string;
+    keys: ReturnType<typeof deviceFixture>;
+  }) {
+    const deliveriesResponse = await request(`/api/channels/${input.channelId}/keys`, {
+      cookie: input.cookie,
+    });
+    assert.equal(deliveriesResponse.status, 200);
+    const deliveries = await json<Array<{
+      deliveryId: string;
+      version: number;
+      keyCommitment: string;
+      encryptedKey: string;
+      distributorDeviceId: string;
+    }>>(deliveriesResponse);
+    const delivery = deliveries.find((candidate) => (
+      candidate.version === input.version
+      && candidate.keyCommitment === input.keyCommitment
+      && candidate.encryptedKey === input.encryptedKey
+    ));
+    assert.ok(delivery, `missing committed delivery for ${input.deviceId}`);
+    const signature = sign('sha256', Buffer.from(serializeChannelKeyAcknowledgement({
+      deliveryId: delivery.deliveryId,
+      channelId: input.channelId,
+      keyVersion: input.version,
+      keyCommitment: input.keyCommitment,
+      recipientDeviceId: input.deviceId,
+      distributorDeviceId: delivery.distributorDeviceId,
+      encryptedKey: input.encryptedKey,
+    })), {
+      key: input.keys.signingPrivateKey,
+      dsaEncoding: 'ieee-p1363',
+    }).toString('base64');
+    const response = await request(`/api/channels/${input.channelId}/keys/acknowledge`, {
+      method: 'POST',
+      cookie: input.cookie,
+      body: { deliveryId: delivery.deliveryId, signature },
+    });
+    assert.equal(response.status, 200);
+    return json<{ version: number; status: string; activated: boolean }>(response);
+  }
+
+  async function request(path: string, options: { method?: string; cookie?: string; body?: unknown } = {}) {
+    const headers: Record<string, string> = { Origin: 'http://localhost:5173' };
+    if (options.cookie) headers.Cookie = options.cookie;
+    const rawBody = Buffer.isBuffer(options.body) ? options.body : null;
+    if (options.body !== undefined) headers['Content-Type'] = rawBody ? 'application/octet-stream' : 'application/json';
+    return fetch(`${baseUrl}${path}`, {
+      method: options.method || 'GET',
+      headers,
+      body: options.body === undefined
+        ? undefined
+        : rawBody
+          ? new Uint8Array(rawBody)
+          : JSON.stringify(options.body),
+    });
+  }
+});
+
+async function json<T>(response: Response): Promise<T> {
+  return response.json() as Promise<T>;
+}
+
+function deviceFixture() {
+  const encryption = generateKeyPairSync('rsa', { modulusLength: 2048, publicExponent: 0x10001 });
+  const signingKeys = generateKeyPairSync('ec', { namedCurve: 'P-256' });
+  const encryptionKey = encryption.publicKey.export({ format: 'jwk' });
+  const signingKey = signingKeys.publicKey.export({ format: 'jwk' });
+  encryptionKey.alg = 'RSA-OAEP-256';
+  encryptionKey.ext = true;
+  encryptionKey.key_ops = ['encrypt'];
+  signingKey.alg = 'ES256';
+  signingKey.ext = true;
+  signingKey.key_ops = ['verify'];
+  return {
+    identityKey: JSON.stringify({ version: 1, encryptionKey, signingKey }),
+    encryptionPrivateKey: encryption.privateKey,
+    signingPrivateKey: signingKeys.privateKey,
+  };
+}
+
+function wrapKey(raw: Buffer, identityKey: string): string {
+  const encryptionKey = JSON.parse(identityKey).encryptionKey;
+  const key = createPublicKey({ key: encryptionKey as any, format: 'jwk' });
+  return publicEncrypt({ key, padding: constants.RSA_PKCS1_OAEP_PADDING, oaepHash: 'sha256' }, raw).toString('base64');
+}
+
+function unwrapKey(wrapped: string, privateKey: import('node:crypto').KeyObject): Buffer {
+  return privateDecrypt({
+    key: privateKey,
+    padding: constants.RSA_PKCS1_OAEP_PADDING,
+    oaepHash: 'sha256',
+  }, Buffer.from(wrapped, 'base64'));
+}
+
+function encryptedMessage(
+  channelId: string,
+  authorId: string,
+  deviceId: string,
+  privateKey: import('node:crypto').KeyObject,
+  key: Buffer,
+  plaintext: string,
+  idempotencyKey?: string,
+) {
+  return encryptedCryptoEvent('message', channelId, null, authorId, deviceId, privateKey, key, plaintext, idempotencyKey);
+}
+
+function encryptedEdit(
+  channelId: string,
+  messageId: string,
+  authorId: string,
+  deviceId: string,
+  privateKey: import('node:crypto').KeyObject,
+  key: Buffer,
+  plaintext: string,
+) {
+  return encryptedCryptoEvent('edit', channelId, messageId, authorId, deviceId, privateKey, key, plaintext);
+}
+
+function encryptedCryptoEvent(
+  type: 'message' | 'edit',
+  channelId: string,
+  refMessageId: string | null,
+  authorId: string,
+  deviceId: string,
+  privateKey: import('node:crypto').KeyObject,
+  key: Buffer,
+  plaintext: string,
+  requestedIdempotencyKey?: string,
+) {
+  const idempotencyKey = requestedIdempotencyKey ?? randomUUID();
+  const nonce = randomBytes(12);
+  const unsigned = {
+    type,
+    channelId,
+    authorId,
+    deviceId,
+    keyVersion: 1,
+    idempotencyKey,
+    refMessageId,
+    broadcastMention: false,
+  };
+  const cipher = createCipheriv('aes-256-gcm', key, nonce);
+  cipher.setAAD(Buffer.from(serializeMessageAad(unsigned)));
+  const encryptedContent = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final(), cipher.getAuthTag()]).toString('base64');
+  const envelope: SignedMessageEnvelope = { ...unsigned, encryptedContent, contentNonce: nonce.toString('base64') };
+  return {
+    envelope,
+    body: {
+      encryptedContent,
+      contentNonce: envelope.contentNonce,
+      deviceId,
+      keyVersion: 1,
+      idempotencyKey,
+      broadcastMention: false,
+      signature: signEnvelope(envelope, privateKey),
+    },
+  };
+}
+
+function encryptAttachmentChunk(key: Buffer, noncePrefix: Buffer, index: number, aad: Buffer, plaintext: Buffer): Buffer {
+  assert.equal(noncePrefix.length, 8);
+  const nonce = Buffer.alloc(12);
+  noncePrefix.copy(nonce, 0);
+  nonce.writeUInt32BE(index, 8);
+  const cipher = createCipheriv('aes-256-gcm', key, nonce);
+  cipher.setAAD(aad);
+  return Buffer.concat([cipher.update(plaintext), cipher.final(), cipher.getAuthTag()]);
+}
+
+function decryptAttachmentChunk(key: Buffer, noncePrefix: Buffer, index: number, aad: Buffer, ciphertext: Buffer): Buffer {
+  const nonce = Buffer.alloc(12);
+  noncePrefix.copy(nonce, 0);
+  nonce.writeUInt32BE(index, 8);
+  const decipher = createDecipheriv('aes-256-gcm', key, nonce);
+  decipher.setAAD(aad);
+  decipher.setAuthTag(ciphertext.subarray(ciphertext.length - 16));
+  return Buffer.concat([decipher.update(ciphertext.subarray(0, -16)), decipher.final()]);
+}
+
+function signedAttachmentFinalizeBody(input: {
+  uploadId: string;
+  messageId: string;
+  channelId: string;
+  authorId: string;
+  deviceId: string;
+  privateKey: import('node:crypto').KeyObject;
+  keyVersion: number;
+  filenameEnc: string;
+  mimeType: string;
+  wrappedKey: string;
+  chunkCount: number;
+  cryptoManifest: {
+    version: 1;
+    algorithm: 'AES-256-GCM';
+    nonceStrategy: 'prefix-counter-be32';
+    noncePrefix: string;
+    aadVersion: 1;
+    plaintextSize: number;
+  };
+}) {
+  const envelope: SignedAttachmentEnvelope = {
+    type: 'attachment',
+    uploadId: input.uploadId,
+    messageId: input.messageId,
+    channelId: input.channelId,
+    authorId: input.authorId,
+    deviceId: input.deviceId,
+    keyVersion: input.keyVersion,
+    filenameEnc: input.filenameEnc,
+    mimeType: input.mimeType,
+    wrappedKey: input.wrappedKey,
+    noncePrefix: input.cryptoManifest.noncePrefix,
+    plaintextSize: input.cryptoManifest.plaintextSize,
+    chunkCount: input.chunkCount,
+  };
+  const signature = sign('sha256', Buffer.from(serializeAttachmentEnvelope(envelope)), {
+    key: input.privateKey,
+    dsaEncoding: 'ieee-p1363',
+  }).toString('base64');
+  return {
+    deviceId: input.deviceId,
+    keyVersion: input.keyVersion,
+    signature,
+    wrappedKey: input.wrappedKey,
+    chunkCount: input.chunkCount,
+    cryptoManifest: input.cryptoManifest,
+  };
+}
+
+function pick(object: Record<string, unknown>, keys: string[]): Record<string, unknown> {
+  return Object.fromEntries(keys.map((key) => [key, object[key]]));
+}
+
+function signEnvelope(envelope: SignedMessageEnvelope, privateKey: import('node:crypto').KeyObject): string {
+  return sign('sha256', Buffer.from(serializeMessageEnvelope(envelope)), {
+    key: privateKey,
+    dsaEncoding: 'ieee-p1363',
+  }).toString('base64');
+}
+
+async function onceConnected(socket: import('socket.io-client').Socket): Promise<void> {
+  if (socket.connected) return;
+  await new Promise<void>((resolve, reject) => {
+    socket.once('connect', () => resolve());
+    socket.once('connect_error', reject);
+  });
+}
+
+async function joinChannel(socket: import('socket.io-client').Socket, channelId: string): Promise<boolean> {
+  return new Promise((resolve) => socket.emit('channel:join', channelId, (result: { ok: boolean }) => resolve(result.ok)));
+}
+
+interface VoiceJoinAck {
+  ok: boolean;
+  error?: string;
+  self?: import('@alparts/shared').VoiceParticipant;
+  participants?: import('@alparts/shared').VoiceParticipant[];
+}
+
+async function joinVoice(
+  socket: import('socket.io-client').Socket,
+  channelId: string,
+): Promise<VoiceJoinAck> {
+  return new Promise((resolve) => socket.emit('voice:join', { channelId }, (result: VoiceJoinAck) => resolve(result)));
+}
+
+async function emitSocketAck(
+  socket: import('socket.io-client').Socket,
+  event: string,
+  payload: unknown,
+): Promise<Record<string, unknown>> {
+  return new Promise((resolve) => socket.emit(event, payload, (result: Record<string, unknown>) => resolve(result)));
+}
+
+async function onceSocketEvent<T>(
+  socket: import('socket.io-client').Socket,
+  event: string,
+  timeoutMs = 2_000,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const onEvent = (payload: T) => {
+      clearTimeout(timer);
+      resolve(payload);
+    };
+    const timer = setTimeout(() => {
+      socket.off(event, onEvent);
+      reject(new Error(`Timed out waiting for ${event}`));
+    }, timeoutMs);
+    socket.once(event, onEvent);
+  });
+}
+
+function assertNewestFirst(events: Array<{ id: string; createdAt: string }>): void {
+  for (let index = 1; index < events.length; index += 1) {
+    const previous = events[index - 1];
+    const current = events[index];
+    const previousTime = Date.parse(previous.createdAt);
+    const currentTime = Date.parse(current.createdAt);
+    assert.ok(
+      previousTime > currentTime || (previousTime === currentTime && previous.id > current.id),
+      'message history must remain newest-first by (createdAt, id)',
+    );
+  }
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}

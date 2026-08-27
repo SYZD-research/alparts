@@ -1,192 +1,886 @@
+import {
+  serializeAttachmentEnvelope,
+  serializeDeviceChallengeProof,
+  serializeChannelKeyAcknowledgement,
+  serializeChannelKeyEpochAbort,
+  serializeChannelKeyWrap,
+  serializeMessageAad,
+  serializeMessageEnvelope,
+  serializeVoiceSignalEnvelope,
+  type SignedAttachmentEnvelope,
+  type SignedMessageEnvelope,
+  type SignedVoiceSignalEnvelope,
+  type User,
+} from '@alparts/shared';
+import {
+  api,
+  ApiError,
+  type ChannelKeyDelivery,
+  type ChannelKeyEpochStatus,
+  type ChannelKeyRecipientState,
+} from './api';
+import { ChannelKeyScopeGuard, type ChannelKeyScopeToken } from './channel-key-scope';
+
 const DB_NAME = 'alparts-crypto';
 const STORE_NAME = 'keys';
+const DB_VERSION = 3;
+
+interface DevicePublicBundle {
+  version: 1;
+  encryptionKey: JsonWebKey;
+  signingKey: JsonWebKey;
+}
+
+interface ActiveDevice {
+  userId: string;
+  deviceId: string;
+  identityKey: string;
+  encryptionPrivateKey: CryptoKey;
+  signingPrivateKey: CryptoKey;
+}
+
+export interface ChannelKey {
+  key: CryptoKey;
+  version: number;
+}
+
+const MAX_KEY_RECONCILIATION_ATTEMPTS = 6;
+
+interface LoadedChannelKeyDelivery {
+  key: CryptoKey;
+  delivery: ChannelKeyDelivery;
+  acknowledged: boolean;
+}
+
+let activeDevice: ActiveDevice | null = null;
+const deviceInitializations = new Map<string, Promise<ActiveDevice>>();
+const channelKeyScopes = new ChannelKeyScopeGuard();
+const channelKeyDeletionQueues = new Map<string, Promise<void>>();
 
 async function getDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, 1);
-    request.onupgradeneeded = () => {
-      request.result.createObjectStore(STORE_NAME);
+    const request = indexedDB.open(DB_NAME, DB_VERSION);
+    request.onupgradeneeded = (event) => {
+      const store = (event as IDBVersionChangeEvent).oldVersion === 0
+        ? request.result.createObjectStore(STORE_NAME)
+        : request.transaction!.objectStore(STORE_NAME);
+      // Delete the legacy plaintext/extractable private-key record.
+      store.delete('device-private-key');
+      if ((event as IDBVersionChangeEvent).oldVersion < 3) {
+        const cursorRequest = store.openCursor();
+        cursorRequest.onsuccess = () => {
+          const cursor = cursorRequest.result;
+          if (!cursor) return;
+          if (typeof cursor.key === 'string' && cursor.key.startsWith('channel:')) cursor.delete();
+          cursor.continue();
+        };
+      }
     };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
   });
 }
 
-async function saveKey(keyId: string, key: CryptoKey | string): Promise<void> {
+async function saveValue(key: string, value: unknown): Promise<void> {
+  await saveValues([[key, value]]);
+}
+
+async function deleteValue(key: string): Promise<void> {
+  const db = await getDb();
+  const tx = db.transaction(STORE_NAME, 'readwrite');
+  tx.objectStore(STORE_NAME).delete(key);
+  return new Promise((resolve, reject) => {
+    tx.oncomplete = () => { db.close(); resolve(); };
+    tx.onerror = () => { db.close(); reject(tx.error); };
+    tx.onabort = () => { db.close(); reject(tx.error); };
+  });
+}
+
+async function saveValues(entries: Array<readonly [string, unknown]>): Promise<void> {
   const db = await getDb();
   const tx = db.transaction(STORE_NAME, 'readwrite');
   const store = tx.objectStore(STORE_NAME);
-
-  if (typeof key === 'string') {
-    store.put(key, keyId);
-  } else {
-    const exported = await crypto.subtle.exportKey('jwk', key);
-    store.put(JSON.stringify(exported), keyId);
-  }
-
+  for (const [key, value] of entries) store.put(value, key);
   return new Promise((resolve, reject) => {
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
+    tx.oncomplete = () => { db.close(); resolve(); };
+    tx.onerror = () => { db.close(); reject(tx.error); };
+    tx.onabort = () => { db.close(); reject(tx.error); };
   });
 }
 
-async function loadKey(keyId: string): Promise<string | null> {
+async function loadValue<T>(key: string): Promise<T | null> {
   const db = await getDb();
   const tx = db.transaction(STORE_NAME, 'readonly');
-  const store = tx.objectStore(STORE_NAME);
-  const request = store.get(keyId);
-
+  const request = tx.objectStore(STORE_NAME).get(key);
   return new Promise((resolve, reject) => {
-    request.onsuccess = () => resolve(request.result || null);
-    request.onerror = () => reject(request.error);
+    request.onsuccess = () => { db.close(); resolve((request.result as T | undefined) ?? null); };
+    request.onerror = () => { db.close(); reject(request.error); };
   });
 }
 
-// Generate RSA-OAEP key pair for device
-export async function generateDeviceKeyPair(): Promise<{ publicKey: string; privateKey: string }> {
-  const keyPair = await crypto.subtle.generateKey(
-    {
-      name: 'RSA-OAEP',
-      modulusLength: 2048,
-      publicExponent: new Uint8Array([1, 0, 1]),
-      hash: 'SHA-256',
-    },
-    true, // extractable
-    ['encrypt', 'decrypt'],
-  );
-
-  const publicKeyJwk = await crypto.subtle.exportKey('jwk', keyPair.publicKey);
-  const privateKeyJwk = await crypto.subtle.exportKey('jwk', keyPair.privateKey);
-
-  const publicKeyPem = jwkToPem(publicKeyJwk, 'PUBLIC');
-  const privateKeyStr = JSON.stringify(privateKeyJwk);
-
-  await saveKey('device-private-key', privateKeyStr);
-
-  return { publicKey: publicKeyPem, privateKey: privateKeyStr };
+function devicePrefix(userId: string): string {
+  return `device:${userId}`;
 }
 
-// Get stored private key
-export async function getDevicePrivateKey(): Promise<string | null> {
-  return loadKey('device-private-key');
+export async function ensureDeviceSession(user: User, stepUpPassword?: string): Promise<ActiveDevice> {
+  if (activeDevice?.userId === user.id) return activeDevice;
+  const existing = deviceInitializations.get(user.id);
+  if (existing) return existing;
+  const initialization = initializeDeviceSession(user, stepUpPassword).finally(() => {
+    deviceInitializations.delete(user.id);
+  });
+  deviceInitializations.set(user.id, initialization);
+  return initialization;
 }
 
-// Check if device key exists
-export async function hasDeviceKey(): Promise<boolean> {
-  const key = await loadKey('device-private-key');
-  return key !== null;
+async function initializeDeviceSession(user: User, stepUpPassword?: string): Promise<ActiveDevice> {
+  const prefix = devicePrefix(user.id);
+  let encryptionPrivateKey = await loadValue<CryptoKey>(`${prefix}:encryption-private`);
+  let signingPrivateKey = await loadValue<CryptoKey>(`${prefix}:signing-private`);
+  let identityKey = await loadValue<string>(`${prefix}:identity`);
+
+  if (!(encryptionPrivateKey instanceof CryptoKey) || !(signingPrivateKey instanceof CryptoKey) || !identityKey) {
+    const generated = await generateDeviceKeys();
+    encryptionPrivateKey = generated.encryptionPrivateKey;
+    signingPrivateKey = generated.signingPrivateKey;
+    identityKey = generated.identityKey;
+    await saveValues([
+      [`${prefix}:encryption-private`, encryptionPrivateKey],
+      [`${prefix}:signing-private`, signingPrivateKey],
+      [`${prefix}:identity`, identityKey],
+    ]);
+  }
+
+  const storedDeviceId = await loadValue<string>(`${prefix}:id`);
+  const devices = await api.getDevices();
+  let matching = devices.find((device) => device.id === storedDeviceId)
+    || devices.find((device) => device.identityKey === identityKey);
+  // A persisted id that disappeared from the active-device list was revoked.
+  // Never resurrect its long-term identity by registering the same key again.
+  if (storedDeviceId && !matching) {
+    const generated = await generateDeviceKeys();
+    encryptionPrivateKey = generated.encryptionPrivateKey;
+    signingPrivateKey = generated.signingPrivateKey;
+    identityKey = generated.identityKey;
+    matching = undefined;
+    await saveValues([
+      [`${prefix}:encryption-private`, encryptionPrivateKey],
+      [`${prefix}:signing-private`, signingPrivateKey],
+      [`${prefix}:identity`, identityKey],
+    ]);
+  }
+  let device;
+  if (matching) {
+    const challenge = await api.getDeviceChallenge();
+    const proof = await signDeviceChallenge(user.id, challenge.challenge, signingPrivateKey);
+    device = await api.bindDevice(matching.id, challenge.challenge, proof);
+  } else {
+    if (!stepUpPassword) throw new Error('端末を登録するには再ログインが必要です');
+    try {
+      const challenge = await api.getDeviceChallenge();
+      const proof = await signDeviceChallenge(user.id, challenge.challenge, signingPrivateKey);
+      device = await api.registerDevice(
+        browserDeviceName(),
+        identityKey,
+        challenge.challenge,
+        proof,
+        stepUpPassword,
+      );
+    } catch (error) {
+      if (!isRevokedIdentityRegistrationError(error)) throw error;
+      // A missing local :id can leave a revoked keypair behind. Rotate the
+      // complete identity atomically before one bounded registration retry;
+      // never retry the rejected identity and never loop on a second 409.
+      const generated = await generateDeviceKeys();
+      encryptionPrivateKey = generated.encryptionPrivateKey;
+      signingPrivateKey = generated.signingPrivateKey;
+      identityKey = generated.identityKey;
+      await saveValues([
+        [`${prefix}:encryption-private`, encryptionPrivateKey],
+        [`${prefix}:signing-private`, signingPrivateKey],
+        [`${prefix}:identity`, identityKey],
+      ]);
+      const challenge = await api.getDeviceChallenge();
+      const proof = await signDeviceChallenge(user.id, challenge.challenge, signingPrivateKey);
+      device = await api.registerDevice(
+        browserDeviceName(),
+        identityKey,
+        challenge.challenge,
+        proof,
+        stepUpPassword,
+      );
+    }
+  }
+  identityKey = device.identityKey;
+  await saveValue(`${prefix}:identity`, identityKey);
+  await saveValue(`${prefix}:id`, device.id);
+  activeDevice = {
+    userId: user.id,
+    deviceId: device.id,
+    identityKey,
+    encryptionPrivateKey,
+    signingPrivateKey,
+  };
+  return activeDevice;
 }
 
-// Generate AES-256-GCM channel key
-export async function generateChannelKey(): Promise<string> {
-  const key = await crypto.subtle.generateKey(
-    { name: 'AES-GCM', length: 256 },
-    true,
-    ['encrypt', 'decrypt'],
+async function signDeviceChallenge(userId: string, challenge: string, signingPrivateKey: CryptoKey): Promise<string> {
+  const signature = await crypto.subtle.sign(
+    { name: 'ECDSA', hash: 'SHA-256' },
+    signingPrivateKey,
+    new TextEncoder().encode(serializeDeviceChallengeProof(userId, challenge)),
   );
-
-  const exported = await crypto.subtle.exportKey('jwk', key);
-  return JSON.stringify(exported);
+  return arrayBufferToBase64(signature);
 }
 
-// Encrypt message with channel key
-export async function encryptMessage(content: string, channelKeyJwk: string): Promise<{ encrypted: string; nonce: string }> {
-  const key = await crypto.subtle.importKey(
-    'jwk',
-    JSON.parse(channelKeyJwk),
-    { name: 'AES-GCM', length: 256 },
-    false,
-    ['encrypt'],
-  );
+export function clearActiveDevice(): void {
+  channelKeyScopes.reset();
+  channelKeyDeletionQueues.clear();
+  activeDevice = null;
+}
 
-  const encoder = new TextEncoder();
-  const data = encoder.encode(content);
-  const nonce = crypto.getRandomValues(new Uint8Array(12));
+export function getActiveDevice(): ActiveDevice {
+  if (!activeDevice) throw new Error('Security device is not initialized');
+  return activeDevice;
+}
 
-  const encrypted = await crypto.subtle.encrypt(
-    { name: 'AES-GCM', iv: nonce },
-    key,
-    data,
-  );
+export function isRevokedIdentityRegistrationError(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 409 && error.code === 'IDENTITY_REVOKED';
+}
 
+async function generateDeviceKeys() {
+  const encryption = await crypto.subtle.generateKey({
+    name: 'RSA-OAEP',
+    modulusLength: 3072,
+    publicExponent: new Uint8Array([1, 0, 1]),
+    hash: 'SHA-256',
+  }, false, ['encrypt', 'decrypt']);
+  const signing = await crypto.subtle.generateKey({
+    name: 'ECDSA',
+    namedCurve: 'P-256',
+  }, false, ['sign', 'verify']);
+
+  const encryptionKey = await crypto.subtle.exportKey('jwk', encryption.publicKey);
+  const signingKey = await crypto.subtle.exportKey('jwk', signing.publicKey);
+  encryptionKey.alg = 'RSA-OAEP-256';
+  signingKey.alg = 'ES256';
+  const bundle: DevicePublicBundle = { version: 1, encryptionKey, signingKey };
   return {
-    encrypted: arrayBufferToBase64(encrypted),
-    nonce: arrayBufferToBase64(nonce),
+    encryptionPrivateKey: encryption.privateKey,
+    signingPrivateKey: signing.privateKey,
+    identityKey: JSON.stringify(bundle),
   };
 }
 
-// Decrypt message with channel key
-export async function decryptMessage(encryptedBase64: string, nonceBase664: string, channelKeyJwk: string): Promise<string> {
-  const key = await crypto.subtle.importKey(
-    'jwk',
-    JSON.parse(channelKeyJwk),
-    { name: 'AES-GCM', length: 256 },
-    false,
-    ['decrypt'],
-  );
-
-  const encrypted = base64ToArrayBuffer(encryptedBase64);
-  const nonce = base64ToArrayBuffer(nonceBase664);
-
-  const decrypted = await crypto.subtle.decrypt(
-    { name: 'AES-GCM', iv: nonce },
-    key,
-    encrypted,
-  );
-
-  const decoder = new TextDecoder();
-  return decoder.decode(decrypted);
+export async function ensureChannelKey(channelId: string): Promise<ChannelKey> {
+  const scope = channelKeyScopes.capture(channelId);
+  return ensureChannelKeyAttempt(channelId, scope);
 }
 
-// Encrypt channel key with device public key
-export async function encryptChannelKeyForDevice(channelKeyJwk: string, devicePublicKeyPem: string): Promise<string> {
-  const publicKeyJwk = pemToJwk(devicePublicKeyPem);
+async function ensureChannelKeyAttempt(
+  channelId: string,
+  scope: ChannelKeyScopeToken,
+): Promise<ChannelKey> {
+  const device = getActiveDevice();
+  for (let attempt = 0; attempt < MAX_KEY_RECONCILIATION_ATTEMPTS; attempt += 1) {
+    channelKeyScopes.assertCurrent(scope);
+    const [state, deliveries] = await Promise.all([
+      api.getKeyRecipients(channelId),
+      api.getChannelKeys(channelId),
+    ]);
+    channelKeyScopes.assertCurrent(scope);
+    assertKeyRecipientState(state);
+
+    const activeDeliveries = state.currentVersion === 0 ? [] : deliveriesForEpoch(
+      deliveries,
+      'active',
+      state.currentVersion,
+      state.keyCommitment!,
+    );
+    const active = await loadChannelKeyDelivery(
+      channelId,
+      activeDeliveries,
+      device,
+      scope,
+      () => true,
+    );
+    channelKeyScopes.assertCurrent(scope);
+    if (active?.acknowledged) continue;
+
+    const hasPendingEpoch = state.pendingVersion !== null;
+    const pendingDeliveries = !hasPendingEpoch ? [] : deliveriesForEpoch(
+      deliveries,
+      'pending',
+      state.pendingVersion!,
+      state.pendingKeyCommitment!,
+    );
+    const pending = await loadChannelKeyDelivery(
+      channelId,
+      pendingDeliveries,
+      device,
+      scope,
+      () => true,
+    );
+    channelKeyScopes.assertCurrent(scope);
+    if (pending?.acknowledged) continue;
+
+    // GET requests are not one atomic snapshot. Retry an observed monotonic
+    // pending -> active -> retired transition instead of misclassifying it as
+    // an invalid delivery.
+    if (
+      (!active && hasAdjacentEpochStatus(deliveries, state.currentVersion, state.keyCommitment, 'active'))
+      || (hasPendingEpoch && !pending && hasAdjacentEpochStatus(
+        deliveries,
+        state.pendingVersion!,
+        state.pendingKeyCommitment!,
+        'pending',
+      ))
+    ) continue;
+
+    if (hasPendingEpoch) {
+      if (!pending) {
+        if (
+          state.canAbortPending
+          && state.recipients.some((recipient) => recipient.deviceId === device.deviceId)
+          && (
+            state.currentVersion === 0
+            || (active && state.distributedDeviceIds.includes(device.deviceId))
+          )
+        ) {
+          await abortPendingChannelKeyEpoch(channelId, state, device);
+          channelKeyScopes.assertCurrent(scope);
+          await deleteValue(channelStorageId(device, channelId, state.pendingVersion!)).catch(() => undefined);
+          continue;
+        }
+        throw new Error('This device has not received a valid pending channel key delivery');
+      }
+
+      if (!state.pendingAcknowledgedDeviceIds.includes(device.deviceId)) continue;
+      const acknowledged = new Set(state.pendingAcknowledgedDeviceIds);
+      const missing = state.recipients.filter((recipient) => !acknowledged.has(recipient.deviceId));
+      if (missing.length === 0) continue;
+      try {
+        await distributeFromDelivery(channelId, pending.delivery, missing, device);
+        channelKeyScopes.assertCurrent(scope);
+      } catch (error) {
+        channelKeyScopes.assertCurrent(scope);
+        // The candidate key is immutable per distributor. A conflict means
+        // this device already supplied its one repair candidate.
+        if (!(error instanceof ApiError && error.status === 409)) throw error;
+      }
+      throw new Error('Channel key activation is waiting for recipient acknowledgements');
+    }
+
+    if (state.rotationRequired || state.currentVersion === 0) {
+      if (!state.canRotate) {
+        throw new Error('Channel key rotation is pending an authorized workspace manager');
+      }
+      if (!state.recipients.some((recipient) => recipient.deviceId === device.deviceId)) {
+        throw new Error('Current device is not an authorized key recipient');
+      }
+      if (
+        state.currentVersion > 0
+        && (!active || !state.distributedDeviceIds.includes(device.deviceId))
+      ) {
+        throw new Error('Current device must accept the active channel key before rotating it');
+      }
+
+      const raw = crypto.getRandomValues(new Uint8Array(32));
+      try {
+        const commitment = await computeKeyCommitment(raw);
+        const keys = await wrapForRecipients(raw, state.recipients, {
+          channelId,
+          version: state.nextVersion,
+          keyCommitment: commitment,
+        });
+        try {
+          await api.distributeChannelKeys(channelId, state.nextVersion, commitment, keys);
+          channelKeyScopes.assertCurrent(scope);
+        } catch (error) {
+          channelKeyScopes.assertCurrent(scope);
+          if (error instanceof ApiError && error.status === 409) continue;
+          throw error;
+        }
+        const key = await importChannelKey(raw);
+        await saveChannelKeyForScope(
+          channelStorageId(device, channelId, state.nextVersion),
+          key,
+          scope,
+        );
+        // Delivery ids are server-generated. Refetch before signing the exact
+        // candidate acknowledgement; a locally reconstructed row is unsafe.
+        continue;
+      } finally {
+        raw.fill(0);
+      }
+    }
+
+    if (!active || !state.distributedDeviceIds.includes(device.deviceId)) {
+      throw new Error('This device has not received the active channel key; approve it from an existing device');
+    }
+
+    const distributed = new Set(state.distributedDeviceIds);
+    const missing = state.recipients.filter((recipient) => !distributed.has(recipient.deviceId));
+    if (missing.length > 0) {
+      try {
+        await distributeFromDelivery(channelId, active.delivery, missing, device);
+        channelKeyScopes.assertCurrent(scope);
+      } catch (error) {
+        channelKeyScopes.assertCurrent(scope);
+        if (!(error instanceof ApiError && error.status === 409)) throw error;
+      }
+    }
+    channelKeyScopes.assertCurrent(scope);
+    return { key: active.key, version: state.currentVersion };
+  }
+
+  throw new Error('Channel key state changed too many times; retry the operation');
+}
+
+async function unwrapChannelKey(encryptedKey: string, device: ActiveDevice): Promise<Uint8Array> {
+  const raw = await crypto.subtle.decrypt(
+    { name: 'RSA-OAEP' },
+    device.encryptionPrivateKey,
+    base64ToArrayBuffer(encryptedKey),
+  );
+  return new Uint8Array(raw);
+}
+
+export function orderChannelKeyDeliveries<T extends Pick<ChannelKeyDelivery, 'deliveryId'>>(
+  deliveries: readonly T[],
+): T[] {
+  return [...deliveries].sort((left, right) => (
+    left.deliveryId < right.deliveryId ? -1 : left.deliveryId > right.deliveryId ? 1 : 0
+  ));
+}
+
+export async function tryChannelKeyDeliveries<T>(
+  deliveries: readonly ChannelKeyDelivery[],
+  attempt: (delivery: ChannelKeyDelivery) => Promise<T | null>,
+): Promise<{ delivery: ChannelKeyDelivery; value: T } | null> {
+  for (const delivery of orderChannelKeyDeliveries(deliveries)) {
+    const value = await attempt(delivery);
+    if (value !== null) return { delivery, value };
+  }
+  return null;
+}
+
+export function isDecryptableChannelKeyEpoch(status: ChannelKeyEpochStatus): boolean {
+  return status === 'active' || status === 'retired';
+}
+
+function deliveriesForEpoch(
+  deliveries: readonly ChannelKeyDelivery[],
+  status: ChannelKeyEpochStatus,
+  version: number,
+  keyCommitment: string,
+): ChannelKeyDelivery[] {
+  return deliveries.filter((delivery) => (
+    delivery.epochStatus === status
+    && delivery.version === version
+    && delivery.keyCommitment === keyCommitment
+  ));
+}
+
+function hasAdjacentEpochStatus(
+  deliveries: readonly ChannelKeyDelivery[],
+  version: number,
+  keyCommitment: string | null,
+  expectedStatus: ChannelKeyEpochStatus,
+): boolean {
+  if (version === 0 || !keyCommitment) return false;
+  return deliveries.some((delivery) => (
+    delivery.version === version
+    && delivery.keyCommitment === keyCommitment
+    && delivery.epochStatus !== expectedStatus
+  ));
+}
+
+function assertKeyRecipientState(state: ChannelKeyRecipientState): void {
+  if ((state.currentVersion === 0) !== (state.keyCommitment === null)) {
+    throw new Error('Server returned an invalid active channel key state');
+  }
+  if ((state.pendingVersion === null) !== (state.pendingKeyCommitment === null)) {
+    throw new Error('Server returned an invalid pending channel key state');
+  }
+  if (state.nextVersion <= state.currentVersion || (state.pendingVersion !== null && state.nextVersion <= state.pendingVersion)) {
+    throw new Error('Server returned a non-monotonic channel key version');
+  }
+}
+
+async function loadChannelKeyDelivery(
+  channelId: string,
+  deliveries: readonly ChannelKeyDelivery[],
+  device: ActiveDevice,
+  scope: ChannelKeyScopeToken,
+  shouldAcknowledge: (delivery: ChannelKeyDelivery) => boolean,
+): Promise<LoadedChannelKeyDelivery | null> {
+  if (deliveries.length === 0) return null;
+  const attempted = await tryChannelKeyDeliveries(deliveries, async (delivery) => {
+    const storageId = channelStorageId(device, channelId, delivery.version);
+    const stored = await loadValue<CryptoKey>(storageId);
+    channelKeyScopes.assertCurrent(scope);
+    if (stored instanceof CryptoKey && delivery.confirmedAt) {
+      return { key: stored, acknowledged: false };
+    }
+
+    // Every unconfirmed immutable candidate is checked independently. A
+    // malicious first writer therefore cannot prevent a later honest delivery.
+    const raw = await unwrapCommittedChannelKey(channelId, delivery, device);
+    if (!raw) return null;
+    try {
+      const key = await importChannelKey(raw);
+      await saveChannelKeyForScope(storageId, key, scope);
+      let acknowledged = false;
+      if (!delivery.confirmedAt && shouldAcknowledge(delivery)) {
+        await acknowledgeCommittedChannelKey(channelId, delivery, device);
+        channelKeyScopes.assertCurrent(scope);
+        acknowledged = true;
+      }
+      return { key, acknowledged };
+    } finally {
+      raw.fill(0);
+    }
+  });
+  if (!attempted) return null;
+  return { ...attempted.value, delivery: attempted.delivery };
+}
+
+async function acknowledgeCommittedChannelKey(
+  channelId: string,
+  wrapped: ChannelKeyDelivery,
+  device: ActiveDevice,
+): Promise<void> {
+  const signature = await signDevicePayload(serializeChannelKeyAcknowledgement({
+    deliveryId: wrapped.deliveryId,
+    channelId,
+    keyVersion: wrapped.version,
+    keyCommitment: wrapped.keyCommitment,
+    recipientDeviceId: device.deviceId,
+    distributorDeviceId: wrapped.distributorDeviceId,
+    encryptedKey: wrapped.encryptedKey,
+  }));
+  await api.acknowledgeChannelKey(channelId, wrapped.deliveryId, signature);
+}
+
+async function unwrapCommittedChannelKey(
+  channelId: string,
+  wrapped: ChannelKeyDelivery,
+  device: ActiveDevice,
+): Promise<Uint8Array | null> {
+  const envelope = {
+    channelId,
+    keyVersion: wrapped.version,
+    keyCommitment: wrapped.keyCommitment,
+    recipientDeviceId: device.deviceId,
+    encryptedKey: wrapped.encryptedKey,
+  };
+  if (!await verifyDevicePayload(
+    serializeChannelKeyWrap(envelope),
+    wrapped.signature,
+    wrapped.distributorIdentityKey,
+  )) return null;
+  let raw: Uint8Array;
+  try {
+    raw = await unwrapChannelKey(wrapped.encryptedKey, device);
+  } catch {
+    return null;
+  }
+  if (await computeKeyCommitment(raw) !== wrapped.keyCommitment) {
+    raw.fill(0);
+    return null;
+  }
+  return raw;
+}
+
+async function distributeFromDelivery(
+  channelId: string,
+  delivery: ChannelKeyDelivery,
+  recipients: Array<{ deviceId: string; identityKey: string }>,
+  device: ActiveDevice,
+): Promise<void> {
+  const raw = await unwrapCommittedChannelKey(channelId, delivery, device);
+  if (!raw) throw new Error('Channel key commitment verification failed');
+  try {
+    const keys = await wrapForRecipients(raw, recipients, {
+      channelId,
+      version: delivery.version,
+      keyCommitment: delivery.keyCommitment,
+    });
+    await api.distributeChannelKeys(channelId, delivery.version, delivery.keyCommitment, keys);
+  } finally {
+    raw.fill(0);
+  }
+}
+
+async function abortPendingChannelKeyEpoch(
+  channelId: string,
+  state: ChannelKeyRecipientState,
+  device: ActiveDevice,
+): Promise<void> {
+  if (state.pendingVersion === null || state.pendingKeyCommitment === null) {
+    throw new Error('There is no pending channel key epoch to abort');
+  }
+  const signature = await signDevicePayload(serializeChannelKeyEpochAbort({
+    channelId,
+    keyVersion: state.pendingVersion,
+    keyCommitment: state.pendingKeyCommitment,
+    deviceId: device.deviceId,
+  }));
+  await api.abortChannelKeyEpoch(
+    channelId,
+    state.pendingVersion,
+    state.pendingKeyCommitment,
+    signature,
+  );
+}
+
+async function computeKeyCommitment(raw: Uint8Array): Promise<string> {
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', raw.buffer as ArrayBuffer));
+  return arrayBufferToBase64(digest).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+async function importChannelKey(raw: Uint8Array): Promise<CryptoKey> {
+  return crypto.subtle.importKey('raw', raw.buffer as ArrayBuffer, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+}
+
+async function wrapForRecipients(
+  raw: Uint8Array,
+  recipients: Array<{ deviceId: string; identityKey: string }>,
+  context: { channelId: string; version: number; keyCommitment: string },
+): Promise<Array<{ deviceId: string; encryptedKey: string; signature: string }>> {
+  return Promise.all(recipients.map(async (recipient) => {
+    const encryptedKey = await wrapChannelKey(raw, recipient.identityKey);
+    const signature = await signDevicePayload(serializeChannelKeyWrap({
+      channelId: context.channelId,
+      keyVersion: context.version,
+      keyCommitment: context.keyCommitment,
+      recipientDeviceId: recipient.deviceId,
+      encryptedKey,
+    }));
+    return { deviceId: recipient.deviceId, encryptedKey, signature };
+  }));
+}
+
+export async function getChannelKeyForVersion(channelId: string, version: number): Promise<CryptoKey | null> {
+  const scope = channelKeyScopes.capture(channelId);
+  const device = getActiveDevice();
+  const deliveries = (await api.getChannelKeys(channelId)).filter((delivery) => (
+    delivery.version === version && isDecryptableChannelKeyEpoch(delivery.epochStatus)
+  ));
+  channelKeyScopes.assertCurrent(scope);
+  const loaded = await loadChannelKeyDelivery(
+    channelId,
+    deliveries,
+    device,
+    scope,
+    (delivery) => delivery.epochStatus === 'active',
+  );
+  channelKeyScopes.assertCurrent(scope);
+  return loaded?.key ?? null;
+}
+
+/** Best-effort local hygiene after this device loses channel access. */
+export async function deletePersistedChannelKeys(channelId: string): Promise<void> {
+  // Synchronous invalidation is deliberately first: any already-running key
+  // fetch/import cannot return or persist after this point, even if its
+  // network response wins the IndexedDB deletion race.
+  channelKeyScopes.invalidate(channelId);
+  const previous = channelKeyDeletionQueues.get(channelId) || Promise.resolve();
+  const deletion = previous.catch(() => undefined).then(async () => {
+    const device = getActiveDevice();
+    const prefix = buildChannelStoragePrefix(device.userId, device.deviceId, channelId);
+    await deletePersistedChannelKeysForPrefix(prefix);
+  });
+  channelKeyDeletionQueues.set(channelId, deletion);
+  try {
+    await deletion;
+  } finally {
+    if (channelKeyDeletionQueues.get(channelId) === deletion) channelKeyDeletionQueues.delete(channelId);
+  }
+}
+
+async function deletePersistedChannelKeysForPrefix(prefix: string): Promise<void> {
+  const db = await getDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, 'readwrite');
+    const request = tx.objectStore(STORE_NAME).openCursor(IDBKeyRange.bound(prefix, `${prefix}\uffff`));
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor) return;
+      if (isChannelStorageKeyForPrefix(cursor.key, prefix)) cursor.delete();
+      cursor.continue();
+    };
+    request.onerror = () => reject(request.error);
+    tx.oncomplete = () => { db.close(); resolve(); };
+    tx.onerror = () => { db.close(); reject(tx.error); };
+    tx.onabort = () => { db.close(); reject(tx.error); };
+  });
+}
+
+/** Restore only after a fresh authorized channel-list response includes it. */
+export async function restoreChannelKeyScope(channelId: string): Promise<void> {
+  // A fresh authorization response cannot race a still-running cursor delete;
+  // otherwise that delete could remove a newly persisted authorized key.
+  while (channelKeyDeletionQueues.has(channelId)) {
+    await channelKeyDeletionQueues.get(channelId)!.catch(() => undefined);
+  }
+  channelKeyScopes.restore(channelId);
+}
+
+async function saveChannelKeyForScope(
+  storageId: string,
+  key: CryptoKey,
+  scope: ChannelKeyScopeToken,
+): Promise<void> {
+  channelKeyScopes.assertCurrent(scope);
+  await saveValue(storageId, key);
+  if (channelKeyScopes.isCurrent(scope)) return;
+  // A revocation can race the IDB transaction after its cursor already
+  // passed this key. Remove the late write before rejecting the operation.
+  await deleteValue(storageId).catch(() => undefined);
+  channelKeyScopes.assertCurrent(scope);
+}
+
+export function buildChannelStoragePrefix(userId: string, deviceId: string, channelId: string): string {
+  if (![userId, deviceId, channelId].every(isUuid)) throw new Error('Channel key scope is invalid');
+  return `channel:${userId}:${deviceId}:${channelId}:`;
+}
+
+export function isChannelStorageKeyForPrefix(key: IDBValidKey, prefix: string): boolean {
+  if (typeof key !== 'string' || !key.startsWith(prefix)) return false;
+  const version = key.slice(prefix.length);
+  return /^[1-9]\d{0,6}$/.test(version) && Number(version) <= 1_000_000;
+}
+
+export async function encryptMessage(
+  content: string,
+  channelKey: CryptoKey,
+  envelope: Omit<SignedMessageEnvelope, 'encryptedContent' | 'contentNonce'>,
+) {
+  const nonce = crypto.getRandomValues(new Uint8Array(12));
+  const encrypted = await crypto.subtle.encrypt({
+    name: 'AES-GCM',
+    iv: nonce,
+    additionalData: new TextEncoder().encode(serializeMessageAad(envelope)),
+    tagLength: 128,
+  }, channelKey, new TextEncoder().encode(content));
+  return { encrypted: arrayBufferToBase64(encrypted), nonce: arrayBufferToBase64(nonce) };
+}
+
+export async function decryptMessage(message: SignedMessageEnvelope, channelKey: CryptoKey): Promise<string> {
+  const decrypted = await crypto.subtle.decrypt({
+    name: 'AES-GCM',
+    iv: base64ToArrayBuffer(message.contentNonce),
+    additionalData: new TextEncoder().encode(serializeMessageAad(message)),
+    tagLength: 128,
+  }, channelKey, base64ToArrayBuffer(message.encryptedContent));
+  return new TextDecoder('utf-8', { fatal: true }).decode(decrypted);
+}
+
+export async function signMessageEnvelope(envelope: SignedMessageEnvelope): Promise<string> {
+  return signDevicePayload(serializeMessageEnvelope(envelope));
+}
+
+export async function signAttachmentEnvelope(envelope: SignedAttachmentEnvelope): Promise<string> {
+  return signDevicePayload(serializeAttachmentEnvelope(envelope));
+}
+
+export async function signVoiceSignalEnvelope(envelope: SignedVoiceSignalEnvelope): Promise<string> {
+  return signDevicePayload(serializeVoiceSignalEnvelope(envelope));
+}
+
+async function signDevicePayload(payload: string): Promise<string> {
+  const signature = await crypto.subtle.sign(
+    { name: 'ECDSA', hash: 'SHA-256' },
+    getActiveDevice().signingPrivateKey,
+    new TextEncoder().encode(payload),
+  );
+  return arrayBufferToBase64(signature);
+}
+
+export async function verifyMessageSignature(envelope: SignedMessageEnvelope, signature: string, identityKey: string): Promise<boolean> {
+  return verifyDevicePayload(serializeMessageEnvelope(envelope), signature, identityKey);
+}
+
+export async function verifyAttachmentSignature(
+  envelope: SignedAttachmentEnvelope,
+  signature: string,
+  identityKey: string,
+): Promise<boolean> {
+  return verifyDevicePayload(serializeAttachmentEnvelope(envelope), signature, identityKey);
+}
+
+export async function verifyVoiceSignalSignature(
+  envelope: SignedVoiceSignalEnvelope,
+  signature: string,
+  identityKey: string,
+): Promise<boolean> {
+  return verifyDevicePayload(serializeVoiceSignalEnvelope(envelope), signature, identityKey);
+}
+
+async function verifyDevicePayload(payload: string, signature: string, identityKey: string): Promise<boolean> {
+  try {
+    const parsed = JSON.parse(identityKey) as DevicePublicBundle;
+    if (parsed.version !== 1 || parsed.signingKey.kty !== 'EC' || parsed.signingKey.crv !== 'P-256' || parsed.signingKey.alg !== 'ES256') {
+      return false;
+    }
+    const publicKey = await crypto.subtle.importKey(
+      'jwk',
+      parsed.signingKey,
+      { name: 'ECDSA', namedCurve: 'P-256' },
+      false,
+      ['verify'],
+    );
+    return crypto.subtle.verify(
+      { name: 'ECDSA', hash: 'SHA-256' },
+      publicKey,
+      base64ToArrayBuffer(signature),
+      new TextEncoder().encode(payload),
+    );
+  } catch {
+    return false;
+  }
+}
+
+async function wrapChannelKey(raw: Uint8Array, identityKey: string): Promise<string> {
+  const parsed = JSON.parse(identityKey) as DevicePublicBundle;
+  if (parsed.version !== 1 || parsed.encryptionKey.kty !== 'RSA' || parsed.encryptionKey.alg !== 'RSA-OAEP-256') {
+    throw new Error('Invalid recipient identity key');
+  }
   const publicKey = await crypto.subtle.importKey(
     'jwk',
-    publicKeyJwk,
+    parsed.encryptionKey,
     { name: 'RSA-OAEP', hash: 'SHA-256' },
     false,
     ['encrypt'],
   );
-
-  const encoder = new TextEncoder();
-  const data = encoder.encode(channelKeyJwk);
-  const encrypted = await crypto.subtle.encrypt(
+  return arrayBufferToBase64(await crypto.subtle.encrypt(
     { name: 'RSA-OAEP' },
     publicKey,
-    data,
-  );
-
-  return arrayBufferToBase64(encrypted);
+    raw.buffer as ArrayBuffer,
+  ));
 }
 
-// Decrypt channel key with device private key
-export async function decryptChannelKey(encryptedKeyBase64: string, privateKeyJwk: string): Promise<string> {
-  const privateKey = await crypto.subtle.importKey(
-    'jwk',
-    JSON.parse(privateKeyJwk),
-    { name: 'RSA-OAEP', hash: 'SHA-256' },
-    false,
-    ['decrypt'],
-  );
-
-  const encrypted = base64ToArrayBuffer(encryptedKeyBase64);
-  const decrypted = await crypto.subtle.decrypt(
-    { name: 'RSA-OAEP' },
-    privateKey,
-    encrypted,
-  );
-
-  const decoder = new TextDecoder();
-  return decoder.decode(decrypted);
+function channelStorageId(device: ActiveDevice, channelId: string, version: number) {
+  return `channel:${device.userId}:${device.deviceId}:${channelId}:${version}`;
 }
 
-// Helper functions
+function isUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
+function browserDeviceName(): string {
+  const nav = navigator as Navigator & { userAgentData?: { platform?: string } };
+  const platform = nav.userAgentData?.platform || navigator.platform || 'Web';
+  return `Web (${platform.slice(0, 60)})`;
+}
+
 function arrayBufferToBase64(buffer: ArrayBuffer | Uint8Array): string {
   const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
   let binary = '';
-  for (let i = 0; i < bytes.byteLength; i++) {
-    binary += String.fromCharCode(bytes[i]);
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
   }
   return btoa(binary);
 }
@@ -194,21 +888,6 @@ function arrayBufferToBase64(buffer: ArrayBuffer | Uint8Array): string {
 function base64ToArrayBuffer(base64: string): ArrayBuffer {
   const binary = atob(base64);
   const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  return bytes.buffer as ArrayBuffer;
-}
-
-function jwkToPem(jwk: JsonWebKey, type: 'PUBLIC' | 'PRIVATE'): string {
-  const base64 = btoa(JSON.stringify(jwk));
-  return `-----BEGIN ${type} KEY-----\n${base64}\n-----END ${type} KEY-----`;
-}
-
-function pemToJwk(pem: string): JsonWebKey {
-  const base64 = pem
-    .replace(/-----BEGIN.*-----/, '')
-    .replace(/-----END.*-----/, '')
-    .replace(/\s/g, '');
-  return JSON.parse(atob(base64));
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  return bytes.buffer;
 }
