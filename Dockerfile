@@ -1,4 +1,4 @@
-FROM node:24-alpine3.22@sha256:191c9f0080fcbbc6547a85dc0ff7988072214a355aabdc1d2ec55a7dae5eea8a AS build
+FROM node:26-alpine3.22@sha256:c7932b9e5e337b0e733d6e16abc1b0e104759e8b05e59ed56586cce967d26dfe AS build
 
 WORKDIR /app
 RUN apk add --no-cache 'libcrypto3=3.5.8-r0' 'libssl3=3.5.8-r0'
@@ -13,7 +13,7 @@ RUN pnpm install --frozen-lockfile
 COPY packages ./packages
 RUN pnpm build
 
-FROM node:24-alpine3.22@sha256:191c9f0080fcbbc6547a85dc0ff7988072214a355aabdc1d2ec55a7dae5eea8a AS runtime
+FROM node:26-alpine3.22@sha256:c7932b9e5e337b0e733d6e16abc1b0e104759e8b05e59ed56586cce967d26dfe AS runtime
 
 ENV NODE_ENV=production \
     BIND_HOST=127.0.0.1
