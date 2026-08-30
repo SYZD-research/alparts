@@ -1,6 +1,5 @@
 import { db } from '../db/index.js';
 import {
-  channelKeys,
   channels,
   channelMembers,
   channelPreferences,
@@ -9,66 +8,74 @@ import {
   workspaces,
   users,
 } from '../db/schema.js';
-import { eq, and, asc, inArray, sql } from 'drizzle-orm';
+import { eq, and, asc, inArray, ne, sql } from 'drizzle-orm';
 import { Permissions } from '@alparts/shared';
 import { auditedTransaction } from '../middleware/audit.js';
-import { MAX_CATEGORIES_PER_WORKSPACE, MAX_CHANNELS_PER_WORKSPACE } from '../security/limits.js';
+import {
+  MAX_CATEGORIES_PER_WORKSPACE,
+  MAX_CHANNELS_PER_WORKSPACE,
+  MAX_TOTAL_CHANNELS_PER_WORKSPACE,
+  MAX_WORKSPACE_MEMBERS,
+} from '../security/limits.js';
 import {
   applyViewerEffectsAndRotation,
   captureChannelViewersFromStore,
+  getChannelAuthorizationFromSnapshot,
   getChannelAuthorizationFromStore,
   getChannelViewerIdsFromStore,
+  getWorkspaceAuthorizationFromSnapshot,
   getWorkspaceAuthorizationFromStore,
   isVisibleChannelAuthorization,
+  loadWorkspaceAuthorizationSnapshot,
+  lockWorkspaceForAuthorization,
 } from './authorization.service.js';
 
 export async function getWorkspaceChannels(workspaceId: string, userId: string) {
-  const allChannels = await db.query.channels.findMany({
-    where: eq(channels.workspaceId, workspaceId),
-    orderBy: [asc(channels.position), asc(channels.id)],
+  return db.transaction(async (transaction) => {
+    await lockWorkspaceForAuthorization(transaction, workspaceId, 'share');
+    const snapshot = await loadWorkspaceAuthorizationSnapshot(transaction, workspaceId);
+    if (!snapshot) return [];
+    return snapshot.channels.flatMap((channel) => (
+      isVisibleChannelAuthorization(getChannelAuthorizationFromSnapshot(snapshot, userId, channel, {}, false))
+        ? [formatChannel(channel as any)]
+        : []
+    ));
   });
-
-  const result = [];
-  for (const ch of allChannels) {
-    const authorization = await getChannelAuthorizationFromStore(db, userId, ch);
-    if (isVisibleChannelAuthorization(authorization)) result.push(formatChannel(ch));
-  }
-
-  return result;
 }
 
 export async function getWorkspaceCategories(workspaceId: string, userId: string) {
-  const workspaceAuthorization = await getWorkspaceAuthorizationFromStore(db, workspaceId, userId);
-  if (!workspaceAuthorization) return [];
-  const canManageEmptyCategories = workspaceAuthorization.isOwner
-    || (workspaceAuthorization.permissionMask & Permissions.MANAGE_CHANNELS) === Permissions.MANAGE_CHANNELS;
-  const cats = await db.query.categories.findMany({
-    where: eq(categories.workspaceId, workspaceId),
-    orderBy: [asc(categories.position), asc(categories.id)],
-    with: {
-      channels: {
-        orderBy: [asc(channels.position), asc(channels.id)],
-      },
-    },
-  });
-
-  const result = [];
-  for (const category of cats) {
-    const visibleChannels = [];
-    for (const channel of category.channels) {
-      const authorization = await getChannelAuthorizationFromStore(db, userId, channel);
-      if (isVisibleChannelAuthorization(authorization)) visibleChannels.push(formatChannel(channel));
-    }
-    if (visibleChannels.length === 0 && !canManageEmptyCategories) continue;
-    result.push({
-      id: category.id,
-      workspaceId: category.workspaceId,
-      name: category.name,
-      position: category.position,
-      channels: visibleChannels,
+  return db.transaction(async (transaction) => {
+    await lockWorkspaceForAuthorization(transaction, workspaceId, 'share');
+    const snapshot = await loadWorkspaceAuthorizationSnapshot(transaction, workspaceId);
+    if (!snapshot) return [];
+    const workspaceAuthorization = getWorkspaceAuthorizationFromSnapshot(snapshot, userId);
+    if (!workspaceAuthorization) return [];
+    const canManageEmptyCategories = workspaceAuthorization.isOwner
+      || (workspaceAuthorization.permissionMask & Permissions.MANAGE_CHANNELS) === Permissions.MANAGE_CHANNELS;
+    const cats = await transaction.query.categories.findMany({
+      where: eq(categories.workspaceId, workspaceId),
+      orderBy: [asc(categories.position), asc(categories.id)],
+      limit: MAX_CATEGORIES_PER_WORKSPACE + 1,
     });
-  }
-  return result;
+    if (cats.length > MAX_CATEGORIES_PER_WORKSPACE) throw new Error('CATEGORY_INVARIANT_EXCEEDED');
+
+    return cats.flatMap((category: any) => {
+      const visibleChannels = snapshot.channels.flatMap((channel) => (
+        channel.categoryId === category.id
+        && isVisibleChannelAuthorization(getChannelAuthorizationFromSnapshot(snapshot, userId, channel, {}, false))
+          ? [formatChannel(channel as any)]
+          : []
+      ));
+      if (visibleChannels.length === 0 && !canManageEmptyCategories) return [];
+      return [{
+        id: category.id,
+        workspaceId: category.workspaceId,
+        name: category.name,
+        position: category.position,
+        channels: visibleChannels,
+      }];
+    });
+  });
 }
 
 export async function createChannel(
@@ -85,7 +92,7 @@ export async function createChannel(
     await assertWorkspaceChannelManager(transaction, workspaceId, actorId);
     const existingChannels = await transaction.query.channels.findMany({
       columns: { id: true },
-      where: eq(channels.workspaceId, workspaceId),
+      where: and(eq(channels.workspaceId, workspaceId), ne(channels.type, 'dm')),
       limit: MAX_CHANNELS_PER_WORKSPACE + 1,
     });
     if (existingChannels.length >= MAX_CHANNELS_PER_WORKSPACE) throw new Error('CHANNEL_LIMIT_REACHED');
@@ -310,16 +317,17 @@ export async function deleteCategory(workspaceId: string, categoryId: string, ac
       columns: { id: true },
       where: and(eq(channels.workspaceId, workspaceId), eq(channels.categoryId, categoryId)),
       orderBy: [asc(channels.id)],
+      limit: MAX_TOTAL_CHANNELS_PER_WORKSPACE + 1,
     });
+    if (affectedChannels.length > MAX_TOTAL_CHANNELS_PER_WORKSPACE) throw new Error('CHANNEL_INVARIANT_EXCEEDED');
     for (const channel of affectedChannels) {
       await transaction.execute(sql`select pg_advisory_xact_lock(hashtext(${channel.id})::bigint)`);
     }
     const affectedChannelIds = affectedChannels.map((channel: { id: string }) => channel.id);
     const before = await captureChannelViewersFromStore(transaction, workspaceId, affectedChannelIds);
-    const movedChannels = await transaction.update(channels)
+    await transaction.update(channels)
       .set({ categoryId: null })
-      .where(and(eq(channels.workspaceId, workspaceId), eq(channels.categoryId, categoryId)))
-      .returning({ id: channels.id });
+      .where(and(eq(channels.workspaceId, workspaceId), eq(channels.categoryId, categoryId)));
     await transaction.delete(categories)
       .where(and(eq(categories.id, categoryId), eq(categories.workspaceId, workspaceId)));
     const after = await captureChannelViewersFromStore(transaction, workspaceId, affectedChannelIds);
@@ -360,7 +368,9 @@ export async function getChannelMembers(channelId: string) {
   const result = await db.query.users.findMany({
     where: inArray(users.id, viewerIds),
     orderBy: [asc(users.id)],
+    limit: MAX_WORKSPACE_MEMBERS + 1,
   });
+  if (result.length > MAX_WORKSPACE_MEMBERS) throw new Error('WORKSPACE_MEMBER_INVARIANT_EXCEEDED');
   return result.map((user) => ({
     id: user.id,
     displayName: user.displayName,
@@ -418,7 +428,9 @@ export async function removeChannelMember(channelId: string, userId: string, act
     const explicitMembers = await transaction.query.channelMembers.findMany({
       columns: { userId: true },
       where: eq(channelMembers.channelId, channelId),
+      limit: MAX_WORKSPACE_MEMBERS + 1,
     });
+    if (explicitMembers.length > MAX_WORKSPACE_MEMBERS) throw new Error('PRIVATE_MEMBERSHIP_INVARIANT_EXCEEDED');
     if (explicitMembers.length <= 1) throw new Error('LAST_PRIVATE_MEMBER');
     const before = await captureChannelViewersFromStore(transaction, channel.workspaceId, [channelId]);
     await transaction.delete(channelMembers).where(and(

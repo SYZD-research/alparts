@@ -3,7 +3,11 @@ import { config } from './config/index.js';
 import { logError, logInfo } from './security/logger.js';
 import { cleanupExpiredUploads } from './services/file.service.js';
 import { flushAuditCheckpoint, verifyAuditChain } from './middleware/audit.js';
-import { closeDb } from './db/index.js';
+import { checkDatabaseSchema, closeDb } from './db/index.js';
+import { closePasswordWorkers } from './security/password-work.js';
+
+const migrationCount = await checkDatabaseSchema();
+logInfo('database.schema_verified', { migrations: migrationCount });
 
 const auditState = await verifyAuditChain();
 if (!auditState.valid) throw new Error('Audit log integrity verification failed');
@@ -16,8 +20,17 @@ httpServer.listen(config.port, config.bindHost, () => logInfo('server.started', 
   environment: config.nodeEnv,
 }));
 
+let uploadCleanupRunning = false;
 const uploadCleanup = setInterval(() => {
-  void cleanupExpiredUploads().catch((error) => logError('attachments.cleanup', error));
+  if (uploadCleanupRunning) {
+    logInfo('attachments.cleanup_skipped', { outcome: 'busy' });
+    return;
+  }
+  uploadCleanupRunning = true;
+  void cleanupExpiredUploads()
+    .then((removed) => logInfo('attachments.cleanup_complete', { removed, outcome: 'success' }))
+    .catch((error) => logError('attachments.cleanup', error))
+    .finally(() => { uploadCleanupRunning = false; });
 }, 15 * 60 * 1000);
 uploadCleanup.unref();
 
@@ -45,6 +58,7 @@ function shutdown(signal: string): Promise<void> {
     } catch (error) {
       auditFlushError = error;
     }
+    await closePasswordWorkers();
     await closeDb();
     if (auditFlushError) throw auditFlushError;
     logInfo('server.shutdown_complete');
@@ -57,3 +71,16 @@ function shutdown(signal: string): Promise<void> {
 
 process.once('SIGTERM', () => { void shutdown('SIGTERM'); });
 process.once('SIGINT', () => { void shutdown('SIGINT'); });
+
+function fatal(kind: 'uncaughtException' | 'unhandledRejection', error: unknown): void {
+  logError(`process.${kind}`, error);
+  const forcedExit = setTimeout(() => process.exit(1), 30_000);
+  forcedExit.unref();
+  void shutdown(kind).finally(() => {
+    clearTimeout(forcedExit);
+    process.exit(1);
+  });
+}
+
+process.once('uncaughtException', (error) => fatal('uncaughtException', error));
+process.once('unhandledRejection', (error) => fatal('unhandledRejection', error));

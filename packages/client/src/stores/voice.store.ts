@@ -94,10 +94,13 @@ let voiceCandidate = false;
 let voiceCandidateSamples = 0;
 let lastPublishedVoiceState = '';
 const incomingSequences = new VoiceSignalSequenceTracker();
+const MAX_PENDING_VOICE_OPERATIONS_PER_PEER = 64;
 const outboundSequences = new Map<string, number>();
 const outboundQueues = new Map<string, Promise<void>>();
+const outboundQueueDepths = new Map<string, number>();
 const peers = new Map<string, RTCPeerConnection>();
 const peerQueues = new Map<string, Promise<void>>();
+const peerQueueDepths = new Map<string, number>();
 const pendingIce = new Map<string, RTCIceCandidateInit[]>();
 const remoteStreams = new Map<string, MediaStream>();
 
@@ -617,6 +620,9 @@ function currentSignalContext(targetParticipantId: string, generation: number) {
 }
 
 async function sendSignedSignal(envelope: SignedVoiceSignalEnvelope, generation: number): Promise<void> {
+  const depth = outboundQueueDepths.get(envelope.targetParticipantId) ?? 0;
+  if (depth >= MAX_PENDING_VOICE_OPERATIONS_PER_PEER) throw new Error('VOICE_SIGNAL_CAPACITY');
+  outboundQueueDepths.set(envelope.targetParticipantId, depth + 1);
   const previous = outboundQueues.get(envelope.targetParticipantId) ?? Promise.resolve();
   const next = previous.catch(() => undefined).then(async () => {
     const signature = await signVoiceSignalEnvelope(envelope);
@@ -628,6 +634,7 @@ async function sendSignedSignal(envelope: SignedVoiceSignalEnvelope, generation:
   try {
     await next;
   } finally {
+    decrementQueueDepth(outboundQueueDepths, envelope.targetParticipantId);
     if (outboundQueues.get(envelope.targetParticipantId) === next) {
       outboundQueues.delete(envelope.targetParticipantId);
     }
@@ -649,18 +656,35 @@ async function flushPendingIce(participantId: string, peer: RTCPeerConnection): 
 }
 
 function enqueuePeerOperation(participantId: string, operation: () => Promise<void>): void {
+  const depth = peerQueueDepths.get(participantId) ?? 0;
+  if (depth >= MAX_PENDING_VOICE_OPERATIONS_PER_PEER) {
+    useVoiceStore.setState({ quality: 'fair' });
+    return;
+  }
+  peerQueueDepths.set(participantId, depth + 1);
   const previous = peerQueues.get(participantId) ?? Promise.resolve();
   const next = previous.catch(() => undefined).then(operation);
   peerQueues.set(participantId, next);
   void next.finally(() => {
+    decrementQueueDepth(peerQueueDepths, participantId);
     if (peerQueues.get(participantId) === next) peerQueues.delete(participantId);
   }).catch(() => undefined);
 }
 
+function decrementQueueDepth(depths: Map<string, number>, participantId: string): void {
+  const remaining = (depths.get(participantId) ?? 1) - 1;
+  if (remaining <= 0) depths.delete(participantId);
+  else depths.set(participantId, remaining);
+}
+
 async function loadDeviceDirectory(channelId: string): Promise<Map<string, DeviceDirectoryEntry>> {
   if (!directoryPromise) {
-    directoryPromise = api.getChannelDeviceDirectory(channelId).then((entries) => {
-      if (entries.length > 400) throw new Error('Invalid device directory');
+    const requestedDeviceIds = [...new Set(useVoiceStore.getState().participants.map((entry) => entry.deviceId))];
+    if (requestedDeviceIds.length < 1 || requestedDeviceIds.length > MAX_VOICE_PARTICIPANTS) {
+      throw new Error('Invalid voice device directory request');
+    }
+    directoryPromise = api.getChannelDeviceDirectory(channelId, requestedDeviceIds).then((entries) => {
+      if (entries.length > MAX_VOICE_PARTICIPANTS) throw new Error('Invalid device directory');
       const result = new Map<string, DeviceDirectoryEntry>();
       for (const entry of entries) {
         if (
@@ -837,7 +861,9 @@ function removePeer(participantId: string): void {
   }
   peers.delete(participantId);
   peerQueues.delete(participantId);
+  peerQueueDepths.delete(participantId);
   outboundQueues.delete(participantId);
+  outboundQueueDepths.delete(participantId);
   outboundSequences.delete(participantId);
   incomingSequences.remove(participantId);
   pendingIce.delete(participantId);
@@ -861,14 +887,16 @@ function teardownVoiceRuntime(notifyServer: boolean): void {
   incomingSequences.clear();
   outboundSequences.clear();
   outboundQueues.clear();
+  outboundQueueDepths.clear();
   lastPublishedVoiceState = '';
   lastSpeakingTransitionAt = 0;
   stopLocalLevelMonitoring();
   if (statsTimer) clearInterval(statsTimer);
   statsTimer = null;
   statsRunning = false;
-  for (const participantId of [...peers.keys()]) removePeer(participantId);
+  for (const participantId of peers.keys()) removePeer(participantId);
   peerQueues.clear();
+  peerQueueDepths.clear();
   pendingIce.clear();
   if (remoteStreams.size > 0) {
     remoteStreams.clear();

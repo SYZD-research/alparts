@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNotNull, isNull, ne, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNotNull, isNull, ne, or, sql } from 'drizzle-orm';
 import { Permissions } from '@alparts/shared';
 import { db } from '../db/index.js';
 import {
@@ -24,10 +24,19 @@ import {
   verifyChannelKeyEpochAbortSignature,
   verifyChannelKeyWrapSignature,
 } from '../security/message.js';
-import { MAX_KEY_RECIPIENTS } from '../security/limits.js';
+import {
+  MAX_DEVICE_DIRECTORY_ENTRIES,
+  MAX_DEVICE_DIRECTORY_LOOKUP_IDS,
+  MAX_KEY_DELIVERIES_PER_FETCH,
+  MAX_KEY_DELIVERIES_PER_HISTORY_BATCH,
+  MAX_KEY_RECIPIENTS,
+  MAX_KEY_VERSION_LOOKUP_IDS,
+  MAX_LEGACY_KEY_VERSION_LOOKUP_IDS,
+} from '../security/limits.js';
 import {
   abortPendingChannelKeyEpochs,
   areRequiredRecipientsAcknowledged,
+  hasRevokedEpochRecipient,
   nextChannelKeyVersion,
 } from './key-epoch-state.js';
 
@@ -79,7 +88,9 @@ export async function getKeyRecipients(channelId: string, userId: string, sender
       eq(channelKeyEpochRecipients.version, activeEpoch.version),
       isNotNull(channelKeyEpochRecipients.acceptedDeliveryId),
     ),
+    limit: MAX_KEY_RECIPIENTS + 1,
   }) : [];
+  if (activeAcknowledgements.length > MAX_KEY_RECIPIENTS) throw new Error('KEY_RECIPIENT_INVARIANT_EXCEEDED');
   const pendingAcknowledgements = pendingEpoch ? await db.query.channelKeyEpochRecipients.findMany({
     columns: { deviceId: true },
     where: and(
@@ -87,7 +98,9 @@ export async function getKeyRecipients(channelId: string, userId: string, sender
       eq(channelKeyEpochRecipients.version, pendingEpoch.version),
       isNotNull(channelKeyEpochRecipients.acceptedDeliveryId),
     ),
+    limit: MAX_KEY_RECIPIENTS + 1,
   }) : [];
+  if (pendingAcknowledgements.length > MAX_KEY_RECIPIENTS) throw new Error('KEY_RECIPIENT_INVARIANT_EXCEEDED');
   const senderPendingRecipient = pendingEpoch && senderDeviceId
     ? await db.query.channelKeyEpochRecipients.findFirst({
       columns: { deviceId: true },
@@ -101,6 +114,22 @@ export async function getKeyRecipients(channelId: string, userId: string, sender
     : null;
 
   const activeAcknowledgedDeviceIds = new Set(activeAcknowledgements.map((row) => row.deviceId));
+  const activeHasRevokedRecipient = activeEpoch
+    ? await hasRevokedEpochRecipient(db, channelId, activeEpoch.version)
+    : false;
+  const pendingHasRevokedRecipient = pendingEpoch
+    ? await hasRevokedEpochRecipient(db, channelId, pendingEpoch.version)
+    : false;
+  const effectiveRotationRequired = channel.keyRotationRequired || activeHasRevokedRecipient;
+  const activeHasEligibleHolder = recipientDevices.some((device) => (
+    activeAcknowledgedDeviceIds.has(device.id)
+  ));
+  // If every accepted holder is gone, preserving the old epoch is impossible.
+  // An authorized current device may create a fresh epoch for future writes;
+  // old ciphertext remains unavailable and is never silently re-encrypted.
+  const historyRecoveryRequired = Boolean(
+    activeEpoch && effectiveRotationRequired && !activeHasEligibleHolder
+  );
   const hasRotationPermission = channel.type === 'dm'
     || (authorization.permissions & Permissions.MANAGE_CHANNELS) === Permissions.MANAGE_CHANNELS;
   const senderIsEligible = Boolean(senderDeviceId && recipientDevices.some(
@@ -114,15 +143,23 @@ export async function getKeyRecipients(channelId: string, userId: string, sender
     && senderIsEligible
     && (
       !activeEpoch
-      || (channel.keyRotationRequired && senderDeviceId && activeAcknowledgedDeviceIds.has(senderDeviceId))
+      || (
+        effectiveRotationRequired
+        && senderDeviceId
+        && (activeAcknowledgedDeviceIds.has(senderDeviceId) || historyRecoveryRequired)
+      )
     )
   );
   const canAbortPending = Boolean(
     pendingEpoch
     && hasRotationPermission
     && senderIsEligible
-    && senderPendingRecipient
-    && (!activeEpoch || (senderDeviceId && activeAcknowledgedDeviceIds.has(senderDeviceId)))
+    && (senderPendingRecipient || pendingHasRevokedRecipient)
+    && (
+      !activeEpoch
+      || (senderDeviceId && activeAcknowledgedDeviceIds.has(senderDeviceId))
+      || historyRecoveryRequired
+    )
   );
 
   return {
@@ -130,9 +167,11 @@ export async function getKeyRecipients(channelId: string, userId: string, sender
     keyCommitment: activeEpoch?.keyCommitment ?? null,
     pendingVersion: pendingEpoch?.version ?? null,
     pendingKeyCommitment: pendingEpoch?.keyCommitment ?? null,
+    pendingInvalid: pendingHasRevokedRecipient,
     pendingAcknowledgedDeviceIds: pendingAcknowledgements.map((row) => row.deviceId),
     nextVersion,
-    rotationRequired: channel.keyRotationRequired,
+    rotationRequired: effectiveRotationRequired,
+    historyRecoveryRequired,
     canRotate,
     canAbortPending,
     distributedDeviceIds: [...activeAcknowledgedDeviceIds],
@@ -144,7 +183,13 @@ export async function getKeyRecipients(channelId: string, userId: string, sender
   };
 }
 
-export async function getDeviceChannelKeys(channelId: string, userId: string, deviceId: string) {
+export async function getDeviceChannelKeys(
+  channelId: string,
+  userId: string,
+  deviceId: string,
+  requestedVersions?: readonly number[],
+  includeLegacyWindow = false,
+) {
   const authorization = await getChannelAuthorization(userId, channelId);
   if (!authorization) throw new Error('CHANNEL_NOT_FOUND');
   const device = await db.query.devices.findFirst({
@@ -152,28 +197,90 @@ export async function getDeviceChannelKeys(channelId: string, userId: string, de
   });
   if (!device) throw new Error('DEVICE_REQUIRED');
 
-  const keys = await db.query.channelKeys.findMany({
-    where: and(eq(channelKeys.channelId, channelId), eq(channelKeys.deviceId, deviceId)),
-    orderBy: [desc(channelKeys.version), asc(channelKeys.createdAt), asc(channelKeys.id)],
-  });
-  const versions = [...new Set(keys.map((key) => key.version))];
-  const epochs = versions.length === 0 ? [] : await db.query.channelKeyEpochs.findMany({
-    where: and(eq(channelKeyEpochs.channelId, channelId), inArray(channelKeyEpochs.version, versions)),
-  });
-  const epochsByVersion = new Map(epochs.map((epoch) => [epoch.version, epoch]));
-  const recipientStates = versions.length === 0 ? [] : await db.query.channelKeyEpochRecipients.findMany({
+  if (requestedVersions && (
+    requestedVersions.length < 1
+    || requestedVersions.length > MAX_KEY_VERSION_LOOKUP_IDS
+    || new Set(requestedVersions).size !== requestedVersions.length
+  )) throw new Error('KEY_VERSION_LOOKUP_LIMIT');
+  const epochRows = requestedVersions !== undefined
+    ? await db.query.channelKeyEpochs.findMany({
+      where: and(
+        eq(channelKeyEpochs.channelId, channelId),
+        inArray(channelKeyEpochs.version, [...requestedVersions]),
+      ),
+      limit: requestedVersions.length + 1,
+    })
+    : includeLegacyWindow
+      ? await db.query.channelKeyEpochs.findMany({
+        where: and(
+          eq(channelKeyEpochs.channelId, channelId),
+          inArray(channelKeyEpochs.status, ['active', 'pending', 'retired']),
+        ),
+        orderBy: [desc(channelKeyEpochs.version)],
+        limit: MAX_LEGACY_KEY_VERSION_LOOKUP_IDS,
+      })
+      : await db.query.channelKeyEpochs.findMany({
+        where: and(
+          eq(channelKeyEpochs.channelId, channelId),
+          inArray(channelKeyEpochs.status, ['active', 'pending']),
+        ),
+        orderBy: [desc(channelKeyEpochs.version)],
+        limit: 3,
+      });
+  if (
+    (requestedVersions && epochRows.length > requestedVersions.length)
+    || (!requestedVersions && !includeLegacyWindow && epochRows.length > 2)
+  ) {
+    throw new Error('KEY_EPOCH_INVARIANT_EXCEEDED');
+  }
+  const versions = epochRows.map((epoch) => epoch.version);
+  if (versions.length === 0) return [];
+  const epochsByVersion = new Map(epochRows.map((epoch) => [epoch.version, epoch]));
+  const recipientStates = await db.query.channelKeyEpochRecipients.findMany({
     where: and(
       eq(channelKeyEpochRecipients.channelId, channelId),
       eq(channelKeyEpochRecipients.deviceId, deviceId),
       inArray(channelKeyEpochRecipients.version, versions),
     ),
+    limit: versions.length + 1,
   });
+  if (recipientStates.length > versions.length) throw new Error('KEY_RECIPIENT_INVARIANT_EXCEEDED');
   const recipientStatesByVersion = new Map(recipientStates.map((recipient) => [recipient.version, recipient]));
+  const mutableVersions = epochRows
+    .filter((epoch) => epoch.status === 'active' || epoch.status === 'pending')
+    .map((epoch) => epoch.version);
+  const acceptedDeliveryIds = recipientStates.flatMap((recipient) => (
+    recipient.acceptedDeliveryId ? [recipient.acceptedDeliveryId] : []
+  ));
+  const legacyProtocolVersions = epochRows
+    .filter((epoch) => epoch.protocolVersion === 1)
+    .map((epoch) => epoch.version);
+  const deliveryLimit = requestedVersions === undefined && !includeLegacyWindow
+    ? MAX_KEY_DELIVERIES_PER_FETCH
+    : MAX_KEY_DELIVERIES_PER_HISTORY_BATCH;
+  const keys = await db.query.channelKeys.findMany({
+    where: and(
+      eq(channelKeys.channelId, channelId),
+      eq(channelKeys.deviceId, deviceId),
+      or(
+        mutableVersions.length > 0 ? inArray(channelKeys.version, mutableVersions) : sql`false`,
+        acceptedDeliveryIds.length > 0 ? inArray(channelKeys.id, acceptedDeliveryIds) : sql`false`,
+        legacyProtocolVersions.length > 0
+          ? and(inArray(channelKeys.version, legacyProtocolVersions), isNotNull(channelKeys.confirmedAt))
+          : sql`false`,
+      ),
+    ),
+    orderBy: [desc(channelKeys.version), asc(channelKeys.createdAt), asc(channelKeys.id)],
+    limit: deliveryLimit + 1,
+  });
+  if (keys.length > deliveryLimit) throw new Error('KEY_DELIVERY_INVARIANT_EXCEEDED');
   const distributorIds = [...new Set(keys.flatMap((key) => key.distributorDeviceId ? [key.distributorDeviceId] : []))];
   const distributors = distributorIds.length === 0 ? [] : await db.query.devices.findMany({
     columns: { id: true, identityKey: true },
     where: inArray(devices.id, distributorIds),
+    limit: deliveryLimit + 1,
   });
+  if (distributors.length > deliveryLimit) throw new Error('DEVICE_DIRECTORY_INVARIANT_EXCEEDED');
   const distributorKeys = new Map(distributors.map((candidate) => [candidate.id, candidate.identityKey]));
 
   return keys.flatMap((key) => {
@@ -209,33 +316,123 @@ export async function getDeviceChannelKeys(channelId: string, userId: string, de
   });
 }
 
-export async function getChannelDeviceDirectory(channelId: string, userId: string) {
+export async function getChannelDeviceDirectory(
+  channelId: string,
+  userId: string,
+  requestedDeviceIds?: readonly string[],
+) {
   if (!await getChannelAuthorization(userId, channelId)) throw new Error('CHANNEL_NOT_FOUND');
   const recipientUserIds = await getRecipientUserIds(channelId);
+  const requestedIds = requestedDeviceIds === undefined
+    ? null
+    : [...new Set(requestedDeviceIds)];
+  const requestedCount = requestedDeviceIds?.length;
+  if (requestedIds && (
+    requestedIds.length < 1
+    || requestedIds.length > MAX_DEVICE_DIRECTORY_LOOKUP_IDS
+    || requestedIds.length !== requestedCount
+  )) throw new Error('DEVICE_DIRECTORY_LOOKUP_LIMIT');
+
+  // Pre-batched browser clients used an unscoped directory for history. Keep a
+  // strictly bounded rollout bridge so an open old tab can still verify normal
+  // history, while new clients always request at most 64 exact device ids.
+  if (!requestedIds) {
+    const currentDevices = recipientUserIds.length === 0 ? [] : await db.query.devices.findMany({
+      columns: { id: true },
+      where: and(inArray(devices.userId, recipientUserIds), isNull(devices.revokedAt)),
+      limit: MAX_DEVICE_DIRECTORY_ENTRIES + 1,
+    });
+    if (currentDevices.length > MAX_DEVICE_DIRECTORY_ENTRIES) {
+      throw new Error('DEVICE_DIRECTORY_INVARIANT_EXCEEDED');
+    }
+    const historicalRows = await db.selectDistinct({ deviceId: messages.deviceId })
+      .from(messages)
+      .where(and(eq(messages.channelId, channelId), isNotNull(messages.deviceId)))
+      .limit(MAX_DEVICE_DIRECTORY_ENTRIES + 1);
+    const historicalAttachmentRows = await db.selectDistinct({ deviceId: attachments.signerDeviceId })
+      .from(attachments)
+      .where(and(eq(attachments.channelId, channelId), isNotNull(attachments.signerDeviceId)))
+      .limit(MAX_DEVICE_DIRECTORY_ENTRIES + 1);
+    if (
+      historicalRows.length > MAX_DEVICE_DIRECTORY_ENTRIES
+      || historicalAttachmentRows.length > MAX_DEVICE_DIRECTORY_ENTRIES
+    ) throw new Error('DEVICE_DIRECTORY_INVARIANT_EXCEEDED');
+    const legacyDeviceIds = [...new Set([
+      ...currentDevices.map((candidate) => candidate.id),
+      ...historicalRows.flatMap((row) => row.deviceId ? [row.deviceId] : []),
+      ...historicalAttachmentRows.flatMap((row) => row.deviceId ? [row.deviceId] : []),
+    ])];
+    if (legacyDeviceIds.length > MAX_DEVICE_DIRECTORY_ENTRIES) {
+      throw new Error('DEVICE_DIRECTORY_INVARIANT_EXCEEDED');
+    }
+    if (legacyDeviceIds.length === 0) return [];
+    const legacyDevices = await db.query.devices.findMany({
+      where: inArray(devices.id, legacyDeviceIds),
+      limit: MAX_DEVICE_DIRECTORY_ENTRIES + 1,
+    });
+    if (legacyDevices.length > MAX_DEVICE_DIRECTORY_ENTRIES) {
+      throw new Error('DEVICE_DIRECTORY_INVARIANT_EXCEEDED');
+    }
+    return legacyDevices.map((candidate) => ({
+      deviceId: candidate.id,
+      userId: candidate.userId,
+      identityKey: candidate.identityKey,
+    }));
+  }
+
   const currentDevices = recipientUserIds.length === 0 ? [] : await db.query.devices.findMany({
     columns: { id: true },
-    where: and(inArray(devices.userId, recipientUserIds), isNull(devices.revokedAt)),
+    where: and(
+      inArray(devices.id, requestedIds),
+      inArray(devices.userId, recipientUserIds),
+      isNull(devices.revokedAt),
+    ),
+    limit: requestedIds.length + 1,
   });
+  if (currentDevices.length > requestedIds.length) throw new Error('DEVICE_DIRECTORY_INVARIANT_EXCEEDED');
   const historicalRows = await db.selectDistinct({ deviceId: messages.deviceId })
     .from(messages)
-    .where(and(eq(messages.channelId, channelId), isNotNull(messages.deviceId)));
+    .where(and(
+      eq(messages.channelId, channelId),
+      isNotNull(messages.deviceId),
+      inArray(messages.deviceId, requestedIds),
+    ))
+    .limit(requestedIds.length + 1);
+  if (historicalRows.length > requestedIds.length) throw new Error('DEVICE_DIRECTORY_INVARIANT_EXCEEDED');
   const historicalAttachmentRows = await db.selectDistinct({ deviceId: attachments.signerDeviceId })
     .from(attachments)
-    .where(and(eq(attachments.channelId, channelId), isNotNull(attachments.signerDeviceId)));
+    .where(and(
+      eq(attachments.channelId, channelId),
+      isNotNull(attachments.signerDeviceId),
+      inArray(attachments.signerDeviceId, requestedIds),
+    ))
+    .limit(requestedIds.length + 1);
+  if (historicalAttachmentRows.length > requestedIds.length) {
+    throw new Error('DEVICE_DIRECTORY_INVARIANT_EXCEEDED');
+  }
   const deviceIds = [...new Set([
     ...currentDevices.map((candidate) => candidate.id),
     ...historicalRows.flatMap((row) => row.deviceId ? [row.deviceId] : []),
     ...historicalAttachmentRows.flatMap((row) => row.deviceId ? [row.deviceId] : []),
   ])];
   if (deviceIds.length === 0) return [];
+  if (deviceIds.length > requestedIds.length) throw new Error('DEVICE_DIRECTORY_INVARIANT_EXCEEDED');
   // Historical signing public keys remain verifiable after revocation or
   // membership loss. This directory is not a key-recipient grant.
-  const rows = await db.query.devices.findMany({ where: inArray(devices.id, deviceIds) });
-  return rows.map((candidate) => ({
-    deviceId: candidate.id,
-    userId: candidate.userId,
-    identityKey: candidate.identityKey,
-  }));
+  const rows = await db.query.devices.findMany({
+    where: inArray(devices.id, deviceIds),
+    limit: deviceIds.length + 1,
+  });
+  if (rows.length > deviceIds.length) throw new Error('DEVICE_DIRECTORY_INVARIANT_EXCEEDED');
+  const byId = new Map(rows.map((candidate) => [candidate.id, candidate]));
+  return requestedIds.flatMap((deviceId) => {
+    const candidate = byId.get(deviceId);
+    return candidate ? [{
+      deviceId: candidate.id,
+      userId: candidate.userId,
+      identityKey: candidate.identityKey,
+    }] : [];
+  });
 }
 
 export async function distributeChannelKeys(
@@ -252,6 +449,7 @@ export async function distributeChannelKeys(
     insertedCount: number;
     workspaceId: string;
     mode: 'proposal' | 'delivery';
+    historyRecovery: boolean;
   }>(async (tx) => {
     await lockKeyProtocol(tx);
     const channelLocation = await tx.query.channels.findFirst({
@@ -298,6 +496,16 @@ export async function distributeChannelKeys(
       orderBy: [desc(channelKeyEpochs.version)],
     });
     const nextVersion = nextChannelKeyVersion(latestEpoch?.version);
+    const activeHasRevokedRecipient = activeEpoch
+      ? await hasRevokedEpochRecipient(tx, channelId, activeEpoch.version)
+      : false;
+    const effectiveRotationRequired = channel.keyRotationRequired || activeHasRevokedRecipient;
+    const activeHasEligibleHolder = activeEpoch
+      ? await hasAnyAcceptedEpochRecipient(tx, channelId, activeEpoch.version, [...eligibleById.keys()])
+      : false;
+    const historyRecoveryRequired = Boolean(
+      activeEpoch && effectiveRotationRequired && !activeHasEligibleHolder
+    );
 
     if (version === nextVersion) {
       if (pendingEpoch) throw new Error('KEY_EPOCH_PENDING');
@@ -311,8 +519,11 @@ export async function distributeChannelKeys(
         && (authorization.permissions & Permissions.MANAGE_CHANNELS) !== Permissions.MANAGE_CHANNELS
       ) throw new Error('KEY_ROTATION_FORBIDDEN');
       if (activeEpoch) {
-        if (!channel.keyRotationRequired) throw new Error('KEY_ROTATION_NOT_REQUIRED');
-        if (!await hasAcceptedEpoch(tx, channelId, activeEpoch.version, senderDeviceId)) {
+        if (!effectiveRotationRequired) throw new Error('KEY_ROTATION_NOT_REQUIRED');
+        if (
+          !historyRecoveryRequired
+          && !await hasAcceptedEpoch(tx, channelId, activeEpoch.version, senderDeviceId)
+        ) {
           throw new Error('KEY_DISTRIBUTION_FORBIDDEN');
         }
       }
@@ -347,6 +558,7 @@ export async function distributeChannelKeys(
         insertedCount: inserted.length,
         workspaceId: channel.workspaceId,
         mode: 'proposal' as const,
+        historyRecovery: historyRecoveryRequired,
       };
     }
 
@@ -374,8 +586,11 @@ export async function distributeChannelKeys(
         eq(channelKeys.channelId, channelId),
         eq(channelKeys.version, version),
         inArray(channelKeys.deviceId, [...suppliedIds]),
+        eq(channelKeys.distributorDeviceId, senderDeviceId),
       ),
+      limit: suppliedIds.size + 1,
     });
+    if (existingCandidates.length > suppliedIds.size) throw new Error('KEY_DELIVERY_INVARIANT_EXCEEDED');
     const newWrappedKeys: WrappedKeyInput[] = [];
     for (const key of wrappedKeys) {
       const existing = existingCandidates.find((candidate) => (
@@ -414,11 +629,12 @@ export async function distributeChannelKeys(
     const targetRecipients: Array<typeof channelKeyEpochRecipients.$inferSelect> = newRecipientIds.length === 0
       ? []
       : await tx.query.channelKeyEpochRecipients.findMany({
-      where: and(
-        eq(channelKeyEpochRecipients.channelId, channelId),
-        eq(channelKeyEpochRecipients.version, version),
-        inArray(channelKeyEpochRecipients.deviceId, newRecipientIds),
-      ),
+        where: and(
+          eq(channelKeyEpochRecipients.channelId, channelId),
+          eq(channelKeyEpochRecipients.version, version),
+          inArray(channelKeyEpochRecipients.deviceId, newRecipientIds),
+        ),
+        limit: newRecipientIds.length + 1,
       });
     if (
       targetRecipients.length !== newRecipientIds.length
@@ -431,9 +647,19 @@ export async function distributeChannelKeys(
       throw new Error('KEY_ALREADY_DISTRIBUTED');
     }
 
-    for (const recipientId of newRecipientIds) {
-      const candidates = existingCandidates.filter((candidate) => candidate.deviceId === recipientId);
-      if (candidates.length >= MAX_KEY_RECIPIENTS) throw new Error('KEY_DELIVERY_LIMIT');
+    const candidateCounts: Array<{ deviceId: string; count: number }> = newRecipientIds.length === 0 ? [] : await tx.select({
+      deviceId: channelKeys.deviceId,
+      count: sql<number>`count(*)::int`,
+    }).from(channelKeys).where(and(
+      eq(channelKeys.channelId, channelId),
+      eq(channelKeys.version, version),
+      inArray(channelKeys.deviceId, newRecipientIds),
+    )).groupBy(channelKeys.deviceId).limit(newRecipientIds.length + 1);
+    if (
+      candidateCounts.length > newRecipientIds.length
+      || candidateCounts.some((candidate) => Number(candidate.count) >= MAX_KEY_RECIPIENTS)
+    ) {
+      throw new Error('KEY_DELIVERY_LIMIT');
     }
 
     const inserted = newWrappedKeys.length === 0 ? [] : await tx.insert(channelKeys).values(
@@ -452,10 +678,15 @@ export async function distributeChannelKeys(
       insertedCount: inserted.length,
       workspaceId: channel.workspaceId,
       mode: 'delivery' as const,
+      historyRecovery: false,
     };
   }, (committed) => ({
     actorId: userId,
-    action: committed.mode === 'proposal' ? 'channel.key.epoch.propose' : 'channel.key.delivery.add',
+    action: committed.historyRecovery
+      ? 'channel.key.epoch.recovery.propose'
+      : committed.mode === 'proposal'
+        ? 'channel.key.epoch.propose'
+        : 'channel.key.delivery.add',
     targetType: 'channel',
     targetId: channelId,
     details: {
@@ -463,6 +694,7 @@ export async function distributeChannelKeys(
       version,
       recipientCount: committed.recipientCount,
       insertedCount: committed.insertedCount,
+      historyRecovery: committed.historyRecovery,
     },
   }));
   return {
@@ -470,6 +702,7 @@ export async function distributeChannelKeys(
     recipientCount: result.recipientCount,
     insertedCount: result.insertedCount,
     mode: result.mode,
+    historyRecovery: result.historyRecovery,
   };
 }
 
@@ -580,7 +813,9 @@ export async function acknowledgeChannelKey(
           eq(channelKeyEpochRecipients.version, epoch.version),
           eq(channelKeyEpochRecipients.requiredForActivation, true),
         ),
+        limit: MAX_KEY_RECIPIENTS + 1,
       });
+      if (requiredRecipients.length > MAX_KEY_RECIPIENTS) throw new Error('KEY_RECIPIENT_INVARIANT_EXCEEDED');
       if (areRequiredRecipientsAcknowledged(requiredRecipients)) {
         const snapshotValid = await isRequiredSnapshotStillAuthorized(tx, channel, requiredRecipients);
         if (!snapshotValid) {
@@ -694,13 +929,20 @@ export async function abortPendingChannelKey(
         eq(channelKeyEpochRecipients.userId, userId),
       ),
     });
-    if (!pendingRecipient) throw new Error('KEY_ABORT_FORBIDDEN');
+    const pendingInvalid = await hasRevokedEpochRecipient(tx, channelId, version);
+    if (!pendingRecipient && !pendingInvalid) throw new Error('KEY_ABORT_FORBIDDEN');
 
     const activeEpoch = await tx.query.channelKeyEpochs.findFirst({
       where: and(eq(channelKeyEpochs.channelId, channelId), eq(channelKeyEpochs.status, 'active')),
     });
     if (activeEpoch && !await hasAcceptedEpoch(tx, channelId, activeEpoch.version, deviceId)) {
-      throw new Error('KEY_ABORT_FORBIDDEN');
+      const eligible = await getEligibleDevicesFromStore(tx, channel);
+      if (await hasAnyAcceptedEpochRecipient(
+        tx,
+        channelId,
+        activeEpoch.version,
+        eligible.map((candidate) => candidate.id),
+      )) throw new Error('KEY_ABORT_FORBIDDEN');
     }
     const abortedChannelIds = await abortPendingChannelKeyEpochs(tx, [channelId]);
     if (!abortedChannelIds.includes(channelId)) throw new Error('KEY_ABORT_FAILED');
@@ -727,11 +969,14 @@ async function getEligibleDevicesFromStore(
 ): Promise<EligibleDevice[]> {
   const recipientUserIds = await getChannelViewerIdsFromStore(store, channel);
   if (recipientUserIds.length === 0) return [];
-  return store.select({ id: devices.id, userId: devices.userId, identityKey: devices.identityKey })
+  const result = await store.select({ id: devices.id, userId: devices.userId, identityKey: devices.identityKey })
     .from(devices)
     .where(and(inArray(devices.userId, recipientUserIds), isNull(devices.revokedAt)))
     .orderBy(asc(devices.id))
-    .for('share') as Promise<EligibleDevice[]>;
+    .limit(MAX_KEY_RECIPIENTS + 1)
+    .for('share') as EligibleDevice[];
+  if (result.length > MAX_KEY_RECIPIENTS) throw new Error('KEY_RECIPIENT_INVARIANT_EXCEEDED');
+  return result;
 }
 
 async function hasAcceptedEpoch(
@@ -750,6 +995,26 @@ async function hasAcceptedEpoch(
     ),
   });
   return Boolean(recipient?.acceptedDeliveryId);
+}
+
+async function hasAnyAcceptedEpochRecipient(
+  store: any,
+  channelId: string,
+  version: number,
+  eligibleDeviceIds: readonly string[],
+): Promise<boolean> {
+  if (eligibleDeviceIds.length === 0) return false;
+  if (eligibleDeviceIds.length > MAX_KEY_RECIPIENTS) throw new Error('KEY_RECIPIENT_LIMIT');
+  const recipient = await store.query.channelKeyEpochRecipients.findFirst({
+    columns: { deviceId: true },
+    where: and(
+      eq(channelKeyEpochRecipients.channelId, channelId),
+      eq(channelKeyEpochRecipients.version, version),
+      inArray(channelKeyEpochRecipients.deviceId, [...eligibleDeviceIds]),
+      isNotNull(channelKeyEpochRecipients.acceptedDeliveryId),
+    ),
+  });
+  return Boolean(recipient);
 }
 
 async function isRequiredSnapshotStillAuthorized(

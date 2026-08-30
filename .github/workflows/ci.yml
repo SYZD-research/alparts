@@ -1,0 +1,292 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CI: "true"
+
+jobs:
+  quality:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24.8.0"
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm test:backup-security
+      - run: pnpm build
+      - run: pnpm security:secrets
+      - run: pnpm audit --prod --audit-level high
+      - name: Validate generated changes and shell syntax
+        run: |
+          git diff --check
+          bash -n dev.sh just_run.sh scripts/*.sh scripts/lib/*.sh scripts/tests/*.sh
+
+  integration:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    services:
+      postgres:
+        image: postgres:16.10-alpine3.22@sha256:029660641a0cfc575b14f336ba448fb8a75fd595d42e1fa316b9fb4378742297
+        env:
+          POSTGRES_USER: alparts_test
+          POSTGRES_PASSWORD: integration-only-password
+          POSTGRES_DB: alparts_test
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U alparts_test -d alparts_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24.8.0"
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Start disposable object storage
+        run: >-
+          docker run --detach --name alparts-ci-minio --publish 127.0.0.1:9000:9000
+          --env MINIO_ROOT_USER=integration-access-key
+          --env MINIO_ROOT_PASSWORD=integration-secret-key-at-least-32-bytes
+          minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e server /data
+      - name: Provision disposable object bucket
+        run: >-
+          docker run --rm --network host --entrypoint sh
+          minio/mc:RELEASE.2025-08-13T08-35-41Z@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
+          -c 'until mc alias set local http://127.0.0.1:9000 integration-access-key integration-secret-key-at-least-32-bytes; do sleep 1; done; mc mb --ignore-existing local/alparts'
+      - name: Build and replay image-compatible migrations on disposable database
+        run: |
+          printf -v DATABASE_URL '%s://%s:%s@%s:%s/%s' \
+            postgresql "$DATABASE_USER" "$DATABASE_PASSWORD" 127.0.0.1 5433 "$DATABASE_NAME"
+          export DATABASE_URL
+          pnpm --filter @alparts/server build
+          pnpm --filter @alparts/server db:migrate:runtime
+          pnpm --filter @alparts/server db:migrate:runtime
+        env:
+          NODE_ENV: test
+          DATABASE_USER: alparts_test
+          DATABASE_PASSWORD: integration-only-password
+          DATABASE_NAME: alparts_test
+          DB_SSL: "false"
+      - name: Run security integration suite
+        run: |
+          printf -v DATABASE_URL '%s://%s:%s@%s:%s/%s' \
+            postgresql "$DATABASE_USER" "$DATABASE_PASSWORD" 127.0.0.1 5433 "$DATABASE_NAME"
+          export DATABASE_URL
+          pnpm --filter @alparts/server test:integration
+        env:
+          NODE_ENV: test
+          DATABASE_USER: alparts_test
+          DATABASE_PASSWORD: integration-only-password
+          DATABASE_NAME: alparts_test
+          DB_SSL: "false"
+          MINIO_ENDPOINT: 127.0.0.1
+          MINIO_PORT: "9000"
+          MINIO_USE_SSL: "false"
+          MINIO_ACCESS_KEY: integration-access-key
+          MINIO_SECRET_KEY: integration-secret-key-at-least-32-bytes
+          MINIO_BUCKET: alparts
+          JWT_SECRET: integration-jwt-secret-at-least-32-bytes
+          AUDIT_INTEGRITY_KEY: integration-audit-key-at-least-32-bytes
+          REGISTRATION_INVITE_SECRET: integration-bootstrap-secret-at-least-32-bytes
+          CORS_ORIGINS: http://localhost:5173
+
+  supply-chain:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16.10-alpine3.22@sha256:029660641a0cfc575b14f336ba448fb8a75fd595d42e1fa316b9fb4378742297
+        env:
+          POSTGRES_USER: alparts_supply
+          POSTGRES_PASSWORD: supply-chain-only-password
+          POSTGRES_DB: alparts_supply
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U alparts_supply -d alparts_supply"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Filesystem vulnerability scan
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # 0.36.0
+        with:
+          version: v0.74.0
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,misconfig,secret
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+      - name: Build final OCI artifact
+        run: docker build --tag alparts-ci:${{ github.sha }} .
+      - name: Final OCI artifact vulnerability scan
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # 0.36.0
+        with:
+          version: v0.74.0
+          scan-type: image
+          image-ref: alparts-ci:${{ github.sha }}
+          scanners: vuln,secret
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+      - name: Start disposable object storage for final OCI smoke
+        run: >-
+          docker run --detach --name alparts-ci-supply-minio --publish 127.0.0.1:9000:9000
+          --env MINIO_ROOT_USER=supply-access-key
+          --env MINIO_ROOT_PASSWORD=supply-secret-key-at-least-32-bytes
+          minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e server /data
+      - name: Provision final OCI smoke bucket
+        run: >-
+          docker run --rm --network host --entrypoint sh
+          minio/mc:RELEASE.2025-08-13T08-35-41Z@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
+          -c 'until mc alias set local http://127.0.0.1:9000 supply-access-key supply-secret-key-at-least-32-bytes; do sleep 1; done; mc mb --ignore-existing local/alparts-supply'
+      - name: Exercise final OCI schema gate, migrations, and startup
+        env:
+          IMAGE_REF: alparts-ci:${{ github.sha }}
+          DATABASE_USER: alparts_supply
+          DATABASE_PASSWORD: supply-chain-only-password
+          DATABASE_NAME: alparts_supply
+          MINIO_ACCESS_KEY: supply-access-key
+          MINIO_SECRET_KEY: supply-secret-key-at-least-32-bytes
+          JWT_SECRET: supply-jwt-secret-at-least-32-bytes
+          AUDIT_INTEGRITY_KEY: supply-audit-key-at-least-32-bytes
+        run: |
+          set -Eeuo pipefail
+          printf -v DATABASE_URL '%s://%s:%s@%s:%s/%s' \
+            postgresql "$DATABASE_USER" "$DATABASE_PASSWORD" 127.0.0.1 5432 "$DATABASE_NAME"
+          export DATABASE_URL
+          container_name=alparts-ci-oci-smoke
+          cleanup() {
+            docker rm --force "$container_name" >/dev/null 2>&1 || true
+            docker rm --force alparts-ci-supply-minio >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          migration_env=(
+            --env NODE_ENV=production
+            --env DATABASE_URL
+            --env DB_SSL=false
+            --env ALLOW_INSECURE_LOOPBACK_DEPENDENCIES=true
+          )
+
+          runtime_env=(
+            --env NODE_ENV=production
+            --env BIND_HOST=127.0.0.1
+            --env PORT=3100
+            --env DATABASE_URL
+            --env DB_SSL=false
+            --env MINIO_ENDPOINT=127.0.0.1
+            --env MINIO_PORT=9000
+            --env MINIO_USE_SSL=false
+            --env MINIO_BUCKET=alparts-supply
+            --env MINIO_ACCESS_KEY
+            --env MINIO_SECRET_KEY
+            --env JWT_SECRET
+            --env AUDIT_INTEGRITY_KEY
+            --env AUDIT_CHECKPOINT_PATH=/var/lib/alparts-audit/checkpoint.json
+            --env AUDIT_CHECKPOINT_REQUIRED=true
+            --env ALLOW_INSECURE_LOOPBACK_DEPENDENCIES=true
+            --env CORS_ORIGINS=https://alparts.invalid
+          )
+
+          docker run --rm --entrypoint sh "$IMAGE_REF" -ec '
+            test "$(id -u)" = 1000
+            for path in \
+              /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
+              /usr/local/bin/pnpm /usr/local/bin/yarn \
+              /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
+              /opt/yarn-v1.22.22; do
+              test ! -e "$path"
+            done
+          '
+
+          set +e
+          schema_output=$(docker run --rm --network host --read-only --cap-drop ALL \
+            --security-opt no-new-privileges "${runtime_env[@]}" "$IMAGE_REF" \
+            node packages/server/dist/index.js 2>&1)
+          schema_status=$?
+          set -e
+          test "$schema_status" -ne 0
+          case "$schema_output" in
+            *DATABASE_SCHEMA_CHECK_FAILED*|*DATABASE_SCHEMA_MISMATCH*) ;;
+            *) printf '%s\n' "$schema_output" >&2; exit 1 ;;
+          esac
+
+          docker run --rm --network host --read-only --cap-drop ALL \
+            --security-opt no-new-privileges "${migration_env[@]}" "$IMAGE_REF" \
+            node packages/server/dist/scripts/migrate-runtime.js
+          docker run --rm --network host --read-only --cap-drop ALL \
+            --security-opt no-new-privileges "${migration_env[@]}" "$IMAGE_REF" \
+            node packages/server/dist/scripts/migrate-runtime.js
+
+          docker run --detach --name "$container_name" --network host --read-only \
+            --tmpfs /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777 \
+            --tmpfs /var/lib/alparts-audit:rw,noexec,nosuid,nodev,uid=1000,gid=1000,mode=0700 \
+            --cap-drop ALL --security-opt no-new-privileges --pids-limit 256 \
+            --memory 1g --cpus 2 "${runtime_env[@]}" "$IMAGE_REF" sh -ec '
+              node packages/server/dist/scripts/initialize-audit-checkpoint.js
+              exec node packages/server/dist/index.js
+            '
+
+          ready=false
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:3100/health/ready >/dev/null; then
+              ready=true
+              break
+            fi
+            sleep 1
+          done
+          if [[ "$ready" != true ]]; then
+            docker logs "$container_name" >&2
+            exit 1
+          fi
+          docker stop --time 35 "$container_name" >/dev/null
+          test "$(docker inspect --format '{{.State.ExitCode}}' "$container_name")" = 0
+          runtime_logs=$(docker logs "$container_name" 2>&1)
+          case "$runtime_logs" in
+            *database.schema_verified*server.shutdown_started*server.shutdown_complete*) ;;
+            *) printf '%s\n' "$runtime_logs" >&2; exit 1 ;;
+          esac
+      - name: Generate CycloneDX SBOM
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        with:
+          path: .
+          format: cyclonedx-json
+          output-file: alparts-sbom.cdx.json
+          upload-artifact: false
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: alparts-sbom
+          path: alparts-sbom.cdx.json
+          if-no-files-found: error
+          retention-days: 14

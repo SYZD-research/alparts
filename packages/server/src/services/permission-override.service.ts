@@ -9,6 +9,7 @@ import {
   roles,
 } from '../db/schema.js';
 import { auditedTransaction } from '../middleware/audit.js';
+import { MAX_ROLES_PER_WORKSPACE, MAX_TOTAL_CHANNELS_PER_WORKSPACE } from '../security/limits.js';
 import {
   applyViewerEffectsAndRotation,
   assertValidChannelOverrideMask,
@@ -53,6 +54,7 @@ export async function listPermissionOverrides(
         eq(categoryRolePermissionOverrides.categoryId, targetId),
       ),
       orderBy: [asc(categoryRolePermissionOverrides.roleId)],
+      limit: MAX_ROLES_PER_WORKSPACE + 1,
     })
     : await db.query.channelRolePermissionOverrides.findMany({
       where: and(
@@ -60,7 +62,9 @@ export async function listPermissionOverrides(
         eq(channelRolePermissionOverrides.channelId, targetId),
       ),
       orderBy: [asc(channelRolePermissionOverrides.roleId)],
+      limit: MAX_ROLES_PER_WORKSPACE + 1,
     });
+  if (rows.length > MAX_ROLES_PER_WORKSPACE) throw new Error('OVERRIDE_INVARIANT_EXCEEDED');
   return rows.map(formatOverride);
 }
 
@@ -361,7 +365,9 @@ async function getAffectedChannelIds(store: any, target: OverrideTarget, workspa
     columns: { id: true },
     where: and(eq(channels.workspaceId, workspaceId), eq(channels.categoryId, targetId)),
     orderBy: [asc(channels.id)],
+    limit: MAX_TOTAL_CHANNELS_PER_WORKSPACE + 1,
   });
+  if (rows.length > MAX_TOTAL_CHANNELS_PER_WORKSPACE) throw new Error('CHANNEL_INVARIANT_EXCEEDED');
   return rows.map((channel: { id: string }) => channel.id);
 }
 

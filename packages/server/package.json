@@ -10,12 +10,14 @@
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test src/**/*.test.ts",
-    "test:integration": "RUN_INTEGRATION=1 tsx --test src/security/integration.test.ts",
+    "test:integration": "RUN_INTEGRATION=1 tsx --test --test-concurrency=1 src/security/audit-checkpoint-write-failure.integration.test.ts src/security/integration.test.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
+    "db:migrate:runtime": "node dist/scripts/migrate-runtime.js",
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio",
-    "audit:checkpoint:init": "tsx src/scripts/initialize-audit-checkpoint.ts"
+    "audit:checkpoint:init": "tsx src/scripts/initialize-audit-checkpoint.ts",
+    "audit:checkpoint:init:runtime": "node dist/scripts/initialize-audit-checkpoint.js"
   },
   "dependencies": {
     "@alparts/shared": "workspace:*",

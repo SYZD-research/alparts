@@ -1,0 +1,76 @@
+# Documentation index
+
+Last verified: 2026-08-30 against the current working tree.
+
+This is the navigation root for implementation, architecture, security, operations, and recovery material. Statements marked **implemented** are backed by the linked code or tests. Statements marked **target** are not current guarantees.
+
+## Start here
+
+- [Repository overview](../README.md)
+- [System inventory](./SYSTEM_INVENTORY.md)
+- [Architecture](../ARCHITECTURE.md)
+- [Known limitations](../LIMITATIONS.md)
+- [Risk register](./RISK_REGISTER.md)
+- [Verification record](./VERIFICATION.md)
+
+## Security
+
+- [Security policy](../SECURITY.md)
+- [Threat model](./security/THREAT_MODEL.md)
+- [Security audit and Deep Security Scan record](../SECURITY_AUDIT.md)
+- [Legacy top-level threat-model link](../THREAT_MODEL.md)
+
+## Reliability and operations
+
+- [Reliability model](../RELIABILITY.md)
+- [Failure-mode analysis](./reliability/FAILURE_MODES.md)
+- [SLI/SLO baseline](./reliability/SLO.md)
+- [Operations](../OPERATIONS.md)
+- [Detailed operator guide](./OPERATIONS.md)
+- [Backup and restore](./BACKUP.md)
+- [Disaster recovery](../DISASTER_RECOVERY.md)
+- [Incident runbook](./runbooks/INCIDENT_RESPONSE.md)
+
+## Deployment
+
+- [Deployment guide](../DEPLOYMENT.md)
+- [Capability levels](./deployment/CAPABILITY_LEVELS.md)
+- [Single-host production Compose](../compose.production.yml)
+- [Container build](../Dockerfile)
+- [Application systemd unit](../deploy/alparts.service)
+- [Backup service and timer](../deploy/alparts-backup.service)
+- [Development-only dependencies](../docker-compose.yml)
+
+## Design decisions
+
+- [ADR index](./adr/README.md)
+- [Storage](./adr/0001-storage.md)
+- [Consistency](./adr/0002-consistency.md)
+- [Tenancy](./adr/0003-tenancy.md)
+- [Deployment and HA](./adr/0004-deployment-and-ha.md)
+- [Backup and recovery](./adr/0005-backup-and-recovery.md)
+- [Observability](./adr/0006-observability.md)
+- [Authentication](./adr/0007-authentication.md)
+- [Authorization](./adr/0008-authorization.md)
+- [Audit witness](./adr/0009-audit-witness.md)
+- [Schema/image coupling](./adr/0010-schema-image-coupling.md)
+
+## Interfaces and source
+
+- [API and WebSocket inventory](./api/README.md)
+- [Server entry point](../packages/server/src/index.ts)
+- [HTTP composition](../packages/server/src/app.ts)
+- [Database schema](../packages/server/src/db/schema.ts)
+- [Runtime schema catalog gate](../packages/server/src/db/schema-catalog.ts)
+- [Shared protocol types and canonical serialization](../packages/shared/src)
+- [Web client](../packages/client/src)
+- [Database migrations](../packages/server/src/db/migrations)
+- [Backup/restore scripts](../scripts)
+
+## Engineering
+
+- [Contributing and release gates](../CONTRIBUTING.md)
+- [Product specification (aspirational where not implemented)](../SPECIFICATION.md)
+- [Implementation backlog](../IMPLEMENTATION_TODO.md)
+
+`SPECIFICATION.md` describes a larger intended product. It is not an implementation or compliance claim. In a conflict, executable code/tests plus the current limitations and risk register describe the shipped boundary.

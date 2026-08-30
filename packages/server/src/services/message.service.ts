@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, inArray, isNotNull, isNull, lt, or, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNotNull, isNull, lt, or, sql } from 'drizzle-orm';
 import { Permissions, MESSAGES_PER_PAGE, type SignedMessageEnvelope } from '@alparts/shared';
 import { db } from '../db/index.js';
 import {
@@ -12,6 +12,7 @@ import {
   readPositions,
   users,
 } from '../db/schema.js';
+import { auditedTransaction, auditGuardedTransaction } from '../middleware/audit.js';
 import { verifyMessageEnvelopeSignature } from '../security/message.js';
 import { getAttachmentsForMessages } from './file.service.js';
 import {
@@ -19,6 +20,13 @@ import {
   isVisibleChannelAuthorization,
   lockWorkspaceForAuthorization,
 } from './authorization.service.js';
+import {
+  MAX_PINS_PER_CHANNEL,
+  MAX_REACTION_EMOJIS_PER_MESSAGE,
+  MAX_REACTIONS_PER_MESSAGE,
+  MAX_REACTIONS_PER_USER_PER_MESSAGE,
+} from '../security/limits.js';
+import { hasRevokedEpochRecipient } from './key-epoch-state.js';
 
 interface CryptoEventInput {
   deviceId: string;
@@ -37,9 +45,6 @@ interface ReactionRow {
 }
 
 type CryptoEventType = 'message' | 'edit' | 'delete';
-export const MAX_REACTION_EMOJIS_PER_MESSAGE = 20;
-export const MAX_REACTIONS_PER_USER_PER_MESSAGE = 20;
-
 export async function getChannelMessages(channelId: string, options?: { cursor?: string; limit?: number }) {
   const limit = Math.min(Math.max(options?.limit ?? MESSAGES_PER_PAGE, 1), 100);
   let cursorCondition;
@@ -91,9 +96,13 @@ export async function getChannelMessages(channelId: string, options?: { cursor?:
             userId: true,
           },
           where: inArray(messageReactions.messageId, baseMessageIds),
+          limit: baseMessageIds.length * MAX_REACTIONS_PER_MESSAGE + 1,
         }),
       ])
     : [[], []];
+  if (reactionRows.length > baseMessageIds.length * MAX_REACTIONS_PER_MESSAGE) {
+    throw new Error('REACTION_INVARIANT_EXCEEDED');
+  }
   const pinnedMessageIds = new Set(pins.map((pin) => pin.messageId));
   const attachmentsByMessage = await getAttachmentsForMessages(baseMessageIds);
   const reactionsByMessage = new Map<string, ReactionRow[]>();
@@ -123,8 +132,8 @@ export async function createMessage(
   input: CryptoEventInput,
   refMessageId?: string,
 ) {
-  return db.transaction(async (transaction) => {
-    await lockAndAuthorizeCryptoWrite(
+  return auditedTransaction(async (transaction) => {
+    const authorization = await lockAndAuthorizeCryptoWrite(
       transaction,
       channelId,
       authorId,
@@ -134,14 +143,25 @@ export async function createMessage(
       refMessageId,
     );
     if (refMessageId) await assertReferenceInChannel(transaction, refMessageId, channelId);
-    return insertCryptoEvent(transaction, channelId, authorId, input, 'message', refMessageId);
-  });
+    const stored = await insertCryptoEvent(transaction, channelId, authorId, input, 'message', refMessageId);
+    return { ...stored, workspaceId: authorization.workspaceId };
+  }, (result) => ({
+    actorId: authorId,
+    action: result.isNewEvent ? 'message.create' : 'message.create.replay',
+    targetType: 'message',
+    targetId: result.event.id,
+    details: {
+      workspaceId: result.workspaceId,
+      channelId,
+      reply: Boolean(refMessageId),
+    },
+  }));
 }
 
 export async function editMessage(messageId: string, authorId: string, input: CryptoEventInput) {
   const location = await getOriginalMessage(messageId);
-  return db.transaction(async (transaction) => {
-    await lockAndAuthorizeCryptoWrite(
+  return auditedTransaction(async (transaction) => {
+    const authorization = await lockAndAuthorizeCryptoWrite(
       transaction,
       location.channelId,
       authorId,
@@ -154,14 +174,25 @@ export async function editMessage(messageId: string, authorId: string, input: Cr
     if (original.channelId !== location.channelId || original.authorId !== authorId || original.type !== 'message') {
       throw new Error('NOT_AUTHORIZED');
     }
-    return insertCryptoEvent(transaction, original.channelId, authorId, input, 'edit', messageId);
-  });
+    const stored = await insertCryptoEvent(transaction, original.channelId, authorId, input, 'edit', messageId);
+    return { ...stored, workspaceId: authorization.workspaceId };
+  }, (result) => ({
+    actorId: authorId,
+    action: result.isNewEvent ? 'message.edit' : 'message.edit.replay',
+    targetType: 'message',
+    targetId: messageId,
+    details: {
+      workspaceId: result.workspaceId,
+      channelId: location.channelId,
+      eventId: result.event.id,
+    },
+  }));
 }
 
 export async function deleteMessage(messageId: string, userId: string, input: CryptoEventInput) {
   const deleteInput = { ...input, encryptedContent: '', contentNonce: '' };
   const location = await getOriginalMessage(messageId);
-  return db.transaction(async (transaction) => {
+  return auditedTransaction(async (transaction) => {
     const authorization = await lockAndAuthorizeCryptoWrite(
       transaction,
       location.channelId,
@@ -185,15 +216,26 @@ export async function deleteMessage(messageId: string, userId: string, input: Cr
     return {
       messageId,
       channelId: original.channelId,
+      workspaceId: authorization.workspaceId,
       event: storedEvent.event,
       isNewEvent: storedEvent.isNewEvent,
     };
-  });
+  }, (result) => ({
+    actorId: userId,
+    action: result.isNewEvent ? 'message.delete' : 'message.delete.replay',
+    targetType: 'message',
+    targetId: messageId,
+    details: {
+      workspaceId: result.workspaceId,
+      channelId: result.channelId,
+      eventId: result.event.id,
+    },
+  }));
 }
 
 export async function toggleReaction(messageId: string, userId: string, emoji: string) {
-  return db.transaction(async (transaction) => {
-    const original = await lockAndAuthorizeMessageMutation(
+  const committed = await auditedTransaction(async (transaction) => {
+    const { original, workspaceId } = await lockAndAuthorizeMessageMutation(
       transaction,
       messageId,
       userId,
@@ -217,12 +259,14 @@ export async function toggleReaction(messageId: string, userId: string, emoji: s
       ));
     } else {
       const [counts] = await transaction.select({
+        totalReactionCount: sql<number>`count(*)::int`,
         distinctEmojiCount: sql<number>`count(distinct ${messageReactions.emoji})::int`,
         userReactionCount: sql<number>`count(*) filter (where ${messageReactions.userId} = ${userId})::int`,
         emojiExists: sql<boolean>`coalesce(bool_or(${messageReactions.emoji} = ${emoji}), false)`,
       }).from(messageReactions).where(eq(messageReactions.messageId, messageId));
       if (
-        Number(counts?.userReactionCount ?? 0) >= MAX_REACTIONS_PER_USER_PER_MESSAGE
+        Number(counts?.totalReactionCount ?? 0) >= MAX_REACTIONS_PER_MESSAGE
+        || Number(counts?.userReactionCount ?? 0) >= MAX_REACTIONS_PER_USER_PER_MESSAGE
         || (!counts?.emojiExists && Number(counts?.distinctEmojiCount ?? 0) >= MAX_REACTION_EMOJIS_PER_MESSAGE)
       ) throw new Error('REACTION_LIMIT_REACHED');
       await transaction.insert(messageReactions).values({ messageId, userId, emoji });
@@ -234,17 +278,32 @@ export async function toggleReaction(messageId: string, userId: string, emoji: s
         userId: true,
       },
       where: eq(messageReactions.messageId, messageId),
+      limit: MAX_REACTIONS_PER_MESSAGE + 1,
     });
+    if (currentReactions.length > MAX_REACTIONS_PER_MESSAGE) throw new Error('REACTION_INVARIANT_EXCEEDED');
     return {
-      messageId,
-      channelId: original.channelId,
-      userId,
-      action,
-      reactionAction,
-      emoji,
-      reactions: summarizeReactions(currentReactions),
+      workspaceId,
+      response: {
+        messageId,
+        channelId: original.channelId,
+        userId,
+        action,
+        reactionAction,
+        emoji,
+        reactions: summarizeReactions(currentReactions),
+      },
     };
-  });
+  }, (result) => ({
+    actorId: userId,
+    action: `message.reaction.${result.response.reactionAction}`,
+    targetType: 'message',
+    targetId: messageId,
+    details: {
+      workspaceId: result.workspaceId,
+      channelId: result.response.channelId,
+    },
+  }));
+  return committed.response;
 }
 
 export async function getReactions(messageId: string) {
@@ -255,17 +314,22 @@ export async function getReactions(messageId: string) {
       userId: true,
     },
     where: eq(messageReactions.messageId, messageId),
+    limit: MAX_REACTIONS_PER_MESSAGE + 1,
   });
+  if (reactions.length > MAX_REACTIONS_PER_MESSAGE) throw new Error('REACTION_INVARIANT_EXCEEDED');
   return summarizeReactions(reactions);
 }
 
 export async function pinMessage(messageId: string, userId: string) {
-  return db.transaction(async (transaction) => {
-    const original = await lockAndAuthorizeMessageMutation(
+  const committed = await auditedTransaction(async (transaction) => {
+    const { original, workspaceId } = await lockAndAuthorizeMessageMutation(
       transaction,
       messageId,
       userId,
       Permissions.PIN_MESSAGES,
+    );
+    await transaction.execute(
+      sql`select pg_advisory_xact_lock(hashtext(${`pins:${original.channelId}`})::bigint)`,
     );
     const existing = await transaction.query.messagePins.findFirst({
       where: and(eq(messagePins.messageId, messageId), eq(messagePins.channelId, original.channelId)),
@@ -275,20 +339,47 @@ export async function pinMessage(messageId: string, userId: string) {
         eq(messagePins.messageId, messageId),
         eq(messagePins.channelId, original.channelId),
       ));
-      return { messageId, channelId: original.channelId, userId, pinned: false };
+      return {
+        workspaceId,
+        response: { messageId, channelId: original.channelId, userId, pinned: false },
+      };
     }
+    const currentPins = await transaction.query.messagePins.findMany({
+      columns: { messageId: true },
+      where: eq(messagePins.channelId, original.channelId),
+      limit: MAX_PINS_PER_CHANNEL + 1,
+    });
+    if (currentPins.length >= MAX_PINS_PER_CHANNEL) throw new Error('PIN_LIMIT_REACHED');
     await transaction.insert(messagePins)
       .values({ channelId: original.channelId, messageId, pinnedBy: userId });
-    return { messageId, channelId: original.channelId, userId, pinned: true };
-  });
+    return {
+      workspaceId,
+      response: { messageId, channelId: original.channelId, userId, pinned: true },
+    };
+  }, (result) => ({
+    actorId: userId,
+    action: result.response.pinned ? 'message.pin.add' : 'message.pin.remove',
+    targetType: 'message',
+    targetId: messageId,
+    details: {
+      workspaceId: result.workspaceId,
+      channelId: result.response.channelId,
+    },
+  }));
+  return committed.response;
 }
 
 export async function getPinnedMessages(channelId: string) {
-  return db.query.messagePins.findMany({ where: eq(messagePins.channelId, channelId) });
+  const rows = await db.query.messagePins.findMany({
+    where: eq(messagePins.channelId, channelId),
+    limit: MAX_PINS_PER_CHANNEL + 1,
+  });
+  if (rows.length > MAX_PINS_PER_CHANNEL) throw new Error('PIN_INVARIANT_EXCEEDED');
+  return rows;
 }
 
 export async function updateReadPosition(userId: string, channelId: string, messageId: string) {
-  return db.transaction(async (transaction) => {
+  return auditGuardedTransaction(async (transaction) => {
     const channel = await transaction.query.channels.findFirst({ where: eq(channels.id, channelId) });
     if (!channel) throw new Error('MESSAGE_NOT_FOUND');
     await lockWorkspaceForAuthorization(transaction, channel.workspaceId, 'share');
@@ -447,6 +538,12 @@ async function lockAndAuthorizeCryptoWrite(
     ),
   });
   if (!epoch) throw new Error('INVALID_KEY_VERSION');
+  // Device revocation is O(1) regardless of account history. Lock and inspect
+  // this epoch's bounded recipient devices so a concurrent revocation either
+  // linearizes after this event or makes the event fail closed.
+  if (await hasRevokedEpochRecipient(store, channelId, input.keyVersion)) {
+    throw new Error('KEY_ROTATION_REQUIRED');
+  }
   const recipient = await store.query.channelKeyEpochRecipients.findFirst({
     columns: { acceptedDeliveryId: true },
     where: and(
@@ -521,7 +618,7 @@ async function lockAndAuthorizeMessageMutation(
   const authorization = await getChannelAuthorizationFromStore(store, userId, channel);
   if (!isVisibleChannelAuthorization(authorization)) throw new Error('MESSAGE_NOT_FOUND');
   if ((authorization.permissions & permission) !== permission) throw new Error('NOT_AUTHORIZED');
-  return original;
+  return { original, workspaceId: channelLocation.workspaceId };
 }
 
 async function getUserForMessage(userId: string, store: any = db) {

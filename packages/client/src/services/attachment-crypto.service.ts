@@ -27,8 +27,8 @@ const DIRECTORY_CACHE_TTL_MS = 60_000;
 const DIRECTORY_CACHE_LIMIT = 32;
 
 type DeviceDirectoryEntry = { deviceId: string; userId: string; identityKey: string };
-const directoryCache = new Map<string, { expiresAt: number; entries: DeviceDirectoryEntry[] }>();
-const directoryPromises = new Map<string, Promise<DeviceDirectoryEntry[]>>();
+const directoryCache = new Map<string, { expiresAt: number; entry: DeviceDirectoryEntry | null }>();
+const directoryPromises = new Map<string, Promise<DeviceDirectoryEntry | null>>();
 let directoryCacheGeneration = 0;
 
 export interface ValidatedAttachmentManifest {
@@ -287,15 +287,11 @@ export async function verifyAttachmentMetadata(
   attachment: Attachment,
 ): Promise<SignedAttachmentEnvelope> {
   const envelope = buildSignedAttachmentEnvelope(message, attachment);
-  let directory = await getDeviceDirectory(message.channelId, false);
-  let identity = directory.find((entry) => (
-    entry.deviceId === envelope.deviceId && entry.userId === envelope.authorId
-  ))?.identityKey;
+  let directoryEntry = await getDeviceDirectory(message.channelId, envelope.deviceId, false);
+  let identity = directoryEntry?.userId === envelope.authorId ? directoryEntry.identityKey : undefined;
   if (!identity) {
-    directory = await getDeviceDirectory(message.channelId, true);
-    identity = directory.find((entry) => (
-      entry.deviceId === envelope.deviceId && entry.userId === envelope.authorId
-    ))?.identityKey;
+    directoryEntry = await getDeviceDirectory(message.channelId, envelope.deviceId, true);
+    identity = directoryEntry?.userId === envelope.authorId ? directoryEntry.identityKey : undefined;
   }
   if (!identity || !attachment.signature) throw new Error('添付送信端末の公開鍵を確認できません');
   if (!await verifyAttachmentSignature(envelope, attachment.signature, identity)) {
@@ -478,28 +474,35 @@ function preparedKeyAad(messageId: string, idempotencyKey: string): Uint8Array {
   return encoder.encode(`alparts-attachment-prepared-key-v1\0${messageId}\0${idempotencyKey}`);
 }
 
-async function getDeviceDirectory(channelId: string, forceRefresh: boolean): Promise<DeviceDirectoryEntry[]> {
+async function getDeviceDirectory(
+  channelId: string,
+  deviceId: string,
+  forceRefresh: boolean,
+): Promise<DeviceDirectoryEntry | null> {
+  const cacheKey = `${channelId}:${deviceId}`;
   const now = Date.now();
-  const cached = directoryCache.get(channelId);
-  if (!forceRefresh && cached && cached.expiresAt > now) return cached.entries;
-  if (forceRefresh) directoryCache.delete(channelId);
-  const inFlight = directoryPromises.get(channelId);
+  const cached = directoryCache.get(cacheKey);
+  if (!forceRefresh && cached && cached.expiresAt > now) return cached.entry;
+  if (forceRefresh) directoryCache.delete(cacheKey);
+  const inFlight = directoryPromises.get(cacheKey);
   if (inFlight) return inFlight;
+  if (directoryPromises.size >= DIRECTORY_CACHE_LIMIT) throw new Error('DEVICE_DIRECTORY_CAPACITY');
   const generation = directoryCacheGeneration;
-  const request = api.getChannelDeviceDirectory(channelId).then((entries) => {
+  const request = api.getChannelDeviceDirectory(channelId, [deviceId]).then((entries) => {
+    const entry = entries.find((candidate) => candidate.deviceId === deviceId) ?? null;
     if (generation === directoryCacheGeneration) {
-      directoryCache.delete(channelId);
-      directoryCache.set(channelId, { entries, expiresAt: Date.now() + DIRECTORY_CACHE_TTL_MS });
+      directoryCache.delete(cacheKey);
+      directoryCache.set(cacheKey, { entry, expiresAt: Date.now() + DIRECTORY_CACHE_TTL_MS });
       while (directoryCache.size > DIRECTORY_CACHE_LIMIT) {
         const oldest = directoryCache.keys().next().value as string | undefined;
         if (!oldest) break;
         directoryCache.delete(oldest);
       }
     }
-    return entries;
+    return entry;
   }).finally(() => {
-    if (directoryPromises.get(channelId) === request) directoryPromises.delete(channelId);
+    if (directoryPromises.get(cacheKey) === request) directoryPromises.delete(cacheKey);
   });
-  directoryPromises.set(channelId, request);
+  directoryPromises.set(cacheKey, request);
   return request;
 }

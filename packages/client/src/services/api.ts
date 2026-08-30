@@ -18,6 +18,28 @@ import type {
 import { withExpectedAuthorizationRevision } from './role-authorization-revision';
 
 const API_BASE = '/api';
+export const API_REQUEST_DEADLINE_MS = 60_000;
+
+export function createApiRequestDeadline(
+  parentSignal: AbortSignal | null | undefined,
+  timeoutMs = API_REQUEST_DEADLINE_MS,
+): { signal: AbortSignal; dispose: () => void } {
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > API_REQUEST_DEADLINE_MS) {
+    throw new Error('Invalid API request deadline');
+  }
+  const controller = new AbortController();
+  const forwardAbort = () => controller.abort(parentSignal?.reason ?? new Error('API_REQUEST_ABORTED'));
+  if (parentSignal?.aborted) forwardAbort();
+  else parentSignal?.addEventListener('abort', forwardAbort, { once: true });
+  const timeout = setTimeout(() => controller.abort(new Error('API_REQUEST_TIMEOUT')), timeoutMs);
+  return {
+    signal: controller.signal,
+    dispose: () => {
+      clearTimeout(timeout);
+      parentSignal?.removeEventListener('abort', forwardAbort);
+    },
+  };
+}
 
 interface ApiErrorPayload {
   error?: string;
@@ -142,8 +164,11 @@ export interface ChannelKeyRecipientState {
   /** A pending epoch is never writable until the server activates it. */
   pendingVersion: number | null;
   pendingKeyCommitment: string | null;
+  pendingInvalid: boolean;
   nextVersion: number;
   rotationRequired: boolean;
+  /** No authorized non-revoked device can decrypt the old active epoch. */
+  historyRecoveryRequired: boolean;
   canRotate: boolean;
   canAbortPending: boolean;
   distributedDeviceIds: string[];
@@ -456,13 +481,23 @@ class ApiService {
   }
 
   private async request<T>(path: string, options: RequestInit = {}): Promise<T> {
-    const response = await this.fetchResponse(path, options);
-    return response.json() as Promise<T>;
+    const deadline = createApiRequestDeadline(options.signal);
+    try {
+      const response = await this.fetchResponse(path, { ...options, signal: deadline.signal });
+      return await response.json() as T;
+    } finally {
+      deadline.dispose();
+    }
   }
 
   private async requestArrayBuffer(path: string, options: RequestInit = {}): Promise<ArrayBuffer> {
-    const response = await this.fetchResponse(path, options);
-    return response.arrayBuffer();
+    const deadline = createApiRequestDeadline(options.signal);
+    try {
+      const response = await this.fetchResponse(path, { ...options, signal: deadline.signal });
+      return await response.arrayBuffer();
+    } finally {
+      deadline.dispose();
+    }
   }
 
   // Auth
@@ -928,17 +963,27 @@ class ApiService {
     });
   }
 
-  async getChannelKeys(channelId: string) {
-    return this.request<ChannelKeyDelivery[]>(`/channels/${channelId}/keys`);
+  async getChannelKeys(channelId: string, version?: number | readonly number[], signal?: AbortSignal) {
+    const query = version === undefined
+      ? '?scope=current'
+      : Array.isArray(version)
+        ? `?versions=${encodeURIComponent(version.join(','))}`
+        : `?version=${encodeURIComponent(String(version))}`;
+    return this.request<ChannelKeyDelivery[]>(`/channels/${channelId}/keys${query}`, { signal });
   }
 
   async getKeyRecipients(channelId: string) {
     return this.request<ChannelKeyRecipientState>(`/channels/${channelId}/key-recipients`);
   }
 
-  async getChannelDeviceDirectory(channelId: string) {
+  async getChannelDeviceDirectory(channelId: string, deviceIds: readonly string[], signal?: AbortSignal) {
+    const uniqueIds = [...new Set(deviceIds)];
+    if (uniqueIds.length < 1 || uniqueIds.length > 64 || uniqueIds.length !== deviceIds.length) {
+      throw new Error('Invalid bounded device-directory request');
+    }
     return this.request<Array<{ deviceId: string; userId: string; identityKey: string }>>(
-      `/channels/${channelId}/device-directory`,
+      `/channels/${channelId}/device-directory?ids=${encodeURIComponent(uniqueIds.join(','))}`,
+      { signal },
     );
   }
 

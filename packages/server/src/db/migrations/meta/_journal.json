@@ -92,6 +92,13 @@
       "when": 1787828938360,
       "tag": "0012_two_phase_channel_keys",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1788075958581,
+      "tag": "0013_bounded_tenant_indexes",
+      "breakpoints": true
     }
   ]
 }

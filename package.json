@@ -18,6 +18,12 @@
     "typecheck": "pnpm -r run typecheck",
     "test": "pnpm run build:shared && pnpm -r --if-present run test",
     "test:backup-security": "bash scripts/tests/backup-security.test.sh",
-    "lint": "pnpm -r --if-present run lint"
+    "lint": "oxlint --deny-warnings packages",
+    "security:secrets": "bash scripts/check-secrets.sh"
+  },
+  "devDependencies": {
+    "@secretlint/secretlint-rule-preset-recommend": "13.0.5",
+    "oxlint": "1.80.0",
+    "secretlint": "13.0.5"
   }
 }

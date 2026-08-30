@@ -26,6 +26,7 @@ import {
   lockWorkspaceForAuthorization,
 } from '../services/authorization.service.js';
 import { VoiceSignalingHub } from './voice.handler.js';
+import { MAX_WORKSPACE_MEMBERSHIPS_PER_USER } from '../security/limits.js';
 
 const channelIdSchema = z.string().uuid();
 const maxTimerDelayMs = 2_147_000_000;
@@ -177,9 +178,12 @@ export function setupWebSocket(io: SocketServer) {
       }
     });
 
-    socket.on('channel:leave', async (value: unknown) => {
+    socket.on('channel:leave', (value: unknown) => {
       const parsed = channelIdSchema.safeParse(value);
-      if (parsed.success) await socket.leave(`channel:${parsed.data}`);
+      if (parsed.success) {
+        void Promise.resolve(socket.leave(`channel:${parsed.data}`))
+          .catch((error) => logError('websocket.channel_leave', error));
+      }
     });
 
     handleMessageEvents(io, socket);
@@ -202,7 +206,11 @@ export function setupWebSocket(io: SocketServer) {
       const memberships = await db.query.workspaceMembers.findMany({
         columns: { workspaceId: true },
         where: eq(workspaceMembers.userId, socket.userId!),
+        limit: MAX_WORKSPACE_MEMBERSHIPS_PER_USER + 1,
       });
+      if (memberships.length > MAX_WORKSPACE_MEMBERSHIPS_PER_USER) {
+        throw new Error('WORKSPACE_MEMBERSHIP_INVARIANT_EXCEEDED');
+      }
       for (const membership of memberships) {
         if (!socket.connected) return;
         await joinRoomUnderWorkspaceAuthorizationLock(

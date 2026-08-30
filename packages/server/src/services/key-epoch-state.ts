@@ -1,10 +1,15 @@
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import {
   channelKeyEpochRecipients,
   channelKeyEpochs,
   channelKeys,
   channels,
+  devices,
 } from '../db/schema.js';
+import {
+  MAX_KEY_RECIPIENTS,
+  MAX_TOTAL_CHANNELS_PER_WORKSPACE,
+} from '../security/limits.js';
 
 export interface RequiredRecipientState {
   requiredForActivation: boolean;
@@ -20,6 +25,28 @@ export function nextChannelKeyVersion(latestVersion: number | null | undefined):
   return (latestVersion ?? 0) + 1;
 }
 
+/** A channel-local, recipient-bounded revocation check used on every write. */
+export async function hasRevokedEpochRecipient(
+  store: any,
+  channelId: string,
+  version: number,
+): Promise<boolean> {
+  const rows = await store.select({
+    deviceId: channelKeyEpochRecipients.deviceId,
+    revokedAt: devices.revokedAt,
+  })
+    .from(channelKeyEpochRecipients)
+    .innerJoin(devices, eq(devices.id, channelKeyEpochRecipients.deviceId))
+    .where(and(
+      eq(channelKeyEpochRecipients.channelId, channelId),
+      eq(channelKeyEpochRecipients.version, version),
+    ))
+    .limit(MAX_KEY_RECIPIENTS + 1)
+    .for('share') as Array<{ deviceId: string; revokedAt: Date | null }>;
+  if (rows.length > MAX_KEY_RECIPIENTS) throw new Error('KEY_RECIPIENT_INVARIANT_EXCEEDED');
+  return rows.some((row) => row.revokedAt !== null);
+}
+
 /** Make a frozen provisional recipient snapshot permanently unusable. */
 export async function abortPendingChannelKeyEpochs(
   store: any,
@@ -27,6 +54,9 @@ export async function abortPendingChannelKeyEpochs(
 ): Promise<string[]> {
   const channelIds = [...new Set(candidateChannelIds)].sort();
   if (channelIds.length === 0) return [];
+  if (channelIds.length > MAX_TOTAL_CHANNELS_PER_WORKSPACE) {
+    throw new Error('KEY_EPOCH_ABORT_LIMIT');
+  }
 
   const aborted = await store.update(channelKeyEpochs)
     .set({ status: 'aborted', abortedAt: new Date() })
@@ -38,27 +68,37 @@ export async function abortPendingChannelKeyEpochs(
       channelId: channelKeyEpochs.channelId,
       version: channelKeyEpochs.version,
     }) as Array<{ channelId: string; version: number }>;
-  // Pending epochs never authorize ciphertext. Discard their provisional
-  // recipient/candidate material so repeated aborts cannot accumulate O(N^2)
-  // delivery rows; retain the epoch record to prevent version reuse.
-  for (const epoch of aborted) {
-    await store.update(channelKeyEpochRecipients).set({
-      acceptedDeliveryId: null,
-      acknowledgementSignature: null,
-      acknowledgedAt: null,
-    }).where(and(
-      eq(channelKeyEpochRecipients.channelId, epoch.channelId),
-      eq(channelKeyEpochRecipients.version, epoch.version),
-    ));
-    await store.delete(channelKeys).where(and(
-      eq(channelKeys.channelId, epoch.channelId),
-      eq(channelKeys.version, epoch.version),
-    ));
-    await store.delete(channelKeyEpochRecipients).where(and(
-      eq(channelKeyEpochRecipients.channelId, epoch.channelId),
-      eq(channelKeyEpochRecipients.version, epoch.version),
-    ));
-  }
+  if (aborted.length === 0) return [];
+
+  // Pending epochs never authorize ciphertext. Clean every returned epoch in
+  // three set operations, independent of epoch count. The acknowledgement FK
+  // requires clearing accepted delivery references before key rows, while key
+  // rows must be removed before recipient rows. Keeping these as ordered SQL
+  // statements avoids PostgreSQL data-modifying CTE execution-order ambiguity.
+  const epochValues = () => sql.join(aborted.map((epoch) => (
+    sql`(${epoch.channelId}::uuid, ${epoch.version}::integer)`
+  )), sql`, `);
+  await store.execute(sql`
+    update ${channelKeyEpochRecipients} as recipient
+    set accepted_delivery_id = null,
+        acknowledgement_signature = null,
+        acknowledged_at = null
+    from (values ${epochValues()}) as aborted(channel_id, version)
+    where recipient.channel_id = aborted.channel_id
+      and recipient.version = aborted.version
+  `);
+  await store.execute(sql`
+    delete from ${channelKeys} as delivery
+    using (values ${epochValues()}) as aborted(channel_id, version)
+    where delivery.channel_id = aborted.channel_id
+      and delivery.version = aborted.version
+  `);
+  await store.execute(sql`
+    delete from ${channelKeyEpochRecipients} as recipient
+    using (values ${epochValues()}) as aborted(channel_id, version)
+    where recipient.channel_id = aborted.channel_id
+      and recipient.version = aborted.version
+  `);
   return [...new Set(aborted.map((row) => row.channelId))].sort();
 }
 

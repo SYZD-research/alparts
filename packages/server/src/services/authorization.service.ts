@@ -3,7 +3,6 @@ import { and, asc, eq, inArray, sql } from 'drizzle-orm';
 import { Permissions } from '@alparts/shared';
 import { db } from '../db/index.js';
 import {
-  categories,
   categoryRolePermissionOverrides,
   channelMembers,
   channelRolePermissionOverrides,
@@ -17,6 +16,13 @@ import {
   abortPendingChannelKeyEpochs,
   requireChannelKeyRotation,
 } from './key-epoch-state.js';
+import {
+  MAX_CATEGORIES_PER_WORKSPACE,
+  MAX_ROLE_ASSIGNMENTS_PER_MEMBER,
+  MAX_ROLES_PER_WORKSPACE,
+  MAX_TOTAL_CHANNELS_PER_WORKSPACE,
+  MAX_WORKSPACE_MEMBERS,
+} from '../security/limits.js';
 
 export const CHANNEL_SCOPED_PERMISSION_MASK =
   Permissions.VIEW_CHANNELS
@@ -76,6 +82,27 @@ export interface ChannelViewerEffect {
   rotationRequired: boolean;
 }
 
+interface SnapshotChannel {
+  id: string;
+  workspaceId: string;
+  categoryId: string | null;
+  isPrivate: boolean;
+  [key: string]: unknown;
+}
+
+export interface WorkspaceAuthorizationSnapshot {
+  workspaceId: string;
+  ownerId: string;
+  channels: SnapshotChannel[];
+  channelsById: Map<string, SnapshotChannel>;
+  membersByUserId: Map<string, { id: string; userId: string }>;
+  rolesById: Map<string, any>;
+  roleIdsByUserId: Map<string, string[]>;
+  categoryOverridesById: Map<string, RolePermissionOverrideValue[]>;
+  channelOverridesById: Map<string, RolePermissionOverrideValue[]>;
+  privateMemberIdsByChannelId: Map<string, Set<string>>;
+}
+
 export function assertValidChannelOverrideMask(value: number): void {
   if (!Number.isSafeInteger(value) || value < 0 || (value & ~CHANNEL_SCOPED_PERMISSION_MASK) !== 0) {
     throw new Error('INVALID_OVERRIDE_PERMISSIONS');
@@ -105,7 +132,11 @@ export async function getWorkspaceAuthorizationFromStore(store: any, workspaceId
   const assignments = await store.query.memberRoles.findMany({
     where: eq(memberRoles.memberId, member.id),
     with: { role: true },
+    limit: MAX_ROLE_ASSIGNMENTS_PER_MEMBER + 1,
   });
+  if (assignments.length > MAX_ROLE_ASSIGNMENTS_PER_MEMBER) {
+    throw new Error('ROLE_ASSIGNMENT_INVARIANT_EXCEEDED');
+  }
   const assignedRoles = assignments
     .map((assignment: any) => assignment.role)
     .filter((role: any) => role?.workspaceId === workspaceId)
@@ -128,6 +159,224 @@ export async function getWorkspaceAuthorizationFromStore(store: any, workspaceId
 
 export async function getWorkspaceAuthorization(workspaceId: string, userId: string) {
   return getWorkspaceAuthorizationFromStore(db, workspaceId, userId);
+}
+
+/**
+ * Load all bounded authorization inputs for one workspace in a fixed query
+ * count. Callers that need a transaction-consistent view must hold the
+ * workspace authorization lock while loading and evaluating this snapshot.
+ */
+export async function loadWorkspaceAuthorizationSnapshot(
+  store: any,
+  workspaceId: string,
+  selectedChannelIds?: readonly string[],
+): Promise<WorkspaceAuthorizationSnapshot | null> {
+  if (selectedChannelIds && selectedChannelIds.length > MAX_TOTAL_CHANNELS_PER_WORKSPACE) {
+    throw new Error('AUTHORIZATION_INPUT_LIMIT_EXCEEDED');
+  }
+  const workspace = await store.query.workspaces.findFirst({
+    columns: { ownerId: true },
+    where: eq(workspaces.id, workspaceId),
+  });
+  if (!workspace) return null;
+
+  const channelRows = selectedChannelIds?.length === 0
+    ? []
+    : await store.query.channels.findMany({
+      where: and(
+        eq(channels.workspaceId, workspaceId),
+        selectedChannelIds ? inArray(channels.id, [...selectedChannelIds]) : undefined,
+      ),
+      orderBy: [asc(channels.position), asc(channels.id)],
+      limit: MAX_TOTAL_CHANNELS_PER_WORKSPACE + 1,
+    }) as SnapshotChannel[];
+  if (channelRows.length > MAX_TOTAL_CHANNELS_PER_WORKSPACE) throw new Error('CHANNEL_INVARIANT_EXCEEDED');
+
+  const memberRows = await store.query.workspaceMembers.findMany({
+    columns: { id: true, userId: true },
+    where: eq(workspaceMembers.workspaceId, workspaceId),
+    orderBy: [asc(workspaceMembers.userId)],
+    limit: MAX_WORKSPACE_MEMBERS + 1,
+  }) as Array<{ id: string; userId: string }>;
+  if (memberRows.length > MAX_WORKSPACE_MEMBERS) throw new Error('WORKSPACE_MEMBER_INVARIANT_EXCEEDED');
+
+  const roleRows = await store.query.roles.findMany({
+    where: eq(roles.workspaceId, workspaceId),
+    orderBy: [asc(roles.id)],
+    limit: MAX_ROLES_PER_WORKSPACE + 1,
+  });
+  if (roleRows.length > MAX_ROLES_PER_WORKSPACE) throw new Error('ROLE_INVARIANT_EXCEEDED');
+
+  const memberIds = memberRows.map((member) => member.id);
+  const assignmentRows = memberIds.length === 0
+    ? []
+    : await store.query.memberRoles.findMany({
+      columns: { memberId: true, roleId: true },
+      where: inArray(memberRoles.memberId, memberIds),
+      limit: MAX_WORKSPACE_MEMBERS * MAX_ROLE_ASSIGNMENTS_PER_MEMBER + 1,
+    }) as Array<{ memberId: string; roleId: string }>;
+  if (assignmentRows.length > MAX_WORKSPACE_MEMBERS * MAX_ROLE_ASSIGNMENTS_PER_MEMBER) {
+    throw new Error('ROLE_ASSIGNMENT_INVARIANT_EXCEEDED');
+  }
+
+  const categoryIds = [...new Set(channelRows.flatMap((channel) => channel.categoryId ? [channel.categoryId] : []))];
+  const categoryOverrideRows = categoryIds.length === 0
+    ? []
+    : await store.query.categoryRolePermissionOverrides.findMany({
+      where: and(
+        eq(categoryRolePermissionOverrides.workspaceId, workspaceId),
+        inArray(categoryRolePermissionOverrides.categoryId, categoryIds),
+      ),
+      limit: MAX_CATEGORIES_PER_WORKSPACE * MAX_ROLES_PER_WORKSPACE + 1,
+    });
+  if (categoryOverrideRows.length > MAX_CATEGORIES_PER_WORKSPACE * MAX_ROLES_PER_WORKSPACE) {
+    throw new Error('CATEGORY_OVERRIDE_INVARIANT_EXCEEDED');
+  }
+
+  const channelIds = channelRows.map((channel) => channel.id);
+  const channelOverrideRows = channelIds.length === 0
+    ? []
+    : await store.query.channelRolePermissionOverrides.findMany({
+      where: and(
+        eq(channelRolePermissionOverrides.workspaceId, workspaceId),
+        inArray(channelRolePermissionOverrides.channelId, channelIds),
+      ),
+      limit: MAX_TOTAL_CHANNELS_PER_WORKSPACE * MAX_ROLES_PER_WORKSPACE + 1,
+    });
+  if (channelOverrideRows.length > MAX_TOTAL_CHANNELS_PER_WORKSPACE * MAX_ROLES_PER_WORKSPACE) {
+    throw new Error('CHANNEL_OVERRIDE_INVARIANT_EXCEEDED');
+  }
+
+  const privateChannelIds = channelRows.filter((channel) => channel.isPrivate).map((channel) => channel.id);
+  const privateMembershipRows = privateChannelIds.length === 0
+    ? []
+    : await store.select({ channelId: channelMembers.channelId, userId: channelMembers.userId })
+      .from(channelMembers)
+      .where(inArray(channelMembers.channelId, privateChannelIds))
+      .limit(MAX_TOTAL_CHANNELS_PER_WORKSPACE * MAX_WORKSPACE_MEMBERS + 1) as Array<{
+        channelId: string;
+        userId: string;
+      }>;
+  if (privateMembershipRows.length > MAX_TOTAL_CHANNELS_PER_WORKSPACE * MAX_WORKSPACE_MEMBERS) {
+    throw new Error('PRIVATE_MEMBERSHIP_INVARIANT_EXCEEDED');
+  }
+
+  const memberIdToUserId = new Map(memberRows.map((member) => [member.id, member.userId]));
+  const roleIdsByUserId = new Map(memberRows.map((member) => [member.userId, [] as string[]]));
+  const workspaceRoleIds = new Set(roleRows.map((role: any) => role.id));
+  for (const assignment of assignmentRows) {
+    const userId = memberIdToUserId.get(assignment.memberId);
+    if (!userId || !workspaceRoleIds.has(assignment.roleId)) throw new Error('ROLE_ASSIGNMENT_INVARIANT_EXCEEDED');
+    roleIdsByUserId.get(userId)?.push(assignment.roleId);
+  }
+
+  return {
+    workspaceId,
+    ownerId: workspace.ownerId,
+    channels: channelRows,
+    channelsById: new Map(channelRows.map((channel) => [channel.id, channel])),
+    membersByUserId: new Map(memberRows.map((member) => [member.userId, member])),
+    rolesById: new Map(roleRows.map((role: any) => [role.id, role])),
+    roleIdsByUserId,
+    categoryOverridesById: groupOverrides(categoryOverrideRows, 'categoryId'),
+    channelOverridesById: groupOverrides(channelOverrideRows, 'channelId'),
+    privateMemberIdsByChannelId: groupPrivateMemberships(privateMembershipRows),
+  };
+}
+
+export function getWorkspaceAuthorizationFromSnapshot(
+  snapshot: WorkspaceAuthorizationSnapshot,
+  userId: string,
+) {
+  const member = snapshot.membersByUserId.get(userId);
+  if (!member) return null;
+  const assignedRoles = (snapshot.roleIdsByUserId.get(userId) ?? [])
+    .flatMap((roleId) => {
+      const role = snapshot.rolesById.get(roleId);
+      return role ? [role] : [];
+    })
+    .sort((left: any, right: any) => right.position - left.position || left.id.localeCompare(right.id));
+  return {
+    workspaceId: snapshot.workspaceId,
+    userId,
+    memberId: member.id,
+    permissionMask: assignedRoles.reduce((mask: number, role: any) => mask | role.permissions, 0),
+    isOwner: snapshot.ownerId === userId,
+    roles: assignedRoles.map((role: any) => ({
+      id: role.id,
+      name: role.name,
+      permissions: role.permissions,
+      position: role.position,
+    })),
+  };
+}
+
+export function getChannelAuthorizationFromSnapshot(
+  snapshot: WorkspaceAuthorizationSnapshot,
+  userId: string,
+  channelOrId: string | SnapshotChannel,
+  options: AuthorizationEvaluationOptions = {},
+  includePermissionDetails = true,
+): ChannelAuthorization | null {
+  const channel = typeof channelOrId === 'string' ? snapshot.channelsById.get(channelOrId) : channelOrId;
+  if (!channel || channel.workspaceId !== snapshot.workspaceId || !snapshot.membersByUserId.has(userId)) return null;
+
+  let assignedRoles = (snapshot.roleIdsByUserId.get(userId) ?? [])
+    .flatMap((roleId) => {
+      const role = snapshot.rolesById.get(roleId);
+      return role ? [role] : [];
+    });
+  if (options.roleMutation && (!options.roleMutationUserIds || options.roleMutationUserIds.includes(userId))) {
+    const mutation = options.roleMutation;
+    assignedRoles = assignedRoles.filter((role: any) => role.id !== mutation.roleId);
+    if (mutation.included !== false) {
+      const source = snapshot.rolesById.get(mutation.roleId);
+      if (source) assignedRoles.push({ ...source, permissions: mutation.permissions ?? source.permissions });
+    }
+  }
+  assignedRoles.sort((left: any, right: any) => right.position - left.position || left.id.localeCompare(right.id));
+  const roleIds = assignedRoles.map((role: any) => role.id);
+  const roleIdSet = new Set(roleIds);
+  const workspacePermissions = assignedRoles.reduce((mask: number, role: any) => mask | role.permissions, 0);
+  const categoryValues = applyOverrideMutation(
+    (channel.categoryId ? snapshot.categoryOverridesById.get(channel.categoryId) : undefined)
+      ?.filter((value) => roleIdSet.has(value.roleId)) ?? [],
+    options.categoryOverrideMutation,
+    roleIdSet,
+  );
+  const channelValues = applyOverrideMutation(
+    (snapshot.channelOverridesById.get(channel.id) ?? []).filter((value) => roleIdSet.has(value.roleId)),
+    options.channelOverrideMutation,
+    roleIdSet,
+  );
+  const categoryLevel = applyPermissionOverrideLevel(workspacePermissions, categoryValues);
+  const channelLevel = applyPermissionOverrideLevel(categoryLevel.permissionMask, channelValues);
+  const isOwner = snapshot.ownerId === userId;
+  const permissionMask = isOwner
+    ? channelLevel.permissionMask | CHANNEL_SCOPED_PERMISSION_MASK
+    : channelLevel.permissionMask;
+  const isPrivateMember = !channel.isPrivate
+    || Boolean(snapshot.privateMemberIdsByChannelId.get(channel.id)?.has(userId));
+
+  return {
+    channelId: channel.id,
+    workspaceId: channel.workspaceId,
+    categoryId: channel.categoryId,
+    permissions: permissionMask,
+    workspacePermissions,
+    isPrivate: channel.isPrivate,
+    isPrivateMember,
+    isOwner,
+    roles: assignedRoles.map((role: any) => ({
+      id: role.id,
+      name: role.name,
+      permissions: role.permissions,
+      position: role.position,
+    })),
+    permissionDetails: includePermissionDetails
+      ? buildPermissionDetails(assignedRoles, categoryValues, channelValues, permissionMask, isOwner)
+      : [],
+  };
 }
 
 export async function getChannelAuthorizationFromStore(
@@ -153,7 +402,11 @@ export async function getChannelAuthorizationFromStore(
   const assignments = await store.query.memberRoles.findMany({
     where: eq(memberRoles.memberId, member.id),
     with: { role: true },
+    limit: MAX_ROLE_ASSIGNMENTS_PER_MEMBER + 1,
   });
+  if (assignments.length > MAX_ROLE_ASSIGNMENTS_PER_MEMBER) {
+    throw new Error('ROLE_ASSIGNMENT_INVARIANT_EXCEEDED');
+  }
   let assignedRoles = assignments
     .map((assignment: any) => assignment.role)
     .filter((role: any) => role?.workspaceId === channel.workspaceId);
@@ -180,9 +433,13 @@ export async function getChannelAuthorizationFromStore(
         eq(categoryRolePermissionOverrides.categoryId, channel.categoryId),
         inArray(categoryRolePermissionOverrides.roleId, roleIds),
       ),
+      limit: MAX_ROLE_ASSIGNMENTS_PER_MEMBER + 1,
     });
+    if (categoryValues.length > MAX_ROLE_ASSIGNMENTS_PER_MEMBER) {
+      throw new Error('CATEGORY_OVERRIDE_INVARIANT_EXCEEDED');
+    }
   }
-  categoryValues = applyOverrideMutation(categoryValues, options.categoryOverrideMutation);
+  categoryValues = applyOverrideMutation(categoryValues, options.categoryOverrideMutation, new Set(roleIds));
 
   let channelValues: RolePermissionOverrideValue[] = [];
   if (roleIds.length > 0) {
@@ -192,9 +449,13 @@ export async function getChannelAuthorizationFromStore(
         eq(channelRolePermissionOverrides.channelId, channel.id),
         inArray(channelRolePermissionOverrides.roleId, roleIds),
       ),
+      limit: MAX_ROLE_ASSIGNMENTS_PER_MEMBER + 1,
     });
+    if (channelValues.length > MAX_ROLE_ASSIGNMENTS_PER_MEMBER) {
+      throw new Error('CHANNEL_OVERRIDE_INVARIANT_EXCEEDED');
+    }
   }
-  channelValues = applyOverrideMutation(channelValues, options.channelOverrideMutation);
+  channelValues = applyOverrideMutation(channelValues, options.channelOverrideMutation, new Set(roleIds));
 
   const categoryLevel = applyPermissionOverrideLevel(workspacePermissions, categoryValues);
   const channelLevel = applyPermissionOverrideLevel(categoryLevel.permissionMask, channelValues);
@@ -255,17 +516,11 @@ export async function getChannelViewerIdsFromStore(
   channel: { id: string; workspaceId: string; categoryId: string | null; isPrivate: boolean },
   options: AuthorizationEvaluationOptions = {},
 ): Promise<string[]> {
-  const members = await store.query.workspaceMembers.findMany({
-    columns: { userId: true },
-    where: eq(workspaceMembers.workspaceId, channel.workspaceId),
-    orderBy: [asc(workspaceMembers.userId)],
-  });
-  const viewerIds: string[] = [];
-  for (const member of members) {
-    const authorization = await getChannelAuthorizationFromStore(store, member.userId, channel, options);
-    if (isVisibleChannelAuthorization(authorization)) viewerIds.push(member.userId);
-  }
-  return viewerIds;
+  const snapshot = await loadWorkspaceAuthorizationSnapshot(store, channel.workspaceId, [channel.id]);
+  if (!snapshot) return [];
+  return [...snapshot.membersByUserId.keys()].sort().filter((userId) => isVisibleChannelAuthorization(
+    getChannelAuthorizationFromSnapshot(snapshot, userId, channel, options, false),
+  ));
 }
 
 export async function captureChannelViewersFromStore(
@@ -275,16 +530,22 @@ export async function captureChannelViewersFromStore(
   options: AuthorizationEvaluationOptions = {},
 ): Promise<Map<string, string[]>> {
   if (channelIds && channelIds.length === 0) return new Map();
-  const workspaceChannels = await store.query.channels.findMany({
-    where: and(
-      eq(channels.workspaceId, workspaceId),
-      channelIds && channelIds.length > 0 ? inArray(channels.id, channelIds) : undefined,
-    ),
-    orderBy: [asc(channels.id)],
-  });
+  const snapshot = await loadWorkspaceAuthorizationSnapshot(store, workspaceId, channelIds);
+  if (!snapshot) return new Map();
+  return captureChannelViewersFromSnapshot(snapshot, options);
+}
+
+export function captureChannelViewersFromSnapshot(
+  snapshot: WorkspaceAuthorizationSnapshot,
+  options: AuthorizationEvaluationOptions = {},
+): Map<string, string[]> {
   const result = new Map<string, string[]>();
-  for (const channel of workspaceChannels) {
-    result.set(channel.id, await getChannelViewerIdsFromStore(store, channel, options));
+  const userIds = [...snapshot.membersByUserId.keys()].sort();
+  for (const channel of snapshot.channels) {
+    const viewers = userIds.filter((userId) => isVisibleChannelAuthorization(
+      getChannelAuthorizationFromSnapshot(snapshot, userId, channel, options, false),
+    ));
+    result.set(channel.id, viewers);
   }
   return result;
 }
@@ -340,6 +601,7 @@ export async function computeAuthorizationRevisionFromStore(store: any, workspac
     columns: { id: true, name: true, permissions: true, position: true },
     where: eq(roles.workspaceId, workspaceId),
     orderBy: [asc(roles.id)],
+    limit: MAX_ROLES_PER_WORKSPACE + 1,
   });
   const membershipRows = await store.select({
     memberId: workspaceMembers.id,
@@ -348,7 +610,8 @@ export async function computeAuthorizationRevisionFromStore(store: any, workspac
   }).from(workspaceMembers)
     .leftJoin(memberRoles, eq(memberRoles.memberId, workspaceMembers.id))
     .where(eq(workspaceMembers.workspaceId, workspaceId))
-    .orderBy(asc(workspaceMembers.userId), asc(memberRoles.roleId));
+    .orderBy(asc(workspaceMembers.userId), asc(memberRoles.roleId))
+    .limit(MAX_WORKSPACE_MEMBERS * MAX_ROLE_ASSIGNMENTS_PER_MEMBER + 1);
   const categoryOverrideRows = await store.query.categoryRolePermissionOverrides.findMany({
     columns: {
       categoryId: true,
@@ -359,6 +622,7 @@ export async function computeAuthorizationRevisionFromStore(store: any, workspac
     },
     where: eq(categoryRolePermissionOverrides.workspaceId, workspaceId),
     orderBy: [asc(categoryRolePermissionOverrides.categoryId), asc(categoryRolePermissionOverrides.roleId)],
+    limit: MAX_CATEGORIES_PER_WORKSPACE * MAX_ROLES_PER_WORKSPACE + 1,
   });
   const channelOverrideRows = await store.query.channelRolePermissionOverrides.findMany({
     columns: {
@@ -370,19 +634,46 @@ export async function computeAuthorizationRevisionFromStore(store: any, workspac
     },
     where: eq(channelRolePermissionOverrides.workspaceId, workspaceId),
     orderBy: [asc(channelRolePermissionOverrides.channelId), asc(channelRolePermissionOverrides.roleId)],
+    limit: MAX_TOTAL_CHANNELS_PER_WORKSPACE * MAX_ROLES_PER_WORKSPACE + 1,
   });
   const channelRows = await store.query.channels.findMany({
     columns: { id: true, categoryId: true, isPrivate: true },
     where: eq(channels.workspaceId, workspaceId),
     orderBy: [asc(channels.id)],
+    limit: MAX_TOTAL_CHANNELS_PER_WORKSPACE + 1,
   });
+  if (roleRows.length > MAX_ROLES_PER_WORKSPACE) throw new Error('ROLE_INVARIANT_EXCEEDED');
+  if (membershipRows.length > MAX_WORKSPACE_MEMBERS * MAX_ROLE_ASSIGNMENTS_PER_MEMBER) {
+    throw new Error('ROLE_ASSIGNMENT_INVARIANT_EXCEEDED');
+  }
+  const revisionMemberAssignments = new Map<string, number>();
+  for (const row of membershipRows) {
+    const count = revisionMemberAssignments.get(row.memberId) ?? 0;
+    const next = row.roleId === null ? count : count + 1;
+    revisionMemberAssignments.set(row.memberId, next);
+    if (next > MAX_ROLE_ASSIGNMENTS_PER_MEMBER) throw new Error('ROLE_ASSIGNMENT_INVARIANT_EXCEEDED');
+  }
+  if (revisionMemberAssignments.size > MAX_WORKSPACE_MEMBERS) {
+    throw new Error('WORKSPACE_MEMBER_INVARIANT_EXCEEDED');
+  }
+  if (categoryOverrideRows.length > MAX_CATEGORIES_PER_WORKSPACE * MAX_ROLES_PER_WORKSPACE) {
+    throw new Error('CATEGORY_OVERRIDE_INVARIANT_EXCEEDED');
+  }
+  if (channelOverrideRows.length > MAX_TOTAL_CHANNELS_PER_WORKSPACE * MAX_ROLES_PER_WORKSPACE) {
+    throw new Error('CHANNEL_OVERRIDE_INVARIANT_EXCEEDED');
+  }
+  if (channelRows.length > MAX_TOTAL_CHANNELS_PER_WORKSPACE) throw new Error('CHANNEL_INVARIANT_EXCEEDED');
   const channelIds = channelRows.map((channel: { id: string }) => channel.id);
   const privateMembershipRows = channelIds.length === 0
     ? []
     : await store.select({ channelId: channelMembers.channelId, userId: channelMembers.userId })
       .from(channelMembers)
       .where(inArray(channelMembers.channelId, channelIds))
-      .orderBy(asc(channelMembers.channelId), asc(channelMembers.userId));
+      .orderBy(asc(channelMembers.channelId), asc(channelMembers.userId))
+      .limit(MAX_TOTAL_CHANNELS_PER_WORKSPACE * MAX_WORKSPACE_MEMBERS + 1);
+  if (privateMembershipRows.length > MAX_TOTAL_CHANNELS_PER_WORKSPACE * MAX_WORKSPACE_MEMBERS) {
+    throw new Error('PRIVATE_MEMBERSHIP_INVARIANT_EXCEEDED');
+  }
   const canonical = JSON.stringify({
     ownerId: workspace.ownerId,
     roles: roleRows.map((role: any) => [role.id, role.name, role.permissions, role.position]),
@@ -402,11 +693,38 @@ export async function computeAuthorizationRevisionFromStore(store: any, workspac
 function applyOverrideMutation(
   rows: RolePermissionOverrideValue[],
   mutation: OverrideMutation | undefined,
+  assignedRoleIds?: ReadonlySet<string>,
 ): RolePermissionOverrideValue[] {
-  if (!mutation) return rows;
+  if (!mutation || (assignedRoleIds && !assignedRoleIds.has(mutation.roleId))) return rows;
   const withoutTarget = rows.filter((row) => row.roleId !== mutation.roleId);
   if (!mutation.deleted) withoutTarget.push(mutation);
   return withoutTarget;
+}
+
+function groupOverrides(
+  rows: any[],
+  targetField: 'categoryId' | 'channelId',
+): Map<string, RolePermissionOverrideValue[]> {
+  const grouped = new Map<string, RolePermissionOverrideValue[]>();
+  for (const row of rows) {
+    const targetId = row[targetField] as string;
+    const values = grouped.get(targetId) ?? [];
+    values.push({ roleId: row.roleId, allowMask: row.allowMask, denyMask: row.denyMask });
+    grouped.set(targetId, values);
+  }
+  return grouped;
+}
+
+function groupPrivateMemberships(
+  rows: Array<{ channelId: string; userId: string }>,
+): Map<string, Set<string>> {
+  const grouped = new Map<string, Set<string>>();
+  for (const row of rows) {
+    const users = grouped.get(row.channelId) ?? new Set<string>();
+    users.add(row.userId);
+    grouped.set(row.channelId, users);
+  }
+  return grouped;
 }
 
 function buildPermissionDetails(

@@ -1,6 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import type { Attachment, Message, SignedMessageEnvelope, User } from '@alparts/shared';
-import { compareMessageEvents, mergeMessageEvents, projectMessageEvents } from './message-projector';
+import {
+  compareMessageEvents,
+  getMessageCryptoVerificationState,
+  hasAuthenticatedEnvelopeConflict,
+  isMessageKeyUnavailable,
+  markMessageCryptoVerification,
+  markMessageKeyUnavailable,
+  mergeMessageEvents,
+  projectMessageEvents,
+  retryMessageKeyVerification,
+} from './message-projector';
 import { matchesLocallySignedMessageResponse } from './message.store';
 
 const author: User = {
@@ -14,7 +24,7 @@ const author: User = {
 
 function event(overrides: Partial<Message> & Pick<Message, 'id' | 'type' | 'createdAt'>): Message {
   const { id, type, createdAt, ...rest } = overrides;
-  return {
+  return markMessageCryptoVerification({
     id,
     channelId: 'channel-1',
     authorId: overrides.authorId || author.id,
@@ -32,8 +42,7 @@ function event(overrides: Partial<Message> & Pick<Message, 'id' | 'type' | 'crea
     idempotencyKey: `idem-${id}`,
     createdAt,
     ...rest,
-    cryptoVerified: true,
-  } as Message;
+  } as Message, true);
 }
 
 describe('projectMessageEvents', () => {
@@ -83,7 +92,7 @@ describe('projectMessageEvents', () => {
       createdAt: '2026-01-01T00:00:05.000Z',
     });
 
-    const rawNewestFirst = [deletion, reaction, edit, second, original, { ...edit, content: '' }];
+    const rawNewestFirst = [deletion, reaction, edit, second, original, wireEvent(edit, { content: '' })];
     const merged = mergeMessageEvents(rawNewestFirst);
     const projected = projectMessageEvents(merged);
 
@@ -103,10 +112,49 @@ describe('projectMessageEvents', () => {
       isPinned: true,
       createdAt: '2026-01-01T00:00:00.000Z',
     });
-    const refreshed = { ...stored, content: '', reactions: [], isPinned: false };
+    const refreshed = wireEvent(stored, { content: '', reactions: [], isPinned: false });
 
     const [merged] = mergeMessageEvents([stored], [refreshed]);
     expect(merged).toMatchObject({ content: 'decrypted locally', reactions: [], isPinned: false });
+  });
+
+  it('ignores plaintext and a forged string verification marker from an exact wire duplicate', () => {
+    const stored = event({
+      id: '00000000-0000-4000-8000-000000000002',
+      type: 'message',
+      content: 'decrypted locally',
+      createdAt: '2026-01-01T00:00:00.000Z',
+    });
+    const wireDuplicate = {
+      ...wireEvent(stored),
+      content: 'server injected',
+      cryptoVerified: true,
+    } as Message & { cryptoVerified: boolean };
+
+    const [merged] = mergeMessageEvents([stored], [wireDuplicate]);
+    expect(merged.content).toBe('decrypted locally');
+    expect(getMessageCryptoVerificationState(merged)).toBe(true);
+    expect(Object.prototype.hasOwnProperty.call(merged, 'cryptoVerified')).toBe(false);
+  });
+
+  it('quarantines one id that arrives with a different authenticated envelope', () => {
+    const stored = event({
+      id: '00000000-0000-4000-8000-000000000003',
+      type: 'message',
+      content: 'decrypted locally',
+      createdAt: '2026-01-01T00:00:00.000Z',
+    });
+    const conflictingDuplicate = {
+      ...stored,
+      encryptedContent: 'different-ciphertext',
+      content: 'server injected',
+    };
+
+    const [merged] = mergeMessageEvents([stored], [conflictingDuplicate]);
+    expect(merged.content).toBe('');
+    expect(getMessageCryptoVerificationState(merged)).toBe(false);
+    expect(hasAuthenticatedEnvelopeConflict(merged)).toBe(true);
+    expect(projectMessageEvents([merged])[0].content).toBe('');
   });
 
   it('keeps immutable attachments when a duplicate socket event has an older empty snapshot', () => {
@@ -118,6 +166,27 @@ describe('projectMessageEvents', () => {
     });
     const [merged] = mergeMessageEvents([stored], [{ ...stored, attachments: [] }]);
     expect(merged.attachments?.map((item) => item.id)).toEqual(['00000000-0000-4000-8000-000000000020']);
+  });
+
+  it('keeps a missing-key result terminal until explicit reconciliation', () => {
+    const unavailable = markMessageKeyUnavailable(wireEvent(event({
+      id: '00000000-0000-4000-8000-000000000004',
+      type: 'message',
+      content: 'must not survive',
+      createdAt: '2026-01-01T00:00:00.000Z',
+    })));
+    expect(isMessageKeyUnavailable(unavailable)).toBe(true);
+    expect(getMessageCryptoVerificationState(unavailable)).toBe(false);
+    expect(unavailable.content).toBe('');
+
+    const [duplicate] = mergeMessageEvents([unavailable], [wireEvent(unavailable)]);
+    expect(isMessageKeyUnavailable(duplicate)).toBe(true);
+    expect(duplicate.content).toBe('');
+
+    const retryable = retryMessageKeyVerification(duplicate);
+    expect(isMessageKeyUnavailable(retryable)).toBe(false);
+    expect(getMessageCryptoVerificationState(retryable)).toBeUndefined();
+    expect(retryable.content).toBe('');
   });
 
   it('does not apply an edit signed by a different author', () => {
@@ -135,22 +204,38 @@ describe('projectMessageEvents', () => {
 
   it('does not apply mutation events before local signature verification', () => {
     const original = event({ id: 'message-verified-boundary', type: 'message', content: 'visible', createdAt: '2026-01-01T00:00:00.000Z' });
-    const unsignedDelete = {
+    const unsignedDelete = markMessageCryptoVerification({
       ...event({ id: 'delete-unverified', type: 'delete', refMessageId: original.id, createdAt: '2026-01-01T00:00:01.000Z' }),
-      cryptoVerified: false,
       signature: null,
-    } as Message;
+    } as Message, false);
     expect(projectMessageEvents([original, unsignedDelete])[0]).toMatchObject({ type: 'message', content: 'visible' });
   });
 
   it('does not render server-supplied base plaintext before verification', () => {
-    const unverified = {
+    const unverified = markMessageCryptoVerification({
       ...event({ id: 'message-unverified-base', type: 'message', content: 'server injected', createdAt: '2026-01-01T00:00:00.000Z' }),
-      cryptoVerified: false,
-    } as Message;
+    } as Message, false);
     expect(projectMessageEvents([unverified])[0].content).toBe('');
   });
+
+  it('does not accept a network-supplied string verification property', () => {
+    const forged = {
+      ...wireEvent(event({
+        id: 'message-forged-verification-marker',
+        type: 'message',
+        content: 'server injected',
+        createdAt: '2026-01-01T00:00:00.000Z',
+      })),
+      cryptoVerified: true,
+    } as Message & { cryptoVerified: boolean };
+    expect(projectMessageEvents([forged])[0].content).toBe('');
+  });
 });
+
+function wireEvent(message: Message, overrides: Partial<Message> = {}): Message {
+  // JSON is the relevant trust boundary and cannot carry process-local Symbols.
+  return { ...JSON.parse(JSON.stringify(message)) as Message, ...overrides };
+}
 
 describe('locally signed REST message responses', () => {
   const expected: SignedMessageEnvelope = {

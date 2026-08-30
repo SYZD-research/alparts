@@ -22,11 +22,13 @@ import permissionOverrideRoutes from './routes/permission-overrides.js';
 import { enforceBrowserOrigin } from './middleware/origin.js';
 import { rateLimit } from './middleware/rate-limit.js';
 import { logError } from './security/logger.js';
-import { checkDb } from './db/index.js';
+import { checkDatabaseSchema, checkDb } from './db/index.js';
 import { checkObjectStorage } from './services/object-storage.js';
 import { requestContext } from './middleware/request-context.js';
 import { checkAuditCheckpoint } from './middleware/audit.js';
 import { reserveJsonBody } from './middleware/body-admission.js';
+import { renderPrometheusMetrics } from './observability/metrics.js';
+import { matchesSecret } from './security/cookies.js';
 
 export function createApp() {
   const app = express();
@@ -132,12 +134,25 @@ export function createApp() {
       return;
     }
     try {
-      await Promise.all([checkDb(), checkObjectStorage(), checkAuditCheckpoint()]);
+      await Promise.all([checkDb(), checkDatabaseSchema(), checkObjectStorage(), checkAuditCheckpoint()]);
       res.json({ status: 'ready' });
     } catch {
       res.status(503).json({ status: 'unavailable' });
     }
   });
+  if (config.observability.metricsEnabled) {
+    app.get('/metrics', (req, res) => {
+      const authorization = req.headers.authorization;
+      const supplied = authorization?.startsWith('Bearer ') ? authorization.slice(7) : '';
+      if (!config.observability.metricsToken || !matchesSecret(supplied, config.observability.metricsToken)) {
+        res.setHeader('WWW-Authenticate', 'Bearer');
+        res.status(401).type('text/plain').send('Authentication required\n');
+        return;
+      }
+      res.setHeader('Cache-Control', 'no-store');
+      res.type('text/plain; version=0.0.4').send(renderPrometheusMetrics());
+    });
+  }
 
   // API Routes
   app.use('/api/auth', authRoutes);
@@ -175,6 +190,24 @@ export function createApp() {
 
   // Error handler
   app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    if (err?.message === 'AUTH_CAPACITY') {
+      res.setHeader('Retry-After', '5');
+      res.status(503).json({ error: 'AUTH_CAPACITY', message: 'Authentication capacity is temporarily exhausted', statusCode: 503 });
+      return;
+    }
+    if (err?.message === 'AUDIT_UNAVAILABLE') {
+      res.setHeader('Retry-After', '30');
+      res.status(503).json({ error: 'AUDIT_UNAVAILABLE', message: 'Authoritative writes are temporarily unavailable', statusCode: 503 });
+      return;
+    }
+    if (typeof err?.message === 'string' && (
+      err.message.endsWith('_INVARIANT_EXCEEDED')
+      || err.message === 'AUTHORIZATION_INPUT_LIMIT_EXCEEDED'
+    )) {
+      res.setHeader('Retry-After', '30');
+      res.status(503).json({ error: 'DATA_INVARIANT', message: 'A bounded data invariant requires operator attention', statusCode: 503 });
+      return;
+    }
     if (err?.type === 'entity.parse.failed' || err?.type === 'request.size.invalid') {
       res.status(400).json({ error: 'INVALID_JSON', message: 'Invalid JSON request body', statusCode: 400 });
       return;

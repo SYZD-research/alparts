@@ -1,0 +1,12 @@
+[Unit]
+Description=Schedule encrypted alparts backups
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=30m
+Persistent=true
+AccuracySec=1m
+Unit=alparts-backup.service
+
+[Install]
+WantedBy=timers.target

@@ -1,11 +1,17 @@
 import { getActiveDevice } from './crypto.service';
-import { parseOutboxCommand, type OutboxCommand } from '../stores/outbox-model';
+import {
+  MAX_OUTBOX_COMMANDS_PER_DEVICE,
+  parseOutboxCommand,
+  type OutboxCommand,
+} from '../stores/outbox-model';
 
 const DB_NAME = 'alparts-local-state';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const KEY_STORE = 'crypto';
 const DRAFT_STORE = 'drafts';
 const OUTBOX_STORE = 'outbox';
+const OUTBOX_OWNER_DEVICE_CREATED_INDEX = 'owner-device-created';
+const OUTBOX_OWNER_DEVICE_CHANNEL_INDEX = 'owner-device-channel';
 const FORMAT_VERSION = 1;
 
 type RecordPurpose = 'draft' | 'outbox';
@@ -81,7 +87,23 @@ function openLocalDb(): Promise<IDBDatabase> {
       const db = request.result;
       if (!db.objectStoreNames.contains(KEY_STORE)) db.createObjectStore(KEY_STORE);
       if (!db.objectStoreNames.contains(DRAFT_STORE)) db.createObjectStore(DRAFT_STORE, { keyPath: 'id' });
-      if (!db.objectStoreNames.contains(OUTBOX_STORE)) db.createObjectStore(OUTBOX_STORE, { keyPath: 'id' });
+      const outbox = db.objectStoreNames.contains(OUTBOX_STORE)
+        ? request.transaction!.objectStore(OUTBOX_STORE)
+        : db.createObjectStore(OUTBOX_STORE, { keyPath: 'id' });
+      if (!outbox.indexNames.contains(OUTBOX_OWNER_DEVICE_CREATED_INDEX)) {
+        outbox.createIndex(
+          OUTBOX_OWNER_DEVICE_CREATED_INDEX,
+          ['ownerId', 'deviceId', 'createdAt'],
+          { unique: false },
+        );
+      }
+      if (!outbox.indexNames.contains(OUTBOX_OWNER_DEVICE_CHANNEL_INDEX)) {
+        outbox.createIndex(
+          OUTBOX_OWNER_DEVICE_CHANNEL_INDEX,
+          ['ownerId', 'deviceId', 'channelId'],
+          { unique: false },
+        );
+      }
     };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
@@ -102,12 +124,17 @@ async function getRecord<T>(storeName: string, key: IDBValidKey): Promise<T | nu
   });
 }
 
-async function getAllRecords<T>(storeName: string): Promise<T[]> {
+async function getBoundedOutboxRecords(context: DeviceContext): Promise<unknown[]> {
   const db = await openLocalDb();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(storeName, 'readonly');
-    const request = tx.objectStore(storeName).getAll();
-    request.onsuccess = () => resolve((request.result as T[] | undefined) ?? []);
+    const tx = db.transaction(OUTBOX_STORE, 'readonly');
+    const index = tx.objectStore(OUTBOX_STORE).index(OUTBOX_OWNER_DEVICE_CREATED_INDEX);
+    const range = IDBKeyRange.bound(
+      [context.userId, context.deviceId, ''],
+      [context.userId, context.deviceId, '\uffff'],
+    );
+    const request = index.getAll(range, MAX_OUTBOX_COMMANDS_PER_DEVICE + 1);
+    request.onsuccess = () => resolve((request.result as unknown[] | undefined) ?? []);
     request.onerror = () => reject(request.error);
     tx.oncomplete = () => db.close();
     tx.onerror = () => { db.close(); reject(tx.error); };
@@ -150,24 +177,79 @@ async function deleteRecord(storeName: string, key: IDBValidKey): Promise<void> 
   });
 }
 
-async function deleteRecordsMatching(
-  storeName: string,
-  predicate: (value: unknown) => boolean,
+async function deleteOutboxRecordsForChannel(
+  context: DeviceContext,
+  channelId: string,
 ): Promise<void> {
   const db = await openLocalDb();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(storeName, 'readwrite');
-    const request = tx.objectStore(storeName).openCursor();
+    const tx = db.transaction(OUTBOX_STORE, 'readwrite');
+    const index = tx.objectStore(OUTBOX_STORE).index(OUTBOX_OWNER_DEVICE_CHANNEL_INDEX);
+    const request = index.openCursor(IDBKeyRange.only([context.userId, context.deviceId, channelId]));
     request.onsuccess = () => {
       const cursor = request.result;
       if (!cursor) return;
-      if (predicate(cursor.value)) cursor.delete();
+      cursor.delete();
       cursor.continue();
     };
     request.onerror = () => reject(request.error);
     tx.oncomplete = () => { db.close(); resolve(); };
     tx.onerror = () => { db.close(); reject(tx.error); };
     tx.onabort = () => { db.close(); reject(tx.error); };
+  });
+}
+
+async function putBoundedOutboxRecord(
+  context: DeviceContext,
+  command: OutboxCommand,
+  encrypted: Pick<EncryptedRecord, 'nonce' | 'ciphertext'>,
+): Promise<void> {
+  const db = await openLocalDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(OUTBOX_STORE, 'readwrite');
+    const store = tx.objectStore(OUTBOX_STORE);
+    const id = recordId(context.userId, command.idempotencyKey);
+    const existingRequest = store.get(id);
+    const range = IDBKeyRange.bound(
+      [context.userId, context.deviceId, ''],
+      [context.userId, context.deviceId, '\uffff'],
+    );
+    const countRequest = store.index(OUTBOX_OWNER_DEVICE_CREATED_INDEX).count(range);
+    let existingReady = false;
+    let countReady = false;
+    let failure: Error | null = null;
+    let putStarted = false;
+
+    const maybePut = () => {
+      if (!existingReady || !countReady || putStarted) return;
+      const existing = existingRequest.result as unknown;
+      if (!existing && countRequest.result >= MAX_OUTBOX_COMMANDS_PER_DEVICE) {
+        failure = new Error('OUTBOX_CAPACITY');
+        tx.abort();
+        return;
+      }
+      const now = new Date().toISOString();
+      const record: EncryptedRecord = {
+        id,
+        version: FORMAT_VERSION,
+        purpose: 'outbox',
+        ownerId: context.userId,
+        deviceId: context.deviceId,
+        channelId: command.channelId,
+        createdAt: isEncryptedRecord(existing) ? existing.createdAt : command.createdAt,
+        updatedAt: now,
+        ...encrypted,
+      };
+      putStarted = true;
+      store.put(record);
+    };
+    existingRequest.onsuccess = () => { existingReady = true; maybePut(); };
+    countRequest.onsuccess = () => { countReady = true; maybePut(); };
+    existingRequest.onerror = () => { failure = existingRequest.error ?? new Error('Outbox lookup failed'); };
+    countRequest.onerror = () => { failure = countRequest.error ?? new Error('Outbox count failed'); };
+    tx.oncomplete = () => { db.close(); resolve(); };
+    tx.onerror = () => { db.close(); reject(failure ?? tx.error); };
+    tx.onabort = () => { db.close(); reject(failure ?? tx.error ?? new Error('Outbox write aborted')); };
   });
 }
 
@@ -316,23 +398,7 @@ export async function saveOutboxCommand(
   if (!isCurrent()) return;
   const encrypted = await encryptPayload('outbox', context, command.idempotencyKey, command);
   if (!isCurrent()) return;
-  const id = recordId(context.userId, command.idempotencyKey);
-  const existing = await getRecord<EncryptedRecord>(OUTBOX_STORE, id);
-  if (!isCurrent()) return;
-  const now = new Date().toISOString();
-  const record: EncryptedRecord = {
-    id,
-    version: FORMAT_VERSION,
-    purpose: 'outbox',
-    ownerId: context.userId,
-    deviceId: context.deviceId,
-    channelId: command.channelId,
-    createdAt: existing?.createdAt || command.createdAt,
-    updatedAt: now,
-    ...encrypted,
-  };
-  if (!isCurrent()) return;
-  await putRecord(OUTBOX_STORE, record);
+  await putBoundedOutboxRecord(context, command, encrypted);
 }
 
 async function decryptOutboxRecord(record: EncryptedRecord, context: DeviceContext): Promise<OutboxCommand | null> {
@@ -352,7 +418,8 @@ async function decryptOutboxRecord(record: EncryptedRecord, context: DeviceConte
 }
 
 export async function loadOutboxCommands(context: OutboxStorageContext): Promise<OutboxCommand[]> {
-  const values = await getAllRecords<unknown>(OUTBOX_STORE);
+  const values = await getBoundedOutboxRecords(context);
+  if (values.length > MAX_OUTBOX_COMMANDS_PER_DEVICE) throw new Error('OUTBOX_CAPACITY_REVIEW_REQUIRED');
   const owned: EncryptedRecord[] = [];
   for (const value of values) {
     if (isEncryptedRecord(value)) {
@@ -397,13 +464,7 @@ export async function deleteOutboxCommandsForChannel(
   context: OutboxStorageContext,
   channelId: string,
 ): Promise<void> {
-  await deleteRecordsMatching(OUTBOX_STORE, (value) => (
-    isEncryptedRecord(value)
-    && value.purpose === 'outbox'
-    && value.ownerId === context.userId
-    && value.deviceId === context.deviceId
-    && value.channelId === channelId
-  ));
+  await deleteOutboxRecordsForChannel(context, channelId);
 }
 
 /** Drop all in-memory key references; encrypted records remain available to the same valid device. */

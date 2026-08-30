@@ -7,6 +7,8 @@ export interface OutboxCommand {
   createdAt: string;
 }
 
+export const MAX_OUTBOX_COMMANDS_PER_DEVICE = 100;
+
 export type OutboxStatus = 'queued' | 'sending' | 'failed';
 
 export interface OutboxItem {

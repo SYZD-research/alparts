@@ -39,7 +39,7 @@ const deleteSchema = z.object({
 type StoredMessageResult = Awaited<ReturnType<typeof messageService.createMessage>>;
 type MessageEvent = StoredMessageResult['event'];
 type MessageDeletedResult = Awaited<ReturnType<typeof messageService.deleteMessage>>;
-export type MessageDeletedPayload = Omit<MessageDeletedResult, 'isNewEvent'>;
+export type MessageDeletedPayload = Pick<MessageDeletedResult, 'messageId' | 'channelId' | 'event'>;
 export type ReactionUpdatedPayload = Awaited<ReturnType<typeof messageService.toggleReaction>>;
 export type PinUpdatedPayload = Awaited<ReturnType<typeof messageService.pinMessage>>;
 

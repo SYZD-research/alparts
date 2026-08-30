@@ -1,19 +1,14 @@
 import { randomBytes } from 'node:crypto';
-import { readFileSync } from 'node:fs';
 import { parseBindHost, parseBoundedInteger, parseCorsOrigins, parseVoiceIceServers } from './validation.js';
+import { loadDatabaseRuntimeConfig } from './database.js';
+import { readConfiguredValue } from './source.js';
 
 const env = process.env;
 const nodeEnv = env.NODE_ENV || 'development';
 const isProduction = nodeEnv === 'production';
 
 function value(name: string): string | undefined {
-  const direct = env[name]?.trim();
-  const file = env[`${name}_FILE`]?.trim();
-  if (direct && file) throw new Error(`Configure only one of ${name} or ${name}_FILE`);
-  if (!file) return direct || undefined;
-  const loaded = readFileSync(file, { encoding: 'utf8' }).trim();
-  if (Buffer.byteLength(loaded, 'utf8') > 64 * 1024) throw new Error(`${name}_FILE is too large`);
-  return loaded || undefined;
+  return readConfiguredValue(name, env, isProduction);
 }
 
 function required(name: string): string {
@@ -52,12 +47,21 @@ function mandatorySecret(name: string, minimumBytes = 32): string {
   return value;
 }
 
+function productionSecret(name: string, minimumBytes = 32): string {
+  const configured = required(name);
+  if (isProduction && Buffer.byteLength(configured, 'utf8') < minimumBytes) {
+    throw new Error(`${name} must contain at least ${minimumBytes} bytes in production`);
+  }
+  return configured;
+}
+
 const configuredCorsOrigins = env.CORS_ORIGINS || env.CORS_ORIGIN;
 if (isProduction && !configuredCorsOrigins) {
   throw new Error('CORS_ORIGINS must be explicitly configured in production');
 }
 
 const corsOrigins = parseCorsOrigins(configuredCorsOrigins || 'http://localhost:5173', isProduction);
+const databaseRuntimeConfig = loadDatabaseRuntimeConfig(env, nodeEnv);
 
 export const config = {
   bindHost: parseBindHost(env.BIND_HOST),
@@ -65,13 +69,7 @@ export const config = {
   nodeEnv,
   isProduction,
 
-  db: {
-    url: required('DATABASE_URL'),
-    ssl: env.DB_SSL === 'true' || (isProduction && env.DB_SSL !== 'false'),
-    poolMax: parseBoundedInteger('DB_POOL_MAX', env.DB_POOL_MAX, 10, 1, 100),
-    connectTimeoutMs: parseBoundedInteger('DB_CONNECT_TIMEOUT_MS', env.DB_CONNECT_TIMEOUT_MS, 5_000, 100, 60_000),
-    statementTimeoutMs: parseBoundedInteger('DB_STATEMENT_TIMEOUT_MS', env.DB_STATEMENT_TIMEOUT_MS, 15_000, 1_000, 120_000),
-  },
+  db: databaseRuntimeConfig,
 
   jwt: {
     secret: secret('JWT_SECRET'),
@@ -96,7 +94,7 @@ export const config = {
     endPoint: env.MINIO_ENDPOINT || 'localhost',
     port: parseBoundedInteger('MINIO_PORT', env.MINIO_PORT, 9000, 1, 65535),
     accessKey: required('MINIO_ACCESS_KEY'),
-    secretKey: required('MINIO_SECRET_KEY'),
+    secretKey: productionSecret('MINIO_SECRET_KEY'),
     bucket: env.MINIO_BUCKET || 'alparts',
     useSSL: env.MINIO_USE_SSL === 'true' || (isProduction && env.MINIO_USE_SSL !== 'false'),
     requestTimeoutMs: parseBoundedInteger(
@@ -122,7 +120,34 @@ export const config = {
     trustedProxies: (env.TRUSTED_PROXIES || '').split(',').map((entry) => entry.trim()).filter(Boolean),
   },
 
+  observability: {
+    metricsEnabled: env.METRICS_ENABLED === 'true',
+    metricsToken: optionalSecret('METRICS_TOKEN'),
+  },
+
   voice: {
     iceServers: parseVoiceIceServers(value('VOICE_ICE_SERVERS_JSON')),
   },
 } as const;
+
+if (config.observability.metricsEnabled && !config.observability.metricsToken) {
+  throw new Error('METRICS_TOKEN is required when METRICS_ENABLED=true');
+}
+if (config.isProduction && (!config.audit.checkpointPath || !config.audit.checkpointRequired)) {
+  throw new Error('Production requires AUDIT_CHECKPOINT_PATH and AUDIT_CHECKPOINT_REQUIRED=true');
+}
+if (config.isProduction && !config.minio.useSSL && (
+  env.ALLOW_INSECURE_LOOPBACK_DEPENDENCIES !== 'true'
+  || !isLoopbackHost(config.minio.endPoint)
+)) {
+  throw new Error('Production object-storage TLS may be disabled only for an explicitly acknowledged loopback endpoint');
+}
+
+function isLoopbackHost(host: string): boolean {
+  const normalized = host.toLowerCase();
+  return normalized === 'localhost'
+    || normalized === '127.0.0.1'
+    || normalized === '[::1]'
+    || normalized === '::1'
+    || normalized === 'unix-socket';
+}

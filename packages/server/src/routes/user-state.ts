@@ -51,6 +51,10 @@ router.post('/messages/:id/bookmark', authMiddleware, requireMessagePermission(P
       res.status(404).json({ error: 'NOT_FOUND', message: 'Message not found', statusCode: 404 });
       return;
     }
+    if (error.message === 'BOOKMARK_LIMIT_REACHED') {
+      res.status(409).json({ error: error.message, message: 'Bookmark quota reached', statusCode: 409 });
+      return;
+    }
     throw error;
   }
 });

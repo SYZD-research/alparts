@@ -54,7 +54,11 @@ router.get(
   authMiddleware,
   requireWorkspacePermission(Permissions.MANAGE_MEMBERS, 'wid'),
   async (req: AuthRequest, res) => {
-    res.json(await invitationService.listInvitations(req.params.wid));
+    try {
+      res.json(await invitationService.listInvitations(req.params.wid));
+    } catch (error: any) {
+      if (!sendInvitationError(res, error)) throw error;
+    }
   },
 );
 
@@ -96,6 +100,18 @@ function sendInvitationError(res: Response, error: any): boolean {
   }
   if (error?.message === 'WORKSPACE_MEMBER_LIMIT') {
     res.status(409).json({ error: 'WORKSPACE_MEMBER_LIMIT', message: 'Workspace member limit reached', statusCode: 409 });
+    return true;
+  }
+  if (error?.message === 'WORKSPACE_MEMBERSHIP_LIMIT_REACHED') {
+    res.status(409).json({ error: error.message, message: 'Workspace membership quota reached', statusCode: 409 });
+    return true;
+  }
+  if (['INVITATION_ACTIVE_LIMIT_REACHED', 'INVITATION_RETENTION_LIMIT_REACHED'].includes(error?.message)) {
+    res.status(409).json({ error: error.message, message: 'Workspace invitation quota reached', statusCode: 409 });
+    return true;
+  }
+  if (error?.message === 'INVITATION_INVARIANT_EXCEEDED') {
+    res.status(503).json({ error: error.message, message: 'Invitation invariant exceeded', statusCode: 503 });
     return true;
   }
   return false;

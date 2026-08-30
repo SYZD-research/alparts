@@ -1,6 +1,8 @@
-# Phase 1 Prototype threat model
+# Phase 1 Prototype threat model (legacy location)
 
-最終更新: 2026-08-27
+最終更新: 2026-08-30
+
+Canonical/current threat model: [`docs/security/THREAT_MODEL.md`](./docs/security/THREAT_MODEL.md). The material below remains as the detailed Phase 1 protocol baseline; where it conflicts, the canonical model, current code/tests, and risk register take precedence.
 
 対象はWeb / single-node / basic per-channel key / text中心＋最大8人P2P音声のprototypeである。`SPECIFICATION.md` の正式運用版に対するthreat modelまたはsecurity approvalではない。
 
@@ -32,7 +34,7 @@
 3. **Application process:** serverはrouting、membership、device、object metadataを扱い、availabilityとkey directory提示を制御する。Message plaintextを保持しないことはmetadata confidentiality、availability、rollback resistanceを意味しない。
 4. **PostgreSQL / MinIO:** message confidentialityについてuntrusted storeとして扱う。Remote接続はauthenticated TLSとleast-privilege credentialを必要とする。Attachmentはclient crypto unit vectorと隔離PostgreSQL/MinIOのprotocol-level resume/download SHAを組み合わせて検証するが、store自体はupload byteが正しいplaintextから生成されたことを証明できない。
 5. **Workspace / channel:** workspace membershipがpublic channelの最低境界で、private channelはexplicit membershipを追加要求する。Role/overrideと暗号group membershipの不一致時は安全側へ停止しなければならない。
-6. **Device enrollment / key distribution:** sessionはactive deviceへbindingする。新しいidentityの登録はsession-bound challengeへのdevice署名とcurrent passwordを要求し、既存identityへのbindingはそのdevice署名を要求する。Wrapped channel keyはauthorized userのactive deviceだけへ配布する。透明性logと既存端末approvalがないため、server提示directory自体は独立検証できない。
+6. **Device enrollment / key distribution:** sessionはactive deviceへbindingする。新しいidentityの登録はsession-bound challengeへのdevice署名とcurrent passwordを要求し、既存identityへのbindingはそのdevice署名を要求する。新端末によるpending recipient変化は最大50 workspaceを安定順にlockし、各最大300 channel内でset-based reconciliationする。Wrapped channel keyはauthorized userのactive deviceだけへ配布する。透明性logと既存端末approvalがないため、server提示directory自体は独立検証できない。
 7. **Audit checkpoint:** PostgreSQL chainとcheckpointが別のfailure/authority domainにある場合だけ末尾切断への独立証拠になる。同一operatorが両方をwrite/deleteできる配置は独立境界ではない。
 8. **Backup / restore:** published artifactはage recipientへ暗号化されるが、audit key、deployment credential、browser device keyは別資産である。PostgreSQL credentialはprivate libpq service file、MinIO credentialはstdin importされた一時configに留める。Restoreは明示した空の使い捨てDB/bucketだけを対象にする。Recipient encryptionは作成者のauthenticityを証明しない。
 9. **WebRTC peer / ICE:** 音声本文はparticipant browser間のDTLS-SRTPでpairwiseに暗号化する。Application serverは署名付きSDP/ICEだけを中継し、設定されたSTUN/TURNはnetwork traversalまたは暗号化packet relayを行う。正規peerは受信音声と相手のICE由来network metadataを観測でき、compromised endpointは当然plaintextへ到達する。
@@ -46,12 +48,14 @@
 - Message/attachment ciphertextはAES-256-GCMのcontextual AADを使う。Message protocol v3のP-256 device signatureは認証author ID、mutation target、broadcast-mention flagを含むrouting/crypto metadataをcoverし、server/clientはdeviceとauthor userのbindingを照合する。
 - Serverはchannel epochごとに一つのSHA-256 key commitment、frozen recipient snapshot、`pending/active/retired/aborted`状態をcommitする。各recipient deliveryはchannel/version/commitment/recipient/distributor/ciphertextへ署名され、全required recipient deviceがserver発行のexact deliveryを署名ackした場合だけepochをatomicに`active`へ昇格する。Per-distributor candidateはimmutableで、選択された候補以外はack時に除去する。
 - Serverは`active`なcurrent channel-key versionだけをmessage/attachment writeへ受理する。Pending epochは自己ackだけでは有効化されず、managerまたはDM participantの署名abort後もversionを再利用しない。Member/device removalなどでrekey requiredになったchannelへの新規writeを停止する。Device/member/channel/category数とatomic recipient fan-outをsmall-team上限内へ固定する。
-- Event projectorはimmutable event IDをdeduplicateし、`(createdAt, id)`で決定的に並べる。Base plaintextとedit/deleteは端末側の署名・AEAD検証完了前に投影しない。REST mutation responseもlocal signed envelopeと完全一致した場合だけ検証済みとして取り込み、reaction/pinはbounded current-state snapshotとして扱う。
+- 全accepted holderを失ったchannelは旧ciphertextを復旧可能と表示せず、`historyRecoveryRequired`を返す。認可済みのfresh deviceは将来write用の次epochだけを確立できる。公式clientのcurrent key照会、最大64 versionの履歴batch、最大64 deviceの署名鍵照会と、deprecation付き16-version/400-device rollout bridgeはすべて有限である。
+- Event projectorはimmutable event IDをdeduplicateし、`(createdAt, id)`で決定的に並べる。Base plaintextとedit/deleteは端末側の署名・AEAD検証完了前に投影しない。検証済みprovenanceはnetwork fieldではなくprocess-local markerで、REST mutation responseもlocal signed envelopeと完全一致した場合だけ取り込む。同じIDの非同一署名envelopeはsticky conflictへquarantineし、reaction/pinはbounded current-state snapshotとして扱う。
 - Session tokenはHttpOnly/SameSite cookieで配送し、server DBにはSHA-256 hashだけを保存する。Logout/device/session revokeはlive checkへ反映する。
 - Invitationはrandom tokenのhashだけを保存し、一回限り・期限付き・個別失効・任意email bindingを強制する。
 - Draft/outboxはuser/device/purpose/scopeをAADへ含め、same-origin IndexedDBに保存したnon-extractable AES-GCM `CryptoKey`で暗号化する。非同期outbox処理は開始時のprincipal/device/generationへ固定し、reset後の保存・送信・削除callbackを受理しない。Logout/user切替時は復号済みmemoryとkey cacheをclearする。
-- Audit appendはPostgreSQL advisory lockで直列化し、security-sensitive state mutationと同じtransactionへ入れる。起動時にchainとconfigured checkpointを検証し、audit閲覧も監査する。Required checkpointの初期化は明示operator commandだけが行う。通常appendとcheckpoint更新は同じlock内で現在anchorのHMACとDB tailへのdescendant関係を検証し、欠落・rollback・tail切断はsticky failureとしてreadiness/writeをfail closedにして通常処理から再作成・再署名しない。
+- Audit appendはPostgreSQL advisory lockで直列化し、message create/edit/delete/replay、reaction/pin、preference/bookmarkを含むsecurity-sensitive state mutationと同じtransactionへ入れる。Read positionとprovisional upload chunk registration/cleanupは個別eventを生成しないが同じauthoritative-write admissionを通す。起動時にchainとconfigured checkpointを検証し、audit閲覧も監査する。Required checkpointの初期化は明示operator commandだけが行う。通常appendとcheckpoint更新は同じlock内で現在anchorのHMACとDB tailへのdescendant関係を検証し、欠落・rollback・tail切断はsticky failureとしてreadiness/以後のauthoritative writeをfail closedにして通常処理から再作成・再署名しない。Presence/device activity timestampは認可等に使わないadvisory stateとしてこのgate外に置く。
 - Backup scriptはquiesce assertion、private libpq service、tool/server major一致、private staging、checksum/manifest、age recipient encryption、既存artifact非上書きを強制する。Restore scriptはextract前のentry/logical-byte/sparse/path/type上限と、target名・空DB・空bucket・非特権ownerを検査し、drop/clean/migrationを実行しない。
+- Runtimeはbundled migration timestamp/hash列と、最大4,096 descriptorのPostgreSQL 16 `public` catalog fingerprintをrepeatable-read snapshotで照合する。Persistentなcovered schema driftはstartup/readinessをfail closedにするが、row data、role/grant、physical durability、probe間だけのDBA変更は別controlである。
 - JSON/attachment bodyはparser前にContent-Length、aggregate bytes、concurrent request、source/user budgetを確認する。Object storage transportはactive/pending workを制限し、response header待ちとstream inactivityを設定上限内でtimeoutする。Download leaseとobject-storage leaseはresponse stream終端まで保持する。Remote object I/OをDB transaction中に実行せず、resume/finalizeでは短いauthorization/quota transaction間でobjectを照合してcommit直前に再確認する。同一uploadのmutationは単一process内で直列化する。
 - Workspace membershipの追加は一回限りinvitation consent経路だけに限定し、member removalは専用`KICK_MEMBERS`とrole hierarchyをworkspace lock取得後に再確認する。DMは2人以上のdistinct participantを要求し、generic channel mutation/permission overrideから隔離する。
 - Category/channel permission overrideはallow/deny継承、private membership、owner保護、両revision、適用前preview、room退出、rekeyをfresh integration matrixで検証する。
@@ -61,7 +65,7 @@
 ## Residual risks / formal blockers
 
 - Basic per-channel epochはMLSのforward secrecy/post-compromise securityを提供しない。
-- 新端末へのhistorical epoch backfill/recoveryはなく、1 workspaceは50 member、1 userは8 active device、1回のatomic key fan-outは最大400 active recipient deviceである。Small-team境界を超えるcapacityと履歴復旧は未保証である。
+- 新端末へのhistorical epoch backfill/recoveryはなく、全holder喪失時の旧ciphertextは復旧不能である。1 workspaceは50 member、1 userは8 active device、1回のatomic key fan-outは最大400 active recipient deviceである。Small-team境界を超えるcapacityと履歴復旧は未保証である。
 - Append-only key transparency、consistency proof、independent witness、existing-device approvalがなく、malicious serverのsplit viewを形式的に検出できない。
 - WebAuthn/Passkey、OIDC、一般の管理操作step-up、二者approval、閾値recoveryがない。新device identityの登録だけはcurrent-password step-upを実装しているが、password/session compromiseは主要riskとして残る。
 - Same-origin IndexedDBのdevice/local-state keyはOS secure storageではない。Origin、browser extension、browser profile、endpoint compromiseはplaintext/key利用へ到達しうる。

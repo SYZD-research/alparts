@@ -64,7 +64,7 @@ describe('configuration validation', () => {
     for (const invalid of [
       '{',
       '{}',
-      JSON.stringify(new Array(5).fill({ urls: 'stun:turn.example.test' })),
+      JSON.stringify(Array.from({ length: 5 }, () => ({ urls: 'stun:turn.example.test' }))),
       JSON.stringify([{ urls: 'https://example.test' }]),
       JSON.stringify([{ urls: 'turn:user@turn.example.test', username: 'u', credential: 'c' }]),
       JSON.stringify([{ urls: 'turn:turn.example.test' }]),

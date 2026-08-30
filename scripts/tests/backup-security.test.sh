@@ -155,4 +155,29 @@ expect_failure 'sparse or unsupported compact file metadata' "$TEST_TMP/sparse-m
   validate_restore_archive "$SPARSE_ARCHIVE" "$TEST_TMP/sparse-metadata.list" \
   "$TEST_TMP/sparse-metadata.verbose" 10 8388608 8388608
 
+RETENTION_DIR="$TEST_TMP/retention"
+mkdir -p -- "$RETENTION_DIR"
+for run in 20250101T000000Z-000000000001 20250102T000000Z-000000000002 20250103T000000Z-000000000003; do
+  : > "$RETENTION_DIR/alparts-backup-${run}.tar.age"
+done
+touch -d '90 days ago' -- "$RETENTION_DIR"/*.tar.age
+retention_output="$(
+  BACKUP_OUTPUT_DIR="$RETENTION_DIR" \
+  BACKUP_RETENTION_DAYS=30 \
+  BACKUP_MINIMUM_COPIES=2 \
+    "$REPOSITORY_ROOT/scripts/prune-backups.sh" --dry-run
+)"
+[[ "$(printf '%s\n' "$retention_output" | wc -l)" -eq 1 ]] \
+  || fail 'retention dry-run did not preserve the configured minimum copies'
+[[ "$(find "$RETENTION_DIR" -maxdepth 1 -type f | wc -l)" -eq 3 ]] \
+  || fail 'retention dry-run removed a backup'
+expect_failure 'BACKUP_PRUNE_ACK' "$TEST_TMP/prune-ack.err" \
+  env BACKUP_OUTPUT_DIR="$RETENTION_DIR" BACKUP_RETENTION_DAYS=30 BACKUP_MINIMUM_COPIES=2 \
+    "$REPOSITORY_ROOT/scripts/prune-backups.sh" --apply
+[[ "$(find "$RETENTION_DIR" -maxdepth 1 -type f | wc -l)" -eq 3 ]] \
+  || fail 'retention changed files without an explicit acknowledgement'
+expect_failure 'Refusing broad backup retention target' "$TEST_TMP/prune-root.err" \
+  env BACKUP_OUTPUT_DIR=/ BACKUP_RETENTION_DAYS=30 BACKUP_MINIMUM_COPIES=2 \
+    "$REPOSITORY_ROOT/scripts/prune-backups.sh" --dry-run
+
 printf 'backup security tests passed\n'

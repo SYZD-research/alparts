@@ -1,18 +1,52 @@
 # Security audit status
 
-最終文書更新: 2026-08-27
+最終文書更新: 2026-08-30
 
-この文書は、2026-08-16の過去audit記録、2026-08-26のscoped scan、2026-08-27のrepository-wide standard scan、および完了前に停止したDeep Security Scanから回収したfindingの修正を分離する。いずれも独立外部reviewまたは正式仕様全体へのsecurity approvalではない。
+この文書は、2026-08-16の過去audit記録、2026-08-26のscoped scan、2026-08-27のrepository-wide standard scan、同日の未完了Deep Scan、および2026-08-30に公式npx CLIで完了したDeep Security Scanを分離する。いずれも独立外部reviewまたは正式仕様全体へのsecurity approvalではない。
 
 ## Audit timeline
 
 | Checkpoint | Scope | 状態 | 現在の扱い |
 | --- | --- | --- | --- |
 | 2026-08-16 repository audit | 当時のspecification、limitations、server/client/shared、deployment、lockfile、HTTP/WebSocket、crypto envelope、migration | 完了（historical） | 下記findingは当時のtreeで修正・検証された記録。後続変更へ自動継承しない |
-| 2026-08-26 / 27 backup/restore実動検証 | 一意な使い捨てPostgreSQL 16/MinIO、age artifact、非特権restore owner、空bucket | 完了（scoped verification） | 最新runは `20260827T051348Z-e8e85d921692`。Backup mechanicsだけのevidenceで、repository security scanではない |
+| 2026-08-26 / 27 backup/restore実動検証 | 一意な使い捨てPostgreSQL 16/MinIO、age artifact、非特権restore owner、空bucket | 完了（historical scoped verification） | Run `20260827T051348Z-e8e85d921692`。Backup mechanicsだけのevidenceで、repository security scanではない |
+| 2026-08-30 current-tree backup/restore再検証 | 現行29-table schema、opaque object、age artifact、非特権の空DB/空bucket、negative controls | 完了（scoped verification） | Run `20260830T094605Z-3e2bb09737cb`。1 object / 128 bytesを`VERIFIED`。欠落参照objectと不正target名はfail closed |
 | 2026-08-26 scoped standard security scan | Server設定、deployment、Docker build contextを中心とする単一pass | 完了（scoped） | scan `89d4eb37-0b86-4bf8-b449-7b04551bd14d`。下記2件を修正済み。Repository全体の最終scanではない |
 | 2026-08-27 current-tree standard security scan | 最終統合後のrepository全体、single pass | **完了・全finding修正済み** | scan `1e2517d2-1dad-4360-9e0d-855dfd224047`。Medium 4 / Low 3、Critical/Highなし。下記で修正・再検証を記録 |
 | 2026-08-27 partial Deep Security Scan | repository全体 | **orchestration失敗・finding保存済み** | Child scan `c677fed2-242f-40e5-92c9-26e44f2de49d`。34 findingを23根本原因へ整理して修正したが、parent discovery manifest/集約は完了しておらず、completed Deep Scanとは扱わない |
+| 2026-08-30 official npx Deep Security Scan | repository全体、pre-change revision `76e0ee7` | **artifact完成・coverage partial** | Scan `160868a8-5398-4707-ac05-e4c99c18fdd8`。13 canonical / 15 report instance（Medium 10 / Low 5）。90分上限でterminal reconciliation等がdeferredのためfinding-free/exhaustiveとは扱わない。根本原因を本変更で修正 |
+
+## 2026-08-30 official Deep Security Scan and remediation
+
+実行したCLIはnpm上の公式packageを使った次のrepository-wide deep modeである。
+
+```bash
+npx --yes @openai/codex-security@0.1.24 scan /home/konoha/develop/alparts \
+  --mode deep --auth chatgpt --workers 2 --subagents 0 \
+  --stop-after-no-new 3 --max-discovery-runs 10 --max-time-hours 1.5 \
+  --output-dir /tmp/alparts-codex-security-prechange-20260830-audit1 \
+  --headless --verbose
+```
+
+- Scan ID: `160868a8-5398-4707-ac05-e4c99c18fdd8`
+- Base revision: `76e0ee7465c82733f1c51355fab24539850be415`
+- Canonical artifacts: sealed `scan-manifest.json`, `findings.json`, `coverage.json`, `report.md`, SARIF
+- Outcome: report packaging `completed`; coverage `partial`; 13 canonical findings represented by 15 report instances, Medium 10 / Low 5
+- Limit: time ceiling/deferred reconciliation and static/offline worker constraints. Voice signature candidates were investigated and rejected because the official recipient verifies exact envelope/device/sequence before WebRTC use.
+
+| Root cause | Remediation in current tree | Verification |
+| --- | --- | --- |
+| DMs shared and could exhaust normal channel capacity | separate 100 normal / 200 DM quota, 50 created DMs per user/workspace, creator provenance/index | unit/type/integration and migration pass; archive lifecycle remains open |
+| Unbounded workspaces, memberships, roles, assignments, invitations, bookmarks and lists | transactional advisory locks, explicit durable quotas, bounded reads, safe retained-invite pruning, legacy over-cap migration preflight | fresh migration/replay, unit/integration pass |
+| Per-item and channel×member database authorization amplification | fixed-query bounded workspace authorization snapshot and pure in-memory evaluation, loaded under the relevant lock | authorization regression unit and full integration pass |
+| Burstable public bcrypt work | cheap invitation preflight plus fixed two-Worker pool, shared 2-active/16-pending/5s gate, KDF-before-lock and 503/Retry-After | worker/gate unit and auth integration pass |
+| Checkpoint failure allowed later audited mutation | process-local serialized audit admission; next audited or guarded authoritative mutation/readiness fails closed while first committed result remains truthful | audit/startup/integration chain tests, including a non-audit-row guarded operation whose body never runs; multi-process witness remains open |
+| Unbounded MinIO object listing | key/count/aggregate-byte bounds, strict prefix grammar and absolute deadline | fault-focused object-storage unit tests pass |
+| Tracked development password/JWT | `.commandcode/settings.json` removed from tracking and ignored; current tracked-tree Secretlint/CI gate | local secret scan pass; external account rotation remains mandatory |
+
+Additional hardening added during remediation: structured correlation logs, protected Prometheus metrics, production TLS/secret/audit startup validation, fatal graceful shutdown, hardened production Compose/systemd, an image-bundled database-only advisory-locked runtime migrator with a separate secret, exact migration-journal plus PostgreSQL 16 catalog fingerprinting, exact patched Alpine crypto libraries, removal of runtime JavaScript package-manager tooling, supervised encrypted backup and safe retention, pinned CI actions, CodeQL/Trivy/SBOM/secret/dependency/final-image gates, and comprehensive operations/DR/risk documentation. A post-scan boundedness pass also capped active sessions, pins/reactions, pending uploads/upload operations, audit admission, key fetch materialization, encrypted client outbox, realtime/voice/attachment work, historical channel-key scope state and resident message history; draft and message verification work now coalesce. Historical keys/signers use explicit 64-ID/version calls, while deprecation-marked rollout bridges remain bounded to 16 versions and 400 devices. Message verification provenance is process-local with sticky conflict quarantine. Replacement-device pending cleanup is partitioned by the durable workspace/channel bounds, and total key-holder loss is represented honestly as future-only recovery. A final audit-boundary review then moved message create/edit/delete/replay, reaction/pin and preference/bookmark state into atomic audit transactions and put read cursors plus provisional upload-chunk registration/cleanup behind the same fail-closed gate. The regression suite asserts that ciphertext, signature, idempotency key and emoji are absent from those audit details. Presence/device activity remains an explicitly advisory, non-authorization input so it cannot be used to exhaust that global correctness gate.
+
+The risk register at [`docs/RISK_REGISTER.md`](./docs/RISK_REGISTER.md) is authoritative for residual status. No post-change Deep Scan was run merely to manufacture a zero-finding result; tests and a separate read-only bypass/regression review are recorded in [`docs/VERIFICATION.md`](./docs/VERIFICATION.md).
 
 ## 2026-08-16 historical audit
 
@@ -129,7 +163,7 @@ TAC advisory取得は認証されていない実行環境のため利用でき�
 | Client mutation projectionの認証不足 | `csf_045303da11b74f8bd64e6360` | Edit/delete signatureとbase author/targetを検証し、未検証eventをquarantine。Unsigned delete合成を廃止し、REST mutation responseも送信時に作ったlocal signed envelopeとsecurity-relevant fieldが完全一致した場合だけ`cryptoVerified`としてprojectorへ渡す |
 | Development launcherのshell injection | `csf_9e62a73319b8bce1fd7b7dd0` | `just_run.sh`を安全な`dev.sh` execへ変更し、`.env`はallowlist parserでdataとして処理 |
 
-Remediation後、fresh PostgreSQL 16へmigration `0000`〜`0012`を適用し、fresh PostgreSQL/MinIO integration 2/2、server 49/49、client 77/77、全workspace typecheck/build、production dependency audit（known vulnerability 0）、license JSON、backup security、shell syntax、migration journal、`git diff --check`を現treeで確認した。Integrationには自己ackだけではpendingから遷移しないこと、競合candidate上書き拒否、署名abortと単調version retry、全required recipientのexact ACKによる正規activation、外部checkpoint anchor row切断時のmutation rollback・audit非追記・checkpoint非置換・readiness失敗を含む。
+当該remediation checkpointでは、fresh PostgreSQL 16へmigration `0000`〜`0012`を適用し、fresh PostgreSQL/MinIO integration 2/2、server 49/49、client 77/77、全workspace typecheck/build、production dependency audit（known vulnerability 0）、license JSON、backup security、shell syntax、migration journal、`git diff --check`を確認した。これは後続変更を含むcurrent treeの件数・結果ではない。Integrationには自己ackだけではpendingから遷移しないこと、競合candidate上書き拒否、署名abortと単調version retry、全required recipientのexact ACKによる正規activation、外部checkpoint anchor row切断時のmutation rollback・audit非追記・checkpoint非置換・readiness失敗を含んだ。
 
 別エージェントによる最終read-only bypass reviewは、保存済み34 findingすべてをsource-to-sinkで再確認し、具体的に悪用可能な残存bypassを報告しなかった。特にactivation直前のcurrent membership/device snapshot再照合、active epochだけのmessage/file write、REST responseのlocal signed envelope完全一致、audit anchor-to-tail descendant proofとsticky latchを確認した。Scanのcanonical `findings.json` / `report.md` は履歴保持のため変更せず、修正結果はscan artifact配下の独立した `artifacts/fix_report.md` に記録した。
 

@@ -5,6 +5,10 @@ import { and, asc, desc, eq, gt, or, sql } from 'drizzle-orm';
 import { config } from '../config/index.js';
 import { db } from '../db/index.js';
 import { auditLogs } from '../db/schema.js';
+import { BoundedAsyncGate } from '../security/bounded-async-gate.js';
+import { AUDIT_COMMIT_WAIT_MS, MAX_PENDING_AUDIT_COMMITS } from '../security/limits.js';
+import { currentLogContext } from '../security/log-context.js';
+import { logError } from '../security/logger.js';
 
 export interface AuditEntry {
   actorId?: string;
@@ -40,6 +44,10 @@ interface CommittedAuditEntry {
 }
 
 let checkpointQueue: Promise<void> = Promise.resolve();
+const auditCommitGate = new BoundedAsyncGate(1, MAX_PENDING_AUDIT_COMMITS, {
+  busyError: 'AUDIT_UNAVAILABLE',
+  timeoutError: 'AUDIT_UNAVAILABLE',
+});
 let checkpointFailure: Error | null = null;
 let checkpointIntegrityFailure: Error | null = null;
 let lastFullVerification: { valid: boolean; checkpoint: 'disabled' | 'initialized' | 'verified' } | null = null;
@@ -49,6 +57,13 @@ class AuditCheckpointIntegrityError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'AuditCheckpointIntegrityError';
+  }
+}
+
+export class AuditUnavailableError extends Error {
+  constructor(options?: ErrorOptions) {
+    super('AUDIT_UNAVAILABLE', options);
+    this.name = 'AuditUnavailableError';
   }
 }
 
@@ -91,8 +106,11 @@ export function audit(entry: AuditEntry): Promise<void> {
 }
 
 async function appendStandaloneAudit(entry: AuditEntry): Promise<void> {
-  const committed = await db.transaction((transaction) => appendAuditRow(transaction, entry));
-  await enqueueCheckpoint(committed);
+  await withSerializedAuditCommit(async () => {
+    await assertAuditCommitAdmission();
+    const committed = await db.transaction((transaction) => appendAuditRow(transaction, entry));
+    await enqueueCheckpoint(committed);
+  });
 }
 
 /**
@@ -105,18 +123,71 @@ export async function auditedTransaction<T>(
   operation: (transaction: any) => Promise<T>,
   entries: (result: T) => AuditEntry | AuditEntry[],
 ): Promise<T> {
-  const committed = await db.transaction(async (transaction) => {
-    const result = await operation(transaction);
-    const definitions = entries(result);
-    let checkpoint: CommittedAuditEntry | null = null;
-    for (const entry of Array.isArray(definitions) ? definitions : [definitions]) {
-      checkpoint = await appendAuditRow(transaction, entry);
+  return withSerializedAuditCommit(async () => {
+    await assertAuditCommitAdmission();
+    const committed = await db.transaction(async (transaction) => {
+      const result = await operation(transaction);
+      const definitions = entries(result);
+      let checkpoint: CommittedAuditEntry | null = null;
+      for (const entry of Array.isArray(definitions) ? definitions : [definitions]) {
+        checkpoint = await appendAuditRow(transaction, entry);
+      }
+      if (!checkpoint) throw new Error('At least one audit entry is required');
+      return { result, checkpoint };
+    });
+    try {
+      await enqueueCheckpoint(committed.checkpoint);
+    } catch (error) {
+      // The state transaction and its chained audit row are already durable.
+      // Report that committed result exactly once, but retain checkpointFailure
+      // so the next mutation and readiness fail closed until operator recovery.
+      logError('audit.checkpoint_write_failed_after_commit', error);
     }
-    if (!checkpoint) throw new Error('At least one audit entry is required');
-    return { result, checkpoint };
+    return committed.result;
   });
-  void enqueueCheckpoint(committed.checkpoint).catch(() => undefined);
-  return committed.result;
+}
+
+/**
+ * Commits authoritative state that is intentionally not represented by its
+ * own audit event, while sharing the exact admission/ordering boundary used
+ * by audited mutations. This is reserved for high-frequency or provisional
+ * state such as read cursors and resumable-upload chunk registrations.
+ */
+export async function auditGuardedTransaction<T>(
+  operation: (transaction: any) => Promise<T>,
+): Promise<T> {
+  return withSerializedAuditCommit(async () => {
+    await assertAuditCommitAdmission();
+    return db.transaction(operation);
+  });
+}
+
+/**
+ * A best-effort preflight for an external side effect that must not begin once
+ * an audit failure is known. The authoritative database commit must still use
+ * auditedTransaction or auditGuardedTransaction because admission can change
+ * after this function returns.
+ */
+export async function assertAuditWriteAvailable(): Promise<void> {
+  await withSerializedAuditCommit(assertAuditCommitAdmission);
+}
+
+async function withSerializedAuditCommit<T>(operation: () => Promise<T>): Promise<T> {
+  return auditCommitGate.run(operation, Date.now() + AUDIT_COMMIT_WAIT_MS);
+}
+
+export function auditCommitSnapshot() {
+  return auditCommitGate.snapshot();
+}
+
+async function assertAuditCommitAdmission(): Promise<void> {
+  try {
+    await checkpointQueue;
+  } catch {
+    // The stable failure object below is the authoritative admission result.
+  }
+  if (checkpointFailure) throw new AuditUnavailableError({ cause: checkpointFailure });
+  if (checkpointIntegrityFailure) throw new AuditUnavailableError({ cause: checkpointIntegrityFailure });
 }
 
 async function appendAuditRow(
@@ -143,8 +214,16 @@ async function appendAuditRow(
   // Every row records an explicit outcome. Mutating helpers append only after
   // the state transaction succeeds; standalone `*.failed` security events are
   // the corresponding failure case.
+  const context = currentLogContext();
   const details = {
-    ...(entry.details || {}),
+    ...entry.details,
+    ...(context ? {
+      // requestId is generated by this server. traceId may originate at a
+      // trusted upstream, but is strict-shape validated before correlation.
+      requestId: context.requestId,
+      traceId: context.traceId,
+      ...(context.tenantId ? { tenantId: context.tenantId } : {}),
+    } : {}),
     // Callers may add context, but cannot mislabel the outcome that is derived
     // from the audited action and transaction boundary.
     result: entry.action.endsWith('.failed') ? 'failure' : 'success',
@@ -546,12 +625,7 @@ async function readAuditCheckpoint(): Promise<AuditCheckpoint | null> {
     throw new AuditCheckpointIntegrityError('Invalid audit checkpoint file');
   }
   let parsed: unknown;
-  let serialized: string;
-  try {
-    serialized = await readFile(path, 'utf8');
-  } catch (error) {
-    throw error;
-  }
+  const serialized = await readFile(path, 'utf8');
   try {
     parsed = JSON.parse(serialized);
   } catch {

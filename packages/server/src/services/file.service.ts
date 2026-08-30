@@ -19,9 +19,17 @@ import {
   devices,
   messages,
 } from '../db/schema.js';
-import { auditedTransaction } from '../middleware/audit.js';
+import {
+  assertAuditWriteAvailable,
+  auditedTransaction,
+  auditGuardedTransaction,
+} from '../middleware/audit.js';
 import { verifyAttachmentEnvelopeSignature } from '../security/message.js';
 import { acquireDownloadLease } from '../security/download-limits.js';
+import {
+  MAX_PENDING_UPLOADS_PER_USER,
+  MAX_PENDING_UPLOADS_PER_WORKSPACE,
+} from '../security/limits.js';
 import {
   getChannelAuthorizationFromStore,
   isVisibleChannelAuthorization,
@@ -43,6 +51,7 @@ import {
   validateFinalChunkLayout,
   type AttachmentCryptoManifestInput,
 } from './attachment-contract.js';
+import { hasRevokedEpochRecipient } from './key-epoch-state.js';
 import {
   createObjectStorageDeadline,
   deleteStoredUpload,
@@ -149,6 +158,38 @@ export async function createUpload(
       };
     }
 
+    await transaction.execute(
+      sql`select pg_advisory_xact_lock(hashtext(${`pending-uploads:workspace:${workspaceId}`})::bigint)`,
+    );
+    await transaction.execute(
+      sql`select pg_advisory_xact_lock(hashtext(${`pending-uploads:user:${userId}`})::bigint)`,
+    );
+    const now = new Date();
+    const [userPending, workspacePending] = await Promise.all([
+      transaction.select({ count: sql<number>`count(*)::int` })
+        .from(attachmentUploads)
+        .where(and(
+          eq(attachmentUploads.uploaderId, userId),
+          isNull(attachmentUploads.completedAt),
+          gt(attachmentUploads.expiresAt, now),
+        )),
+      transaction.select({ count: sql<number>`count(*)::int` })
+        .from(attachmentUploads)
+        .innerJoin(messages, eq(attachmentUploads.messageId, messages.id))
+        .innerJoin(channels, eq(messages.channelId, channels.id))
+        .where(and(
+          eq(channels.workspaceId, workspaceId),
+          isNull(attachmentUploads.completedAt),
+          gt(attachmentUploads.expiresAt, now),
+        )),
+    ]);
+    if (Number(userPending[0]?.count ?? 0) >= MAX_PENDING_UPLOADS_PER_USER) {
+      throw new Error('PENDING_UPLOAD_USER_LIMIT_REACHED');
+    }
+    if (Number(workspacePending[0]?.count ?? 0) >= MAX_PENDING_UPLOADS_PER_WORKSPACE) {
+      throw new Error('PENDING_UPLOAD_WORKSPACE_LIMIT_REACHED');
+    }
+
     await lockAttachmentMessageSlots(transaction, messageId);
     const [finalized, pending] = await Promise.all([
       transaction.select({ count: sql<number>`count(*)::int` })
@@ -218,7 +259,9 @@ export async function getUploadStatus(uploadId: string, userId: string) {
     const chunks = await transaction.query.attachmentUploadChunks.findMany({
       where: eq(attachmentUploadChunks.uploadId, uploadId),
       orderBy: [asc(attachmentUploadChunks.chunkIndex)],
+      limit: MAX_ATTACHMENT_CHUNKS + 1,
     });
+    if (chunks.length > MAX_ATTACHMENT_CHUNKS) throw new Error('CHUNK_INVARIANT_EXCEEDED');
     return { context, chunks };
   });
   // Object-store probes are resumability hints, not an authorization grant.
@@ -264,6 +307,7 @@ export async function cancelUpload(uploadId: string, userId: string) {
     // MinIO is outside every database transaction. The per-upload operation
     // lock preserves single-node ordering; the commit below re-locks and checks
     // the reservation before deleting the row and appending its audit record.
+    await assertAuditWriteAvailable();
     await deleteStoredUpload(location.upload.storageKey);
 
     return auditedTransaction(async (transaction) => {
@@ -345,11 +389,12 @@ export async function storeUploadChunk(
       return { storageKey: attachmentChunkStorageKey(context.upload.storageKey, chunkIndex, attemptId) };
     });
 
+    await assertAuditWriteAvailable();
     const uploaded = await putStoredObject(reservation.storageKey, body);
     const etag = normalizeEtag(uploaded.etag);
     if (!etag) throw new Error('CHUNK_STORAGE_FAILED');
 
-    const committed = await db.transaction(async (transaction) => {
+    const committed = await auditGuardedTransaction(async (transaction) => {
       await lockWorkspaceForAuthorization(transaction, workspaceId, 'share');
       await lockUpload(transaction, uploadId);
       const context = await getAuthorizedPendingUpload(transaction, uploadId, userId, workspaceId);
@@ -441,6 +486,7 @@ export async function finalizeUpload(
     // a PostgreSQL connection. The short commit transaction below repeats all
     // authorization/signature/quota checks and requires the exact same chunk
     // registrations observed here.
+    await assertAuditWriteAvailable();
     await verifyRegisteredChunkObjects(snapshot.chunkRows);
     const expectedObjectKeys = new Set(snapshot.chunkRows.map((chunk) => chunk.storageKey));
     await reconcileStoredUpload(snapshot.context.upload.storageKey, expectedObjectKeys);
@@ -602,7 +648,11 @@ export async function getAttachmentsForMessages(messageIds: string[]) {
   const rows = await db.query.attachments.findMany({
     where: inArray(attachments.messageId, messageIds),
     orderBy: [asc(attachments.createdAt), asc(attachments.id)],
+    limit: messageIds.length * MAX_ATTACHMENTS_PER_MESSAGE + 1,
   });
+  if (rows.length > messageIds.length * MAX_ATTACHMENTS_PER_MESSAGE) {
+    throw new Error('ATTACHMENT_INVARIANT_EXCEEDED');
+  }
   for (const row of rows) {
     const existing = grouped.get(row.messageId) ?? [];
     existing.push(formatAttachment(row));
@@ -634,8 +684,9 @@ export async function cleanupExpiredUploads(limit = 100): Promise<number> {
           });
         });
         if (!upload) return false;
+        await assertAuditWriteAvailable();
         await deleteStoredUpload(upload.storageKey);
-        return db.transaction(async (transaction) => {
+        return auditGuardedTransaction(async (transaction) => {
           await lockUpload(transaction, candidate.id);
           const [removedUpload] = await transaction.delete(attachmentUploads)
             .where(and(
@@ -710,6 +761,9 @@ async function loadFinalizationSnapshot(
     ),
   });
   if (!epoch) throw new Error('INVALID_KEY_VERSION');
+  if (await hasRevokedEpochRecipient(store, context.channel.id, input.keyVersion)) {
+    throw new Error('KEY_ROTATION_REQUIRED');
+  }
   const recipient = await store.query.channelKeyEpochRecipients.findFirst({
     columns: { acceptedDeliveryId: true },
     where: and(
@@ -742,7 +796,9 @@ async function loadFinalizationSnapshot(
   const chunkRows = await store.query.attachmentUploadChunks.findMany({
     where: eq(attachmentUploadChunks.uploadId, uploadId),
     orderBy: [asc(attachmentUploadChunks.chunkIndex)],
+    limit: MAX_ATTACHMENT_CHUNKS + 1,
   }) as Array<typeof attachmentUploadChunks.$inferSelect>;
+  if (chunkRows.length > MAX_ATTACHMENT_CHUNKS) throw new Error('CHUNK_INVARIANT_EXCEEDED');
   const layout = validateFinalChunkLayout(input.chunkCount, input.cryptoManifest, chunkRows);
   await lockQuotaScopes(store, context.channel.workspaceId, context.channel.id, userId);
   const used = await getCiphertextUsage(store, context.channel.workspaceId, context.channel.id, userId);
@@ -930,7 +986,16 @@ async function getCiphertextUsage(store: any, workspaceId: string, channelId: st
   return result;
 }
 
-const uploadOperationTails = new Map<string, Promise<void>>();
+export const MAX_UPLOAD_OPERATIONS_PER_UPLOAD = 4;
+export const MAX_UPLOAD_OPERATIONS_TOTAL = 64;
+
+interface UploadOperationState {
+  tail: Promise<void>;
+  outstanding: number;
+}
+
+const uploadOperationStates = new Map<string, UploadOperationState>();
+let outstandingUploadOperations = 0;
 
 /**
  * The supported deployment is one application node. Serialize every MinIO
@@ -938,17 +1003,29 @@ const uploadOperationTails = new Map<string, Promise<void>>();
  * each short database phase re-lock and re-authorize its own state transition.
  */
 export async function withUploadOperationLock<T>(uploadId: string, operation: () => Promise<T>): Promise<T> {
-  const predecessor = uploadOperationTails.get(uploadId) ?? Promise.resolve();
+  const state = uploadOperationStates.get(uploadId) ?? { tail: Promise.resolve(), outstanding: 0 };
+  if (
+    state.outstanding >= MAX_UPLOAD_OPERATIONS_PER_UPLOAD
+    || outstandingUploadOperations >= MAX_UPLOAD_OPERATIONS_TOTAL
+  ) throw new Error('UPLOAD_OPERATION_BUSY');
+
+  const predecessor = state.tail;
   let release!: () => void;
   const gate = new Promise<void>((resolve) => { release = resolve; });
-  const tail = predecessor.catch(() => undefined).then(() => gate);
-  uploadOperationTails.set(uploadId, tail);
+  state.tail = predecessor.catch(() => undefined).then(() => gate);
+  state.outstanding += 1;
+  outstandingUploadOperations += 1;
+  uploadOperationStates.set(uploadId, state);
   await predecessor.catch(() => undefined);
   try {
     return await operation();
   } finally {
     release();
-    if (uploadOperationTails.get(uploadId) === tail) uploadOperationTails.delete(uploadId);
+    state.outstanding -= 1;
+    outstandingUploadOperations -= 1;
+    if (state.outstanding === 0 && uploadOperationStates.get(uploadId) === state) {
+      uploadOperationStates.delete(uploadId);
+    }
   }
 }
 
@@ -985,7 +1062,7 @@ async function lockQuotaScopes(store: any, workspaceId: string, channelId: strin
 }
 
 function normalizeEtag(etag: string | undefined): string {
-  return (etag ?? '').replace(/^\"|\"$/g, '').trim().toLowerCase();
+  return (etag ?? '').replace(/^"|"$/g, '').trim().toLowerCase();
 }
 
 function formatAttachment(attachment: typeof attachments.$inferSelect) {

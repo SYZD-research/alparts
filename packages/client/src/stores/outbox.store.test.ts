@@ -73,6 +73,22 @@ afterEach(() => {
 });
 
 describe('outbox principal and persistence lifecycle', () => {
+  it('rejects a new command before persistence when the bounded outbox is full', async () => {
+    const { MAX_OUTBOX_COMMANDS_PER_DEVICE } = await import('./outbox-model');
+    const items = Object.fromEntries(Array.from({ length: MAX_OUTBOX_COMMANDS_PER_DEVICE }, (_, index) => {
+      const command = createOutboxCommand(
+        { channelId, content: `queued-${index}` },
+        () => `${String(index).padStart(8, '0')}-0000-4000-8000-000000000000`,
+        () => `2026-01-01T00:00:${String(index % 60).padStart(2, '0')}.000Z`,
+      );
+      return [command.idempotencyKey, outboxItemFromCommand(command)];
+    }));
+    useOutboxStore.setState({ items, isInitialized: true });
+
+    await expect(useOutboxStore.getState().enqueue(channelId, 'one too many')).rejects.toThrow('OUTBOX_CAPACITY');
+    expect(localState.saveCommand).not.toHaveBeenCalled();
+  });
+
   it('orders channel cleanup after a save already in flight', async () => {
     const save = promiseWithResolvers<void>();
     const order: string[] = [];

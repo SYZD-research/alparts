@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, inArray, lt, or, sql } from 'drizzle-orm';
+import { and, desc, eq, gt, inArray, or, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import type { NotificationLevel } from '@alparts/shared';
 import { db } from '../db/index.js';
@@ -9,10 +9,14 @@ import {
   messages,
   readPositions,
 } from '../db/schema.js';
+import { auditedTransaction } from '../middleware/audit.js';
+import { MAX_BOOKMARKS_PER_USER } from '../security/limits.js';
 import { getWorkspaceChannels } from './channel.service.js';
 import {
   getChannelAuthorizationFromStore,
+  getChannelAuthorizationFromSnapshot,
   isVisibleChannelAuthorization,
+  loadWorkspaceAuthorizationSnapshot,
   lockWorkspaceForAuthorization,
 } from './authorization.service.js';
 
@@ -120,7 +124,7 @@ export async function updateChannelPreference(
 ) {
   const location = await db.query.channels.findFirst({ columns: { workspaceId: true }, where: eq(channels.id, channelId) });
   if (!location) throw new Error('CHANNEL_NOT_FOUND');
-  return db.transaction(async (transaction) => {
+  return auditedTransaction(async (transaction) => {
     await lockWorkspaceForAuthorization(transaction, location.workspaceId, 'share');
     const channel = await transaction.query.channels.findFirst({ where: eq(channels.id, channelId) });
     if (!channel || channel.workspaceId !== location.workspaceId) throw new Error('CHANNEL_NOT_FOUND');
@@ -141,7 +145,19 @@ export async function updateChannelPreference(
       set: { ...updates, updatedAt },
     }).returning();
     return formatPreference(preference);
-  });
+  }, (result) => ({
+    actorId: userId,
+    action: 'channel.preference.update',
+    targetType: 'channel',
+    targetId: channelId,
+    details: {
+      workspaceId: location.workspaceId,
+      favorite: result.favorite,
+      muted: result.muted,
+      hidden: result.hidden,
+      notificationLevel: result.notificationLevel,
+    },
+  }));
 }
 
 export async function toggleMessageBookmark(messageId: string, userId: string) {
@@ -152,7 +168,7 @@ export async function toggleMessageBookmark(messageId: string, userId: string) {
   if (!message || message.type !== 'message') throw new Error('MESSAGE_NOT_FOUND');
   const location = await db.query.channels.findFirst({ columns: { workspaceId: true }, where: eq(channels.id, message.channelId) });
   if (!location) throw new Error('MESSAGE_NOT_FOUND');
-  return db.transaction(async (transaction) => {
+  return auditedTransaction(async (transaction) => {
     await lockWorkspaceForAuthorization(transaction, location.workspaceId, 'share');
     await transaction.execute(sql`select pg_advisory_xact_lock(hashtext(${`bookmark:${userId}:${messageId}`})::bigint)`);
     const [lockedMessage] = await transaction.select().from(messages)
@@ -178,6 +194,13 @@ export async function toggleMessageBookmark(messageId: string, userId: string) {
       ));
       return { messageId, channelId: message.channelId, bookmarked: false, createdAt: null };
     }
+    await transaction.execute(sql`select pg_advisory_xact_lock(hashtext(${`bookmark-user:${userId}`})::bigint)`);
+    const retained = await transaction.query.messageBookmarks.findMany({
+      columns: { messageId: true },
+      where: eq(messageBookmarks.userId, userId),
+      limit: MAX_BOOKMARKS_PER_USER + 1,
+    });
+    if (retained.length >= MAX_BOOKMARKS_PER_USER) throw new Error('BOOKMARK_LIMIT_REACHED');
     const [created] = await transaction.insert(messageBookmarks)
       .values({ userId, messageId })
       .returning();
@@ -187,55 +210,60 @@ export async function toggleMessageBookmark(messageId: string, userId: string) {
       bookmarked: true,
       createdAt: created.createdAt.toISOString(),
     };
-  });
+  }, (result) => ({
+    actorId: userId,
+    action: result.bookmarked ? 'message.bookmark.add' : 'message.bookmark.remove',
+    targetType: 'message',
+    targetId: messageId,
+    details: {
+      workspaceId: location.workspaceId,
+      channelId: result.channelId,
+    },
+  }));
 }
 
 export async function listMessageBookmarks(userId: string, limit = 100) {
   const requested = Math.min(Math.max(limit, 1), 500);
-  const authorized: Array<{ messageId: string; channelId: string; createdAt: string }> = [];
-  const authorizationCache = new Map<string, boolean>();
-  let cursor: { createdAt: Date; messageId: string } | null = null;
-  let examined = 0;
-  const maxExamined = 10_000;
-  while (authorized.length < requested && examined < maxExamined) {
-    const rows: Array<{ messageId: string; channelId: string; createdAt: Date }> = await db.select({
-      messageId: messageBookmarks.messageId,
-      channelId: messages.channelId,
-      createdAt: messageBookmarks.createdAt,
-    }).from(messageBookmarks)
-      .innerJoin(messages, and(eq(messages.id, messageBookmarks.messageId), eq(messages.type, 'message')))
-      .where(and(
-        eq(messageBookmarks.userId, userId),
-        cursor ? or(
-          lt(messageBookmarks.createdAt, cursor.createdAt),
-          and(eq(messageBookmarks.createdAt, cursor.createdAt), lt(messageBookmarks.messageId, cursor.messageId)),
-        ) : undefined,
-      ))
-      .orderBy(desc(messageBookmarks.createdAt), desc(messageBookmarks.messageId))
-      .limit(Math.min(500, maxExamined - examined));
-    if (rows.length === 0) break;
-    examined += rows.length;
-    for (const row of rows) {
-      let allowed = authorizationCache.get(row.channelId);
-      if (allowed === undefined) {
-        const authorization = await getChannelAuthorizationFromStore(db, userId, row.channelId);
-        allowed = isVisibleChannelAuthorization(authorization);
-        authorizationCache.set(row.channelId, allowed);
-      }
-      if (allowed) {
-        authorized.push({
-          messageId: row.messageId,
-          channelId: row.channelId,
-          createdAt: row.createdAt.toISOString(),
-        });
-        if (authorized.length >= requested) break;
-      }
-    }
-    const last: { messageId: string; channelId: string; createdAt: Date } = rows[rows.length - 1];
-    cursor = { createdAt: last.createdAt, messageId: last.messageId };
-    if (rows.length < Math.min(500, maxExamined - examined + rows.length)) break;
+  const rows = await db.select({
+    messageId: messageBookmarks.messageId,
+    channelId: messages.channelId,
+    workspaceId: channels.workspaceId,
+    createdAt: messageBookmarks.createdAt,
+  }).from(messageBookmarks)
+    .innerJoin(messages, and(eq(messages.id, messageBookmarks.messageId), eq(messages.type, 'message')))
+    .innerJoin(channels, eq(channels.id, messages.channelId))
+    .where(eq(messageBookmarks.userId, userId))
+    .orderBy(desc(messageBookmarks.createdAt), desc(messageBookmarks.messageId))
+    .limit(MAX_BOOKMARKS_PER_USER + 1);
+  if (rows.length > MAX_BOOKMARKS_PER_USER) throw new Error('BOOKMARK_INVARIANT_EXCEEDED');
+
+  const allowedChannels = new Set<string>();
+  const channelIdsByWorkspace = new Map<string, string[]>();
+  for (const row of rows) {
+    const ids = channelIdsByWorkspace.get(row.workspaceId) ?? [];
+    if (!ids.includes(row.channelId)) ids.push(row.channelId);
+    channelIdsByWorkspace.set(row.workspaceId, ids);
   }
-  return authorized;
+  for (const [workspaceId, channelIds] of channelIdsByWorkspace) {
+    await db.transaction(async (transaction) => {
+      await lockWorkspaceForAuthorization(transaction, workspaceId, 'share');
+      const snapshot = await loadWorkspaceAuthorizationSnapshot(transaction, workspaceId, channelIds);
+      if (!snapshot) return;
+      for (const channelId of channelIds) {
+        if (isVisibleChannelAuthorization(
+          getChannelAuthorizationFromSnapshot(snapshot, userId, channelId, {}, false),
+        )) allowedChannels.add(channelId);
+      }
+    });
+  }
+  return rows
+    .filter((row) => allowedChannels.has(row.channelId))
+    .slice(0, requested)
+    .map((row) => ({
+      messageId: row.messageId,
+      channelId: row.channelId,
+      createdAt: row.createdAt.toISOString(),
+    }));
 }
 
 function formatPreference(preference: typeof channelPreferences.$inferSelect) {

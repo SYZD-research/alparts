@@ -34,8 +34,8 @@ router.post('/workspaces/:wid/dms', authMiddleware, requireWorkspaceMember('wid'
       res.status(404).json({ error: 'NOT_FOUND', message: 'Direct-message member not found', statusCode: 404 });
       return;
     }
-    if (error.message === 'CHANNEL_LIMIT_REACHED') {
-      res.status(409).json({ error: 'CHANNEL_LIMIT_REACHED', message: 'Workspace channel limit reached', statusCode: 409 });
+    if (['DM_WORKSPACE_LIMIT_REACHED', 'DM_USER_LIMIT_REACHED'].includes(error.message)) {
+      res.status(409).json({ error: error.message, message: 'Direct-message quota reached', statusCode: 409 });
       return;
     }
     throw error;

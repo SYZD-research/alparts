@@ -2,7 +2,7 @@
 
 alpartsは、serverへ平文messageを渡さないchannel型communication基盤の **Phase 1 Web prototype** です。React/TypeScript SPA、Node.js/TypeScript API、PostgreSQL、MinIOで構成され、少人数向けP2P音声通話も提供します。
 
-このrepositoryは `SPECIFICATION.md` の正式運用版ではありません。現在の到達点はWeb / single-node / basic per-channel key / text中心＋最大8人P2P音声のprototypeです。通常のrepository-wide scanに加え、完了前に停止したDeep Security Scanが保存した34件（23の根本原因）を現treeへ反映し、隔離PostgreSQL/MinIOを含む回帰検証を行っています。ただし、Deep Scanの集約manifest自体は完了しておらず、独立外部reviewでもありません。ゼロデイ、認証情報、Embargo情報には使用しないでください。正確な境界は [LIMITATIONS.md](./LIMITATIONS.md)、[THREAT_MODEL.md](./THREAT_MODEL.md)、[IMPLEMENTATION_TODO.md](./IMPLEMENTATION_TODO.md) を参照してください。
+このrepositoryは `SPECIFICATION.md` の正式運用版ではありません。現在の到達点はWeb / single-process / basic per-channel key / text中心＋最大8人P2P音声のprototypeです。2026-08-30に公式npx CLIのDeep Security Scanを実施し、pre-change treeへ13 canonical finding / 15 report instanceを報告しました。検出根本原因を現treeで修正し、fresh PostgreSQL/MinIOを含む回帰検証を行っていますが、scan coverageはtime ceiling等により`partial`で、独立外部reviewでもありません。ゼロデイ、認証情報、Embargo情報には使用しないでください。正確な境界は [docs/INDEX.md](./docs/INDEX.md)、[LIMITATIONS.md](./LIMITATIONS.md)、[risk register](./docs/RISK_REGISTER.md) を参照してください。
 
 ## 現在の到達点
 
@@ -18,8 +18,11 @@ alpartsは、serverへ平文messageを渡さないchannel型communication基盤�
 - file別key、暗号化filename、5 MiB chunk AEAD、中断再開、opaque download復号、危険形式警告を備えた添付flow
 - 最大8人のP2P WebRTC音声通話、署名付きSDP/ICE、参加・退出、ミュート、音声検出／プッシュトゥトーク、入出力device切替、発言者・接続品質表示
 - HMAC chained audit、起動時検証、監査閲覧の自己監査、設定可能なHMAC checkpoint
-- startup/liveness/readiness、graceful shutdown、non-root OCI/systemd例、`*_FILE` secret
-- age recipientで暗号化するmanual backup gateと、空の隔離DB/bucketだけを対象にするrestore verification
+- startup/liveness/readiness、fatal pathを含むgraceful shutdown、structured correlation log、private bearer-protected metrics
+- non-root/read-only OCI/systemd例、安全側configuration/TLS、`*_FILE` secret、tracked-file secret/dependency/CI scan
+- image内のdatabase-only migrator、migration journal＋PostgreSQL 16 catalog fingerprintによるstartup/readinessのschema/image coupling
+- age recipientで暗号化するbackup gate、systemd daily schedule、安全なlocal retention、空の隔離DB/bucketだけを対象にするrestore verification
+- tenant/resource/database/object listing/password/audit/upload work、およびbrowser outbox/realtime/voice/attachment workのtransactional・bounded admissionとbulk authorization snapshot
 
 Category/channel permission override、client attachment flow、音声signalingは、fresh PostgreSQL/MinIOを使う認可matrix・複数chunk再開/download SHA・2端末の通話参加/relay/失権退出まで確認しています。MLS、device approval/key transparency、WebAuthn/OIDC、desktop/mobile、Restricted profile、HA、PITR/WORM/off-site/automatic DR、retention/export、signed updates、映像・画面共有・SFU/SFrame、Bot/Webhook、独立外部reviewは正式版blockerとして未実装です。
 
@@ -58,7 +61,9 @@ pnpm typecheck
 pnpm test
 pnpm --filter @alparts/server test:integration
 pnpm build
-pnpm audit --audit-level low
+pnpm test:backup-security
+pnpm security:secrets
+pnpm audit --prod --audit-level high
 git diff --check
 ```
 
@@ -66,21 +71,25 @@ DB integrationは、既存dataを含まない一意な使い捨てPostgreSQL/Min
 
 ## Cryptoとlocal stateの境界
 
-Message本文はbrowserでAES-256-GCM暗号化し、device P-256 keyでcontext付きprotocol-v3 envelopeへ署名します。Channel-key epochは共通SHA-256 commitmentとfrozen recipient snapshotを持つ`pending`として提案され、全required端末が復号・commitment・server発行のexact deliveryを検証して署名ackした場合だけ`active`になります。Pending epochはmessage/attachment writeに使えず、abort後もversionを再利用しません。Serverはciphertext、signature、配送に必要なmetadataを保持します。現在のgroup keyはbasic per-channel epoch方式で、MLS相当のforward secrecy/post-compromise securityを提供しません。
+Message本文はbrowserでAES-256-GCM暗号化し、device P-256 keyでcontext付きprotocol-v3 envelopeへ署名します。Channel-key epochは共通SHA-256 commitmentとfrozen recipient snapshotを持つ`pending`として提案され、全required端末が復号・commitment・server発行のexact deliveryを検証して署名ackした場合だけ`active`になります。Pending epochはmessage/attachment writeに使えず、abort後もversionを再利用しません。全accepted holderを失った場合は旧ciphertextを復旧できたと装わず、`historyRecoveryRequired`を示して新端末から将来用epochだけを確立します。Serverはciphertext、signature、配送に必要なmetadataを保持します。現在のgroup keyはbasic per-channel epoch方式で、MLS相当のforward secrecy/post-compromise securityを提供しません。
 
 Device private keyとdraft/outbox用AES-GCM keyはnon-extractable WebCrypto `CryptoKey`としてsame-origin IndexedDBへ保存されます。これはOS secure storageではありません。Web originが侵害されると、悪性JavaScriptはkeyをexportせず暗号操作へ利用できます。Searchはmemory上の読み込み済み復号messageだけを対象とし、永続暗号化indexや端末間同期はありません。
 
 ## 運用
 
-- [運用手順](./docs/OPERATIONS.md): migration、probe、audit checkpoint、shutdownの境界
+- [Documentation index](./docs/INDEX.md): inventory、architecture、security、reliability、deployment、runbookへの入口
+- [運用手順](./OPERATIONS.md): monitoring、migration、probe、audit checkpoint、shutdownの境界
 - [Backup / restore verification](./docs/BACKUP.md): migration前gate、age暗号化artifact、隔離restore
+- [Deployment](./DEPLOYMENT.md): development、single-host、air-gapped、cluster/multi-region非保証
+- [Disaster recovery](./DISASTER_RECOVERY.md): RPO/RTO objective、資産、復旧順序、演習
 - `Dockerfile`: non-root runtime、readiness healthcheck、production dependencyのみ
+- `compose.production.yml`: loopback publish、secret mount、read-only/cap-drop/resource limitのsingle-host profile
 - `deploy/alparts.service`: systemd credentials、read-only filesystem hardening、restart/backoff
 
 External公開時はTLS 1.3を優先するreverse proxyを使用し、PostgreSQL、MinIO、管理・監視endpointをpublic networkへ出さないでください。`AUDIT_CHECKPOINT_PATH` がPostgreSQL operatorとはwrite/delete権限を分離したmountにある場合だけ、checkpointをoperator-independentと呼べます。
 
 ## Repository policy
 
-脆弱性の報告方法は [SECURITY.md](./SECURITY.md) を参照してください。過去の監査、完了済みstandard scan、未完了Deep Scanから回収したfindingと修正結果は [SECURITY_AUDIT.md](./SECURITY_AUDIT.md) で分離しています。
+脆弱性の報告方法は [SECURITY.md](./SECURITY.md) を参照してください。過去の監査、完了済みstandard scan、2026-08-27に停止したDeep Scan、および2026-08-30にartifact packagingまで完了したcoverage-partial Deep Scanのfindingと修正結果は [SECURITY_AUDIT.md](./SECURITY_AUDIT.md) で分離しています。
 
 このrepositoryは現在 `UNLICENSED` であり、公開閲覧できること自体は利用・改変・再配布の許諾を意味しません。Project licenseの選定は権利者判断が必要な正式版TODOです。Production依存の機械的inventoryでは MIT / ISC / BSD-3-Clause / Apache-2.0 / BlueOak-1.0.0 を確認していますが、これはproject licenseの付与または法的助言ではありません。

@@ -10,6 +10,7 @@ import {
   getWorkspaceAuthorization,
   type ChannelAuthorization,
 } from '../services/authorization.service.js';
+import { setLogTenant } from '../security/log-context.js';
 
 const uuid = z.string().uuid();
 
@@ -33,6 +34,7 @@ export function requireWorkspacePermission(permission: number, parameter = 'wid'
       return;
     }
     try {
+      setLogTenant(workspaceId);
       const permissions = await getUserPermissions(req.userId, workspaceId);
       if ((permissions & permission) !== permission) {
         res.status(403).json({ error: 'FORBIDDEN', message: 'Insufficient permissions', statusCode: 403 });
@@ -57,6 +59,7 @@ export function requireWorkspaceMembership(parameter = 'wid') {
       return;
     }
     try {
+      setLogTenant(workspaceId);
       const membership = await db.query.workspaceMembers.findFirst({
         columns: { id: true },
         where: and(
@@ -88,6 +91,7 @@ export function requireChannelPermission(permission: number, parameter = 'id') {
         res.status(404).json({ error: 'NOT_FOUND', message: 'Channel not found', statusCode: 404 });
         return;
       }
+      setLogTenant(authorization.workspaceId);
       if ((authorization.permissions & permission) !== permission) {
         res.status(403).json({ error: 'FORBIDDEN', message: 'Insufficient permissions', statusCode: 403 });
         return;
@@ -124,6 +128,7 @@ export function requireMessagePermission(permission: number, parameter = 'id') {
         res.status(404).json({ error: 'NOT_FOUND', message: 'Message not found', statusCode: 404 });
         return;
       }
+      setLogTenant(authorization.workspaceId);
       if ((authorization.permissions & permission) !== permission) {
         res.status(403).json({ error: 'FORBIDDEN', message: 'Insufficient permissions', statusCode: 403 });
         return;

@@ -1,6 +1,7 @@
 import type { Server as SocketServer } from 'socket.io';
 import { z } from 'zod';
 import { Permissions } from '@alparts/shared';
+import { logError } from '../security/logger.js';
 import { authorizeSocketChannel, consumeSocketRate, type AuthenticatedSocket } from './security.js';
 
 const schema = z.object({ channelId: z.string().uuid() }).strict();
@@ -17,6 +18,9 @@ export function handleTypingEvents(_io: SocketServer, socket: AuthenticatedSocke
       isTyping,
     });
   };
-  socket.on('typing:start', (data: unknown) => void emit(data, true));
-  socket.on('typing:stop', (data: unknown) => void emit(data, false));
+  const safelyEmit = (data: unknown, isTyping: boolean) => {
+    void emit(data, isTyping).catch((error) => logError('websocket.typing_update', error));
+  };
+  socket.on('typing:start', (data: unknown) => safelyEmit(data, true));
+  socket.on('typing:stop', (data: unknown) => safelyEmit(data, false));
 }

@@ -4,7 +4,11 @@ import { z } from 'zod';
 import * as keyService from '../services/key.service.js';
 import { authMiddleware, type AuthRequest } from '../middleware/auth.js';
 import { requireChannelAccess } from '../middleware/rbac.js';
-import { MAX_KEY_RECIPIENTS } from '../security/limits.js';
+import {
+  MAX_DEVICE_DIRECTORY_LOOKUP_IDS,
+  MAX_KEY_RECIPIENTS,
+  MAX_KEY_VERSION_LOOKUP_IDS,
+} from '../security/limits.js';
 import { rateLimit } from '../middleware/rate-limit.js';
 
 const router = Router();
@@ -26,6 +30,28 @@ const abortSchema = z.object({
   version: z.number().int().min(1).max(1_000_000),
   keyCommitment: z.string().length(43).regex(/^[A-Za-z0-9_-]+$/),
   signature: z.string().length(88).regex(/^[A-Za-z0-9+/]{86}==$/),
+}).strict();
+const keyQuerySchema = z.object({
+  scope: z.literal('current').optional(),
+  version: z.coerce.number().int().min(1).max(1_000_000).optional(),
+  versions: z.string()
+    .min(1)
+    .max(MAX_KEY_VERSION_LOOKUP_IDS * 8)
+    .transform((value) => value.split(',').map(Number))
+    .pipe(z.array(z.number().int().min(1).max(1_000_000)).min(1).max(MAX_KEY_VERSION_LOOKUP_IDS))
+    .refine((values) => new Set(values).size === values.length, 'Key versions must be unique')
+    .optional(),
+}).strict().refine((value) => (
+  [value.scope, value.version, value.versions].filter((candidate) => candidate !== undefined).length <= 1
+));
+const deviceDirectoryQuerySchema = z.object({
+  ids: z.string()
+    .min(36)
+    .max(MAX_DEVICE_DIRECTORY_LOOKUP_IDS * 37 - 1)
+    .transform((value) => value.split(','))
+    .pipe(z.array(z.string().uuid()).min(1).max(MAX_DEVICE_DIRECTORY_LOOKUP_IDS))
+    .refine((values) => new Set(values).size === values.length, 'Device IDs must be unique')
+    .optional(),
 }).strict();
 const keyMutationLimit = rateLimit({
   windowMs: 60_000,
@@ -52,17 +78,67 @@ router.get('/channels/:id/key-recipients', authMiddleware, requireChannelAccess(
 });
 
 router.get('/channels/:id/keys', authMiddleware, requireChannelAccess('id'), async (req: AuthRequest, res) => {
-  if (!req.deviceId) {
-    res.status(428).json({ error: 'DEVICE_REQUIRED', message: 'A bound device is required', statusCode: 428 });
-    return;
+  try {
+    if (!req.deviceId) {
+      res.status(428).json({ error: 'DEVICE_REQUIRED', message: 'A bound device is required', statusCode: 428 });
+      return;
+    }
+    const query = keyQuerySchema.parse(req.query);
+    res.setHeader('Cache-Control', 'no-store');
+    const legacyWindow = query.scope === undefined
+      && query.version === undefined
+      && query.versions === undefined;
+    if (legacyWindow) {
+      res.setHeader('Deprecation', 'true');
+      res.setHeader('Warning', '299 alparts "Unscoped key history is a bounded compatibility window; reload the client"');
+    }
+    const requestedVersions = query.version === undefined
+      ? query.versions
+      : [query.version];
+    res.json(await keyService.getDeviceChannelKeys(
+      req.params.id,
+      req.userId!,
+      req.deviceId,
+      requestedVersions,
+      legacyWindow,
+    ));
+  } catch (error: any) {
+    if (error.name === 'ZodError') {
+      res.status(400).json({ error: 'VALIDATION', message: 'Invalid key version', statusCode: 400 });
+      return;
+    }
+    throw error;
   }
-  res.setHeader('Cache-Control', 'no-store');
-  res.json(await keyService.getDeviceChannelKeys(req.params.id, req.userId!, req.deviceId));
 });
 
 router.get('/channels/:id/device-directory', authMiddleware, requireChannelAccess('id'), async (req: AuthRequest, res) => {
-  res.setHeader('Cache-Control', 'no-store');
-  res.json(await keyService.getChannelDeviceDirectory(req.params.id, req.userId!));
+  try {
+    const query = deviceDirectoryQuerySchema.parse(req.query);
+    res.setHeader('Cache-Control', 'no-store');
+    if (query.ids === undefined) {
+      res.setHeader('Deprecation', 'true');
+      res.setHeader('Warning', '299 alparts "Unscoped device history is bounded; reload the client"');
+    }
+    res.json(await keyService.getChannelDeviceDirectory(req.params.id, req.userId!, query.ids));
+  } catch (error: any) {
+    if (error.name === 'ZodError' || error.message === 'DEVICE_DIRECTORY_LOOKUP_LIMIT') {
+      res.status(400).json({
+        error: 'VALIDATION',
+        message: 'Invalid bounded device-directory request',
+        statusCode: 400,
+      });
+      return;
+    }
+    if (error.message === 'DEVICE_DIRECTORY_INVARIANT_EXCEEDED') {
+      res.status(409).json({
+        error: 'DEVICE_DIRECTORY_LIMIT',
+        message: 'Legacy device history exceeds the compatibility window; reload the client',
+        statusCode: 409,
+      });
+      return;
+    }
+    throw error;
+  }
 });
 
 router.post('/channels/:id/keys', authMiddleware, keyMutationLimit, requireChannelAccess('id'), async (req: AuthRequest, res) => {

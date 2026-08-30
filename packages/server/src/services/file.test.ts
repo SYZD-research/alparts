@@ -169,9 +169,28 @@ describe('fixed attachment chunk contract', () => {
     assert.deepEqual(events, ['first:start', 'independent', 'first:end', 'second']);
   });
 
+  it('bounds the per-upload serialization queue', async () => {
+    const service = await import('./file.service.js');
+    let releaseFirst!: () => void;
+    const firstBarrier = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const first = service.withUploadOperationLock('bounded-upload', async () => firstBarrier);
+    const queued = Array.from(
+      { length: service.MAX_UPLOAD_OPERATIONS_PER_UPLOAD - 1 },
+      () => service.withUploadOperationLock('bounded-upload', async () => undefined),
+    );
+    await assert.rejects(
+      service.withUploadOperationLock('bounded-upload', async () => undefined),
+      /UPLOAD_OPERATION_BUSY/,
+    );
+    releaseFirst();
+    await Promise.all([first, ...queued]);
+  });
+
   it('bounds active and pending object-storage work and releases capacity exactly', async () => {
     const { BoundedAsyncGate } = await import('./object-storage.js');
-    const gate = new BoundedAsyncGate(1, 1);
+    const gate = new BoundedAsyncGate(1, 1, {
+      busyError: 'OBJECT_STORAGE_BUSY', timeoutError: 'OBJECT_STORAGE_TIMEOUT',
+    });
     let release!: () => void;
     const blocked = new Promise<void>((resolve) => { release = resolve; });
     const first = gate.run(async () => blocked);
@@ -184,7 +203,9 @@ describe('fixed attachment chunk contract', () => {
 
   it('holds explicit object-storage leases until the caller releases them', async () => {
     const { BoundedAsyncGate } = await import('./object-storage.js');
-    const gate = new BoundedAsyncGate(1, 0);
+    const gate = new BoundedAsyncGate(1, 0, {
+      busyError: 'OBJECT_STORAGE_BUSY', timeoutError: 'OBJECT_STORAGE_TIMEOUT',
+    });
     const release = await gate.acquireLease();
     await assert.rejects(gate.acquireLease(), /OBJECT_STORAGE_BUSY/);
     release();
@@ -212,7 +233,9 @@ describe('fixed attachment chunk contract', () => {
 
   it('removes an expired queued operation instead of running it later', async () => {
     const { BoundedAsyncGate } = await import('./object-storage.js');
-    const gate = new BoundedAsyncGate(1, 1);
+    const gate = new BoundedAsyncGate(1, 1, {
+      busyError: 'OBJECT_STORAGE_BUSY', timeoutError: 'OBJECT_STORAGE_TIMEOUT',
+    });
     let release!: () => void;
     let staleOperationRan = false;
     const blocked = new Promise<void>((resolve) => { release = resolve; });
@@ -229,7 +252,59 @@ describe('fixed attachment chunk contract', () => {
     assert.equal(staleOperationRan, false);
     assert.equal(await gate.run(async () => 'reused'), 'reused');
   });
+
+  it('stops materializing an object listing after the per-upload bound', async () => {
+    const { collectBoundedObjectNames } = await import('./object-storage.js');
+    const stream = new FakeListingStream();
+    const result = collectBoundedObjectNames(stream, 2);
+    stream.emit('data', { name: 'prefix/000000' });
+    stream.emit('data', { name: 'prefix/000001' });
+    stream.emit('data', { name: 'prefix/attacker-extra' });
+    await assert.rejects(result, /OBJECT_STORAGE_LIST_LIMIT/);
+    assert.equal(stream.destroyedWith?.message, 'OBJECT_STORAGE_LIST_LIMIT');
+  });
+
+  it('rejects oversized and out-of-prefix object keys without retaining them', async () => {
+    const { collectBoundedObjectNames, MAX_OBJECT_KEY_BYTES } = await import('./object-storage.js');
+    const oversized = new FakeListingStream();
+    const oversizedResult = collectBoundedObjectNames(oversized, 2);
+    oversized.emit('data', { name: 'x'.repeat(MAX_OBJECT_KEY_BYTES + 1) });
+    await assert.rejects(oversizedResult, /OBJECT_STORAGE_LIST_LIMIT/);
+
+    const foreign = new FakeListingStream();
+    const foreignResult = collectBoundedObjectNames(
+      foreign,
+      2,
+      Date.now() + 1_000,
+      'attachments/v1/expected/',
+    );
+    foreign.emit('data', { name: 'attachments/v1/other/000000' });
+    await assert.rejects(foreignResult, /OBJECT_STORAGE_LIST_INVALID_KEY/);
+  });
+
+  it('enforces an absolute listing deadline even while entries keep arriving', async () => {
+    const { collectBoundedObjectNames } = await import('./object-storage.js');
+    const stream = new FakeListingStream();
+    const result = collectBoundedObjectNames(stream, 100, Date.now() + 25);
+    let index = 0;
+    const activity = setInterval(() => stream.emit('data', { name: `prefix/${index++}` }), 2);
+    try {
+      await assert.rejects(result, /OBJECT_STORAGE_TIMEOUT/);
+    } finally {
+      clearInterval(activity);
+    }
+    assert.equal(stream.destroyedWith?.message, 'OBJECT_STORAGE_TIMEOUT');
+  });
 });
+
+class FakeListingStream extends EventEmitter {
+  destroyedWith: Error | undefined;
+
+  destroy(error?: Error) {
+    this.destroyedWith = error;
+    return this;
+  }
+}
 
 class FakeRequest extends EventEmitter {
   timeoutMs = -1;

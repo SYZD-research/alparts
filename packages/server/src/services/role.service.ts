@@ -1,11 +1,9 @@
-import { and, desc, eq, gt, inArray, isNull, ne, sql } from 'drizzle-orm';
+import { and, desc, eq, gt, isNull, ne, sql } from 'drizzle-orm';
 import { DefaultRoles, Permissions } from '@alparts/shared';
 import { db } from '../db/index.js';
 import {
-  channelKeys,
   categoryRolePermissionOverrides,
   channelRolePermissionOverrides,
-  channels,
   memberRoles,
   roles,
   workspaceInvitations,
@@ -15,10 +13,16 @@ import {
 import { auditedTransaction } from '../middleware/audit.js';
 import {
   applyViewerEffectsAndRotation,
-  captureChannelViewersFromStore,
+  captureChannelViewersFromSnapshot,
   computeAuthorizationRevisionFromStore,
+  loadWorkspaceAuthorizationSnapshot,
   lockWorkspaceForAuthorization,
+  type WorkspaceAuthorizationSnapshot,
 } from './authorization.service.js';
+import {
+  MAX_ROLES_PER_WORKSPACE,
+  MAX_ROLE_ASSIGNMENTS_PER_MEMBER,
+} from '../security/limits.js';
 
 export const ALL_PERMISSION_MASK = Object.values(Permissions).reduce((mask, permission) => mask | permission, 0);
 const standardRoleNames = new Set(Object.keys(DefaultRoles).map((name) => name.toLowerCase()));
@@ -52,7 +56,9 @@ export async function listRoles(workspaceId: string) {
   const rows = await db.query.roles.findMany({
     where: eq(roles.workspaceId, workspaceId),
     orderBy: [desc(roles.position), desc(roles.id)],
+    limit: MAX_ROLES_PER_WORKSPACE + 1,
   });
+  if (rows.length > MAX_ROLES_PER_WORKSPACE) throw new Error('ROLE_INVARIANT_EXCEEDED');
   return rows.map(formatRole);
 }
 
@@ -75,6 +81,12 @@ export async function createRole(
     assertRoleNameAvailable(input.name);
     assertCanCreateOrAssign(actor, input.permissions, input.position);
     await assertNoCaseInsensitiveRoleName(transaction, workspaceId, input.name);
+    const existingRoles = await transaction.query.roles.findMany({
+      columns: { id: true },
+      where: eq(roles.workspaceId, workspaceId),
+      limit: MAX_ROLES_PER_WORKSPACE + 1,
+    });
+    if (existingRoles.length >= MAX_ROLES_PER_WORKSPACE) throw new Error('ROLE_LIMIT_REACHED');
     const [created] = await transaction.insert(roles).values({ workspaceId, ...input }).returning();
     return created;
   }, (created) => ({
@@ -113,17 +125,13 @@ export async function updateRole(
     const nextPosition = updates.position ?? existing.position;
     assertCanCreateOrAssign(actor, nextPermissions, nextPosition);
 
-    const assignedMembers = await transaction.query.memberRoles.findMany({
-      where: eq(memberRoles.roleId, roleId),
-      with: { member: true },
-    });
-    const affectedBefore = [];
-    for (const assignment of assignedMembers) {
-      if (!assignment.member || assignment.member.workspaceId !== workspaceId) continue;
-      const evaluated = await evaluateMember(transaction, workspaceId, assignment.member.userId);
-      if (evaluated) affectedBefore.push(evaluated);
-    }
-    const channelViewersBefore = await captureChannelViewersFromStore(transaction, workspaceId);
+    const snapshotBefore = await requireAuthorizationSnapshot(transaction, workspaceId);
+    const affectedUserIds = [...snapshotBefore.roleIdsByUserId.entries()]
+      .filter(([, roleIds]) => roleIds.includes(roleId))
+      .map(([userId]) => userId)
+      .sort();
+    const affectedBefore = affectedUserIds.map((userId) => evaluateMemberFromSnapshot(snapshotBefore, userId));
+    const channelViewersBefore = captureChannelViewersFromSnapshot(snapshotBefore);
 
     const [updated] = await transaction.update(roles)
       .set(updates)
@@ -131,13 +139,10 @@ export async function updateRole(
       .returning();
     if (!updated) throw new Error('ROLE_NOT_FOUND');
 
-    const affectedAfter = [];
-    for (const before of affectedBefore) {
-      const evaluated = await evaluateMember(transaction, workspaceId, before.userId);
-      if (evaluated) affectedAfter.push(evaluated);
-    }
+    const snapshotAfter = await requireAuthorizationSnapshot(transaction, workspaceId);
+    const affectedAfter = affectedUserIds.map((userId) => evaluateMemberFromSnapshot(snapshotAfter, userId));
     const accessChanges = compareAccess(affectedBefore, affectedAfter);
-    const channelViewersAfter = await captureChannelViewersFromStore(transaction, workspaceId);
+    const channelViewersAfter = captureChannelViewersFromSnapshot(snapshotAfter);
     const roomEffects = await applyViewerEffectsAndRotation(transaction, channelViewersBefore, channelViewersAfter);
     return { existing, updated, affectedBefore, affectedAfter, accessChanges, roomEffects };
   }, (committed) => ({
@@ -169,7 +174,7 @@ export async function deleteRole(
   actorId: string,
   expectedAuthorizationRevision: string,
 ) {
-  const deleted = await auditedTransaction(async (transaction) => {
+  await auditedTransaction(async (transaction) => {
     await lockWorkspace(transaction, workspaceId);
     await assertAuthorizationRevision(transaction, workspaceId, expectedAuthorizationRevision);
     const actor = await getRoleManager(transaction, workspaceId, actorId);
@@ -210,14 +215,20 @@ export async function changeRoleAssignment(
       where: and(eq(workspaceMembers.workspaceId, workspaceId), eq(workspaceMembers.userId, userId)),
     });
     if (!member) throw new Error('MEMBER_NOT_FOUND');
-    const before = await evaluateMember(transaction, workspaceId, userId);
-    if (!before) throw new Error('MEMBER_NOT_FOUND');
-    const channelViewersBefore = await captureChannelViewersFromStore(transaction, workspaceId);
+    const snapshotBefore = await requireAuthorizationSnapshot(transaction, workspaceId);
+    const before = evaluateMemberFromSnapshot(snapshotBefore, userId);
+    const channelViewersBefore = captureChannelViewersFromSnapshot(snapshotBefore);
     const existing = await transaction.query.memberRoles.findFirst({
       where: and(eq(memberRoles.memberId, member.id), eq(memberRoles.roleId, roleId)),
     });
     let changed = false;
     if (action === 'assign' && !existing) {
+      const assignments = await transaction.query.memberRoles.findMany({
+        columns: { roleId: true },
+        where: eq(memberRoles.memberId, member.id),
+        limit: MAX_ROLE_ASSIGNMENTS_PER_MEMBER + 1,
+      });
+      if (assignments.length >= MAX_ROLE_ASSIGNMENTS_PER_MEMBER) throw new Error('ROLE_ASSIGNMENT_LIMIT_REACHED');
       await transaction.insert(memberRoles).values({ memberId: member.id, roleId });
       changed = true;
     }
@@ -225,10 +236,10 @@ export async function changeRoleAssignment(
       await transaction.delete(memberRoles).where(and(eq(memberRoles.memberId, member.id), eq(memberRoles.roleId, roleId)));
       changed = true;
     }
-    const after = await evaluateMember(transaction, workspaceId, userId);
-    if (!after) throw new Error('MEMBER_NOT_FOUND');
+    const snapshotAfter = await requireAuthorizationSnapshot(transaction, workspaceId);
+    const after = evaluateMemberFromSnapshot(snapshotAfter, userId);
     const accessChanges = compareAccess([before], [after]);
-    const channelViewersAfter = await captureChannelViewersFromStore(transaction, workspaceId);
+    const channelViewersAfter = captureChannelViewersFromSnapshot(snapshotAfter);
     const roomEffects = await applyViewerEffectsAndRotation(transaction, channelViewersBefore, channelViewersAfter);
     return { role, before, after, changed, accessChanges, roomEffects };
   }, (committed) => ({
@@ -277,13 +288,12 @@ export async function previewRoleChange(workspaceId: string, actorId: string, in
     if (input.operation === 'role.assign' || input.operation === 'role.unassign') {
       if (!input.userId) throw new Error('INVALID_PREVIEW');
       if (input.operation === 'role.assign') assertCanCreateOrAssign(actor, role.permissions, role.position);
-      const before = await evaluateMember(transaction, workspaceId, input.userId);
-      if (!before) throw new Error('MEMBER_NOT_FOUND');
-      const after = await evaluateMember(transaction, workspaceId, input.userId, {
+      const snapshot = await requireAuthorizationSnapshot(transaction, workspaceId);
+      const before = evaluateMemberFromSnapshot(snapshot, input.userId);
+      const after = evaluateMemberFromSnapshot(snapshot, input.userId, {
         roleId: role.id,
         included: input.operation === 'role.assign',
       });
-      if (!after) throw new Error('MEMBER_NOT_FOUND');
       return { ...previewResponse(workspaceId, input.operation, [before], [after]), authorizationRevision };
     }
 
@@ -292,25 +302,17 @@ export async function previewRoleChange(workspaceId: string, actorId: string, in
       return { ...previewResponse(workspaceId, input.operation, [], []), authorizationRevision };
     }
 
-    const assignments = await transaction.query.memberRoles.findMany({
-      where: eq(memberRoles.roleId, role.id),
-      with: { member: true },
-    });
-    const before = [];
-    const after = [];
-    for (const assignment of assignments) {
-      if (!assignment.member || assignment.member.workspaceId !== workspaceId) continue;
-      const current = await evaluateMember(transaction, workspaceId, assignment.member.userId);
-      const proposed = await evaluateMember(transaction, workspaceId, assignment.member.userId, {
+    const snapshot = await requireAuthorizationSnapshot(transaction, workspaceId);
+    const affectedUserIds = [...snapshot.roleIdsByUserId.entries()]
+      .filter(([, roleIds]) => roleIds.includes(role.id))
+      .map(([userId]) => userId)
+      .sort();
+    const before = affectedUserIds.map((userId) => evaluateMemberFromSnapshot(snapshot, userId));
+    const after = affectedUserIds.map((userId) => evaluateMemberFromSnapshot(snapshot, userId, {
         roleId: role.id,
         included: true,
         permissions: input.permissions,
-      });
-      if (current && proposed) {
-        before.push(current);
-        after.push(proposed);
-      }
-    }
+      }));
     return { ...previewResponse(workspaceId, input.operation, before, after), authorizationRevision };
   });
 }
@@ -356,7 +358,11 @@ async function evaluateMember(store: any, workspaceId: string, userId: string, m
   const assignments = await store.query.memberRoles.findMany({
     where: eq(memberRoles.memberId, member.id),
     with: { role: true },
+    limit: MAX_ROLE_ASSIGNMENTS_PER_MEMBER + 1,
   });
+  if (assignments.length > MAX_ROLE_ASSIGNMENTS_PER_MEMBER) {
+    throw new Error('ROLE_ASSIGNMENT_INVARIANT_EXCEEDED');
+  }
   let assignedRoles = assignments
     .map((assignment: any) => assignment.role)
     .filter((role: any) => role && role.workspaceId === workspaceId);
@@ -382,6 +388,55 @@ async function evaluateMember(store: any, workspaceId: string, userId: string, m
   }));
   return {
     workspaceId,
+    userId,
+    permissionMask,
+    effectivePermissions: permissionMask.toString(),
+    roles: assignedRoles.map(formatRole),
+    permissionDetails,
+  };
+}
+
+async function requireAuthorizationSnapshot(
+  store: any,
+  workspaceId: string,
+): Promise<WorkspaceAuthorizationSnapshot> {
+  const snapshot = await loadWorkspaceAuthorizationSnapshot(store, workspaceId);
+  if (!snapshot) throw new Error('WORKSPACE_NOT_FOUND');
+  return snapshot;
+}
+
+function evaluateMemberFromSnapshot(
+  snapshot: WorkspaceAuthorizationSnapshot,
+  userId: string,
+  mutation?: RoleMutation,
+) {
+  if (!snapshot.membersByUserId.has(userId)) throw new Error('MEMBER_NOT_FOUND');
+  let assignedRoles = (snapshot.roleIdsByUserId.get(userId) ?? [])
+    .flatMap((roleId) => {
+      const role = snapshot.rolesById.get(roleId);
+      return role ? [role] : [];
+    });
+  if (mutation) {
+    assignedRoles = assignedRoles.filter((role: any) => role.id !== mutation.roleId);
+    if (mutation.included !== false) {
+      const source = snapshot.rolesById.get(mutation.roleId);
+      if (source) assignedRoles.push({ ...source, permissions: mutation.permissions ?? source.permissions });
+    }
+  }
+  assignedRoles.sort((left: any, right: any) => (
+    right.position - left.position || right.id.localeCompare(left.id)
+  ));
+  const permissionMask = assignedRoles.reduce((mask: number, role: any) => mask | role.permissions, 0);
+  const permissionDetails = Object.entries(Permissions).map(([permission, value]) => ({
+    permission,
+    value,
+    allowed: (permissionMask & value) === value,
+    reasons: assignedRoles
+      .filter((role: any) => (role.permissions & value) === value)
+      .map((role: any) => ({ source: 'role' as const, roleId: role.id, roleName: role.name })),
+  }));
+  return {
+    workspaceId: snapshot.workspaceId,
     userId,
     permissionMask,
     effectivePermissions: permissionMask.toString(),
@@ -429,24 +484,6 @@ function compareAccess(before: any[], after: any[]) {
     if (!hadView && hasView) gainedAccessUserIds.push(previous.userId);
   }
   return { lostAccessUserIds, gainedAccessUserIds };
-}
-
-async function markWorkspaceKeyRotation(store: any, workspaceId: string) {
-  const workspaceChannels = await store.query.channels.findMany({
-    columns: { id: true },
-    where: eq(channels.workspaceId, workspaceId),
-  });
-  const allChannelIds: string[] = workspaceChannels.map((channel: { id: string }) => channel.id);
-  if (allChannelIds.length === 0) return { allChannelIds, keyedChannelIds: [] as string[] };
-  const keys = await store.query.channelKeys.findMany({
-    columns: { channelId: true },
-    where: inArray(channelKeys.channelId, allChannelIds),
-  });
-  const keyedChannelIds: string[] = [...new Set<string>(keys.map((key: { channelId: string }) => key.channelId))];
-  if (keyedChannelIds.length > 0) {
-    await store.update(channels).set({ keyRotationRequired: true }).where(inArray(channels.id, keyedChannelIds));
-  }
-  return { allChannelIds, keyedChannelIds };
 }
 
 async function lockWorkspace(store: any, workspaceId: string) {

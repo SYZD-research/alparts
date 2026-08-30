@@ -46,35 +46,57 @@ export function useSocketEvents() {
     if (!socket) return;
     let rejoinTimer: ReturnType<typeof setTimeout> | undefined;
     let disposed = false;
-    let keySyncQueue = Promise.resolve();
     let authorizationQueue = Promise.resolve();
+    let authorizationQueueDepth = 0;
+    const pendingKeySyncIds = new Set<string>();
+    let keySyncRunning = false;
+    const maxPendingAuthorizationTasks = 64;
 
     const isAuthorizedLoadedChannel = (channelId: string) => (
       useChannelStore.getState().channels.some((channel) => channel.id === channelId)
+      && (
+        Object.prototype.hasOwnProperty.call(useMessageStore.getState().eventsByChannel, channelId)
+        || useMessageStore.getState().loadingByChannel[channelId] === true
+      )
     );
 
     const enqueueAuthorizationWork = (operation: () => Promise<void>) => {
+      // Revocation handlers erase the affected security scope before entering
+      // this queue. Dropping later reconciliation work at the exact cap is
+      // therefore fail-closed and a reconnect will rebuild the visible state.
+      if (authorizationQueueDepth >= maxPendingAuthorizationTasks) return;
+      authorizationQueueDepth += 1;
       authorizationQueue = authorizationQueue
         .catch(() => undefined)
         .then(async () => {
           if (!disposed) await operation();
         })
-        .catch(() => undefined);
+        .catch(() => undefined)
+        .finally(() => { authorizationQueueDepth -= 1; });
     };
 
     const scheduleKeySync = (channelIds: string[]) => {
-      const uniqueIds = [...new Set(channelIds)];
-      keySyncQueue = keySyncQueue.catch(() => undefined).then(async () => {
-        for (const channelId of uniqueIds) {
-          if (disposed) return;
+      for (const channelId of channelIds) {
+        if (isAuthorizedLoadedChannel(channelId)) pendingKeySyncIds.add(channelId);
+      }
+      if (keySyncRunning || pendingKeySyncIds.size === 0) return;
+      keySyncRunning = true;
+      void (async () => {
+        while (!disposed && pendingKeySyncIds.size > 0) {
+          const channelId = pendingKeySyncIds.values().next().value as string;
+          pendingKeySyncIds.delete(channelId);
           if (!isAuthorizedLoadedChannel(channelId)) continue;
           try {
             await ensureChannelKey(channelId);
+            useMessageStore.getState().retryUnavailableMessages(channelId);
           } catch {
             // Another device may complete distribution. Missing/revoked keys
             // remain fail-closed and surface through the message flow.
           }
         }
+      })().finally(() => {
+        keySyncRunning = false;
+        pendingKeySyncIds.clear();
       });
     };
 
@@ -201,6 +223,10 @@ export function useSocketEvents() {
         enqueueAuthorizationWork(() => refreshWorkspaceAuthorization(data.workspaceId));
       }
     };
+    const onWorkspaceKeyStateDirty = (value: unknown) => {
+      const data = parseWorkspaceAuthorizationRefresh(value);
+      if (data) syncLoadedWorkspaceKeys(data.workspaceId);
+    };
     const onWorkspaceAccessRevoked = (value: unknown) => {
       const data = parseWorkspaceAccessRevokedEvent(value);
       if (!data) return;
@@ -285,6 +311,7 @@ export function useSocketEvents() {
     socket.on('workspace:member-added', onWorkspaceMembershipChanged);
     socket.on('workspace:roles-changed', onWorkspaceMembershipChanged);
     socket.on('workspace:permissions-updated', onWorkspaceMembershipChanged);
+    socket.on('workspace:key-state-dirty', onWorkspaceKeyStateDirty);
     socket.on('workspace:access-revoked', onWorkspaceAccessRevoked);
     socket.on('channel:permissions-updated', onChannelPermissionsUpdated);
     socket.on('channel:access-revoked', onChannelAccessRemoved);
@@ -298,6 +325,7 @@ export function useSocketEvents() {
 
     return () => {
       disposed = true;
+      pendingKeySyncIds.clear();
       if (rejoinTimer) clearTimeout(rejoinTimer);
       socket.off('connect', onConnect);
       socket.off('message:new', onMessageNew);
@@ -314,6 +342,7 @@ export function useSocketEvents() {
       socket.off('workspace:member-added', onWorkspaceMembershipChanged);
       socket.off('workspace:roles-changed', onWorkspaceMembershipChanged);
       socket.off('workspace:permissions-updated', onWorkspaceMembershipChanged);
+      socket.off('workspace:key-state-dirty', onWorkspaceKeyStateDirty);
       socket.off('workspace:access-revoked', onWorkspaceAccessRevoked);
       socket.off('channel:permissions-updated', onChannelPermissionsUpdated);
       socket.off('channel:access-revoked', onChannelAccessRemoved);

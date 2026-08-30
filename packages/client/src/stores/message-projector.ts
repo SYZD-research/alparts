@@ -1,4 +1,4 @@
-import type { Attachment, Message, Reaction } from '@alparts/shared';
+import { serializeMessageEnvelope, type Attachment, type Message, type Reaction } from '@alparts/shared';
 
 export type ProjectedMessage = Message & {
   editedAt?: string;
@@ -6,7 +6,51 @@ export type ProjectedMessage = Message & {
   deletedByDisplayName?: string;
 };
 
-type LocallyVerifiedEvent = Message & { cryptoVerified?: boolean };
+const localVerificationState = Symbol('alparts.message.local-verification-state');
+const authenticatedEnvelopeConflict = Symbol('alparts.message.authenticated-envelope-conflict');
+const channelKeyUnavailable = Symbol('alparts.message.channel-key-unavailable');
+
+type LocallyVerifiedEvent = Message & {
+  [localVerificationState]?: boolean;
+  [authenticatedEnvelopeConflict]?: true;
+  [channelKeyUnavailable]?: true;
+};
+
+/** Network JSON cannot manufacture this process-local Symbol marker. */
+export function markMessageCryptoVerification(message: Message, verified: boolean): Message {
+  const { [channelKeyUnavailable]: _unavailable, ...retryable } = withoutLegacyVerificationProperty(message) as LocallyVerifiedEvent;
+  return { ...retryable, [localVerificationState]: verified } as Message;
+}
+
+export function markMessageKeyUnavailable(message: Message): Message {
+  return {
+    ...withoutLegacyVerificationProperty(message),
+    content: '',
+    [localVerificationState]: false,
+    [channelKeyUnavailable]: true,
+  } as Message;
+}
+
+export function isMessageKeyUnavailable(message: Message): boolean {
+  return (message as LocallyVerifiedEvent)[channelKeyUnavailable] === true;
+}
+
+export function retryMessageKeyVerification(message: Message): Message {
+  const {
+    [localVerificationState]: _verification,
+    [channelKeyUnavailable]: _unavailable,
+    ...retryable
+  } = withoutLegacyVerificationProperty(message) as LocallyVerifiedEvent;
+  return retryable as Message;
+}
+
+export function getMessageCryptoVerificationState(message: Message): boolean | undefined {
+  return (message as LocallyVerifiedEvent)[localVerificationState];
+}
+
+export function hasAuthenticatedEnvelopeConflict(message: Message): boolean {
+  return (message as LocallyVerifiedEvent)[authenticatedEnvelopeConflict] === true;
+}
 
 function eventTime(event: Message): number {
   const value = Date.parse(event.createdAt);
@@ -24,21 +68,98 @@ export function compareBinaryIds(left: string, right: string): number {
 }
 
 function mergeDuplicateEvent(current: Message, incoming: Message): Message {
-  const sameCiphertext = current.encryptedContent === incoming.encryptedContent
-    && current.contentNonce === incoming.contentNonce
-    && current.signature === incoming.signature;
+  const currentEvent = withoutLegacyVerificationProperty(current);
+  const incomingEvent = withoutLegacyVerificationProperty(incoming);
+  if (isAuthenticatedMessageEvent(currentEvent) || isAuthenticatedMessageEvent(incomingEvent)) {
+    const currentEnvelope = authenticatedEnvelope(currentEvent);
+    const incomingEnvelope = authenticatedEnvelope(incomingEvent);
+    if (
+      hasAuthenticatedEnvelopeConflict(currentEvent)
+      || hasAuthenticatedEnvelopeConflict(incomingEvent)
+      || currentEnvelope === null
+      || incomingEnvelope === null
+      || currentEnvelope !== incomingEnvelope
+    ) {
+      // One immutable event id must never identify two signed envelopes. Keep
+      // the first projection stable, discard all plaintext, and make the
+      // equivocation sticky until the channel is explicitly reloaded.
+      return {
+        ...currentEvent,
+        content: '',
+        [localVerificationState]: false,
+        [authenticatedEnvelopeConflict]: true,
+      } as Message;
+    }
+
+    const currentVerification = getMessageCryptoVerificationState(currentEvent);
+    const incomingVerification = getMessageCryptoVerificationState(incomingEvent);
+    const verified = currentVerification === true || incomingVerification === true
+      ? true
+      : currentVerification === false || incomingVerification === false
+        ? false
+        : undefined;
+    const trustedContent = incomingVerification === true
+      ? incomingEvent.content
+      : currentVerification === true
+        ? currentEvent.content
+        : '';
+    const trustedAuthor = incomingVerification === true
+      ? incomingEvent.author
+      : currentVerification === true
+        ? currentEvent.author
+        : incomingEvent.author || currentEvent.author;
+    const merged = {
+      ...currentEvent,
+      ...incomingEvent,
+      // Plaintext and the verified author binding are local results. A wire
+      // duplicate may update server-owned aggregates, but can never provide or
+      // replace either value merely by copying the signed ciphertext.
+      content: trustedContent,
+      author: trustedAuthor,
+      reactions: incomingEvent.reactions || currentEvent.reactions,
+      attachments: mergeAttachments(currentEvent.attachments, incomingEvent.attachments),
+      isPinned: incomingEvent.isPinned,
+    } as LocallyVerifiedEvent;
+    if (verified !== undefined) merged[localVerificationState] = verified;
+    return merged;
+  }
+
   return {
-    ...current,
-    ...incoming,
-    // Preserve a locally decrypted body only for the exact same authenticated
-    // envelope. Pin/reaction aggregates are authoritative snapshots and may
-    // legitimately become empty/false, so they must not be OR-merged.
-    content: incoming.content || (sameCiphertext ? current.content : ''),
-    author: incoming.author || current.author,
-    reactions: incoming.reactions || current.reactions,
-    attachments: mergeAttachments(current.attachments, incoming.attachments),
-    isPinned: incoming.isPinned,
+    ...currentEvent,
+    ...incomingEvent,
+    content: incomingEvent.content || currentEvent.content,
+    author: incomingEvent.author || currentEvent.author,
+    reactions: incomingEvent.reactions || currentEvent.reactions,
+    attachments: mergeAttachments(currentEvent.attachments, incomingEvent.attachments),
+    isPinned: incomingEvent.isPinned,
   };
+}
+
+function isAuthenticatedMessageEvent(message: Message): boolean {
+  return message.type === 'message' || message.type === 'edit' || message.type === 'delete';
+}
+
+function authenticatedEnvelope(message: Message): string | null {
+  if (!isAuthenticatedMessageEvent(message) || !message.deviceId || !message.signature) return null;
+  return `${serializeMessageEnvelope({
+    type: message.type as 'message' | 'edit' | 'delete',
+    channelId: message.channelId,
+    authorId: message.authorId,
+    deviceId: message.deviceId,
+    keyVersion: message.keyVersion,
+    idempotencyKey: message.idempotencyKey,
+    refMessageId: message.refMessageId,
+    broadcastMention: message.broadcastMention,
+    encryptedContent: message.encryptedContent,
+    contentNonce: message.contentNonce,
+  })}\u0000${message.signature}`;
+}
+
+function withoutLegacyVerificationProperty(message: Message): Message {
+  // The former string property was forgeable by JSON returned by the server.
+  // Strip it at every merge boundary while retaining process-local Symbols.
+  const { cryptoVerified: _untrusted, ...safe } = message as Message & { cryptoVerified?: unknown };
+  return safe as Message;
 }
 
 function mergeAttachments(current: Attachment[] | undefined, incoming: Attachment[] | undefined): Attachment[] | undefined {
@@ -55,7 +176,7 @@ export function mergeMessageEvents(...batches: Message[][]): Message[] {
   const events = new Map<string, Message>();
   for (const event of batches.flat()) {
     const existing = events.get(event.id);
-    events.set(event.id, existing ? mergeDuplicateEvent(existing, event) : event);
+    events.set(event.id, existing ? mergeDuplicateEvent(existing, event) : withoutLegacyVerificationProperty(event));
   }
   return [...events.values()].sort(compareMessageEvents);
 }
@@ -80,7 +201,7 @@ export function projectMessageEvents(rawEvents: Message[]): ProjectedMessage[] {
         ...event,
         // Network payloads never get to supply display plaintext. A base
         // message becomes visible only after its signature and AEAD verify.
-        content: event.type === 'message' && (event as LocallyVerifiedEvent).cryptoVerified !== true
+        content: event.type === 'message' && getMessageCryptoVerificationState(event) !== true
           ? ''
           : event.content,
         reactions: [...(event.reactions || [])],
@@ -94,7 +215,7 @@ export function projectMessageEvents(rawEvents: Message[]): ProjectedMessage[] {
     if (!target) continue;
 
     if (event.type === 'edit') {
-      if ((event as LocallyVerifiedEvent).cryptoVerified !== true) continue;
+      if (getMessageCryptoVerificationState(event) !== true) continue;
       if (target.type === 'delete' || event.authorId !== target.authorId) continue;
       projected.set(targetId, {
         ...target,
@@ -114,7 +235,7 @@ export function projectMessageEvents(rawEvents: Message[]): ProjectedMessage[] {
     }
 
     if (event.type === 'delete') {
-      if ((event as LocallyVerifiedEvent).cryptoVerified !== true) continue;
+      if (getMessageCryptoVerificationState(event) !== true) continue;
       projected.set(targetId, {
         ...target,
         type: 'delete',

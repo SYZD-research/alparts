@@ -17,6 +17,14 @@ interface DraftState {
 const SAVE_DELAY_MS = 300;
 const saveTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const persistQueues = new Map<string, Promise<void>>();
+interface PendingPersistence {
+  generation: number;
+  operation: () => Promise<void>;
+  onError: (error: unknown) => void;
+  promise: Promise<void>;
+  resolve: () => void;
+}
+const pendingPersistence = new Map<string, PendingPersistence>();
 const draftVersions = new Map<string, number>();
 let draftGeneration = 0;
 
@@ -38,16 +46,42 @@ function queuePersistence(
   operation: () => Promise<void>,
   onError: (error: unknown) => void,
 ): Promise<void> {
-  const previous = persistQueues.get(channelId) || Promise.resolve();
-  const next = previous.catch(() => undefined).then(async () => {
-    if (generation !== draftGeneration) return;
-    await operation();
+  const existing = pendingPersistence.get(channelId);
+  let resolve = existing?.resolve;
+  let promise = existing?.promise;
+  if (!resolve || !promise) {
+    promise = new Promise<void>((resolvePromise) => { resolve = resolvePromise; });
+  }
+  pendingPersistence.set(channelId, {
+    generation,
+    operation,
+    onError,
+    promise,
+    resolve: resolve!,
   });
-  persistQueues.set(channelId, next);
-  void next.catch(onError).finally(() => {
-    if (persistQueues.get(channelId) === next) persistQueues.delete(channelId);
+  if (!persistQueues.has(channelId)) drainPersistence(channelId);
+  return promise;
+}
+
+function drainPersistence(channelId: string): void {
+  let worker!: Promise<void>;
+  worker = (async () => {
+    for (;;) {
+      const pending = pendingPersistence.get(channelId);
+      if (!pending) return;
+      pendingPersistence.delete(channelId);
+      try {
+        if (pending.generation === draftGeneration) await pending.operation();
+      } catch (error) {
+        pending.onError(error);
+      } finally {
+        pending.resolve();
+      }
+    }
+  })().finally(() => {
+    if (persistQueues.get(channelId) === worker) persistQueues.delete(channelId);
   });
-  return next.catch(() => undefined);
+  persistQueues.set(channelId, worker);
 }
 
 export const useDraftStore = create<DraftState>((set, get) => ({
@@ -161,7 +195,6 @@ export const useDraftStore = create<DraftState>((set, get) => ({
     draftGeneration += 1;
     for (const timer of saveTimers.values()) clearTimeout(timer);
     saveTimers.clear();
-    persistQueues.clear();
     draftVersions.clear();
     set({ drafts: {}, loadedByChannel: {}, loadingByChannel: {}, errorsByChannel: {} });
   },

@@ -3,81 +3,13 @@ import * as https from 'node:https';
 import * as Minio from 'minio';
 import { config } from '../config/index.js';
 import type { Readable } from 'node:stream';
+import { BoundedAsyncGate } from '../security/bounded-async-gate.js';
+import { MAX_ATTACHMENT_CHUNKS } from './attachment-contract.js';
+
+export { BoundedAsyncGate } from '../security/bounded-async-gate.js';
 
 export const MAX_CONCURRENT_OBJECT_STORAGE_OPERATIONS = 8;
 export const MAX_PENDING_OBJECT_STORAGE_OPERATIONS = 32;
-
-interface GateWaiter {
-  resolve: () => void;
-  reject: (error: Error) => void;
-  timer?: NodeJS.Timeout;
-}
-
-export class BoundedAsyncGate {
-  private active = 0;
-  private readonly waiters: GateWaiter[] = [];
-
-  constructor(
-    private readonly concurrency: number,
-    private readonly maxPending: number,
-  ) {
-    if (!Number.isSafeInteger(concurrency) || concurrency < 1 || !Number.isSafeInteger(maxPending) || maxPending < 0) {
-      throw new Error('INVALID_ASYNC_GATE_LIMIT');
-    }
-  }
-
-  async run<T>(operation: () => Promise<T>, deadline?: number): Promise<T> {
-    const release = await this.acquireLease(deadline);
-    try {
-      return await operation();
-    } finally {
-      release();
-    }
-  }
-
-  async acquireLease(deadline?: number): Promise<() => void> {
-    await this.acquire(deadline);
-    let released = false;
-    return () => {
-      if (released) return;
-      released = true;
-      this.release();
-    };
-  }
-
-  private acquire(deadline?: number): Promise<void> {
-    if (deadline !== undefined && deadline <= Date.now()) {
-      return Promise.reject(new Error('OBJECT_STORAGE_TIMEOUT'));
-    }
-    if (this.active < this.concurrency) {
-      this.active += 1;
-      return Promise.resolve();
-    }
-    if (this.waiters.length >= this.maxPending) return Promise.reject(new Error('OBJECT_STORAGE_BUSY'));
-    return new Promise((resolve, reject) => {
-      const waiter: GateWaiter = { resolve, reject };
-      if (deadline !== undefined) {
-        waiter.timer = setTimeout(() => {
-          const index = this.waiters.indexOf(waiter);
-          if (index < 0) return;
-          this.waiters.splice(index, 1);
-          reject(new Error('OBJECT_STORAGE_TIMEOUT'));
-        }, Math.max(0, deadline - Date.now()));
-        waiter.timer.unref();
-      }
-      this.waiters.push(waiter);
-    });
-  }
-
-  private release(): void {
-    const next = this.waiters.shift();
-    if (next) {
-      if (next.timer) clearTimeout(next.timer);
-      next.resolve();
-    }
-    else this.active -= 1;
-  }
-}
 
 export function createTimeoutTransport(
   transport: Pick<typeof http, 'request'>,
@@ -86,24 +18,37 @@ export function createTimeoutTransport(
   const request = ((...args: any[]) => {
     const outgoing = (transport.request as (...requestArgs: any[]) => http.ClientRequest)(...args);
     const timeoutError = () => new Error('OBJECT_STORAGE_TIMEOUT');
-    const headerTimer = setTimeout(() => outgoing.destroy(timeoutError()), timeoutMs);
-    headerTimer.unref();
+    let incoming: http.IncomingMessage | null = null;
+    // This is an absolute request deadline, not only an idle-socket timeout.
+    // A peer that continuously trickles headers or listing entries therefore
+    // cannot retain a gate lease forever.
+    const operationTimer = setTimeout(() => {
+      const error = timeoutError();
+      incoming?.destroy(error);
+      outgoing.destroy(error);
+    }, timeoutMs);
+    operationTimer.unref();
     outgoing.setTimeout(timeoutMs, () => outgoing.destroy(timeoutError()));
-    const finishRequest = () => {
-      clearTimeout(headerTimer);
+    const finishOperation = () => {
+      clearTimeout(operationTimer);
       outgoing.setTimeout(0);
     };
-    outgoing.once('error', finishRequest);
+    outgoing.once('error', finishOperation);
     outgoing.once('response', (response) => {
-      finishRequest();
+      incoming = response;
+      outgoing.setTimeout(0);
       response.setTimeout(timeoutMs, () => response.destroy(timeoutError()));
       // IncomingMessage clears its public `socket` reference after end; retain
       // the actual socket so cleanup cannot dereference null on newer Node.
       const responseSocket = response.socket;
       const finishResponse = () => responseSocket?.setTimeout(0);
-      response.once('end', finishResponse);
-      response.once('close', finishResponse);
-      response.once('error', finishResponse);
+      const finish = () => {
+        finishOperation();
+        finishResponse();
+      };
+      response.once('end', finish);
+      response.once('close', finish);
+      response.once('error', finish);
     });
     return outgoing;
   }) as typeof http.request;
@@ -123,7 +68,12 @@ const minioClient = new Minio.Client({
 const objectStorageGate = new BoundedAsyncGate(
   MAX_CONCURRENT_OBJECT_STORAGE_OPERATIONS,
   MAX_PENDING_OBJECT_STORAGE_OPERATIONS,
+  { busyError: 'OBJECT_STORAGE_BUSY', timeoutError: 'OBJECT_STORAGE_TIMEOUT' },
 );
+
+export function objectStorageWorkSnapshot() {
+  return objectStorageGate.snapshot();
+}
 
 export function createObjectStorageDeadline(): number {
   return Date.now() + config.minio.requestTimeoutMs;
@@ -211,25 +161,27 @@ export async function getStoredObject(storageKey: string): Promise<Readable> {
 }
 
 export async function deleteStoredUpload(storagePrefix: string): Promise<void> {
+  const deadline = createObjectStorageDeadline();
   await withObjectStorageDeadline(async () => {
-    const objectNames = new Set(await listObjectNames(`${storagePrefix}/`));
+    const objectNames = new Set(await listObjectNames(`${storagePrefix}/`, deadline));
     // Also clean reservations created before the chunk-attempt protocol.
     objectNames.add(storagePrefix);
     const results = await minioClient.removeObjects(config.minio.bucket, [...objectNames]);
     if (results.some(Boolean)) throw new Error('ORPHAN_CHUNK_DELETE_FAILED');
-  });
+  }, deadline);
 }
 
 export async function reconcileStoredUpload(
   storagePrefix: string,
   expected: ReadonlySet<string>,
 ): Promise<void> {
+  const deadline = createObjectStorageDeadline();
   await withObjectStorageDeadline(async () => {
-    const unexpected = (await listObjectNames(`${storagePrefix}/`)).filter((name) => !expected.has(name));
+    const unexpected = (await listObjectNames(`${storagePrefix}/`, deadline)).filter((name) => !expected.has(name));
     if (unexpected.length === 0) return;
     const results = await minioClient.removeObjects(config.minio.bucket, unexpected);
     if (results.some(Boolean)) throw new Error('ORPHAN_CHUNK_DELETE_FAILED');
-  });
+  }, deadline);
 }
 
 export async function removeStoredObjectBestEffort(storageKey: string): Promise<void> {
@@ -240,14 +192,76 @@ export function isObjectStorageTimeout(error: unknown): error is Error {
   return error instanceof Error && error.message === 'OBJECT_STORAGE_TIMEOUT';
 }
 
-function listObjectNames(prefix: string): Promise<string[]> {
+// A valid upload has one authoritative object per chunk. The extra allowance
+// covers failed replacement attempts while keeping cleanup work and memory
+// bounded even when the object-store endpoint is malicious.
+export const MAX_OBJECTS_PER_UPLOAD_PREFIX = MAX_ATTACHMENT_CHUNKS * 16 + 1;
+export const MAX_OBJECT_KEY_BYTES = 1_024;
+export const MAX_LISTED_OBJECT_KEY_BYTES = MAX_OBJECTS_PER_UPLOAD_PREFIX * MAX_OBJECT_KEY_BYTES;
+
+export function collectBoundedObjectNames(
+  stream: NodeJS.EventEmitter & { destroy?: (error?: Error) => unknown },
+  limit = MAX_OBJECTS_PER_UPLOAD_PREFIX,
+  deadline = createObjectStorageDeadline(),
+  expectedPrefix?: string,
+): Promise<string[]> {
   return new Promise((resolve, reject) => {
     const names: string[] = [];
-    const stream = minioClient.listObjectsV2(config.minio.bucket, prefix, true);
-    stream.on('data', (item) => {
-      if (item.name) names.push(item.name);
+    let retainedBytes = 0;
+    let settled = false;
+    const timer = setTimeout(() => {
+      const error = new Error('OBJECT_STORAGE_TIMEOUT');
+      stream.destroy?.(error);
+      fail(error);
+    }, Math.max(0, deadline - Date.now()));
+    timer.unref();
+    const fail = (error: unknown) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(error instanceof Error ? error : new Error('OBJECT_STORAGE_LIST_FAILED'));
+    };
+    stream.on('data', (item: { name?: string }) => {
+      if (settled || !item.name) return;
+      if (expectedPrefix) {
+        const suffix = item.name.startsWith(expectedPrefix) ? item.name.slice(expectedPrefix.length) : '';
+        if (!/^[0-9]{6}(?:\/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})?$/.test(suffix)) {
+          const error = new Error('OBJECT_STORAGE_LIST_INVALID_KEY');
+          stream.destroy?.(error);
+          fail(error);
+          return;
+        }
+      }
+      const keyBytes = Buffer.byteLength(item.name, 'utf8');
+      if (keyBytes > MAX_OBJECT_KEY_BYTES || retainedBytes + keyBytes > MAX_LISTED_OBJECT_KEY_BYTES) {
+        const error = new Error('OBJECT_STORAGE_LIST_LIMIT');
+        stream.destroy?.(error);
+        fail(error);
+        return;
+      }
+      names.push(item.name);
+      retainedBytes += keyBytes;
+      if (names.length > limit) {
+        const error = new Error('OBJECT_STORAGE_LIST_LIMIT');
+        stream.destroy?.(error);
+        fail(error);
+      }
     });
-    stream.on('error', reject);
-    stream.on('end', () => resolve(names));
+    stream.on('error', fail);
+    stream.on('end', () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(names);
+    });
   });
+}
+
+function listObjectNames(prefix: string, deadline: number): Promise<string[]> {
+  return collectBoundedObjectNames(
+    minioClient.listObjectsV2(config.minio.bucket, prefix, true),
+    undefined,
+    deadline,
+    prefix,
+  );
 }

@@ -101,15 +101,34 @@ scripts/pre-migration-backup.sh 0006_example_change
 
 It only records a `pre-migration:<label>` reason and creates the encrypted artifact. It never runs the migration. Restore and verify that artifact with `restore-verify.sh`; only after a successful `VERIFIED <run-id>` result should a separate deployment step apply the migration.
 
+## Supervised schedule and retention
+
+For the systemd deployment, install `deploy/alparts-backup.service` and `deploy/alparts-backup.timer`. The daily persistent timer invokes `scripts/backup-under-systemd.sh`, which:
+
+1. takes a non-blocking host lock so backups cannot overlap;
+2. refuses to change state unless the configured application service is active;
+3. stops the application and confirms it is inactive;
+4. supplies the exact quiescence acknowledgement to `backup.sh`;
+5. always attempts to restart the application on normal exit, error, HUP, INT, or TERM;
+6. applies retention only after the application is active again.
+
+The timer creates a local artifact; a separate monitored process must copy it to independently controlled off-host/off-region storage. Keep the backup unit free of `Requires=alparts.service`, because the backup intentionally stops that service during its own transaction.
+
+`scripts/prune-backups.sh` performs a dry run unless `--apply` is explicit. It refuses broad directories, recognizes only exact encrypted backup names, keeps at least `BACKUP_MINIMUM_COPIES` (default 7), requires `BACKUP_RETENTION_DAYS` (default 30), and deletes only with `BACKUP_PRUNE_ACK=DELETE_EXPIRED_ENCRYPTED_BACKUPS`. Review the dry-run output and protect the destination with storage-side versioning/object lock where available.
+
 ## Limitations
 
 This workflow backs up one quiesced logical database snapshot and the latest object bytes. It does **not** provide:
 
 - point-in-time recovery (PITR) or continuous WAL archiving;
 - WORM/object-lock retention or protection from a compromised backup identity;
-- automatic off-site replication, retention rotation, or media lifecycle management;
+- automatic off-site replication or storage-side immutable media lifecycle management (only safe local retention is supplied);
 - automatic recovery, failover, RTO/RPO guarantees, or a tested full application DR exercise;
 - MinIO object version history, bucket policies, lifecycle rules, tags, or all object metadata;
 - server-side recovery of browser device private keys.
 
-Copy the encrypted artifact to independently controlled off-site storage, implement retention separately, and schedule restore exercises. A successful script result proves that this artifact can recreate its database rows and latest encrypted object bytes in the tested targets; it does not prove full service recovery or client-side decryptability.
+Copy the encrypted artifact to independently controlled off-site storage, configure and monitor retention, and schedule restore exercises. A successful script result proves that this artifact can recreate its database rows and latest encrypted object bytes in the tested targets; it does not prove full service recovery or client-side decryptability.
+
+## Current-tree verification evidence
+
+On 2026-08-30, run `20260830T094605Z-3e2bb09737cb` backed up the current 29-table migrated schema and one 128-byte opaque object into a 112,856-byte age artifact. Restore into an empty database owned by an unprivileged role and an empty separately named bucket returned `VERIFIED`; table counts, manifest/checksums, object inventory, redownload, and object SHA-256 matched. A missing referenced object and an invalid restore target name were separately confirmed to fail before publication or restore. See [the complete verification record](./VERIFICATION.md).

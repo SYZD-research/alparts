@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { serializeChannelKeyAcknowledgement } from '@alparts/shared';
 import type { ChannelKeyDelivery } from './api';
 import {
+  hasActiveEpochAuthority,
   isDecryptableChannelKeyEpoch,
   orderChannelKeyDeliveries,
   tryChannelKeyDeliveries,
@@ -56,6 +57,17 @@ describe('two-phase channel-key delivery selection', () => {
     expect(isDecryptableChannelKeyEpoch('aborted')).toBe(false);
     expect(isDecryptableChannelKeyEpoch('active')).toBe(true);
     expect(isDecryptableChannelKeyEpoch('retired')).toBe(true);
+  });
+
+  it('permits pending cleanup after total active-holder loss without claiming old-key access', () => {
+    const state = {
+      currentVersion: 7,
+      historyRecoveryRequired: true,
+      distributedDeviceIds: ['revoked-device'],
+    };
+    expect(hasActiveEpochAuthority(state, 'fresh-device', false)).toBe(true);
+    expect(hasActiveEpochAuthority({ ...state, historyRecoveryRequired: false }, 'fresh-device', false)).toBe(false);
+    expect(hasActiveEpochAuthority({ ...state, historyRecoveryRequired: false }, 'revoked-device', true)).toBe(true);
   });
 
   it('binds an acknowledgement to the exact delivery and distributor', () => {

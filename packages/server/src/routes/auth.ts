@@ -73,6 +73,10 @@ router.post('/login', loginIpLimit, loginAccountLimit, loginLimit, async (req, r
       res.status(401).json({ error: 'UNAUTHORIZED', message: 'Invalid email or password', statusCode: 401 });
       return;
     }
+    if (error.message === 'SESSION_LIMIT_REACHED') {
+      res.status(409).json({ error: 'SESSION_LIMIT_REACHED', message: 'Revoke an existing session before signing in again', statusCode: 409 });
+      return;
+    }
     if (error.name === 'ZodError') {
       res.status(400).json({ error: 'VALIDATION', message: 'Invalid login data', statusCode: 400 });
       return;

@@ -13,6 +13,7 @@ import {
 import { useMessageStore } from './message.store';
 import {
   createOutboxCommand,
+  MAX_OUTBOX_COMMANDS_PER_DEVICE,
   outboxItemFromCommand,
   transitionOutboxItem,
   type OutboxItem,
@@ -39,6 +40,7 @@ const sending = new Set<string>();
 const persistenceQueues = new Map<string, Promise<void>>();
 let outboxGeneration = 0;
 let initialization: Promise<void> | null = null;
+let pendingEnqueueReservations = 0;
 
 interface OutboxLifecycle {
   generation: number;
@@ -124,8 +126,16 @@ export const useOutboxStore = create<OutboxState>((set, get) => ({
 
   enqueue: async (channelId, content, refMessageId) => {
     const lifecycle = captureOutboxLifecycle();
+    let reserved = false;
     try {
       validateContent(content);
+      await get().initialize();
+      if (!isOutboxLifecycleCurrent(lifecycle)) throw new Error('OUTBOX_CONTEXT_CHANGED');
+      if (Object.keys(get().items).length + pendingEnqueueReservations >= MAX_OUTBOX_COMMANDS_PER_DEVICE) {
+        throw new Error('OUTBOX_CAPACITY');
+      }
+      pendingEnqueueReservations += 1;
+      reserved = true;
       const command = createOutboxCommand({ channelId, content, refMessageId });
       await queuePersistence(
         lifecycle.context,
@@ -156,6 +166,8 @@ export const useOutboxStore = create<OutboxState>((set, get) => ({
         }));
       }
       throw error;
+    } finally {
+      if (reserved) pendingEnqueueReservations -= 1;
     }
   },
 

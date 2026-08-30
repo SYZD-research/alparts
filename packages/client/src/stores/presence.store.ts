@@ -23,7 +23,7 @@ export const usePresenceStore = create<PresenceState>((set) => ({
 
   setTyping: (channelId, userId, isTyping) => {
     set(state => {
-      const channelTyping = { ...(state.typingUsers[channelId] || {}) };
+      const channelTyping = { ...state.typingUsers[channelId] };
       if (isTyping) channelTyping[userId] = true;
       else delete channelTyping[userId];
 

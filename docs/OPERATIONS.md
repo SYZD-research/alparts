@@ -1,6 +1,6 @@
 # Phase 1 Prototype operations
 
-最終更新: 2026-08-27
+最終更新: 2026-08-30
 
 この文書はWeb / single-node / basic per-channel key / text中心＋最大8人P2P音声のprototypeだけを対象とする。Embargoed vulnerability、credential、その他のhigh-impact secretを扱うproduction approvalではない。
 
@@ -18,7 +18,7 @@
 
 Processはlisten前にaudit HMAC chainを全件検証する。失敗はsecurity incidentである。起動させる目的でaudit rowやcheckpointを書き換えたり削除したりしない。
 
-Serverのlisten addressはIP literalだけを受理し、`BIND_HOST` 未設定時は `127.0.0.1` に限定する。Example systemd unitもloopbackへ固定する。Container imageだけはcontainer networkからreverse proxyへ到達できるよう `BIND_HOST=0.0.0.0` を明示するため、host portをpublic interfaceへ直接publishせず、TLS reverse proxyとnetwork policyの背後で使う。MinIO requestは `MINIO_REQUEST_TIMEOUT_MS`（既定10秒）の期限を持ち、長時間応答しないobject storageでAPI/DB resourceが無期限に占有されないようにする。
+Serverのlisten addressはIP literalだけを受理し、`BIND_HOST` 未設定時は `127.0.0.1` に限定する。Example systemd unitもloopbackへ固定する。Container imageの既定もloopbackであり、production Composeだけがcontainer network内で `BIND_HOST=0.0.0.0` を明示し、host側は`127.0.0.1`へpublishする。TLS reverse proxyとnetwork policyを必ず前段に置く。MinIO requestは `MINIO_REQUEST_TIMEOUT_MS`（既定10秒）の期限を持ち、object listingは件数・key byte・prefix grammar・absolute deadlineも制限する。
 
 音声通話は `VOICE_ICE_SERVERS_JSON` に最大4件のoperator-controlled STUN/TURNをJSONで設定できる。既定の空配列は第三者serviceへ接続しない代わりに、direct candidateで到達できないNAT間の通話を保証しない。TURN credentialは通話参加clientへ渡るため、service管理者credentialを流用せず、短命・最小権限のcredentialを発行する。TURNはauthenticated TLS（`turns:`）を優先し、public Internetへ無制限relayとして開放しない。P2P meshは最大8人であり、media serverとして水平scaleする構成ではない。
 
@@ -28,7 +28,9 @@ AttachmentのDB rowとMinIO objectは分散transactionではない。Upload stat
 
 Newest database audit rowの削除を検出するには、`AUDIT_CHECKPOINT_PATH` をPostgreSQL operatorとはwrite/delete authorityを分離したmountまたはstorageへ置く。FileはHMAC認証され、audit commit後にatomic updateされる。初回deploymentではserverを停止したまま、productionと同じdatabase、`AUDIT_INTEGRITY_KEY`、checkpoint pathを設定して `pnpm --filter @alparts/server audit:checkpoint:init` を一度だけ実行する。その後 `AUDIT_CHECKPOINT_REQUIRED=true` でserverを起動する。既存checkpointがある場合、このcommandは上書きしない。
 
-Required modeでは空chainを含むcheckpoint欠落、参照row/hashの不一致、rollback、tail切断、checkpoint read/write失敗をstartup/readiness/通常writeでfail closedにする。通常appendとcheckpoint更新は同じPostgreSQL advisory lock内で現在anchorのHMACとDB tailへのdescendant関係を検証し、外部fileは比較対象が変わっていない場合だけatomicに置換する。Integrity failureはprocess内でstickyになり、通常のserver起動やaudit appendは欠落checkpointまたは切断されたsuffixを再作成・再署名しない。欠落時に再provisionすると切断後のchainを新しい正史として承認してしまうため、incident responseで独立保管したcheckpoint/backupと照合するまで実行しない。
+Required modeでは空chainを含むcheckpoint欠落、参照row/hashの不一致、rollback、tail切断、checkpoint read/write失敗をstartup/readiness/権威的writeでfail closedにする。Message create/edit/delete/replay、reaction/pin、preference/bookmarkとsecurity/administration mutationはstateとaudit rowを同一transactionへ入れる。Read positionとprovisional upload chunk metadata/cleanupは専用audit eventを増やさないが、同じprocess-local admissionを通る。通常appendとcheckpoint更新は同じPostgreSQL advisory lock内で現在anchorのHMACとDB tailへのdescendant関係を検証し、外部fileは比較対象が変わっていない場合だけatomicに置換する。Integrity failureはprocess内でstickyになり、通常のserver起動やaudit appendは欠落checkpointまたは切断されたsuffixを再作成・再署名しない。欠落時に再provisionすると切断後のchainを新しい正史として承認してしまうため、incident responseで独立保管したcheckpoint/backupと照合するまで実行しない。
+
+State mutationとaudit rowは同じDB transactionでcommitするため、その直後のcheckpoint I/Oだけが失敗した場合、既にcommitしたmutationは成功として一度だけ返す。以後のaudited/guarded authoritative mutationとreadinessはfail closedとなる。Operatorは「500だったからDBもrollbackした」と推測してretryしてはならない。Presenceとdevice activity timestampは認可等に使わないadvisory telemetryとしてgate外であり、欠落を許容する。Readiness失敗後はingressをdrainし、このtelemetry更新をservice write成功と解釈しない。この仕組みはprocess内admissionを使うため、複数application processには対応しない。
 
 Local systemd `StateDirectory` は事故によるDB row削除の検出を改善するが、同一host/operatorがdatabaseとfileを削除できるならoperator separationではない。独立mountを使わない配置で「operator-independent audit」を主張しない。
 
@@ -63,10 +65,10 @@ Migration scriptとbackup scriptは互いを自動実行しない。Operatorが�
 6. Application runtimeとは別のdeployment identityでmigrationを実行する。
 
    ```bash
-   pnpm --filter @alparts/server db:migrate
+   pnpm --filter @alparts/server db:migrate:runtime
    ```
 
-7. Applicationを起動し、startup/live/ready、audit integrity、target schema versionを確認する。Rollback/restoreが必要なら新しい隔離環境で原因を確認してから、承認済みrunbookを使う。
+7. Applicationを起動し、startup/live/ready、audit integrity、migration journalとPostgreSQL 16 `public` catalog fingerprintを確認する。Fingerprint mismatchを期待値の書換えで回避せず、schema driftを調査してforward repairまたは検証済みrestoreを行う。Rollback/restoreが必要なら新しい隔離環境で原因を確認してから、承認済みrunbookを使う。
 
 `pre-migration-backup.sh` はmigration、service停止、restore、cleanupを実行しない。`restore-verify.sh` は既存schemaをdropせず、既存bucketをclearせず、productionらしいtarget名を拒否する。Environmentと全手順は [BACKUP.md](./BACKUP.md) を参照する。
 
@@ -75,6 +77,18 @@ Migration scriptとbackup scriptは互いを自動実行しない。Operatorが�
 `SIGTERM` と `SIGINT` はreadinessを直ちに失敗させ、新規API workを拒否し、realtime clientをdisconnectし、background cleanupを停止し、HTTP connectionを最大25秒drainしてdatabase poolを閉じる。Systemd unitは強制終了まで30秒を許容する。
 
 Shutdownをbackupのquiesce mechanismとして暗黙に扱わない。Database、MinIO、管理toolを含めてwrite sourceが停止したことを別途確認する。
+
+## Metrics and alerting
+
+`METRICS_ENABLED=true` の場合だけ `/metrics` を登録する。`METRICS_TOKEN` またはmodeを保護した `METRICS_TOKEN_FILE` に32 byte以上の値が必須で、Bearer tokenをconstant-time比較する。Endpointはtokenがあってもpublic routeへ公開しない。
+
+収集対象はHTTP rate/status/latency、DB pool total/idle/waiting/max、password/object-storage gate active/pending/cap、event-loop p50/p99/max、process memory/uptimeである。External監視でdisk/inode、PostgreSQL、object容量、TLS期限、backup/off-host copy/restore、systemd restart、synthetic encrypted read/writeを追加する。LogはUTCのstructured JSONでrequest/trace/actor/tenant contextを持つが、body、token、password、key、plaintextは出力しない。
+
+## Automated single-host backup
+
+`deploy/alparts-backup.timer` はdaily + random delay + persistentでoneshot serviceを起動する。`scripts/backup-under-systemd.sh` はflockで重複を拒否し、対象serviceがactiveでなければ状態を変更せず失敗し、stop後だけquiesce assertionを設定する。成功/失敗/signalのtrapはservice再起動を試みる。Backup unitはappを自らstopするため、appへの`Requires=`関係を持たせない。
+
+Retentionはbackup成功とapp再起動の後にだけ実行する。`scripts/prune-backups.sh` はdefault dry-run、狭い既存directory、exact filename、日数/最低copy数、`BACKUP_PRUNE_ACK=DELETE_EXPIRED_ENCRYPTED_BACKUPS`を要求する。Timer成功だけではDRにならないため、artifactのoff-host/off-region copyとrestore testを別に監視する。
 
 ## Backup / restore boundary
 
@@ -119,6 +133,6 @@ PostgreSQL接続はmode `0600`のlibpq service fileとsection名で渡し、MinI
 
 ## 未提供の運用保証
 
-このrepositoryは、PITR/continuous WAL archive、WORM/object lock、automatic off-site replication、retention rotation、scheduled automatic restore、full application automatic recovery、failover、HA、quarterly DR、RTO/RPO、72-hour soakを提供しない。Auditのexternal SIEM/WORM転送、data retention/export、signed update/release provenanceも未実装である。
+このrepositoryは、PITR/continuous WAL archive、WORM/object lock、automatic off-site replication、scheduled automatic restore、full application automatic recovery、failover、HA、実施済みquarterly DR、実測RTO/RPO、72-hour soakを提供しない。安全側のlocal retentionとdaily systemd scheduleは実装したが、同一host内だけではDRではない。Auditのexternal SIEM/WORM転送、data retention/export、signed update/release provenanceも未実装である。
 
 これらは [LIMITATIONS.md](../LIMITATIONS.md) のformal release blockerであり、manual backup roundtrip成功で解除されない。

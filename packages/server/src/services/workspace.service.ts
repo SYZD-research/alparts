@@ -25,9 +25,35 @@ import {
   captureChannelViewersFromStore,
   getWorkspaceAuthorizationFromStore,
 } from './authorization.service.js';
+import {
+  MAX_ROLE_ASSIGNMENTS_PER_MEMBER,
+  MAX_DMS_PER_WORKSPACE,
+  MAX_TOTAL_CHANNELS_PER_WORKSPACE,
+  MAX_WORKSPACE_MEMBERS,
+  MAX_WORKSPACES_OWNED_PER_USER,
+  MAX_WORKSPACE_MEMBERSHIPS_PER_USER,
+} from '../security/limits.js';
 
 export async function createWorkspace(name: string, ownerId: string, iconUrl?: string) {
   const workspace = await auditedTransaction(async (tx) => {
+    // Workspace creation and invitation acceptance share this account-scoped
+    // lock. Without it, accepts in different workspaces can race the same
+    // per-account membership limit.
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`workspace-memberships:${ownerId}`})::bigint)`);
+    const owned = await tx.query.workspaces.findMany({
+      columns: { id: true },
+      where: eq(workspaces.ownerId, ownerId),
+      limit: MAX_WORKSPACES_OWNED_PER_USER + 1,
+    });
+    if (owned.length >= MAX_WORKSPACES_OWNED_PER_USER) throw new Error('WORKSPACE_LIMIT_REACHED');
+    const memberships = await tx.query.workspaceMembers.findMany({
+      columns: { id: true },
+      where: eq(workspaceMembers.userId, ownerId),
+      limit: MAX_WORKSPACE_MEMBERSHIPS_PER_USER + 1,
+    });
+    if (memberships.length >= MAX_WORKSPACE_MEMBERSHIPS_PER_USER) {
+      throw new Error('WORKSPACE_MEMBERSHIP_LIMIT_REACHED');
+    }
     const [created] = await tx.insert(workspaces).values({
       name,
       ownerId,
@@ -82,7 +108,11 @@ export async function getUserWorkspaces(userId: string) {
     with: {
       workspace: true,
     },
+    limit: MAX_WORKSPACE_MEMBERSHIPS_PER_USER + 1,
   });
+  if (memberships.length > MAX_WORKSPACE_MEMBERSHIPS_PER_USER) {
+    throw new Error('WORKSPACE_MEMBERSHIP_INVARIANT_EXCEEDED');
+  }
 
   return memberships.map(m => ({
     id: m.workspace.id,
@@ -112,13 +142,31 @@ export async function getWorkspaceMembers(workspaceId: string) {
     where: eq(workspaceMembers.workspaceId, workspaceId),
     with: {
       user: true,
-      memberRoles: {
-        with: {
-          role: true,
-        },
-      },
     },
+    limit: MAX_WORKSPACE_MEMBERS + 1,
   });
+  if (members.length > MAX_WORKSPACE_MEMBERS) throw new Error('WORKSPACE_MEMBER_INVARIANT_EXCEEDED');
+  const memberIds = members.map((member) => member.id);
+  const assignments = memberIds.length === 0 ? [] : await db.query.memberRoles.findMany({
+    where: inArray(memberRoles.memberId, memberIds),
+    with: { role: true },
+    limit: MAX_WORKSPACE_MEMBERS * MAX_ROLE_ASSIGNMENTS_PER_MEMBER + 1,
+  });
+  if (assignments.length > MAX_WORKSPACE_MEMBERS * MAX_ROLE_ASSIGNMENTS_PER_MEMBER) {
+    throw new Error('ROLE_ASSIGNMENT_INVARIANT_EXCEEDED');
+  }
+  const assignmentsByMember = new Map<string, typeof assignments>();
+  for (const assignment of assignments) {
+    if (!assignment.role || assignment.role.workspaceId !== workspaceId) {
+      throw new Error('ROLE_ASSIGNMENT_INVARIANT_EXCEEDED');
+    }
+    const current = assignmentsByMember.get(assignment.memberId) ?? [];
+    current.push(assignment);
+    if (current.length > MAX_ROLE_ASSIGNMENTS_PER_MEMBER) {
+      throw new Error('ROLE_ASSIGNMENT_INVARIANT_EXCEEDED');
+    }
+    assignmentsByMember.set(assignment.memberId, current);
+  }
 
   return members.map((m: any) => ({
     id: m.id,
@@ -131,7 +179,7 @@ export async function getWorkspaceMembers(workspaceId: string) {
       status: m.user.status,
       createdAt: m.user.createdAt.toISOString(),
     },
-    roles: m.memberRoles.map((mr: any) => ({
+    roles: (assignmentsByMember.get(m.id) ?? []).map((mr: any) => ({
       id: mr.role.id,
       workspaceId: mr.role.workspaceId,
       name: mr.role.name,
@@ -154,7 +202,9 @@ export async function removeMember(workspaceId: string, userId: string, actorId:
     const workspaceChannels = await tx.query.channels.findMany({
       columns: { id: true },
       where: eq(channels.workspaceId, workspaceId),
+      limit: MAX_TOTAL_CHANNELS_PER_WORKSPACE + 1,
     });
+    if (workspaceChannels.length > MAX_TOTAL_CHANNELS_PER_WORKSPACE) throw new Error('CHANNEL_INVARIANT_EXCEEDED');
     const channelIds: string[] = workspaceChannels.map((channel: { id: string }) => channel.id);
     for (const channelId of [...channelIds].sort()) {
       await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${channelId})::bigint)`);
@@ -162,7 +212,11 @@ export async function removeMember(workspaceId: string, userId: string, actorId:
     const explicitPrivateMemberships = channelIds.length === 0 ? [] : await tx.select({ channelId: channelMembers.channelId })
       .from(channelMembers)
       .innerJoin(channels, and(eq(channels.id, channelMembers.channelId), eq(channels.isPrivate, true)))
-      .where(and(eq(channelMembers.userId, userId), inArray(channelMembers.channelId, channelIds)));
+      .where(and(eq(channelMembers.userId, userId), inArray(channelMembers.channelId, channelIds)))
+      .limit(MAX_TOTAL_CHANNELS_PER_WORKSPACE + 1);
+    if (explicitPrivateMemberships.length > MAX_TOTAL_CHANNELS_PER_WORKSPACE) {
+      throw new Error('PRIVATE_MEMBERSHIP_INVARIANT_EXCEEDED');
+    }
     const before = await captureChannelViewersFromStore(tx, workspaceId, channelIds);
     // Realtime removal must tell the client which locally persisted channel
     // state to erase without revealing private/overridden channels it never
@@ -209,7 +263,9 @@ export async function removeMember(workspaceId: string, userId: string, actorId:
         .where(and(
           eq(channels.workspaceId, workspaceId),
           inArray(channels.id, channelIds),
-        ));
+        ))
+        .limit(MAX_DMS_PER_WORKSPACE + 1);
+      if (workspaceDmRows.length > MAX_DMS_PER_WORKSPACE) throw new Error('DM_INVARIANT_EXCEEDED');
       if (workspaceDmRows.length > 0) {
         await tx.delete(dmMembers).where(and(
           eq(dmMembers.userId, userId),

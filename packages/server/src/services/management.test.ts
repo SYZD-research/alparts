@@ -8,6 +8,46 @@ process.env.AUDIT_INTEGRITY_KEY ||= 'test-audit-integrity-key-at-least-32-bytes'
 process.env.JWT_SECRET ||= 'test-jwt-secret-key-at-least-32-bytes';
 
 describe('management security invariants', () => {
+  it('bounds password work and rejects excess queued CPU work', async () => {
+    const { runPasswordWork, passwordWorkSnapshot } = await import('../security/password-work.js');
+    const releases: Array<() => void> = [];
+    const work = Array.from({ length: 18 }, () => runPasswordWork(() => new Promise<void>((resolve) => {
+      releases.push(resolve);
+    })));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.deepEqual(passwordWorkSnapshot(), {
+      active: 2,
+      pending: 16,
+      concurrency: 2,
+      maxPending: 16,
+    });
+    await assert.rejects(runPasswordWork(async () => undefined), /AUTH_CAPACITY/);
+    while (releases.length > 0 || passwordWorkSnapshot().pending > 0) {
+      releases.splice(0).forEach((release) => release());
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    await Promise.all(work);
+  });
+
+  it('runs bcrypt compatibility work only in the fixed worker pool', async () => {
+    const {
+      hashPassword,
+      passwordWorkerSnapshot,
+      verifyPassword,
+    } = await import('../security/password-work.js');
+    const hash = await hashPassword('worker-isolated-password', 4);
+    assert.match(hash, /^\$2[aby]\$04\$/);
+    assert.equal(await verifyPassword('worker-isolated-password', hash), true);
+    assert.equal(await verifyPassword('incorrect-password', hash), false);
+    await assert.rejects(
+      verifyPassword('worker-isolated-password', `$2b$16$${'A'.repeat(53)}`),
+      /PASSWORD_WORK_FAILED/,
+    );
+    const snapshot = passwordWorkerSnapshot();
+    assert.equal(snapshot.workers >= 1 && snapshot.workers <= 2, true);
+    assert.equal(snapshot.threadIds.every((threadId) => threadId > 0), true);
+  });
+
   it('rejects permission masks outside the declared bit set', async () => {
     const {
       ALL_PERMISSION_MASK,
@@ -82,5 +122,45 @@ describe('management security invariants', () => {
     } as any;
     assert.equal(isVisibleChannelAuthorization(ownerAuthorization), false, 'owner still needs explicit private membership');
     assert.equal(isVisibleChannelAuthorization({ ...ownerAuthorization, isPrivateMember: true }), true);
+  });
+
+  it('evaluates a bulk authorization snapshot without applying another role\'s simulated override', async () => {
+    const { Permissions } = await import('@alparts/shared');
+    const {
+      getChannelAuthorizationFromSnapshot,
+      isVisibleChannelAuthorization,
+    } = await import('./authorization.service.js');
+    const channel = {
+      id: 'channel-a', workspaceId: 'workspace-a', categoryId: 'category-a', isPrivate: true,
+    };
+    const snapshot = {
+      workspaceId: 'workspace-a',
+      ownerId: 'owner',
+      channels: [channel],
+      channelsById: new Map([[channel.id, channel]]),
+      membersByUserId: new Map([['member', { id: 'membership-a', userId: 'member' }]]),
+      rolesById: new Map([
+        ['role-a', { id: 'role-a', name: 'Member', permissions: Permissions.VIEW_CHANNELS, position: 10 }],
+        ['role-b', { id: 'role-b', name: 'Other', permissions: 0, position: 5 }],
+      ]),
+      roleIdsByUserId: new Map([['member', ['role-a']]]),
+      categoryOverridesById: new Map(),
+      channelOverridesById: new Map(),
+      privateMemberIdsByChannelId: new Map([['channel-a', new Set(['member'])]]),
+    };
+    const baseline = getChannelAuthorizationFromSnapshot(snapshot, 'member', channel);
+    assert.equal(isVisibleChannelAuthorization(baseline), true);
+    const simulatedOtherRoleDeny = getChannelAuthorizationFromSnapshot(snapshot, 'member', channel, {
+      categoryOverrideMutation: {
+        roleId: 'role-b', allowMask: 0, denyMask: Permissions.VIEW_CHANNELS,
+      },
+    });
+    assert.equal(isVisibleChannelAuthorization(simulatedOtherRoleDeny), true);
+    const simulatedAssignedRoleDeny = getChannelAuthorizationFromSnapshot(snapshot, 'member', channel, {
+      categoryOverrideMutation: {
+        roleId: 'role-a', allowMask: 0, denyMask: Permissions.VIEW_CHANNELS,
+      },
+    });
+    assert.equal(isVisibleChannelAuthorization(simulatedAssignedRoleDeny), false);
   });
 });

@@ -31,6 +31,11 @@ const enrollmentLimit = rateLimit({
   max: 10,
   key: (req) => (req as AuthRequest).userId || req.ip || 'unknown',
 });
+const revocationLimit = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 20,
+  key: (req) => (req as AuthRequest).userId || req.ip || 'unknown',
+});
 
 router.post('/challenge', authMiddleware, challengeLimit, (req: AuthRequest, res) => {
   res.json({ challenge: deviceService.issueDeviceChallenge(req.userId!, req.sessionId!) });
@@ -39,7 +44,7 @@ router.post('/challenge', authMiddleware, challengeLimit, (req: AuthRequest, res
 router.post('/', authMiddleware, enrollmentLimit, async (req: AuthRequest, res) => {
   try {
     const body = registerSchema.parse(req.body);
-    const { device, created, abortedChannelIds } = await deviceService.registerDevice(
+    const { device, created, dirtyWorkspaceIds } = await deviceService.registerDevice(
       req.userId!,
       req.sessionId!,
       body.name,
@@ -50,8 +55,8 @@ router.post('/', authMiddleware, enrollmentLimit, async (req: AuthRequest, res) 
     );
     const io = req.app.get('io') as SocketServer | undefined;
     if (created) io?.to(`user:${req.userId}`).emit('device:registered', device);
-    for (const channelId of abortedChannelIds) {
-      io?.to(`channel:${channelId}`).emit('channel:key-rotation-required', { channelId });
+    for (const workspaceId of dirtyWorkspaceIds) {
+      io?.to(`workspace:${workspaceId}`).emit('workspace:key-state-dirty', { workspaceId });
     }
     res.status(created ? 201 : 200).json(device);
   } catch (error: any) {
@@ -124,18 +129,18 @@ router.get('/', authMiddleware, async (req: AuthRequest, res) => {
   res.json(await deviceService.getUserDevices(req.userId!));
 });
 
-router.delete('/:id', authMiddleware, async (req: AuthRequest, res) => {
+router.delete('/:id', authMiddleware, revocationLimit, async (req: AuthRequest, res) => {
   if (!idSchema.safeParse(req.params.id).success) {
     res.status(404).json({ error: 'NOT_FOUND', message: 'Device not found', statusCode: 404 });
     return;
   }
   try {
-    const { sessionIds, affectedChannelIds } = await deviceService.revokeDevice(req.params.id, req.userId!);
+    const { sessionIds, affectedWorkspaceIds } = await deviceService.revokeDevice(req.params.id, req.userId!);
     const io = req.app.get('io') as SocketServer | undefined;
     for (const sessionId of sessionIds) io?.in(`session:${sessionId}`).disconnectSockets(true);
     io?.to(`user:${req.userId}`).emit('device:revoked', { deviceId: req.params.id });
-    for (const channelId of affectedChannelIds) {
-      io?.to(`channel:${channelId}`).emit('channel:key-rotation-required', { channelId });
+    for (const workspaceId of affectedWorkspaceIds) {
+      io?.to(`workspace:${workspaceId}`).emit('workspace:key-state-dirty', { workspaceId });
     }
     if (req.deviceId === req.params.id) res.setHeader('Set-Cookie', expiredSessionCookie());
     res.json({ success: true });

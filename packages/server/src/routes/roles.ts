@@ -40,7 +40,15 @@ const previewSchema = z.discriminatedUnion('operation', [
 ]);
 
 router.get('/workspaces/:wid/roles', authMiddleware, requireWorkspaceMember('wid'), async (req: AuthRequest, res) => {
-  res.json(await roleService.listRoles(req.params.wid));
+  try {
+    res.json(await roleService.listRoles(req.params.wid));
+  } catch (error: any) {
+    if (error.message === 'ROLE_INVARIANT_EXCEEDED') {
+      res.status(503).json({ error: error.message, message: 'Role invariant exceeded', statusCode: 503 });
+      return;
+    }
+    throw error;
+  }
 });
 
 router.post('/workspaces/:wid/roles', authMiddleware, requireWorkspacePermission(Permissions.MANAGE_ROLES, 'wid'), async (req: AuthRequest, res) => {
@@ -200,7 +208,7 @@ function sendRoleError(res: Response, error: any): boolean {
     res.status(403).json({ error: 'FORBIDDEN', message: 'Role cannot be managed', statusCode: 403 });
     return true;
   }
-  if (['OWNER_ROLE_PROTECTED', 'STANDARD_ROLE_PROTECTED', 'STANDARD_ROLE_NAME_RESERVED', 'ROLE_IN_USE', 'ROLE_NAME_EXISTS'].includes(error?.message) || error?.code === '23505') {
+  if (['OWNER_ROLE_PROTECTED', 'STANDARD_ROLE_PROTECTED', 'STANDARD_ROLE_NAME_RESERVED', 'ROLE_IN_USE', 'ROLE_NAME_EXISTS', 'ROLE_LIMIT_REACHED', 'ROLE_ASSIGNMENT_LIMIT_REACHED'].includes(error?.message) || error?.code === '23505') {
     res.status(409).json({ error: 'CONFLICT', message: 'Role change conflicts with workspace invariants', statusCode: 409 });
     return true;
   }

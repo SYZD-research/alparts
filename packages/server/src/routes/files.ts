@@ -263,12 +263,21 @@ function sendFileError(error: unknown, res: Response): boolean {
     res.status(413).json({ error: code, message: 'Storage quota exceeded', statusCode: 413 });
     return true;
   }
-  if (code === 'OBJECT_STORAGE_TIMEOUT' || code === 'OBJECT_STORAGE_BUSY') {
+  if (
+    code === 'OBJECT_STORAGE_TIMEOUT'
+    || code === 'OBJECT_STORAGE_BUSY'
+    || code === 'UPLOAD_OPERATION_BUSY'
+    || code === 'OBJECT_STORAGE_LIST_LIMIT'
+    || code === 'OBJECT_STORAGE_LIST_INVALID_KEY'
+  ) {
+    res.setHeader('Retry-After', '5');
     res.status(503).json({
       error: code,
       message: code === 'OBJECT_STORAGE_TIMEOUT'
         ? 'Object storage request timed out'
-        : 'Object storage is at its concurrency limit',
+        : code === 'OBJECT_STORAGE_BUSY' || code === 'UPLOAD_OPERATION_BUSY'
+          ? 'Object storage is at its concurrency limit'
+          : 'Object storage returned an unsafe or excessive listing',
       statusCode: 503,
     });
     return true;
@@ -283,6 +292,14 @@ function sendFileError(error: unknown, res: Response): boolean {
   }
   if (code === 'UPLOAD_EXPIRED') {
     res.status(410).json({ error: code, message: 'Upload reservation expired; retry with a new idempotency key', statusCode: 410 });
+    return true;
+  }
+  if (code === 'PENDING_UPLOAD_USER_LIMIT_REACHED' || code === 'PENDING_UPLOAD_WORKSPACE_LIMIT_REACHED') {
+    res.status(409).json({
+      error: code,
+      message: 'Cancel or complete an existing upload reservation before creating another',
+      statusCode: 409,
+    });
     return true;
   }
   if (code === 'IDEMPOTENCY_CONFLICT' || code === 'ATTACHMENT_LIMIT_EXCEEDED') {

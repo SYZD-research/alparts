@@ -60,6 +60,7 @@ export const sessions = pgTable('sessions', {
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => [
   index('sessions_user_id_idx').on(t.userId),
+  index('sessions_user_expires_idx').on(t.userId, t.expiresAt),
   index('sessions_device_id_idx').on(t.deviceId),
   index('sessions_expires_at_idx').on(t.expiresAt),
 ]);
@@ -77,7 +78,9 @@ export const workspaces = pgTable('workspaces', {
   ownerId: uuid('owner_id').notNull().references(() => users.id),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
-});
+}, (t) => [
+  index('workspaces_owner_id_idx').on(t.ownerId),
+]);
 
 export const workspacesRelations = relations(workspaces, ({ many }) => ({
   members: many(workspaceMembers),
@@ -184,6 +187,7 @@ export const channels = pgTable('channels', {
 }, (t) => [
   unique('channels_workspace_id_unique').on(t.workspaceId, t.id),
   index('channels_workspace_position_idx').on(t.workspaceId, t.position),
+  index('channels_workspace_type_idx').on(t.workspaceId, t.type),
   index('channels_category_position_idx').on(t.categoryId, t.position),
 ]);
 
@@ -444,6 +448,7 @@ export const messageBookmarks = pgTable('message_bookmarks', {
 }, (t) => ({
   pk: primaryKey({ columns: [t.userId, t.messageId] }),
   messageIdIdx: index('message_bookmarks_message_id_idx').on(t.messageId),
+  userCreatedIdx: index('message_bookmarks_user_created_idx').on(t.userId, t.createdAt, t.messageId),
 }));
 
 // === DM ===
@@ -451,8 +456,11 @@ export const messageBookmarks = pgTable('message_bookmarks', {
 export const dmConversations = pgTable('dm_conversations', {
   id: uuid('id').primaryKey().defaultRandom(),
   channelId: uuid('channel_id').unique().notNull().references(() => channels.id),
+  createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
-});
+}, (t) => ({
+  createdByIdx: index('dm_conversations_created_by_idx').on(t.createdBy),
+}));
 
 export const dmMembers = pgTable('dm_members', {
   conversationId: uuid('conversation_id').notNull().references(() => dmConversations.id),
@@ -505,6 +513,7 @@ export const attachmentUploads = pgTable('attachment_uploads', {
 }, (t) => [
   index('attachment_uploads_message_id_idx').on(t.messageId),
   index('attachment_uploads_uploader_id_idx').on(t.uploaderId),
+  index('attachment_uploads_uploader_expiry_idx').on(t.uploaderId, t.expiresAt),
   index('attachment_uploads_expires_at_idx').on(t.expiresAt),
 ]);
 

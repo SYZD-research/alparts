@@ -105,6 +105,8 @@ interface AttachmentState {
 }
 
 const runtimes = new Map<string, UploadRuntime>();
+const MAX_LOCAL_ATTACHMENT_RUNTIMES = 16;
+const MAX_LOCAL_ATTACHMENT_TASK_HISTORY = 64;
 let attachmentGeneration = 0;
 let resuming = false;
 
@@ -440,6 +442,12 @@ export const useAttachmentStore = create<AttachmentState>((set, get) => ({
       throw new Error(`1件のメッセージに添付できるファイルは${ATTACHMENT_MAX_COUNT_PER_MESSAGE}件までです`);
     }
     if (!isOnline()) throw new Error('添付ファイルはオンライン時のみ送信できます');
+    if (runtimes.size + files.length > MAX_LOCAL_ATTACHMENT_RUNTIMES) {
+      throw new Error('端末上の添付アップロード上限に達しました');
+    }
+    set((state) => ({
+      tasks: pruneTerminalTaskHistory(state.tasks, files.length),
+    }));
 
     const taskIds = files.map((file) => {
       const id = crypto.randomUUID();
@@ -553,6 +561,20 @@ export const useAttachmentStore = create<AttachmentState>((set, get) => ({
     set({ tasks: {} });
   },
 }));
+
+function pruneTerminalTaskHistory(
+  tasks: Record<string, AttachmentUploadTask>,
+  reserve: number,
+): Record<string, AttachmentUploadTask> {
+  const entries = Object.entries(tasks);
+  const active = entries.filter(([, task]) => task.status !== 'completed' && task.status !== 'cancelled');
+  const terminal = entries.filter(([, task]) => task.status === 'completed' || task.status === 'cancelled');
+  const terminalSlots = Math.max(0, MAX_LOCAL_ATTACHMENT_TASK_HISTORY - reserve - active.length);
+  return Object.fromEntries([
+    ...active,
+    ...(terminalSlots === 0 ? [] : terminal.slice(-terminalSlots)),
+  ]);
+}
 
 function cancelKnownReservation(runtime: UploadRuntime): void {
   // Local UI cancellation is immediate; server cleanup is deliberately

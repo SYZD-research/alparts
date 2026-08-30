@@ -25,12 +25,24 @@ router.post('/', authMiddleware, createLimit, async (req: AuthRequest, res) => {
       res.status(400).json({ error: 'VALIDATION', message: 'Invalid workspace data', statusCode: 400 });
       return;
     }
+    if (['WORKSPACE_LIMIT_REACHED', 'WORKSPACE_MEMBERSHIP_LIMIT_REACHED'].includes(error.message)) {
+      res.status(409).json({ error: error.message, message: 'Workspace quota reached', statusCode: 409 });
+      return;
+    }
     throw error;
   }
 });
 
 router.get('/', authMiddleware, async (req: AuthRequest, res) => {
-  res.json(await workspaceService.getUserWorkspaces(req.userId!));
+  try {
+    res.json(await workspaceService.getUserWorkspaces(req.userId!));
+  } catch (error: any) {
+    if (error.message === 'WORKSPACE_MEMBERSHIP_INVARIANT_EXCEEDED') {
+      res.status(503).json({ error: error.message, message: 'Workspace membership invariant exceeded', statusCode: 503 });
+      return;
+    }
+    throw error;
+  }
 });
 
 router.get('/:id', authMiddleware, requireWorkspaceMember('id'), async (req: AuthRequest, res) => {

@@ -1,11 +1,18 @@
 import { createHash, createHmac, randomBytes } from 'node:crypto';
-import { and, desc, eq, gt, inArray, isNull, sql } from 'drizzle-orm';
+import { and, desc, eq, gt, inArray, isNotNull, isNull, lt, or, sql } from 'drizzle-orm';
 import { Permissions } from '@alparts/shared';
 import { config } from '../config/index.js';
 import { db } from '../db/index.js';
 import { memberRoles, roles, users, workspaceInvitations, workspaceMembers, workspaces } from '../db/schema.js';
 import { auditedTransaction } from '../middleware/audit.js';
-import { MAX_WORKSPACE_MEMBERS } from '../security/limits.js';
+import {
+  INVITATION_RETENTION_DAYS,
+  MAX_ACTIVE_INVITATIONS_PER_WORKSPACE,
+  MAX_ROLE_ASSIGNMENTS_PER_MEMBER,
+  MAX_RETAINED_INVITATIONS_PER_WORKSPACE,
+  MAX_WORKSPACE_MEMBERS,
+  MAX_WORKSPACE_MEMBERSHIPS_PER_USER,
+} from '../security/limits.js';
 
 export function normalizeInvitationEmail(email: string): string {
   return email.trim().toLowerCase();
@@ -36,6 +43,41 @@ export function assertValidInvitationLifetime(expiresInSeconds: number): void {
   ) throw new Error('INVALID_INVITATION_EXPIRY');
 }
 
+/**
+ * Cheap, non-authoritative admission before bcrypt. Consumption repeats every
+ * check under the workspace/invitation locks, so this optimization never turns
+ * a stale preflight result into an accepted invitation.
+ */
+export async function preflightRegistrationInvitation(
+  normalizedEmail: string,
+  token: string,
+  bootstrap: boolean,
+): Promise<void> {
+  if (bootstrap) {
+    const anyUser = await db.query.users.findFirst({ columns: { id: true } });
+    if (anyUser) throw new Error('INVALID_INVITATION');
+    return;
+  }
+  if (token.length < 32 || token.length > 512) throw new Error('INVALID_INVITATION');
+  const candidate = await db.query.workspaceInvitations.findFirst({
+    where: inArray(workspaceInvitations.tokenHash, [hashInvitationToken(token), legacyInvitationTokenHash(token)]),
+  });
+  const now = new Date();
+  if (
+    !candidate
+    || candidate.usedAt
+    || candidate.revokedAt
+    || candidate.expiresAt <= now
+    || (candidate.email && candidate.email !== normalizedEmail)
+    || !candidate.roleId
+  ) throw new Error('INVALID_INVITATION');
+  const role = await db.query.roles.findFirst({
+    columns: { id: true, name: true },
+    where: and(eq(roles.id, candidate.roleId), eq(roles.workspaceId, candidate.workspaceId)),
+  });
+  if (!role || role.name === 'Owner') throw new Error('INVALID_INVITATION');
+}
+
 export async function createInvitation(
   workspaceId: string,
   actorId: string,
@@ -49,6 +91,38 @@ export async function createInvitation(
   const invitation = await auditedTransaction(async (transaction) => {
     await lockWorkspace(transaction, workspaceId);
     const role = await getInvitationRole(transaction, workspaceId, actorId, input.roleId);
+    const now = new Date();
+    const retentionCutoff = new Date(now.getTime() - INVITATION_RETENTION_DAYS * 24 * 60 * 60 * 1_000);
+    const pruned = await transaction.delete(workspaceInvitations).where(and(
+      eq(workspaceInvitations.workspaceId, workspaceId),
+      lt(workspaceInvitations.createdAt, retentionCutoff),
+      or(
+        isNotNull(workspaceInvitations.usedAt),
+        isNotNull(workspaceInvitations.revokedAt),
+        lt(workspaceInvitations.expiresAt, now),
+      ),
+    )).returning({ id: workspaceInvitations.id });
+    const retained = await transaction.query.workspaceInvitations.findMany({
+      columns: { id: true },
+      where: eq(workspaceInvitations.workspaceId, workspaceId),
+      limit: MAX_RETAINED_INVITATIONS_PER_WORKSPACE + 1,
+    });
+    if (retained.length >= MAX_RETAINED_INVITATIONS_PER_WORKSPACE) {
+      throw new Error('INVITATION_RETENTION_LIMIT_REACHED');
+    }
+    const active = await transaction.query.workspaceInvitations.findMany({
+      columns: { id: true },
+      where: and(
+        eq(workspaceInvitations.workspaceId, workspaceId),
+        isNull(workspaceInvitations.usedAt),
+        isNull(workspaceInvitations.revokedAt),
+        gt(workspaceInvitations.expiresAt, now),
+      ),
+      limit: MAX_ACTIVE_INVITATIONS_PER_WORKSPACE + 1,
+    });
+    if (active.length >= MAX_ACTIVE_INVITATIONS_PER_WORKSPACE) {
+      throw new Error('INVITATION_ACTIVE_LIMIT_REACHED');
+    }
     const [created] = await transaction.insert(workspaceInvitations).values({
       workspaceId,
       roleId: role.id,
@@ -57,8 +131,8 @@ export async function createInvitation(
       createdBy: actorId,
       expiresAt,
     }).returning();
-    return { created, role };
-  }, ({ created, role }) => ({
+    return { created, role, prunedCount: pruned.length };
+  }, ({ created, role, prunedCount }) => ({
     actorId,
     action: 'workspace.invitation.create',
     targetType: 'workspace_invitation',
@@ -68,6 +142,7 @@ export async function createInvitation(
       roleId: role.id,
       emailBound: Boolean(email),
       expiresAt: expiresAt.toISOString(),
+      prunedTerminalInvitations: prunedCount,
     },
   }));
   return { ...formatInvitation(invitation.created, invitation.role), token };
@@ -90,7 +165,11 @@ export async function listInvitations(workspaceId: string) {
     },
     where: eq(workspaceInvitations.workspaceId, workspaceId),
     orderBy: [desc(workspaceInvitations.createdAt), desc(workspaceInvitations.id)],
+    limit: MAX_RETAINED_INVITATIONS_PER_WORKSPACE + 1,
   });
+  if (rows.length > MAX_RETAINED_INVITATIONS_PER_WORKSPACE) {
+    throw new Error('INVITATION_INVARIANT_EXCEEDED');
+  }
   const roleIds = [...new Set(rows.flatMap((row) => row.roleId ? [row.roleId] : []))];
   const roleRows = roleIds.length > 0
     ? await db.query.roles.findMany({
@@ -225,6 +304,20 @@ export async function consumeLockedInvitation(
   userId: string,
 ) {
   const { invitation, role, now } = claim;
+  // Canonical admission order is workspace row -> account membership lock.
+  // Invitations for separate workspaces therefore serialize only when they
+  // would change the same account's bounded membership set.
+  await transaction.execute(
+    sql`select pg_advisory_xact_lock(hashtext(${`workspace-memberships:${userId}`})::bigint)`,
+  );
+  const userMemberships = await transaction.query.workspaceMembers.findMany({
+    columns: { id: true },
+    where: eq(workspaceMembers.userId, userId),
+    limit: MAX_WORKSPACE_MEMBERSHIPS_PER_USER + 1,
+  });
+  if (userMemberships.length >= MAX_WORKSPACE_MEMBERSHIPS_PER_USER) {
+    throw new Error('WORKSPACE_MEMBERSHIP_LIMIT_REACHED');
+  }
   const currentMembers = await transaction.query.workspaceMembers.findMany({
     columns: { id: true },
     where: eq(workspaceMembers.workspaceId, invitation.workspaceId),
@@ -262,7 +355,11 @@ async function getInvitationRole(store: any, workspaceId: string, actorId: strin
   const actorAssignments = await store.query.memberRoles.findMany({
     where: eq(memberRoles.memberId, actorMember.id),
     with: { role: true },
+    limit: MAX_ROLE_ASSIGNMENTS_PER_MEMBER + 1,
   });
+  if (actorAssignments.length > MAX_ROLE_ASSIGNMENTS_PER_MEMBER) {
+    throw new Error('ROLE_ASSIGNMENT_INVARIANT_EXCEEDED');
+  }
   const actorRoles = actorAssignments
     .map((assignment: any) => assignment.role)
     .filter((role: any) => role?.workspaceId === workspaceId);

@@ -338,14 +338,24 @@ async function ensureChannelKeyAttempt(
     ) continue;
 
     if (hasPendingEpoch) {
+      if (state.pendingInvalid) {
+        if (
+          state.canAbortPending
+          && state.recipients.some((recipient) => recipient.deviceId === device.deviceId)
+          && hasActiveEpochAuthority(state, device.deviceId, Boolean(active))
+        ) {
+          await abortPendingChannelKeyEpoch(channelId, state, device);
+          channelKeyScopes.assertCurrent(scope);
+          await deleteValue(channelStorageId(device, channelId, state.pendingVersion!)).catch(() => undefined);
+          continue;
+        }
+        throw new Error('Invalid pending channel key epoch requires an authorized manager to abort it');
+      }
       if (!pending) {
         if (
           state.canAbortPending
           && state.recipients.some((recipient) => recipient.deviceId === device.deviceId)
-          && (
-            state.currentVersion === 0
-            || (active && state.distributedDeviceIds.includes(device.deviceId))
-          )
+          && hasActiveEpochAuthority(state, device.deviceId, Boolean(active))
         ) {
           await abortPendingChannelKeyEpoch(channelId, state, device);
           channelKeyScopes.assertCurrent(scope);
@@ -380,6 +390,7 @@ async function ensureChannelKeyAttempt(
       }
       if (
         state.currentVersion > 0
+        && !state.historyRecoveryRequired
         && (!active || !state.distributedDeviceIds.includes(device.deviceId))
       ) {
         throw new Error('Current device must accept the active channel key before rotating it');
@@ -469,6 +480,24 @@ export function isDecryptableChannelKeyEpoch(status: ChannelKeyEpochStatus): boo
   return status === 'active' || status === 'retired';
 }
 
+/**
+ * A device may administer a provisional epoch with no active key only when no
+ * authorized non-revoked accepted holder remains. This never grants access to
+ * historical ciphertext; it only permits fail-closed abort/recovery.
+ */
+export function hasActiveEpochAuthority(
+  state: Pick<
+    ChannelKeyRecipientState,
+    'currentVersion' | 'historyRecoveryRequired' | 'distributedDeviceIds'
+  >,
+  deviceId: string,
+  hasLoadedActiveKey: boolean,
+): boolean {
+  return state.currentVersion === 0
+    || state.historyRecoveryRequired
+    || (hasLoadedActiveKey && state.distributedDeviceIds.includes(deviceId));
+}
+
 function deliveriesForEpoch(
   deliveries: readonly ChannelKeyDelivery[],
   status: ChannelKeyEpochStatus,
@@ -497,11 +526,23 @@ function hasAdjacentEpochStatus(
 }
 
 function assertKeyRecipientState(state: ChannelKeyRecipientState): void {
+  if (
+    typeof state.pendingInvalid !== 'boolean'
+    || typeof state.historyRecoveryRequired !== 'boolean'
+  ) {
+    throw new Error('Server returned an invalid pending channel key state');
+  }
   if ((state.currentVersion === 0) !== (state.keyCommitment === null)) {
     throw new Error('Server returned an invalid active channel key state');
   }
   if ((state.pendingVersion === null) !== (state.pendingKeyCommitment === null)) {
     throw new Error('Server returned an invalid pending channel key state');
+  }
+  if (
+    state.historyRecoveryRequired
+    && (state.currentVersion === 0 || !state.rotationRequired)
+  ) {
+    throw new Error('Server returned an invalid channel key recovery state');
   }
   if (state.nextVersion <= state.currentVersion || (state.pendingVersion !== null && state.nextVersion <= state.pendingVersion)) {
     throw new Error('Server returned a non-monotonic channel key version');
@@ -663,21 +704,53 @@ async function wrapForRecipients(
 }
 
 export async function getChannelKeyForVersion(channelId: string, version: number): Promise<CryptoKey | null> {
+  return (await getChannelKeysForVersions(channelId, [version])).get(version) ?? null;
+}
+
+/** Fetch at most one bounded API batch of historical channel-key versions. */
+export async function getChannelKeysForVersions(
+  channelId: string,
+  requestedVersions: readonly number[],
+  signal?: AbortSignal,
+): Promise<Map<number, CryptoKey | null>> {
+  throwIfRequestAborted(signal);
+  const versions = [...new Set(requestedVersions)];
+  if (
+    versions.length < 1
+    || versions.length > 64
+    || versions.length !== requestedVersions.length
+    || versions.some((version) => !Number.isSafeInteger(version) || version < 1 || version > 1_000_000)
+  ) throw new Error('Invalid bounded channel key version request');
   const scope = channelKeyScopes.capture(channelId);
   const device = getActiveDevice();
-  const deliveries = (await api.getChannelKeys(channelId)).filter((delivery) => (
-    delivery.version === version && isDecryptableChannelKeyEpoch(delivery.epochStatus)
-  ));
+  const response = await api.getChannelKeys(channelId, versions, signal);
+  throwIfRequestAborted(signal);
   channelKeyScopes.assertCurrent(scope);
-  const loaded = await loadChannelKeyDelivery(
-    channelId,
-    deliveries,
-    device,
-    scope,
-    (delivery) => delivery.epochStatus === 'active',
-  );
+  const requested = new Set(versions);
+  if (response.some((delivery) => !requested.has(delivery.version))) {
+    throw new Error('Server returned a channel key outside the requested version set');
+  }
+  const loaded = await Promise.all(versions.map(async (version) => {
+    const deliveries = response.filter((delivery) => (
+      delivery.version === version && isDecryptableChannelKeyEpoch(delivery.epochStatus)
+    ));
+    const candidate = await loadChannelKeyDelivery(
+      channelId,
+      deliveries,
+      device,
+      scope,
+      (delivery) => delivery.epochStatus === 'active',
+    );
+    return [version, candidate?.key ?? null] as const;
+  }));
+  throwIfRequestAborted(signal);
   channelKeyScopes.assertCurrent(scope);
-  return loaded?.key ?? null;
+  return new Map(loaded);
+}
+
+function throwIfRequestAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) return;
+  throw signal.reason instanceof Error ? signal.reason : new Error('CHANNEL_KEY_REQUEST_ABORTED');
 }
 
 /** Best-effort local hygiene after this device loses channel access. */
@@ -686,12 +759,13 @@ export async function deletePersistedChannelKeys(channelId: string): Promise<voi
   // fetch/import cannot return or persist after this point, even if its
   // network response wins the IndexedDB deletion race.
   channelKeyScopes.invalidate(channelId);
-  const previous = channelKeyDeletionQueues.get(channelId) || Promise.resolve();
-  const deletion = previous.catch(() => undefined).then(async () => {
+  const existing = channelKeyDeletionQueues.get(channelId);
+  if (existing) return existing;
+  const deletion = (async () => {
     const device = getActiveDevice();
     const prefix = buildChannelStoragePrefix(device.userId, device.deviceId, channelId);
     await deletePersistedChannelKeysForPrefix(prefix);
-  });
+  })();
   channelKeyDeletionQueues.set(channelId, deletion);
   try {
     await deletion;

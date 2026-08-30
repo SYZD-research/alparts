@@ -16,7 +16,8 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
-import { eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
+import pg from 'pg';
 import {
   Permissions,
   serializeAttachmentEnvelope,
@@ -48,8 +49,15 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
     auditCheckpointPath = join(auditCheckpointDirectory, 'checkpoint.json');
     process.env.AUDIT_CHECKPOINT_PATH = auditCheckpointPath;
     process.env.AUDIT_CHECKPOINT_REQUIRED = 'true';
+    // The suite represents several independent clients but they all originate
+    // from the loopback test runner. Trust only that loopback reverse proxy and
+    // assign a stable documentation-range address per authenticated session so
+    // one client's production rate budget cannot mask a later assertion.
+    process.env.TRUSTED_PROXIES = '127.0.0.1';
     const auditModule = await import('../middleware/audit.js');
-    closeDb = (await import('../db/index.js')).closeDb;
+    const dbModule = await import('../db/index.js');
+    closeDb = dbModule.closeDb;
+    assert.equal(await dbModule.checkDatabaseSchema(), 14);
     verifyAuditChain = auditModule.verifyAuditChain;
     await auditModule.provisionAuditCheckpoint();
     const startupAudit = await verifyAuditChain();
@@ -139,31 +147,175 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
     });
     assert.equal(repeatedDeviceRegistration.status, 200);
     assert.equal((await json<{ id: string }>(repeatedDeviceRegistration)).id, firstRetryDevice.id);
+
+    // A workspace manager can legitimately create more than 64 provisional
+    // epochs that include an ordinary member. Those rows must not consume an
+    // account-global enrollment cap and prevent that member from recovering a
+    // device. Seed the exact database state directly so this regression test
+    // remains fast and independent of API rate limits.
+    const enrollmentDatabaseModule = await import('../db/index.js');
+    const enrollmentSchemaModule = await import('../db/schema.js');
+    const enrollmentFixtureChannels = await enrollmentDatabaseModule.db
+      .insert(enrollmentSchemaModule.channels)
+      .values(Array.from({ length: 65 }, (_, index) => ({
+        workspaceId: workspace.id,
+        name: `enrollment-pending-${index}`,
+        type: 'text',
+        isPrivate: false,
+      })))
+      .returning({ id: enrollmentSchemaModule.channels.id });
+    const enrollmentFixtureChannelIds = enrollmentFixtureChannels.map((channel) => channel.id);
+    await enrollmentDatabaseModule.db.insert(enrollmentSchemaModule.channelKeyEpochs).values(
+      enrollmentFixtureChannelIds.map((channelId) => ({
+        channelId,
+        version: 1,
+        protocolVersion: 2,
+        status: 'pending',
+        keyCommitment: 'A'.repeat(43),
+        distributorDeviceId: firstRetryDevice.id,
+      })),
+    );
+    await enrollmentDatabaseModule.db.insert(enrollmentSchemaModule.channelKeyEpochRecipients).values(
+      enrollmentFixtureChannelIds.map((channelId) => ({
+        channelId,
+        version: 1,
+        deviceId: firstRetryDevice.id,
+        userId: retryDeviceAccount.user.id,
+        requiredForActivation: true,
+      })),
+    );
+    await enrollmentDatabaseModule.db.insert(enrollmentSchemaModule.channelKeys).values(
+      enrollmentFixtureChannelIds.map((channelId) => ({
+        channelId,
+        version: 1,
+        encryptedKey: 'fixture',
+        deviceId: firstRetryDevice.id,
+        distributorDeviceId: firstRetryDevice.id,
+        signature: 'fixture',
+      })),
+    );
+
+    // Losing the only accepted device must not permanently wedge future
+    // writes. Recovery creates a new epoch without pretending old ciphertext
+    // is decryptable, and is separately visible in state and audit logs.
+    const recoveryWorkspaceResponse = await request('/api/workspaces', {
+      method: 'POST', cookie: retryDeviceAccount.cookie, body: { name: 'Sole holder recovery' },
+    });
+    assert.equal(recoveryWorkspaceResponse.status, 201);
+    const recoveryWorkspace = await json<{ id: string }>(recoveryWorkspaceResponse);
+    const recoveryChannels = await json<Array<{ id: string; type: string }>>(
+      await request(`/api/workspaces/${recoveryWorkspace.id}/channels`, { cookie: retryDeviceAccount.cookie }),
+    );
+    const recoveryChannel = recoveryChannels.find((channel) => channel.type !== 'dm');
+    assert.ok(recoveryChannel);
+    const soleRecipients = await json<{ recipients: Array<{ deviceId: string; identityKey: string }> }>(
+      await request(`/api/channels/${recoveryChannel.id}/key-recipients`, { cookie: retryDeviceAccount.cookie }),
+    );
+    assert.deepEqual(soleRecipients.recipients.map((recipient) => recipient.deviceId), [firstRetryDevice.id]);
+    await distributeAndAcknowledgeChannelKey({
+      channelId: recoveryChannel.id,
+      version: 1,
+      rawKey: randomBytes(32),
+      senderCookie: retryDeviceAccount.cookie,
+      senderKeys: retryDeviceKeys,
+      recipients: soleRecipients.recipients,
+      acknowledgements: [{
+        deviceId: firstRetryDevice.id,
+        cookie: retryDeviceAccount.cookie,
+        keys: retryDeviceKeys,
+      }],
+    });
+    const recoveryLogin = await request('/api/auth/login', {
+      method: 'POST',
+      body: { email: 'device-retry@example.test', password: 'Correct-Horse-Battery-10!' },
+    });
+    assert.equal(recoveryLogin.status, 200);
+    const recoveryCookie = recoveryLogin.headers.get('set-cookie')!.split(';', 1)[0];
     const postRevocationAttempt = await deviceRegistrationBody(
       retryDeviceAccount,
       retryDeviceKeys,
       'Retry identity',
+      recoveryCookie,
     );
     assert.equal((await request(`/api/devices/${firstRetryDevice.id}`, {
-      method: 'DELETE', cookie: retryDeviceAccount.cookie,
+      method: 'DELETE', cookie: recoveryCookie,
     })).status, 200);
     const revokedIdentityRetry = await request('/api/devices', {
       method: 'POST', cookie: retryDeviceAccount.cookie,
       body: postRevocationAttempt,
     });
     assert.equal(revokedIdentityRetry.status, 401, 'revoking the bound device invalidates its session');
-    const retryLogin = await request('/api/auth/login', {
-      method: 'POST',
-      body: { email: 'device-retry@example.test', password: 'Correct-Horse-Battery-10!' },
-    });
-    assert.equal(retryLogin.status, 200);
-    const retryLoginCookie = retryLogin.headers.get('set-cookie')!.split(';', 1)[0];
     const revokedIdentityWithFreshSession = await request('/api/devices', {
-      method: 'POST', cookie: retryLoginCookie,
-      body: await deviceRegistrationBody(retryDeviceAccount, retryDeviceKeys, 'Retry identity', retryLoginCookie),
+      method: 'POST', cookie: recoveryCookie, body: postRevocationAttempt,
     });
     assert.equal(revokedIdentityWithFreshSession.status, 409);
     assert.equal((await json<{ error: string }>(revokedIdentityWithFreshSession)).error, 'IDENTITY_REVOKED');
+    const recoveryKeys = deviceFixture();
+    const recoveryDevice = await registerDevice(
+      { ...retryDeviceAccount, cookie: recoveryCookie },
+      recoveryKeys,
+      'Recovery identity',
+    );
+    const enrollmentFixtureEpochs = await enrollmentDatabaseModule.db.query.channelKeyEpochs.findMany({
+      where: inArray(enrollmentSchemaModule.channelKeyEpochs.channelId, enrollmentFixtureChannelIds),
+    });
+    assert.equal(enrollmentFixtureEpochs.length, 65);
+    assert.equal(enrollmentFixtureEpochs.every((epoch) => epoch.status === 'aborted'), true);
+    assert.equal((await enrollmentDatabaseModule.db.query.channelKeyEpochRecipients.findMany({
+      where: inArray(enrollmentSchemaModule.channelKeyEpochRecipients.channelId, enrollmentFixtureChannelIds),
+    })).length, 0);
+    assert.equal((await enrollmentDatabaseModule.db.query.channelKeys.findMany({
+      where: inArray(enrollmentSchemaModule.channelKeys.channelId, enrollmentFixtureChannelIds),
+    })).length, 0);
+    await enrollmentDatabaseModule.db.delete(enrollmentSchemaModule.channelKeyEpochs)
+      .where(inArray(enrollmentSchemaModule.channelKeyEpochs.channelId, enrollmentFixtureChannelIds));
+    await enrollmentDatabaseModule.db.delete(enrollmentSchemaModule.channels)
+      .where(inArray(enrollmentSchemaModule.channels.id, enrollmentFixtureChannelIds));
+    const recoveryState = await json<{
+      historyRecoveryRequired: boolean;
+      rotationRequired: boolean;
+      canRotate: boolean;
+      recipients: Array<{ deviceId: string; identityKey: string }>;
+    }>(await request(`/api/channels/${recoveryChannel.id}/key-recipients`, { cookie: recoveryCookie }));
+    assert.equal(recoveryState.historyRecoveryRequired, true);
+    assert.equal(recoveryState.rotationRequired, true);
+    assert.equal(recoveryState.canRotate, true);
+    assert.deepEqual(recoveryState.recipients.map((recipient) => recipient.deviceId), [recoveryDevice.id]);
+    const recoveredChannelKey = randomBytes(32);
+    await distributeAndAcknowledgeChannelKey({
+      channelId: recoveryChannel.id,
+      version: 2,
+      rawKey: recoveredChannelKey,
+      senderCookie: recoveryCookie,
+      senderKeys: recoveryKeys,
+      recipients: recoveryState.recipients,
+      acknowledgements: [{ deviceId: recoveryDevice.id, cookie: recoveryCookie, keys: recoveryKeys }],
+    });
+    const recoveredWrite = await request(`/api/channels/${recoveryChannel.id}/messages`, {
+      method: 'POST', cookie: recoveryCookie,
+      body: encryptedMessage(
+        recoveryChannel.id,
+        retryDeviceAccount.user.id,
+        recoveryDevice.id,
+        recoveryKeys.signingPrivateKey,
+        recoveredChannelKey,
+        'future writes survive total key-holder loss',
+        undefined,
+        2,
+      ).body,
+    });
+    assert.equal(recoveredWrite.status, 201);
+    const recoveryAudit = await json<{ data: Array<{ action: string }> }>(await request(
+      `/api/workspaces/${recoveryWorkspace.id}/audit-logs?limit=100`,
+      { method: 'POST', cookie: recoveryCookie, body: {} },
+    ));
+    assert.equal(recoveryAudit.data.some((entry) => entry.action === 'channel.key.epoch.recovery.propose'), true);
+    // Keep this account from becoming an unintended recipient in the shared
+    // workspace scenarios below. Self-revocation also proves that the newly
+    // recovered epoch remains subject to the same fail-closed holder-loss rule.
+    assert.equal((await request(`/api/devices/${recoveryDevice.id}`, {
+      method: 'DELETE', cookie: recoveryCookie,
+    })).status, 200);
 
     const outsiderWorkspaceResponse = await request('/api/workspaces', {
       method: 'POST', cookie: alice.cookie, body: { name: 'Outsider Test' },
@@ -217,6 +369,10 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
     assert.equal(dmResponse.status, 201);
     const dm = await json<{ channelId: string; members: Array<{ id: string }> }>(dmResponse);
     assert.deepEqual(new Set(dm.members.map((member) => member.id)), new Set([alice.user.id, bob.user.id]));
+    const replayedDm = await json<{ channelId: string }>(await request(`/api/workspaces/${workspace.id}/dms`, {
+      method: 'POST', cookie: alice.cookie, body: { memberIds: [bob.user.id] },
+    }));
+    assert.equal(replayedDm.channelId, dm.channelId, 'the bulk snapshot reuses the exact normalized DM member set');
     assert.equal((await request(`/api/channels/${dm.channelId}`, {
       method: 'PUT', cookie: alice.cookie, body: { isPrivate: false },
     })).status, 404);
@@ -639,6 +795,186 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
         { deviceId: bobDevice.id, cookie: bob.cookie, keys: bobKeys },
       ],
     });
+
+    // Revocation must remain constant-work with respect to device history and
+    // must fail closed at each channel's bounded active-recipient boundary.
+    const secondaryLogin = await request('/api/auth/login', {
+      method: 'POST',
+      body: { email: 'alice@example.test', password: alice.password },
+    });
+    assert.equal(secondaryLogin.status, 200);
+    const secondaryCookie = secondaryLogin.headers.get('set-cookie')!.split(';', 1)[0];
+    const secondaryKeys = deviceFixture();
+    const secondaryDevice = await registerDevice(
+      { ...alice, cookie: secondaryCookie },
+      secondaryKeys,
+      'Alice revocation boundary device',
+    );
+    const revocationChannelResponse = await request(`/api/workspaces/${workspace.id}/channels`, {
+      method: 'POST', cookie: alice.cookie, body: { name: 'revocation-boundary' },
+    });
+    assert.equal(revocationChannelResponse.status, 201);
+    const revocationChannel = await json<{ id: string }>(revocationChannelResponse);
+    const revocationRecipients = await json<{
+      recipients: Array<{ deviceId: string; identityKey: string }>;
+    }>(await request(`/api/channels/${revocationChannel.id}/key-recipients`, { cookie: alice.cookie }));
+    assert.equal(revocationRecipients.recipients.some((entry) => entry.deviceId === secondaryDevice.id), true);
+    const revocationChannelKey = randomBytes(32);
+    await distributeAndAcknowledgeChannelKey({
+      channelId: revocationChannel.id,
+      version: 1,
+      rawKey: revocationChannelKey,
+      senderCookie: alice.cookie,
+      senderKeys: aliceKeys,
+      recipients: revocationRecipients.recipients,
+      acknowledgements: [
+        { deviceId: aliceDevice.id, cookie: alice.cookie, keys: aliceKeys },
+        { deviceId: secondaryDevice.id, cookie: secondaryCookie, keys: secondaryKeys },
+        { deviceId: bobDevice.id, cookie: bob.cookie, keys: bobKeys },
+      ],
+    });
+    const pendingRevocationChannelResponse = await request(`/api/workspaces/${workspace.id}/channels`, {
+      method: 'POST', cookie: alice.cookie, body: { name: 'pending-revocation-boundary' },
+    });
+    assert.equal(pendingRevocationChannelResponse.status, 201);
+    const pendingRevocationChannel = await json<{ id: string }>(pendingRevocationChannelResponse);
+    const pendingRevocationRecipients = await json<{
+      recipients: Array<{ deviceId: string; identityKey: string }>;
+    }>(await request(`/api/channels/${pendingRevocationChannel.id}/key-recipients`, { cookie: alice.cookie }));
+    const pendingRevocationKey = randomBytes(32);
+    const pendingRevocationCommitment = createHash('sha256').update(pendingRevocationKey).digest('base64url');
+    const pendingRevocationWraps = pendingRevocationRecipients.recipients.map((recipient) => signedChannelKeyWrap({
+      channelId: pendingRevocationChannel.id,
+      version: 1,
+      keyCommitment: pendingRevocationCommitment,
+      rawKey: pendingRevocationKey,
+      recipient,
+      senderKeys: aliceKeys,
+    }));
+    assert.equal((await request(`/api/channels/${pendingRevocationChannel.id}/keys`, {
+      method: 'POST',
+      cookie: alice.cookie,
+      body: { version: 1, keyCommitment: pendingRevocationCommitment, keys: pendingRevocationWraps },
+    })).status, 201);
+    assert.equal((await request(`/api/devices/${secondaryDevice.id}`, {
+      method: 'DELETE', cookie: alice.cookie,
+    })).status, 200);
+    assert.equal((await request('/api/devices', { cookie: secondaryCookie })).status, 401);
+    const blockedAfterRecipientRevocation = await request(`/api/channels/${revocationChannel.id}/messages`, {
+      method: 'POST',
+      cookie: alice.cookie,
+      body: encryptedMessage(
+        revocationChannel.id,
+        alice.user.id,
+        aliceDevice.id,
+        aliceKeys.signingPrivateKey,
+        revocationChannelKey,
+        'must not be accepted after any active recipient is revoked',
+      ).body,
+    });
+    assert.equal(blockedAfterRecipientRevocation.status, 400);
+    const revocationState = await json<{
+      rotationRequired: boolean;
+      canRotate: boolean;
+      recipients: Array<{ deviceId: string }>;
+    }>(await request(`/api/channels/${revocationChannel.id}/key-recipients`, { cookie: alice.cookie }));
+    assert.equal(revocationState.rotationRequired, true);
+    assert.equal(revocationState.canRotate, true);
+    assert.equal(revocationState.recipients.some((entry) => entry.deviceId === secondaryDevice.id), false);
+    const postRevocationKey = randomBytes(32);
+    await distributeAndAcknowledgeChannelKey({
+      channelId: revocationChannel.id,
+      version: 2,
+      rawKey: postRevocationKey,
+      senderCookie: alice.cookie,
+      senderKeys: aliceKeys,
+      recipients: await json<{ recipients: Array<{ deviceId: string; identityKey: string }> }>(
+        await request(`/api/channels/${revocationChannel.id}/key-recipients`, { cookie: alice.cookie }),
+      ).then((state) => state.recipients),
+      acknowledgements: [
+        { deviceId: aliceDevice.id, cookie: alice.cookie, keys: aliceKeys },
+        { deviceId: bobDevice.id, cookie: bob.cookie, keys: bobKeys },
+      ],
+    });
+    const acceptedAfterRevocationRotation = await request(`/api/channels/${revocationChannel.id}/messages`, {
+      method: 'POST',
+      cookie: alice.cookie,
+      body: encryptedMessage(
+        revocationChannel.id,
+        alice.user.id,
+        aliceDevice.id,
+        aliceKeys.signingPrivateKey,
+        postRevocationKey,
+        'accepted after bounded revocation recovery',
+        undefined,
+        2,
+      ).body,
+    });
+    assert.equal(acceptedAfterRevocationRotation.status, 201);
+
+    const invalidPendingState = await json<{
+      pendingVersion: number | null;
+      pendingInvalid: boolean;
+      canAbortPending: boolean;
+    }>(await request(`/api/channels/${pendingRevocationChannel.id}/key-recipients`, { cookie: alice.cookie }));
+    assert.equal(invalidPendingState.pendingVersion, 1);
+    assert.equal(invalidPendingState.pendingInvalid, true);
+    assert.equal(invalidPendingState.canAbortPending, true);
+    const invalidPendingAbortSignature = sign('sha256', Buffer.from(serializeChannelKeyEpochAbort({
+      channelId: pendingRevocationChannel.id,
+      keyVersion: 1,
+      keyCommitment: pendingRevocationCommitment,
+      deviceId: aliceDevice.id,
+    })), {
+      key: aliceKeys.signingPrivateKey,
+      dsaEncoding: 'ieee-p1363',
+    }).toString('base64');
+    assert.equal((await request(`/api/channels/${pendingRevocationChannel.id}/keys/abort`, {
+      method: 'POST',
+      cookie: alice.cookie,
+      body: {
+        version: 1,
+        keyCommitment: pendingRevocationCommitment,
+        signature: invalidPendingAbortSignature,
+      },
+    })).status, 200);
+    const afterInvalidPendingAbort = await json<{ pendingVersion: number | null }>(
+      await request(`/api/channels/${pendingRevocationChannel.id}/key-recipients`, { cookie: alice.cookie }),
+    );
+    assert.equal(afterInvalidPendingAbort.pendingVersion, null);
+    assert.deepEqual(
+      await json<unknown[]>(await request(`/api/channels/${pendingRevocationChannel.id}/keys`, { cookie: alice.cookie })),
+      [],
+      'aborting an invalid pending epoch removes every provisional delivery',
+    );
+    const databaseModule = await import('../db/index.js');
+    const schemaModule = await import('../db/schema.js');
+    assert.equal((await databaseModule.db.query.channelKeys.findMany({
+      where: and(
+        eq(schemaModule.channelKeys.channelId, pendingRevocationChannel.id),
+        eq(schemaModule.channelKeys.version, 1),
+      ),
+    })).length, 0);
+    assert.equal((await databaseModule.db.query.channelKeyEpochRecipients.findMany({
+      where: and(
+        eq(schemaModule.channelKeyEpochRecipients.channelId, pendingRevocationChannel.id),
+        eq(schemaModule.channelKeyEpochRecipients.version, 1),
+      ),
+    })).length, 0);
+    let revocationReplayDirtiedWorkspace = false;
+    const onRevocationReplayDirty = () => { revocationReplayDirtiedWorkspace = true; };
+    aliceSocket.on('workspace:key-state-dirty', onRevocationReplayDirty);
+    assert.equal((await request(`/api/devices/${secondaryDevice.id}`, {
+      method: 'DELETE', cookie: alice.cookie,
+    })).status, 200, 'revocation replay remains idempotent and repairs stale sessions');
+    await delay(75);
+    aliceSocket.off('workspace:key-state-dirty', onRevocationReplayDirty);
+    assert.equal(
+      revocationReplayDirtiedWorkspace,
+      false,
+      'an idempotent revocation replay does not broadcast redundant workspace key dirtiness',
+    );
+
     const aliceRecipient = recipients.recipients.find((recipient) => recipient.deviceId === aliceDevice.id);
     assert.ok(aliceRecipient);
     const poisonEncryptedKey = wrapKey(randomBytes(32), aliceRecipient.identityKey);
@@ -2006,7 +2342,11 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
       false,
       'revoking a former member device must not stale the current epoch',
     );
-    const historicalDirectoryResponse = await request(`/api/channels/${channelId}/device-directory`, { cookie: alice.cookie });
+    const historicalIds = encodeURIComponent([bobDevice.id, attachmentOnlyDevice.id, randomUUID()].join(','));
+    const historicalDirectoryResponse = await request(
+      `/api/channels/${channelId}/device-directory?ids=${historicalIds}`,
+      { cookie: alice.cookie },
+    );
     assert.equal(historicalDirectoryResponse.status, 200);
     const historicalDirectory = await json<Array<{ deviceId: string }>>(historicalDirectoryResponse);
     assert.equal(
@@ -2019,6 +2359,78 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
       true,
       'attachment-only historical signer keys remain available after revocation and membership loss',
     );
+    assert.equal(historicalDirectory.length, 2, 'unreferenced requested device IDs are not disclosed');
+    const legacyDirectoryResponse = await request(
+      `/api/channels/${channelId}/device-directory`,
+      { cookie: alice.cookie },
+    );
+    assert.equal(legacyDirectoryResponse.headers.get('deprecation'), 'true');
+    const legacyDirectory = await json<Array<{ deviceId: string }>>(legacyDirectoryResponse);
+    assert.equal(legacyDirectory.some((device) => device.deviceId === aliceDevice.id), true);
+    assert.equal(legacyDirectory.some((device) => device.deviceId === bobDevice.id), true);
+    assert.equal(legacyDirectory.some((device) => device.deviceId === attachmentOnlyDevice.id), true);
+    const currentKeyDeliveries = await json<Array<{ version: number; epochStatus: string }>>(
+      await request(`/api/channels/${channelId}/keys?scope=current`, { cookie: alice.cookie }),
+    );
+    assert.equal(currentKeyDeliveries.length > 0, true);
+    assert.equal(currentKeyDeliveries.every((delivery) => delivery.version === 3 && delivery.epochStatus === 'active'), true);
+    const legacyKeyResponse = await request(`/api/channels/${channelId}/keys`, { cookie: alice.cookie });
+    assert.equal(legacyKeyResponse.headers.get('deprecation'), 'true');
+    const legacyKeyDeliveries = await json<Array<{ version: number; epochStatus: string }>>(legacyKeyResponse);
+    assert.equal(legacyKeyDeliveries.some((delivery) => delivery.version === 1), true);
+    assert.equal(legacyKeyDeliveries.some((delivery) => delivery.version === 2), true);
+    assert.equal(legacyKeyDeliveries.some((delivery) => delivery.version === 3), true);
+    const retiredKeyDeliveries = await json<Array<{ version: number; epochStatus: string }>>(
+      await request(`/api/channels/${channelId}/keys?version=2`, { cookie: alice.cookie }),
+    );
+    assert.equal(retiredKeyDeliveries.length > 0, true);
+    assert.equal(retiredKeyDeliveries.every((delivery) => delivery.version === 2 && delivery.epochStatus === 'retired'), true);
+    const batchedHistoricalDeliveries = await json<Array<{ version: number; epochStatus: string }>>(
+      await request(`/api/channels/${channelId}/keys?versions=1,2`, { cookie: alice.cookie }),
+    );
+    assert.equal(batchedHistoricalDeliveries.some((delivery) => delivery.version === 1), true);
+    assert.equal(batchedHistoricalDeliveries.some((delivery) => delivery.version === 2), true);
+    assert.equal(batchedHistoricalDeliveries.every((delivery) => [1, 2].includes(delivery.version)), true);
+    assert.equal((await request(`/api/channels/${channelId}/keys?versions=1,1`, {
+      cookie: alice.cookie,
+    })).status, 400);
+    assert.equal((await request(`/api/channels/${channelId}/keys?version=not-a-version`, {
+      cookie: alice.cookie,
+    })).status, 400);
+
+    const { db: auditDb } = await import('../db/index.js');
+    const { auditLogs: auditLogTable } = await import('../db/schema.js');
+    const expectedMessageAuditActions = [
+      'message.create',
+      'message.create.replay',
+      'message.edit',
+      'message.delete',
+      'message.delete.replay',
+      'message.reaction.add',
+      'message.reaction.remove',
+      'message.pin.add',
+      'channel.preference.update',
+      'message.bookmark.add',
+    ];
+    const messageAuditRows = await auditDb.select({
+      action: auditLogTable.action,
+      targetId: auditLogTable.targetId,
+      details: auditLogTable.details,
+    }).from(auditLogTable).where(inArray(auditLogTable.action, expectedMessageAuditActions));
+    const recordedActions = new Set(messageAuditRows.map((row) => row.action));
+    for (const action of expectedMessageAuditActions) assert.equal(recordedActions.has(action), true, action);
+    const createdMessageAudit = messageAuditRows.find((row) => (
+      row.action === 'message.create' && row.targetId === message.id
+    ));
+    assert.ok(createdMessageAudit);
+    const createdMessageAuditDetails = createdMessageAudit.details as Record<string, unknown>;
+    assert.equal(createdMessageAuditDetails.requestId, messageResponse.headers.get('x-request-id'));
+    assert.match(String(createdMessageAuditDetails.traceId), /^[a-f0-9]{32}$/);
+    const serializedMessageAudit = JSON.stringify(messageAuditRows);
+    assert.equal(serializedMessageAudit.includes('server must never see this plaintext'), false);
+    assert.equal(serializedMessageAudit.includes('👍'), false);
+    assert.equal(serializedMessageAudit.includes(messageRequest.body.signature), false);
+    assert.equal(serializedMessageAudit.includes(messageRequest.body.idempotencyKey), false);
 
     const disconnected = new Promise<void>((resolve) => aliceSocket.once('disconnect', () => resolve()));
     const logout = await request('/api/auth/logout', { method: 'POST', cookie: alice.cookie, body: {} });
@@ -2030,6 +2442,29 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
     const audit = await verifyAuditChain();
     assert.equal(audit.valid, true);
     assert.ok(audit.checked > 0);
+  });
+
+  it('fails the schema gate when the journal is intact but a catalog invariant is removed', async () => {
+    const client = new pg.Client({ connectionString: process.env.DATABASE_URL });
+    await client.connect();
+    try {
+      await client.query('begin');
+      await client.query('set local search_path = pg_catalog');
+      await client.query(
+        'alter table public.channel_keys drop constraint channel_keys_epoch_recipient_fk',
+      );
+      const catalog = await import('../db/schema-catalog.js');
+      const snapshot = await catalog.loadSchemaCatalogSnapshot(client);
+      assert.throws(
+        () => catalog.assertSchemaCatalogMatches(snapshot),
+        /DATABASE_SCHEMA_CATALOG_MISMATCH/,
+      );
+    } finally {
+      await client.query('rollback').catch(() => undefined);
+      await client.end();
+    }
+    const { checkDatabaseSchema } = await import('../db/index.js');
+    assert.equal(await checkDatabaseSchema(), 14);
   });
 
   it('never re-signs a shortened audit chain after the external checkpoint anchor is deleted', async () => {
@@ -2255,7 +2690,11 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
 
   async function request(path: string, options: { method?: string; cookie?: string; body?: unknown } = {}) {
     const headers: Record<string, string> = { Origin: 'http://localhost:5173' };
-    if (options.cookie) headers.Cookie = options.cookie;
+    if (options.cookie) {
+      headers.Cookie = options.cookie;
+      const addressSeed = createHash('sha256').update(options.cookie).digest();
+      headers['X-Forwarded-For'] = `198.18.${addressSeed[0]}.${addressSeed[1]}`;
+    }
     const rawBody = Buffer.isBuffer(options.body) ? options.body : null;
     if (options.body !== undefined) headers['Content-Type'] = rawBody ? 'application/octet-stream' : 'application/json';
     return fetch(`${baseUrl}${path}`, {
@@ -2314,8 +2753,9 @@ function encryptedMessage(
   key: Buffer,
   plaintext: string,
   idempotencyKey?: string,
+  keyVersion = 1,
 ) {
-  return encryptedCryptoEvent('message', channelId, null, authorId, deviceId, privateKey, key, plaintext, idempotencyKey);
+  return encryptedCryptoEvent('message', channelId, null, authorId, deviceId, privateKey, key, plaintext, idempotencyKey, keyVersion);
 }
 
 function encryptedEdit(
@@ -2340,6 +2780,7 @@ function encryptedCryptoEvent(
   key: Buffer,
   plaintext: string,
   requestedIdempotencyKey?: string,
+  keyVersion = 1,
 ) {
   const idempotencyKey = requestedIdempotencyKey ?? randomUUID();
   const nonce = randomBytes(12);
@@ -2348,7 +2789,7 @@ function encryptedCryptoEvent(
     channelId,
     authorId,
     deviceId,
-    keyVersion: 1,
+    keyVersion,
     idempotencyKey,
     refMessageId,
     broadcastMention: false,
@@ -2363,7 +2804,7 @@ function encryptedCryptoEvent(
       encryptedContent,
       contentNonce: envelope.contentNonce,
       deviceId,
-      keyVersion: 1,
+      keyVersion,
       idempotencyKey,
       broadcastMention: false,
       signature: signEnvelope(envelope, privateKey),

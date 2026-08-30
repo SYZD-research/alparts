@@ -3,6 +3,7 @@ import { config } from '../config/index.js';
 import { readCookie } from '../security/cookies.js';
 import { verifySessionToken } from '../security/session.js';
 import { updateLastActive } from '../services/device.service.js';
+import { setLogActor } from '../security/log-context.js';
 
 export interface AuthRequest extends Request {
   params: Record<string, string>;
@@ -34,6 +35,7 @@ async function authenticate(req: AuthRequest): Promise<boolean> {
   req.deviceId = session.deviceId;
   req.sessionTokenHash = session.tokenHash;
   req.authTransport = candidate.transport;
+  setLogActor(session.userId);
   if (session.deviceId) void updateLastActive(session.deviceId).catch(() => undefined);
   return true;
 }

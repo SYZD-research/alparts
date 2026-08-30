@@ -194,6 +194,10 @@ router.post('/messages/:id/pin', authMiddleware, requireMessagePermission(Permis
       res.status(403).json({ error: 'FORBIDDEN', message: 'Not authorized to pin', statusCode: 403 });
       return;
     }
+    if (error.message === 'PIN_LIMIT_REACHED') {
+      res.status(409).json({ error: 'PIN_LIMIT_REACHED', message: 'Channel pin limit reached', statusCode: 409 });
+      return;
+    }
     throw error;
   }
 });

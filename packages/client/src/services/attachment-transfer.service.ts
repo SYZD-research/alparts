@@ -17,6 +17,10 @@ import {
   unwrapAttachmentFileKey,
   validateAttachmentManifest,
 } from './attachment-crypto.service';
+import {
+  boundedBackoffDelayMs,
+  MAX_RETRY_ATTEMPTS,
+} from './fixed-request-retry';
 
 export interface AttachmentDownloadProgress {
   completedBytes: number;
@@ -58,6 +62,10 @@ export async function withTransientAttachmentRetry<T>(
   attempts = 4,
   baseDelayMs = 250,
 ): Promise<T> {
+  if (!Number.isSafeInteger(attempts) || attempts < 1 || attempts > MAX_RETRY_ATTEMPTS) {
+    throw new Error('Retry attempts are outside the supported range');
+  }
+  boundedBackoffDelayMs(0, baseDelayMs);
   let lastError: unknown;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     throwIfAborted(signal);
@@ -66,7 +74,7 @@ export async function withTransientAttachmentRetry<T>(
     } catch (error) {
       lastError = error;
       if (!isTransientAttachmentError(error) || attempt === attempts - 1) throw error;
-      await abortableDelay(baseDelayMs * (2 ** attempt), signal);
+      await abortableDelay(boundedBackoffDelayMs(attempt, baseDelayMs), signal);
     }
   }
   throw lastError;

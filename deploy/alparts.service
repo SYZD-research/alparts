@@ -24,15 +24,21 @@ Environment=JWT_SECRET_FILE=%d/jwt_secret
 Environment=AUDIT_INTEGRITY_KEY_FILE=%d/audit_integrity_key
 Environment=AUDIT_CHECKPOINT_PATH=/var/lib/alparts-audit/checkpoint.json
 Environment=AUDIT_CHECKPOINT_REQUIRED=true
+Environment=ALLOW_INSECURE_LOOPBACK_DEPENDENCIES=true
 ExecStart=/usr/bin/node /opt/alparts/packages/server/dist/index.js
 Restart=on-failure
 RestartSec=5s
 TimeoutStopSec=30s
 KillSignal=SIGTERM
+OOMPolicy=stop
+MemoryMax=1G
+TasksMax=256
+LimitNOFILE=65536
 
 NoNewPrivileges=yes
 PrivateTmp=yes
 PrivateDevices=yes
+DevicePolicy=closed
 ProtectSystem=strict
 ProtectHome=yes
 ProtectKernelTunables=yes
@@ -43,6 +49,9 @@ ProtectHostname=yes
 RestrictSUIDSGID=yes
 RestrictRealtime=yes
 RestrictNamespaces=yes
+ProtectProc=invisible
+ProcSubset=pid
+SystemCallArchitectures=native
 LockPersonality=yes
 CapabilityBoundingSet=
 AmbientCapabilities=

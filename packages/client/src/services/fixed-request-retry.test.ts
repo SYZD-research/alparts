@@ -1,7 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
-import { retryFixedRequest } from './fixed-request-retry';
+import { boundedBackoffDelayMs, retryFixedRequest } from './fixed-request-retry';
 
 describe('retryFixedRequest', () => {
+  it('uses capped exponential backoff with bounded jitter', () => {
+    expect(boundedBackoffDelayMs(0, 1_000, () => 0)).toBe(500);
+    expect(boundedBackoffDelayMs(2, 1_000, () => 1)).toBe(4_000);
+    expect(boundedBackoffDelayMs(8, 30_000, () => 1)).toBe(30_000);
+    expect(() => boundedBackoffDelayMs(0, 30_001)).toThrow('outside the supported range');
+  });
+
   it('reuses the identical signed envelope after a response-loss error', async () => {
     const request = Object.freeze({
       encryptedContent: 'ciphertext',

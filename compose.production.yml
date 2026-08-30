@@ -1,0 +1,109 @@
+# Single-host production application profile. PostgreSQL and S3-compatible
+# storage are external dependencies so operators can choose local durable
+# services or managed/clustered endpoints without changing the application.
+# The reverse proxy is expected to terminate public TLS; the host port remains
+# loopback-only by default.
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: alparts:${ALPARTS_IMAGE_TAG:?set ALPARTS_IMAGE_TAG to an immutable release identifier}
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 35s
+    ports:
+      - "127.0.0.1:${ALPARTS_HOST_PORT:-3000}:3000"
+    environment:
+      NODE_ENV: production
+      BIND_HOST: 0.0.0.0
+      PORT: 3000
+      DATABASE_URL_FILE: /run/secrets/database_url
+      DB_SSL: ${DB_SSL:-true}
+      DB_POOL_MAX: ${DB_POOL_MAX:-10}
+      DB_CONNECT_TIMEOUT_MS: ${DB_CONNECT_TIMEOUT_MS:-5000}
+      DB_STATEMENT_TIMEOUT_MS: ${DB_STATEMENT_TIMEOUT_MS:-15000}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT:?set the TLS object-storage endpoint}
+      MINIO_PORT: ${MINIO_PORT:-443}
+      MINIO_USE_SSL: ${MINIO_USE_SSL:-true}
+      MINIO_BUCKET: ${MINIO_BUCKET:-alparts}
+      MINIO_REQUEST_TIMEOUT_MS: ${MINIO_REQUEST_TIMEOUT_MS:-10000}
+      MINIO_ACCESS_KEY_FILE: /run/secrets/minio_access_key
+      MINIO_SECRET_KEY_FILE: /run/secrets/minio_secret_key
+      JWT_SECRET_FILE: /run/secrets/jwt_secret
+      AUDIT_INTEGRITY_KEY_FILE: /run/secrets/audit_integrity_key
+      AUDIT_CHECKPOINT_PATH: /var/lib/alparts-audit/checkpoint.json
+      AUDIT_CHECKPOINT_REQUIRED: "true"
+      CORS_ORIGINS: ${CORS_ORIGINS:?set the exact public HTTPS origin}
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-}
+      METRICS_ENABLED: ${METRICS_ENABLED:-false}
+      METRICS_TOKEN_FILE: /run/secrets/metrics_token
+    secrets:
+      - database_url
+      - minio_access_key
+      - minio_secret_key
+      - jwt_secret
+      - audit_integrity_key
+      - metrics_token
+    volumes:
+      - audit_checkpoint:/var/lib/alparts-audit
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: ${ALPARTS_MEMORY_LIMIT:-1g}
+    cpus: ${ALPARTS_CPU_LIMIT:-2.0}
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+
+  migrator:
+    image: alparts:${ALPARTS_IMAGE_TAG:?set ALPARTS_IMAGE_TAG to an immutable release identifier}
+    profiles: ["operations"]
+    restart: "no"
+    command: ["node", "packages/server/dist/scripts/migrate-runtime.js"]
+    environment:
+      NODE_ENV: production
+      DATABASE_URL_FILE: /run/secrets/migration_database_url
+      DB_SSL: ${DB_SSL:-true}
+      DB_CONNECT_TIMEOUT_MS: ${DB_CONNECT_TIMEOUT_MS:-5000}
+      DB_STATEMENT_TIMEOUT_MS: ${DB_STATEMENT_TIMEOUT_MS:-15000}
+      ALLOW_INSECURE_LOOPBACK_DEPENDENCIES: ${ALLOW_INSECURE_LOOPBACK_DEPENDENCIES:-false}
+    secrets:
+      - migration_database_url
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    mem_limit: 256m
+    cpus: 1.0
+
+secrets:
+  database_url:
+    file: ${DATABASE_URL_SECRET_FILE:?set DATABASE_URL_SECRET_FILE}
+  minio_access_key:
+    file: ${MINIO_ACCESS_KEY_SECRET_FILE:?set MINIO_ACCESS_KEY_SECRET_FILE}
+  minio_secret_key:
+    file: ${MINIO_SECRET_KEY_SECRET_FILE:?set MINIO_SECRET_KEY_SECRET_FILE}
+  jwt_secret:
+    file: ${JWT_SECRET_SECRET_FILE:?set JWT_SECRET_SECRET_FILE}
+  audit_integrity_key:
+    file: ${AUDIT_INTEGRITY_KEY_SECRET_FILE:?set AUDIT_INTEGRITY_KEY_SECRET_FILE}
+  metrics_token:
+    file: ${METRICS_TOKEN_SECRET_FILE:?set METRICS_TOKEN_SECRET_FILE}
+  migration_database_url:
+    file: ${MIGRATION_DATABASE_URL_SECRET_FILE:?set MIGRATION_DATABASE_URL_SECRET_FILE}
+
+volumes:
+  audit_checkpoint:
