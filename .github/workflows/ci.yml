@@ -84,6 +84,7 @@ jobs:
           printf -v DATABASE_URL '%s://%s:%s@%s:%s/%s' \
             postgresql "$DATABASE_USER" "$DATABASE_PASSWORD" 127.0.0.1 5433 "$DATABASE_NAME"
           export DATABASE_URL
+          pnpm build:shared
           pnpm --filter @alparts/server build
           pnpm --filter @alparts/server db:migrate:runtime
           pnpm --filter @alparts/server db:migrate:runtime
