@@ -133,13 +133,13 @@ describe('attachment crypto protocol', () => {
       identityKey,
     )).toBe(false);
     expect(() => buildSignedAttachmentEnvelope(message, { ...attachment, channelId: null }))
-      .toThrow(/sender metadata/);
+      .toThrow(/ファイル情報/);
     expect(() => buildSignedAttachmentEnvelope(message, { ...attachment, keyVersion: 2 }))
-      .toThrow(/sender metadata/);
+      .toThrow(/ファイル情報/);
     expect(() => buildSignedAttachmentEnvelope(message, {
       ...attachment,
       signature: encodeCanonicalBase64(new Uint8Array(63)),
-    })).toThrow(/canonical base64/);
+    })).toThrow(/正しい形式のデータではありません/);
   });
 });
 
@@ -150,7 +150,7 @@ describe('attachment transfer policy', () => {
     expect(() => assertAttachmentReservationContract({
       ...reservation,
       crypto: { ...reservation.crypto, aadFormat: 'other' },
-    }, 42)).toThrow(/契約/);
+    }, 42)).toThrow(/取り決め/);
   });
 
   it('retries only transient transport statuses and recognizes revoked identities exactly', () => {

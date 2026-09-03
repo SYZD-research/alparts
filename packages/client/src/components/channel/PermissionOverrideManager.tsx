@@ -44,15 +44,15 @@ interface PendingOverrideAction {
 
 function overrideErrorMessage(error: unknown, fallback: string): string {
   if (error instanceof ApiError) {
-    if (error.status === 403) return 'この対象の権限overrideを管理できません。状態は変更されていません。';
-    if (error.status === 404) return '対象、ロール、またはoverrideが現在の閲覧範囲にありません。';
+    if (error.status === 403) return 'この対象の権限を管理できません。状態は変更されていません。';
+    if (error.status === 404) return '対象、ロール、または設定が現在の閲覧範囲にありません。';
     if (error.status === 409 && (error.code === 'STALE_PREVIEW' || error.code === 'STALE_OVERRIDE')) {
-      return '権限状態がpreview後に変更されました。最新の影響を再計算し、もう一度確認してください。';
+      return '確認中に権限状態が変更されました。最新の影響を確認し、もう一度保存してください。';
     }
-    if (error.status === 409) return 'Overrideが別の操作と競合しました。一覧を再読み込みしてください。';
+    if (error.status === 409) return 'この設定は別の操作と競合しました。一覧を再読み込みしてください。';
     if (error.status === 400) return '許可・拒否する権限の範囲を確認してください。';
   }
-  return error instanceof Error && error.message ? error.message : fallback;
+  return fallback;
 }
 
 export function PermissionOverrideManager({ workspaceId, channels, categories, members, onChanged }: Props) {
@@ -135,7 +135,7 @@ export function PermissionOverrideManager({ workspaceId, channels, categories, m
     } catch (caught) {
       if (request === overrideRequest.current) {
         setOverrides([]);
-        setError(overrideErrorMessage(caught, 'Override一覧を読み込めませんでした'));
+        setError(overrideErrorMessage(caught, '設定一覧を読み込めませんでした'));
       }
       throw caught;
     } finally {
@@ -178,7 +178,7 @@ export function PermissionOverrideManager({ workspaceId, channels, categories, m
     }).catch((caught: unknown) => {
       if (request === effectiveRequest.current) {
         setEffective(null);
-        setEffectiveError(overrideErrorMessage(caught, '実効チャンネル権限を読み込めませんでした'));
+        setEffectiveError(overrideErrorMessage(caught, '実際のチャンネル権限を読み込めませんでした'));
       }
     }).finally(() => {
       if (request === effectiveRequest.current) setEffectiveLoading(false);
@@ -214,11 +214,11 @@ export function PermissionOverrideManager({ workspaceId, channels, categories, m
         roleId: selectedRole.id,
         operation: input.operation,
       })) {
-        throw new Error('Override previewの対象が一致しません');
+        throw new Error('確認対象が一致しません');
       }
       setPending({ target, targetId, targetLabel, role: selectedRole, input, preview });
     } catch (caught) {
-      setError(overrideErrorMessage(caught, '変更の影響をpreviewできませんでした'));
+      setError(overrideErrorMessage(caught, '変更の影響を確認できませんでした'));
     } finally {
       setBusy(false);
     }
@@ -249,8 +249,8 @@ export function PermissionOverrideManager({ workspaceId, channels, categories, m
       }
       setPending(null);
       setNotice(action.input.operation === 'delete'
-        ? `ロール「${action.role.name}」のoverrideを削除しました。`
-        : `ロール「${action.role.name}」のoverrideを更新しました。`);
+        ? `ロール「${action.role.name}」の権限設定を削除しました。`
+        : `ロール「${action.role.name}」の権限設定を保存しました。`);
       await Promise.allSettled([
         loadOverrides(action.target, action.targetId),
         onChanged(),
@@ -269,14 +269,14 @@ export function PermissionOverrideManager({ workspaceId, channels, categories, m
             targetId: action.targetId,
             roleId: action.role.id,
             operation: action.input.operation,
-          })) throw new Error('再取得したOverride previewの対象が一致しません');
+          })) throw new Error('再取得した確認内容が一致しません');
           setPending({ ...action, preview });
-          setError(overrideErrorMessage(caught, 'Override previewを再計算しました'));
+          setError(overrideErrorMessage(caught, '権限設定の確認内容を最新に更新しました'));
         } catch (refreshError) {
-          setError(overrideErrorMessage(refreshError, '最新のoverride previewを再取得できませんでした'));
+          setError(overrideErrorMessage(refreshError, '最新の確認内容を再取得できませんでした'));
         }
       } else {
-        setError(overrideErrorMessage(caught, 'Overrideを変更できませんでした'));
+        setError(overrideErrorMessage(caught, '権限設定を変更できませんでした'));
       }
     } finally {
       setBusy(false);
@@ -337,17 +337,17 @@ export function PermissionOverrideManager({ workspaceId, channels, categories, m
         </div>
 
         {roles.some((role) => roleProtection(role) === 'owner') && (
-          <p className="text-xs text-discord-muted">Ownerはチャンネル権限が強制保護されるため、override対象から除外しています。</p>
+          <p className="text-xs text-discord-muted">所有者ロールは変更できません。</p>
         )}
 
         {!targetId || !selectedRole ? (
           <p role="status" className="rounded bg-discord-bg p-3 text-sm text-discord-muted">管理できる対象またはロールがありません。</p>
         ) : loading ? (
-          <p role="status" className="text-sm text-discord-muted">Override一覧を読み込み中…</p>
+          <p role="status" className="text-sm text-discord-muted">設定を読み込み中…</p>
         ) : (
           <>
             <fieldset className="rounded border border-discord-hover p-4">
-              <legend className="px-1 text-sm text-discord-text">各権限の効果</legend>
+              <legend className="px-1 text-sm text-discord-text">各権限の設定</legend>
               <div className="grid gap-3 md:grid-cols-2">
                 {channelScopedPermissions.map((permission) => {
                   const state = overridePermissionState(allowMask, denyMask, permission.value);
@@ -355,7 +355,7 @@ export function PermissionOverrideManager({ workspaceId, channels, categories, m
                     <label key={permission.name} className="flex items-center justify-between gap-3 rounded bg-discord-bg/60 px-3 py-2 text-sm text-discord-text">
                       <span>{permissionLabel(permission.name)}</span>
                       <select
-                        aria-label={`${permissionLabel(permission.name)}のoverride`}
+                        aria-label={`${permissionLabel(permission.name)}の設定`}
                         value={state}
                         onChange={(event) => updatePermission(permission.value, event.target.value as OverridePermissionState)}
                         className="rounded bg-discord-input px-2 py-1 text-xs"
@@ -373,7 +373,7 @@ export function PermissionOverrideManager({ workspaceId, channels, categories, m
 
             <div className="flex flex-wrap items-center justify-between gap-3">
               <p className="text-xs text-discord-muted">
-                {selectedOverride ? `保存済み revision ${selectedOverride.revision}` : 'このロールのoverrideは未作成です。'}
+                {selectedOverride ? '保存済み' : 'このロールの設定はまだありません。'}
               </p>
               <div className="flex gap-2">
                 {selectedOverride && (
@@ -382,14 +382,14 @@ export function PermissionOverrideManager({ workspaceId, channels, categories, m
                     onClick={() => void previewAction({ operation: 'delete', roleId: selectedRole.id })}
                     disabled={busy}
                     className="rounded px-3 py-2 text-sm text-discord-red hover:bg-discord-red/10 disabled:opacity-50"
-                  >削除の影響をpreview</button>
+                  >削除の影響を確認</button>
                 )}
                 <button
                   type="button"
                   onClick={() => void previewAction({ operation: 'upsert', roleId: selectedRole.id, allowMask, denyMask })}
                   disabled={busy || hasConflict || unchanged}
                   className="rounded bg-discord-accent px-4 py-2 text-sm text-white disabled:opacity-50"
-                >{busy ? 'Preview中…' : '変更の影響をpreview'}</button>
+                >{busy ? '確認中…' : '変更の影響を確認'}</button>
               </div>
             </div>
           </>
@@ -397,7 +397,7 @@ export function PermissionOverrideManager({ workspaceId, channels, categories, m
 
         {overrides.length > 0 && (
           <div>
-            <h4 className="text-sm font-medium text-white">保存済みoverride一覧</h4>
+            <h4 className="text-sm font-medium text-white">保存済みの設定一覧</h4>
             <ul className="mt-2 grid gap-2 md:grid-cols-2">
               {overrides.map((override) => {
                 const role = roles.find((candidate) => candidate.id === override.roleId);
@@ -409,7 +409,7 @@ export function PermissionOverrideManager({ workspaceId, channels, categories, m
                       className="flex w-full items-center justify-between rounded bg-discord-bg/60 px-3 py-2 text-left text-xs text-discord-text hover:bg-discord-hover"
                     >
                       <span>{role?.name || '不明なロール'}</span>
-                      <span className="text-discord-muted">許可 {bitCount(override.allowMask)} / 拒否 {bitCount(override.denyMask)} / r{override.revision}</span>
+                      <span className="text-discord-muted">許可 {bitCount(override.allowMask)} / 拒否 {bitCount(override.denyMask)}</span>
                     </button>
                   </li>
                 );
@@ -459,22 +459,22 @@ function OverrideConfirmation({ pending, members, channels, busy, notice, onConf
   return (
     <section role="alertdialog" aria-modal="true" aria-labelledby="override-preview-title" onKeyDown={onKeyDown} className="space-y-4 rounded border border-yellow-500/50 bg-discord-bg/50 p-5">
       <div>
-        <p className="text-xs font-bold uppercase tracking-wide text-yellow-300">Override変更の確認</p>
+        <p className="text-xs font-bold uppercase tracking-wide text-yellow-300">権限設定の確認</p>
         <h3 id="override-preview-title" className="mt-1 text-lg font-semibold text-white">
           {pending.target === 'category' ? 'カテゴリー' : 'チャンネル'}「{pending.targetLabel}」 / {pending.role.name}
         </h3>
-        <p className="mt-1 text-sm text-discord-muted">実行時はこのpreviewのoverride revisionと認可revisionの両方が一致する場合のみcommitされます。</p>
+        <p className="mt-1 text-sm text-discord-muted">保存時に他の管理者の変更と競合した場合は、最新の状態を確認してからやり直します。</p>
       </div>
       {notice && <p role="alert" className="rounded bg-yellow-500/10 p-3 text-sm text-yellow-200">{notice}</p>}
       <dl className="grid gap-2 text-sm sm:grid-cols-4">
-        <PreviewMetric label="可視性変化channel" value={summary.affectedChannels} />
-        <PreviewMetric label="閲覧喪失user" value={summary.losingUsers} danger={summary.losingUsers > 0} />
-        <PreviewMetric label="閲覧獲得user" value={summary.gainingUsers} />
-        <PreviewMetric label="再鍵必要channel" value={summary.rotationChannels} danger={summary.rotationChannels > 0} />
+        <PreviewMetric label="影響を受けるチャンネル" value={summary.affectedChannels} />
+        <PreviewMetric label="閲覧できなくなる人" value={summary.losingUsers} danger={summary.losingUsers > 0} />
+        <PreviewMetric label="閲覧できるようになる人" value={summary.gainingUsers} />
+        <PreviewMetric label="一時的に送信できない可能性があるチャンネル" value={summary.rotationChannels} danger={summary.rotationChannels > 0} />
       </dl>
       <div className="grid gap-3 text-xs md:grid-cols-2">
         <div className="rounded bg-discord-sidebar p-3 text-discord-muted">
-          <p className="font-medium text-white">変更前（revision {pending.preview.currentRevision}）</p>
+          <p className="font-medium text-white">変更前</p>
           <p className="mt-2">許可: {namesForMask(before?.allowMask || 0)}</p>
           <p className="mt-1">拒否: {namesForMask(before?.denyMask || 0)}</p>
         </div>
@@ -482,17 +482,17 @@ function OverrideConfirmation({ pending, members, channels, busy, notice, onConf
           <p className="font-medium text-white">変更後</p>
           <p className="mt-2">許可: {namesForMask(after?.allowMask || 0)}</p>
           <p className="mt-1">拒否: {namesForMask(after?.denyMask || 0)}</p>
-          {pending.input.operation === 'delete' && <p className="mt-1 text-yellow-200">Overrideを削除し、上位設定を継承します。</p>}
+          {pending.input.operation === 'delete' && <p className="mt-1 text-yellow-200">この設定を削除し、上位の設定を引き継ぎます。</p>}
         </div>
       </div>
       {pending.preview.roomEffects.length > 0 && (
-        <ul className="max-h-52 space-y-2 overflow-y-auto" aria-label="チャンネルごとの閲覧者影響">
+        <ul className="max-h-52 space-y-2 overflow-y-auto" aria-label="チャンネルごとの閲覧者への影響">
           {pending.preview.roomEffects.map((effect) => (
             <li key={effect.channelId} className="rounded bg-discord-sidebar p-3 text-xs text-discord-muted">
               <p className="font-medium text-white">{channels.find((channel) => channel.id === effect.channelId)?.name || effect.channelId}</p>
-              <p className="mt-1 text-discord-red">喪失: {memberNames(effect.lostUserIds, members)}</p>
-              <p className="mt-1 text-green-300">獲得: {memberNames(effect.gainedUserIds, members)}</p>
-              {effect.rotationRequired && <p className="mt-1 text-yellow-200">閲覧喪失により鍵ローテーションが必要です。</p>}
+              <p className="mt-1 text-discord-red">閲覧できなくなる人: {memberNames(effect.lostUserIds, members)}</p>
+              <p className="mt-1 text-green-300">閲覧できるようになる人: {memberNames(effect.gainedUserIds, members)}</p>
+              {effect.rotationRequired && <p className="mt-1 text-yellow-200">変更後、しばらくメッセージを送信できない場合があります。</p>}
             </li>
           ))}
         </ul>
@@ -500,7 +500,7 @@ function OverrideConfirmation({ pending, members, channels, busy, notice, onConf
       <div className="flex justify-end gap-2">
         <button autoFocus type="button" onClick={onCancel} disabled={busy} className="rounded px-4 py-2 text-sm text-discord-muted hover:bg-discord-hover disabled:opacity-50">キャンセル</button>
         <button type="button" onClick={onConfirm} disabled={busy} className={`rounded px-4 py-2 text-sm text-white disabled:opacity-50 ${pending.input.operation === 'delete' || summary.losingUsers > 0 ? 'bg-discord-red' : 'bg-discord-accent'}`}>
-          {busy ? '実行中…' : 'Preview内容で実行'}
+          {busy ? '実行中…' : 'この内容で保存'}
         </button>
       </div>
     </section>
@@ -525,8 +525,8 @@ function EffectiveChannelPermissions({ channels, members, channelId, userId, eva
   return (
     <section aria-labelledby="channel-effective-title" className="space-y-4 border-t border-discord-hover pt-6">
       <div>
-        <h3 id="channel-effective-title" className="font-semibold text-white">実効チャンネル権限と理由</h3>
-        <p className="mt-1 text-sm text-discord-muted">ワークスペースロール、カテゴリー、チャンネルoverride、privateメンバーシップを合成したserver判定です。</p>
+        <h3 id="channel-effective-title" className="font-semibold text-white">メンバーごとの実際の権限</h3>
+        <p className="mt-1 text-sm text-discord-muted">ロール、カテゴリー、チャンネル、非公開メンバーの設定を反映した権限です。</p>
       </div>
       <div className="grid gap-3 md:grid-cols-2">
         <label className="text-sm text-discord-text">チャンネル
@@ -540,14 +540,14 @@ function EffectiveChannelPermissions({ channels, members, channelId, userId, eva
           </select>
         </label>
       </div>
-      {loading && <p role="status" className="text-sm text-discord-muted">実効権限を計算中…</p>}
+      {loading && <p role="status" className="text-sm text-discord-muted">権限を計算中…</p>}
       {error && <p role="alert" className="text-sm text-discord-red">{error}</p>}
       {evaluation && !loading && (
         <div className="space-y-3">
           <p className={`rounded p-3 text-sm ${evaluation.visible ? 'bg-green-500/10 text-green-300' : 'bg-discord-red/10 text-discord-red'}`}>
             {evaluation.visible ? '閲覧可能' : '閲覧不可'}
-            {evaluation.privateMembershipRequired && !evaluation.privateMember ? '（privateメンバーではありません）' : ''}
-            {evaluation.ownerProtected ? '（Owner保護）' : ''}
+            {evaluation.privateMembershipRequired && !evaluation.privateMember ? '（非公開メンバーではありません）' : ''}
+            {evaluation.ownerProtected ? '（所有者）' : ''}
           </p>
           <ul className="grid gap-2 md:grid-cols-2">
             {evaluation.permissionDetails.map((detail) => (

@@ -44,6 +44,35 @@ export interface ChannelKey {
   version: number;
 }
 
+export const CHANNEL_KEY_ACTIVATION_PENDING = 'CHANNEL_KEY_ACTIVATION_PENDING';
+
+/**
+ * The candidate key is valid, but the server cannot activate it until every
+ * frozen recipient device has acknowledged its exact delivery. This is an
+ * availability state, not evidence of a cryptographic failure.
+ */
+export class ChannelKeyActivationPendingError extends Error {
+  readonly code = CHANNEL_KEY_ACTIVATION_PENDING;
+
+  constructor(readonly remainingDeviceCount: number) {
+    super(
+      remainingDeviceCount > 0
+        ? `暗号化キーを準備しています（あと${remainingDeviceCount}台の端末を確認待ち）`
+        : '暗号化キーを準備しています',
+    );
+    this.name = 'ChannelKeyActivationPendingError';
+  }
+}
+
+export function isChannelKeyActivationPendingError(
+  error: unknown,
+): error is ChannelKeyActivationPendingError {
+  return error instanceof ChannelKeyActivationPendingError
+    || (typeof error === 'object'
+      && error !== null
+      && (error as { code?: unknown }).code === CHANNEL_KEY_ACTIVATION_PENDING);
+}
+
 const MAX_KEY_RECONCILIATION_ATTEMPTS = 6;
 
 interface LoadedChannelKeyDelivery {
@@ -378,7 +407,7 @@ async function ensureChannelKeyAttempt(
         // this device already supplied its one repair candidate.
         if (!(error instanceof ApiError && error.status === 409)) throw error;
       }
-      throw new Error('Channel key activation is waiting for recipient acknowledgements');
+      throw new ChannelKeyActivationPendingError(missing.length);
     }
 
     if (state.rotationRequired || state.currentVersion === 0) {

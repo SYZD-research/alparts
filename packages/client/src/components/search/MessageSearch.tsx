@@ -48,7 +48,7 @@ export function MessageSearch() {
         type="button"
         onClick={() => setIsOpen(true)}
         className="fixed right-4 top-2 z-30 rounded bg-discord-input px-3 py-1 text-xs text-discord-muted hover:text-discord-text"
-        aria-label="読み込み済みメッセージを検索"
+        aria-label="メッセージを検索"
       >
         検索 <span className="ml-2 opacity-70">Ctrl/⌘ K</span>
       </button>
@@ -57,7 +57,7 @@ export function MessageSearch() {
           className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 px-4 pt-[10vh]"
           role="dialog"
           aria-modal="true"
-          aria-label="読み込み済みメッセージを検索"
+          aria-label="メッセージを検索"
           onMouseDown={(event) => {
             if (event.target === event.currentTarget) setIsOpen(false);
           }}
@@ -69,14 +69,13 @@ export function MessageSearch() {
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
                 className="w-full rounded bg-discord-input px-4 py-3 text-discord-text outline-none focus:ring-1 focus:ring-discord-accent"
-                placeholder="この端末で読み込み済みのメッセージを検索"
+                placeholder="メッセージを検索"
                 aria-label="検索語"
               />
-              <p className="mt-2 text-xs text-discord-muted">検索語や復号済み本文はサーバーへ送信されません。</p>
             </div>
             <div className="overflow-y-auto p-2">
               {query.trim() && results.length === 0 && (
-                <p className="p-6 text-center text-sm text-discord-muted">読み込み済みメッセージに一致しません</p>
+                <p className="p-6 text-center text-sm text-discord-muted">一致するメッセージがありません</p>
               )}
               {!query.trim() && (
                 <p className="p-6 text-center text-sm text-discord-muted">本文、投稿者、チャンネル名で検索できます</p>

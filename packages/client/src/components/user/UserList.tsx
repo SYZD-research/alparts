@@ -14,7 +14,7 @@ export function UserList() {
   const offlineMembers = members.filter(m => statuses[m.userId] === 'offline' || !statuses[m.userId]);
 
   return (
-    <div className="w-60 bg-discord-sidebar overflow-y-auto flex-shrink-0">
+    <div className="h-full w-full bg-discord-sidebar overflow-y-auto">
       <div className="px-4 pt-6">
         {/* Online members */}
         {onlineMembers.length > 0 && (

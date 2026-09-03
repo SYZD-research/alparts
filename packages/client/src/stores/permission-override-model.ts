@@ -59,7 +59,7 @@ export function validateOverrideMasks(allowMask: number, denyMask: number): stri
     || denyMask < 0
     || (allowMask & ~channelScopedPermissionMask) !== 0
     || (denyMask & ~channelScopedPermissionMask) !== 0
-  ) return 'チャンネルスコープ外の権限が含まれています。';
+  ) return 'この画面では変更できない権限が含まれています。もう一度読み込んでください。';
   if ((allowMask & denyMask) !== 0) return '同じ権限を許可と拒否の両方には設定できません。競合を解消してください。';
   return null;
 }
@@ -146,18 +146,18 @@ export function formatChannelPermissionReason(
   reason: ChannelPermissionReason,
   roleNames: ReadonlyMap<string, string>,
 ): string {
-  if (reason.source === 'workspace-owner' && reason.effect === 'allow') return 'Workspace Ownerによる保護';
+  if (reason.source === 'workspace-owner' && reason.effect === 'allow') return 'ワークスペースの所有者に許可されています';
   if (reason.source === 'role' && reason.effect === 'allow' && reason.roleId) {
     return `ロール「${reason.roleName || roleNames.get(reason.roleId) || '不明'}」が許可`;
   }
   if ((reason.source === 'category' || reason.source === 'channel')
     && (reason.effect === 'allow' || reason.effect === 'deny')
     && reason.roleId) {
-    const scope = reason.source === 'category' ? 'カテゴリー' : 'チャンネル';
+    const scope = reason.source === 'category' ? 'カテゴリーの設定' : 'チャンネルの設定';
     const effect = reason.effect === 'allow' ? '許可' : '拒否';
-    return `${scope} override（${roleNames.get(reason.roleId) || '不明なロール'}）が${effect}`;
+    return `${scope}（${roleNames.get(reason.roleId) || '不明なロール'}）が${effect}`;
   }
-  return '詳細を表示できないサーバー判定';
+  return '詳細を確認できません';
 }
 
 function assertPreviewRevisions(preview: PermissionOverridePreview): void {

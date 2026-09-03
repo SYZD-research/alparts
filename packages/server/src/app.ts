@@ -65,7 +65,9 @@ export function createApp() {
         formAction: ["'self'"],
         scriptSrc: ["'self'"],
         styleSrc: config.isProduction ? ["'self'"] : ["'self'", "'unsafe-inline'"],
-        imgSrc: ["'self'", 'data:'],
+        // Authenticated attachment previews are decrypted into short-lived
+        // local object URLs. Network image origins remain disallowed.
+        imgSrc: ["'self'", 'data:', 'blob:'],
         // The production SPA uses the same origin for both REST and Socket.IO.
         // Keeping this at self also prevents an injected script from opening an
         // arbitrary WebSocket as an exfiltration channel.

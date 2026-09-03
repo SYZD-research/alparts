@@ -40,7 +40,7 @@ export function EffectivePermissionsPanel({
     }).catch((loadError: unknown) => {
       if (generation === requestGeneration.current) {
         setEvaluation(null);
-        setError(managementErrorMessage(loadError, '実効権限を読み込めませんでした'));
+        setError(managementErrorMessage(loadError, '権限を読み込めませんでした'));
       }
     }).finally(() => {
       if (generation === requestGeneration.current) setLoading(false);
@@ -51,8 +51,8 @@ export function EffectivePermissionsPanel({
   return (
     <section className="space-y-4" aria-labelledby="effective-permissions-title">
       <div>
-        <h3 id="effective-permissions-title" className="font-semibold text-white">実効権限と付与理由</h3>
-        <p className="mt-1 text-sm text-discord-muted">複数ロールの権限を合成し、どのロールが各権限を許可しているかを表示します。</p>
+        <h3 id="effective-permissions-title" className="font-semibold text-white">権限と付与理由</h3>
+        <p className="mt-1 text-sm text-discord-muted">複数のロールを持つ場合の権限をまとめ、どのロールが各権限を許可しているかを表示します。</p>
       </div>
       <label className="block max-w-md text-sm text-discord-text">
         対象メンバー

@@ -31,7 +31,7 @@ let draftGeneration = 0;
 function errorMessage(error: unknown): string {
   return error instanceof Error && error.message
     ? error.message
-    : '暗号化した下書きを端末へ保存できませんでした';
+    : '下書きを端末へ保存できませんでした';
 }
 
 function nextDraftVersion(channelId: string): number {

@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useChannelStore } from '../../stores/channel.store';
 import { useMessageStore } from '../../stores/message.store';
 import { usePresenceStore } from '../../stores/presence.store';
@@ -16,7 +16,9 @@ export function ChatArea() {
   const activeChannelId = useChannelStore((state) => state.activeChannelId);
   const channel = useChannelStore((state) => state.channels.find((candidate) => candidate.id === state.activeChannelId));
   const loadMessages = useMessageStore((state) => state.loadMessages);
+  const reconcileChannelKey = useMessageStore((state) => state.reconcileChannelKey);
   const securityError = useMessageStore((state) => activeChannelId ? state.securityErrors[activeChannelId] : null);
+  const channelKeyPending = useMessageStore((state) => activeChannelId ? state.channelKeyPending[activeChannelId] : null);
   const operationError = useMessageStore((state) => activeChannelId ? state.operationErrors[activeChannelId] : null);
   const clearOperationError = useMessageStore((state) => state.clearOperationError);
   const typingUsers = usePresenceStore((state) => activeChannelId ? state.typingUsers[activeChannelId] : undefined);
@@ -27,6 +29,7 @@ export function ChatArea() {
     ? state.conversationsByWorkspace[activeWorkspaceId]?.find((conversation) => conversation.channelId === activeChannelId)
     : undefined);
   const openSavedMessages = useUiStore((state) => state.openSavedMessages);
+  const [isRetryingKey, setIsRetryingKey] = useState(false);
 
   useEffect(() => {
     if (activeChannelId) {
@@ -39,6 +42,23 @@ export function ChatArea() {
       };
     }
   }, [activeChannelId, loadMessages]);
+
+  useEffect(() => {
+    if (!activeChannelId || !channelKeyPending) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const retry = async () => {
+      await reconcileChannelKey(activeChannelId);
+      if (!cancelled && useMessageStore.getState().channelKeyPending[activeChannelId]) {
+        timer = setTimeout(() => { void retry(); }, 5_000);
+      }
+    };
+    timer = setTimeout(() => { void retry(); }, 2_000);
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [activeChannelId, channelKeyPending, reconcileChannelKey]);
 
   if (!activeChannelId) return null;
 
@@ -68,15 +88,38 @@ export function ChatArea() {
       <VoiceCallPanel channelId={activeChannelId} />
 
       {securityError ? (
-        <div role="alert" className="flex-1 flex items-center justify-center px-8 text-center text-discord-red">
-          安全な暗号鍵を準備できないため、このチャンネルは停止しました。{securityError}
+        <div role="alert" className="flex flex-1 flex-col items-center justify-center gap-3 px-8 text-center text-discord-red">
+          <p>このチャンネルを安全に表示できませんでした。</p>
+          <button
+            type="button"
+            onClick={() => { void loadMessages(activeChannelId); }}
+            className="rounded bg-discord-hover px-3 py-2 text-sm text-discord-text hover:text-white"
+          >
+            再試行
+          </button>
         </div>
       ) : (
         <>
           <MessageList channelId={activeChannelId} />
+          {channelKeyPending && (
+            <div role="status" className="mx-4 mb-2 flex items-center justify-between gap-3 rounded border border-discord-yellow/40 bg-discord-yellow/10 px-3 py-2 text-sm text-discord-yellow">
+              <span>メッセージを送信できるよう準備しています。しばらくお待ちください。</span>
+              <button
+                type="button"
+                disabled={isRetryingKey}
+                onClick={() => {
+                  setIsRetryingKey(true);
+                  void reconcileChannelKey(activeChannelId).finally(() => setIsRetryingKey(false));
+                }}
+                className="shrink-0 rounded px-2 py-1 underline hover:bg-discord-hover disabled:opacity-50"
+              >
+                {isRetryingKey ? '再試行中…' : '再試行'}
+              </button>
+            </div>
+          )}
           {operationError && (
             <div role="alert" className="mx-4 mb-2 flex items-center justify-between gap-3 rounded bg-discord-red/15 px-3 py-2 text-sm text-discord-red">
-              <span>{operationError}</span>
+              <span>操作を完了できませんでした。もう一度お試しください。</span>
               <button type="button" onClick={() => clearOperationError(activeChannelId)} className="underline">
                 閉じる
               </button>
@@ -85,7 +128,7 @@ export function ChatArea() {
           <div aria-live="polite" className="min-h-5 px-5 text-xs text-discord-muted">
             {typingNames.length > 0 ? `${typingNames.slice(0, 3).join('、')} が入力中…` : ''}
           </div>
-          <MessageInput channelId={activeChannelId} />
+          <MessageInput channelId={activeChannelId} sendDisabled={Boolean(channelKeyPending)} />
         </>
       )}
     </div>

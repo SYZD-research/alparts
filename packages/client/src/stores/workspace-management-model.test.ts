@@ -58,13 +58,13 @@ describe('workspace management model', () => {
 
   it('explains hierarchy and invariant failures without trusting server prose', () => {
     expect(managementErrorMessage({ status: 403 }, 'fallback')).toContain('階層');
-    expect(managementErrorMessage({ status: 409 }, 'fallback')).toContain('標準ロール');
+    expect(managementErrorMessage({ status: 409 }, 'fallback')).toContain('保護されたロール');
   });
 
   it('discards and refreshes only a stale authorization preview', () => {
     const stale = { status: 409, code: 'STALE_PREVIEW' };
     expect(roleMutationFailurePlan(stale)).toEqual({ discardPreview: true, refreshPreview: true });
-    expect(managementErrorMessage(stale, 'fallback')).toContain('再計算');
+    expect(managementErrorMessage(stale, 'fallback')).toContain('最新の影響を確認');
     expect(roleMutationFailurePlan({ status: 409, code: 'ROLE_CONFLICT' }))
       .toEqual({ discardPreview: true, refreshPreview: false });
   });

@@ -1,11 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Attachment, Message } from '@alparts/shared';
 import {
-  ATTACHMENT_FALLBACK_BLOB_LIMIT_BYTES,
   decryptAttachmentFilename,
   isDangerousAttachmentFilename,
 } from '../../services/attachment-crypto.service';
-import { downloadAttachment, type AttachmentDownloadProgress } from '../../services/attachment-transfer.service';
+import {
+  downloadAttachment,
+  loadAttachmentImagePreview,
+  type AttachmentDownloadProgress,
+} from '../../services/attachment-transfer.service';
+import {
+  ATTACHMENT_IMAGE_PREVIEW_MAX_BYTES,
+  canPreviewImage,
+  isPreviewableImageMimeType,
+} from '../../services/attachment-preview';
+import { Dialog } from '../ui/Dialog';
 
 interface Props {
   attachment: Attachment;
@@ -27,7 +36,15 @@ export function AttachmentItem({ attachment, message }: Props) {
   const [downloadState, setDownloadState] = useState<'idle' | 'downloading' | 'saved' | 'error'>('idle');
   const [downloadError, setDownloadError] = useState<string | null>(null);
   const [progress, setProgress] = useState(EMPTY_PROGRESS);
+  const [previewState, setPreviewState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
+  const [previewProgress, setPreviewProgress] = useState(EMPTY_PROGRESS);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [previewAttempt, setPreviewAttempt] = useState(0);
+  const [isPreviewOpen, setIsPreviewOpen] = useState(false);
   const controllerRef = useRef<AbortController | null>(null);
+  const previewControllerRef = useRef<AbortController | null>(null);
+  const attachmentIdentity = attachmentSecurityIdentity(attachment);
 
   useEffect(() => {
     let disposed = false;
@@ -41,22 +58,90 @@ export function AttachmentItem({ attachment, message }: Props) {
         setFilename(decrypted);
       }
     }).catch(() => {
-      if (!disposed) setFilenameError('ファイル名を安全に復号・検証できません');
+      if (!disposed) setFilenameError('ファイル名を確認できません');
     });
     return () => {
       disposed = true;
       controllerRef.current?.abort();
+      previewControllerRef.current?.abort();
     };
-  }, [attachment, message.authorId, message.channelId, message.id, message.keyVersion]);
+  }, [attachmentIdentity, message.authorId, message.channelId, message.id, message.keyVersion]);
 
   const dangerousFilename = useMemo(
     () => Boolean(filename && isDangerousAttachmentFilename(filename)),
     [filename],
   );
   const dangerous = metadataVerified && (attachment.dangerousMime || dangerousFilename);
+  const previewEligible = Boolean(
+    metadataVerified
+    && filename
+    && !dangerous
+    && canPreviewImage(attachment.mimeType, attachment.cryptoManifest.plaintextSize),
+  );
   const percentage = progress.totalBytes > 0
     ? Math.min(100, Math.round((progress.completedBytes / progress.totalBytes) * 100))
     : progress.completedChunks > 0 ? 100 : 0;
+  const previewPercentage = previewProgress.totalBytes > 0
+    ? Math.min(100, Math.round((previewProgress.completedBytes / previewProgress.totalBytes) * 100))
+    : previewProgress.completedChunks > 0 ? 100 : 0;
+
+  useEffect(() => {
+    previewControllerRef.current?.abort();
+    setPreviewUrl(null);
+    setPreviewError(null);
+    setIsPreviewOpen(false);
+    if (!previewEligible) {
+      setPreviewState('idle');
+      return;
+    }
+
+    const controller = new AbortController();
+    previewControllerRef.current = controller;
+    setPreviewState('loading');
+    setPreviewProgress({
+      ...EMPTY_PROGRESS,
+      totalBytes: attachment.cryptoManifest.plaintextSize,
+      totalChunks: attachment.chunkCount,
+    });
+    void loadAttachmentImagePreview(message, attachment, controller.signal, setPreviewProgress)
+      .then((blob) => createDecodableImageUrl(blob, controller.signal))
+      .then((url) => {
+        if (controller.signal.aborted) {
+          URL.revokeObjectURL(url);
+          return;
+        }
+        setPreviewUrl(url);
+        setPreviewState('ready');
+      })
+      .catch(() => {
+        if (controller.signal.aborted) return;
+        setPreviewState('error');
+        setPreviewError('画像を表示できません。ファイルとして保存できます');
+      })
+      .finally(() => {
+        if (previewControllerRef.current === controller) previewControllerRef.current = null;
+      });
+    return () => controller.abort();
+  }, [
+    attachmentIdentity,
+    message.authorId,
+    message.channelId,
+    message.id,
+    message.keyVersion,
+    previewAttempt,
+    previewEligible,
+  ]);
+
+  useEffect(() => () => {
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+  }, [previewUrl]);
+
+  const markPreviewUnrenderable = () => {
+    setPreviewUrl(null);
+    setPreviewState('error');
+    setPreviewError('画像を表示できません。ファイルとして保存できます');
+    setIsPreviewOpen(false);
+  };
 
   const startDownload = async () => {
     if (!filename || filenameError || downloadState === 'downloading' || (dangerous && !acknowledged)) return;
@@ -73,7 +158,7 @@ export function AttachmentItem({ attachment, message }: Props) {
         setDownloadState('idle');
       } else {
         setDownloadState('error');
-        setDownloadError(error instanceof Error ? error.message : '添付ファイルを保存できませんでした');
+        setDownloadError('ファイルを保存できませんでした。時間をおいて再試行してください');
       }
     } finally {
       if (controllerRef.current === controller) controllerRef.current = null;
@@ -81,32 +166,44 @@ export function AttachmentItem({ attachment, message }: Props) {
   };
 
   return (
-    <section
-      aria-label="暗号化された添付ファイル"
-      className="mt-2 max-w-xl rounded border border-discord-hover bg-discord-sidebar/70 p-3 text-sm"
-    >
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="truncate font-medium text-discord-text">
-            {filename || (filenameError ? '復号できない添付ファイル' : 'ファイル名を復号中…')}
-          </p>
-          <p className="text-xs text-discord-muted">
-            {metadataVerified
-              ? `${formatBytes(attachment.plaintextSizeBytes)} ・ ${attachment.mimeType}`
-              : filenameError ? 'sender署名を検証できません' : 'sender署名を検証中…'}
-          </p>
+    <>
+      <Dialog
+        open={Boolean(isPreviewOpen && previewUrl)}
+        onClose={() => setIsPreviewOpen(false)}
+        title={filename || '画像プレビュー'}
+        size="lg"
+      >
+        {previewUrl && (
+          <img
+            src={previewUrl}
+            alt={filename || '添付画像'}
+            className="mx-auto max-h-[75vh] max-w-full object-contain"
+            onError={markPreviewUnrenderable}
+          />
+        )}
+      </Dialog>
+      <section
+        aria-label="添付ファイル"
+        className="mt-2 max-w-xl rounded border border-discord-hover bg-discord-sidebar/70 p-3 text-sm"
+      >
+        <div>
+          <div className="min-w-0">
+            <p className="truncate font-medium text-discord-text">
+              {filename || (filenameError ? 'ファイル名を確認できない添付ファイル' : 'ファイル名を確認中…')}
+            </p>
+            <p className="text-xs text-discord-muted">
+              {metadataVerified
+                ? formatBytes(attachment.plaintextSizeBytes)
+                : filenameError ? 'ファイル情報を確認できません' : 'ファイル情報を確認中…'}
+            </p>
+          </div>
         </div>
-        <span className="shrink-0 rounded bg-discord-hover px-2 py-0.5 text-[11px] text-discord-muted">
-          {metadataVerified ? '署名検証済み E2EE' : '未検証'}
-        </span>
-      </div>
 
       {dangerous && (
         <div role="alert" className="mt-2 rounded border border-discord-yellow/50 bg-discord-yellow/10 p-2 text-xs text-discord-yellow">
-          <p className="font-semibold">危険な可能性がある形式です</p>
+          <p className="font-semibold">安全でない可能性があるファイルです</p>
           <p className="mt-1">
-            MIMEまたは拡張子が、実行可能・active content・macro・archive形式に該当します。
-            E2EEのためサーバー検査はなく、ブラウザーからOSの隔離属性も保証できません。信頼できる場合だけ保存してください。
+            信頼できる相手から届いた場合のみ保存してください。
           </p>
           <label className="mt-2 flex cursor-pointer items-start gap-2 text-discord-text">
             <input
@@ -115,17 +212,50 @@ export function AttachmentItem({ attachment, message }: Props) {
               onChange={(event) => setAcknowledged(event.target.checked)}
               className="mt-0.5"
             />
-            警告を確認し、インライン表示せずファイルとして保存します
+            警告を確認し、ファイルとして保存します
           </label>
         </div>
       )}
 
-      <p className="mt-2 text-[11px] text-discord-muted">
-        内容は表示・実行せず、5MiBずつ認証復号して保存します。File System Access非対応ブラウザーでは最大
-        {Math.round(ATTACHMENT_FALLBACK_BLOB_LIMIT_BYTES / 1024 / 1024)}MBをメモリ上のBlob経由で保存します。
-      </p>
-
       {filenameError && <p role="alert" className="mt-2 text-xs text-discord-red">{filenameError}</p>}
+      {previewState === 'loading' && (
+        <div className="mt-3" aria-live="polite">
+          <div className="mb-1 flex items-center justify-between text-xs text-discord-muted">
+            <span>画像を準備中…</span>
+            <span>{previewPercentage}%</span>
+          </div>
+          <progress value={previewPercentage} max={100} aria-label={`画像プレビュー準備 ${previewPercentage}%`} className="h-1.5 w-full overflow-hidden rounded accent-discord-accent" />
+        </div>
+      )}
+      {previewUrl && previewState === 'ready' && (
+        <button
+          type="button"
+          onClick={() => setIsPreviewOpen(true)}
+          className="mt-3 block overflow-hidden rounded bg-discord-bg/70 focus:ring-2 focus:ring-discord-accent"
+          aria-label={`${filename || '添付画像'}を拡大表示`}
+        >
+          <img
+            src={previewUrl}
+            alt={filename || '添付画像'}
+            className="max-h-80 max-w-full object-contain"
+            onError={markPreviewUnrenderable}
+          />
+        </button>
+      )}
+      {previewError && (
+        <div role="alert" className="mt-2 flex items-center gap-2 text-xs text-discord-red">
+          <span>{previewError}</span>
+          <button type="button" onClick={() => setPreviewAttempt((value) => value + 1)} className="shrink-0 underline">再試行</button>
+        </div>
+      )}
+      {metadataVerified
+        && isPreviewableImageMimeType(attachment.mimeType)
+        && attachment.cryptoManifest.plaintextSize > ATTACHMENT_IMAGE_PREVIEW_MAX_BYTES
+        && (
+          <p className="mt-2 text-xs text-discord-muted">
+            25MBを超える画像は、ファイルとして保存してください。
+          </p>
+        )}
       {downloadError && <p role="alert" className="mt-2 text-xs text-discord-red">{downloadError}</p>}
       {downloadState === 'downloading' && (
         <div className="mt-2" aria-live="polite">
@@ -136,12 +266,12 @@ export function AttachmentItem({ attachment, message }: Props) {
             className="h-1.5 w-full overflow-hidden rounded accent-discord-accent"
           />
           <p className="mt-1 text-xs text-discord-muted">
-            復号・保存中 {percentage}%（{progress.completedChunks}/{progress.totalChunks}チャンク）
+            保存中 {percentage}%
           </p>
         </div>
       )}
       {downloadState === 'saved' && (
-        <p role="status" className="mt-2 text-xs text-discord-green">保存処理を完了しました</p>
+        <p role="status" className="mt-2 text-xs text-discord-green">保存しました</p>
       )}
 
       <div className="mt-3 flex gap-2">
@@ -151,7 +281,7 @@ export function AttachmentItem({ attachment, message }: Props) {
           disabled={!filename || Boolean(filenameError) || downloadState === 'downloading' || (dangerous && !acknowledged)}
           className="rounded bg-discord-accent px-3 py-1.5 text-xs font-medium text-white hover:bg-discord-accent/80 disabled:cursor-not-allowed disabled:opacity-50"
         >
-          {downloadState === 'saved' ? 'もう一度保存' : '復号して保存'}
+          {downloadState === 'saved' ? 'もう一度保存' : 'ファイルを保存'}
         </button>
         {downloadState === 'downloading' && (
           <button
@@ -163,13 +293,71 @@ export function AttachmentItem({ attachment, message }: Props) {
           </button>
         )}
       </div>
-    </section>
+      </section>
+    </>
   );
 }
 
 function formatBytes(value: number | null): string {
   if (value === null || !Number.isFinite(value)) return 'サイズ不明';
   if (value < 1024) return `${value} B`;
-  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KiB`;
-  return `${(value / 1024 / 1024).toFixed(1)} MiB`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${(value / 1024 / 1024).toFixed(1)} MB`;
+}
+
+/** Avoid restarting a decrypt/download merely because a store projection made a new object. */
+function attachmentSecurityIdentity(attachment: Attachment): string {
+  return JSON.stringify([
+    attachment.id,
+    attachment.messageId,
+    attachment.channelId,
+    attachment.keyVersion,
+    attachment.deviceId,
+    attachment.signature,
+    attachment.filenameEnc,
+    attachment.mimeType,
+    attachment.dangerousMime,
+    attachment.downloadPolicy,
+    attachment.sizeBytes,
+    attachment.ciphertextSizeBytes,
+    attachment.plaintextSizeBytes,
+    attachment.chunkCount,
+    attachment.wrappedKey,
+    attachment.contentNonce,
+    attachment.cryptoManifest,
+  ]);
+}
+
+/** Preload the local Blob URL so a broken-image placeholder is never committed to the UI. */
+function createDecodableImageUrl(blob: Blob, signal: AbortSignal): Promise<string> {
+  if (signal.aborted) return Promise.reject(new DOMException('操作はキャンセルされました', 'AbortError'));
+  if (blob.size <= 0) return Promise.reject(new Error('画像データが空です'));
+  const url = URL.createObjectURL(blob);
+  return new Promise<string>((resolve, reject) => {
+    const probe = new Image();
+    let settled = false;
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener('abort', onAbort);
+      probe.onload = null;
+      probe.onerror = null;
+      if (error) {
+        URL.revokeObjectURL(url);
+        reject(error);
+      } else {
+        resolve(url);
+      }
+    };
+    const onAbort = () => finish(new DOMException('操作はキャンセルされました', 'AbortError'));
+    probe.onload = () => finish(
+      probe.naturalWidth > 0 && probe.naturalHeight > 0
+        ? undefined
+        : new Error('画像の大きさを確認できませんでした'),
+    );
+    probe.onerror = () => finish(new Error('画像を表示できません'));
+    signal.addEventListener('abort', onAbort, { once: true });
+    probe.decoding = 'async';
+    probe.src = url;
+  });
 }

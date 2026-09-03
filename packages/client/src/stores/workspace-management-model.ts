@@ -13,13 +13,13 @@ const permissionLabels: Record<Permission, string> = {
   MANAGE_CHANNELS: 'チャンネルを管理',
   MANAGE_MEMBERS: 'メンバーと招待を管理',
   KICK_MEMBERS: 'メンバーを退出',
-  BAN_MEMBERS: 'メンバーをBAN',
+  BAN_MEMBERS: 'メンバーを利用禁止',
   MANAGE_WORKSPACE: 'ワークスペースを管理',
   MANAGE_ROLES: 'ロールを管理',
   VIEW_AUDIT_LOG: '監査ログを閲覧',
   ATTACH_FILES: 'ファイルを添付',
-  MANAGE_WEBHOOKS: 'Webhookを管理',
-  MANAGE_BOTS: 'Botを管理',
+  MANAGE_WEBHOOKS: '連携（Webhook）を管理',
+  MANAGE_BOTS: '連携（Bot）を管理',
 };
 
 export interface PermissionOption {
@@ -88,14 +88,14 @@ export function managementErrorMessage(error: unknown, fallback: string): string
     return '権限が不足しています。自身以上の階層のロール操作、または保有していない権限の付与はできません。';
   }
   if (isStaleAuthorizationPreviewError(error)) {
-    return '権限状態がpreview後に変更されました。最新の影響を再計算し、もう一度確認してください。';
+    return '確認中に権限状態が変更されました。最新の影響を確認し、もう一度保存してください。';
   }
   if (status === 409) {
-    return '変更が競合しました。Owner/標準ロールの保護、使用中のロール、または同名ロールを確認してください。';
+    return '変更が競合しました。保護されたロール、使用中のロール、または同名ロールを確認してください。';
   }
   if (status === 404) return '対象が見つかりません。最新の一覧を再読み込みしてください。';
   if (status === 400) return '入力内容を確認してください。';
-  return error instanceof Error && error.message ? error.message : fallback;
+  return fallback;
 }
 
 export interface RoleMutationFailurePlan {

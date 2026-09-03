@@ -41,8 +41,8 @@ export function DmComposerDialog() {
       await loadChannels(workspaceId);
       setActiveChannel(conversation.channelId);
       close();
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'DMを作成できませんでした');
+    } catch {
+      setError('DMを開けませんでした。もう一度お試しください。');
     } finally {
       setIsSubmitting(false);
     }

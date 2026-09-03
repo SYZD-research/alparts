@@ -6,6 +6,7 @@ import { useUiStore } from '../../stores/ui.store';
 import { useUserStateStore } from '../../stores/user-state.store';
 import { useWorkspaceStore } from '../../stores/workspace.store';
 import { Dialog } from '../ui/Dialog';
+import { userFacingMessageText } from '../../services/message-display';
 
 const HISTORY_PAGE_LIMIT = 20;
 
@@ -45,22 +46,22 @@ export function SavedMessagesDialog() {
       setActiveChannel(channelId);
       const found = await loadMessageThroughHistory(channelId, messageId, HISTORY_PAGE_LIMIT);
       if (!found) {
-        setNavigationError(`チャンネルを開きましたが、過去${HISTORY_PAGE_LIMIT}ページ以内にメッセージを見つけられませんでした。チャンネル上端から追加履歴を読み込めます。`);
+        setNavigationError('メッセージをまだ見つけられませんでした。チャンネルを上にスクロールして、さらに古いメッセージを読み込んでください。');
         return;
       }
       close();
       window.setTimeout(() => {
         document.getElementById(`message-${messageId}`)?.scrollIntoView({ block: 'center', behavior: 'smooth' });
       }, 100);
-    } catch (caught) {
-      setNavigationError(caught instanceof Error ? caught.message : '保存済みメッセージへ移動できませんでした');
+    } catch {
+      setNavigationError('保存済みメッセージへ移動できませんでした。もう一度お試しください。');
     } finally {
       setNavigatingMessageId(null);
     }
   };
 
   return (
-    <Dialog open={open} onClose={close} title="保存済みメッセージ" description="bookmark一覧には本文を保存せず、本文は開いたチャンネルで端末内復号します。" size="md">
+    <Dialog open={open} onClose={close} title="保存済みメッセージ" description="保存済みメッセージから、元のチャンネルのメッセージへ移動できます。" size="md">
       <div className="space-y-4">
         <div className="flex items-center justify-between gap-3">
           <p className="text-sm text-discord-muted">最大100件を新しい順に表示します。</p>
@@ -68,7 +69,7 @@ export function SavedMessagesDialog() {
         </div>
         {error && (
           <div role="alert" className="flex items-center justify-between gap-3 rounded bg-discord-red/10 p-3 text-sm text-discord-red">
-            <span>{error}</span>
+            <span>保存済みメッセージを読み込めませんでした</span>
             <button type="button" onClick={clearBookmarkError} className="underline">閉じる</button>
           </div>
         )}
@@ -94,13 +95,15 @@ export function SavedMessagesDialog() {
                   className="min-w-0 flex-1 rounded text-left disabled:opacity-60"
                   aria-label={`${channel?.name || '保存先チャンネル'}の保存済みメッセージへ移動`}
                 >
-                  <span className="block text-xs text-discord-muted">#{channel?.name || bookmark.channelId.slice(0, 8)} · {new Date(bookmark.createdAt).toLocaleString('ja-JP')}</span>
+                  <span className="block text-xs text-discord-muted">#{channel?.name || '保存先チャンネル'} · {new Date(bookmark.createdAt).toLocaleString('ja-JP')}</span>
                   <span className="mt-1 line-clamp-2 block break-words text-sm text-discord-text">
                     {navigating
                       ? '履歴を読み込み中…'
                       : message?.type === 'delete'
                         ? '削除されたメッセージ'
-                        : message?.content || '本文はまだこの端末で読み込み・復号されていません。'}
+                        : message?.content
+                          ? userFacingMessageText(message.content)
+                          : '本文を表示するには、チャンネルを開いて読み込んでください。'}
                   </span>
                 </button>
                 <button

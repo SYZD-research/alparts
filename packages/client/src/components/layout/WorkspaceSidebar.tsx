@@ -36,8 +36,8 @@ export function WorkspaceSidebar() {
       await createWorkspace(workspaceName.trim());
       setWorkspaceName('');
       setIsCreateOpen(false);
-    } catch (error) {
-      setCreateError(error instanceof Error ? error.message : 'ワークスペースを作成できませんでした');
+    } catch {
+      setCreateError('ワークスペースを作成できませんでした。もう一度お試しください');
     } finally {
       setIsCreating(false);
     }
@@ -46,7 +46,7 @@ export function WorkspaceSidebar() {
   return (
     <div className="w-[72px] bg-discord-sidebar flex flex-col items-center py-3 gap-2 overflow-y-auto">
       <p id="workspace-unread-semantics" className="sr-only">
-        ワークスペース未読バッジはミュート中と非表示のチャンネルも含みます。ミュートは通知だけを抑え、非表示は一覧から隠すだけです。E2EEのためワークスペース単位の正確なメンション件数は不明で、@? と表示します。
+        ワークスペースごとの未読数です。
       </p>
       <Dialog open={isCreateOpen} onClose={() => { if (!isCreating) setIsCreateOpen(false); }} title="ワークスペースを作成" size="sm">
         <form onSubmit={handleCreateWorkspace} className="space-y-4">
@@ -87,7 +87,7 @@ export function WorkspaceSidebar() {
           ? '未読状態を取得できませんでした'
           : summary.status === 'loading' || (channelStateLoading[ws.id] && !loaded)
             ? '未読状態を読み込み中'
-            : `未読${summary.total}件（ミュート・非表示を含む）${summary.mentionStatus === 'unknown' ? '、メンション件数は未確定' : ''}`;
+            : `未読${summary.total}件`;
         return (
           <div key={ws.id} className="relative">
             <button
@@ -104,16 +104,13 @@ export function WorkspaceSidebar() {
             >
               {ws.name.slice(0, 2).toUpperCase()}
             </button>
-            {summary.badge && (
+            {summary.status === 'ready' && summary.badge && (
               <span
                 aria-hidden="true"
-                className={`absolute -right-2 -top-1 min-w-5 rounded-full px-1 text-center text-[10px] font-bold text-white ${summary.status === 'error' ? 'bg-discord-yellow' : 'bg-discord-red'}`}
+                className="absolute -right-2 -top-1 min-w-5 rounded-full bg-discord-red px-1 text-center text-[10px] font-bold text-white"
               >
                 {summary.badge}
               </span>
-            )}
-            {summary.mentionStatus === 'unknown' && (
-              <span aria-hidden="true" className="absolute -bottom-1 -right-2 rounded bg-discord-sidebar px-0.5 text-[9px] text-discord-muted">@?</span>
             )}
             {!loaded && !channelStateErrors[ws.id] && channelStateLoading[ws.id] && (
               <span aria-hidden="true" className="absolute -right-1 -top-1 text-[10px] text-discord-muted">…</span>
@@ -149,8 +146,8 @@ export function WorkspaceSidebar() {
       <button
         onClick={openAccountSecurity}
         className="w-12 h-12 rounded-2xl bg-discord-bg hover:bg-discord-accent hover:rounded-xl flex items-center justify-center transition-all duration-200 text-discord-muted hover:text-white"
-        title="アカウントのセキュリティ"
-        aria-label="アカウントのセキュリティ"
+        title="ログイン中の端末"
+        aria-label="ログイン中の端末を管理"
       >
         <span aria-hidden="true">🛡</span>
       </button>

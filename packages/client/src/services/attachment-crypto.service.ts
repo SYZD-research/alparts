@@ -84,9 +84,9 @@ export function attachmentCiphertextChunkSize(plaintextSize: number, index: numb
 }
 
 export function attachmentChunkNonce(prefix: Uint8Array, index: number): Uint8Array {
-  if (prefix.byteLength !== ATTACHMENT_NONCE_PREFIX_BYTES) throw new Error('添付nonce prefixが不正です');
+  if (prefix.byteLength !== ATTACHMENT_NONCE_PREFIX_BYTES) throw new Error('ファイル情報の形式が不正です');
   if (!Number.isSafeInteger(index) || index < 0 || index > 0xffff_ffff) {
-    throw new Error('添付チャンク番号が不正です');
+    throw new Error('ファイルの分割情報が不正です');
   }
   const nonce = new Uint8Array(12);
   nonce.set(prefix, 0);
@@ -210,7 +210,7 @@ export async function unwrapAttachmentFileKey(
   const envelope = await verifyAttachmentMetadata(message, attachment);
   const manifest = validateAttachmentManifest(attachment, envelope.messageId);
   const channelKey = await getChannelKeyForVersion(message.channelId, message.keyVersion);
-  if (!channelKey) throw new Error('添付ファイルのチャンネル鍵を利用できません');
+  if (!channelKey) throw new Error('このチャンネルは現在ファイルを送信できません');
   const raw = await decryptPacked(
     channelKey,
     attachment.wrappedKey,
@@ -256,13 +256,13 @@ export function buildSignedAttachmentEnvelope(
     || !attachment.signature
     || normalizeAttachmentMimeType(attachment.mimeType) !== attachment.mimeType
   ) {
-    throw new Error('添付sender metadataが欠損またはメッセージと不一致です');
+    throw new Error('ファイル情報が欠落しているか、メッセージと一致しません');
   }
   const filenamePacked = decodeCanonicalBase64(attachment.filenameEnc);
   const wrappedKeyPacked = decodeCanonicalBase64(attachment.wrappedKey, 60);
   decodeCanonicalBase64(attachment.signature, 64);
   if (filenamePacked.byteLength < 28 || filenamePacked.byteLength > 8192 || wrappedKeyPacked.byteLength !== 60) {
-    throw new Error('添付sender metadataの暗号値が不正です');
+    throw new Error('ファイル情報の形式が不正です');
   }
   return {
     type: 'attachment',
@@ -293,9 +293,9 @@ export async function verifyAttachmentMetadata(
     directoryEntry = await getDeviceDirectory(message.channelId, envelope.deviceId, true);
     identity = directoryEntry?.userId === envelope.authorId ? directoryEntry.identityKey : undefined;
   }
-  if (!identity || !attachment.signature) throw new Error('添付送信端末の公開鍵を確認できません');
+  if (!identity || !attachment.signature) throw new Error('ファイルの送信元を確認できません');
   if (!await verifyAttachmentSignature(envelope, attachment.signature, identity)) {
-    throw new Error('添付metadataの署名検証に失敗しました');
+    throw new Error('ファイルの内容を検証できませんでした');
   }
   return envelope;
 }
@@ -328,7 +328,7 @@ export function validateAttachmentManifest(
     || plaintextSize < 0
     || plaintextSize > MAX_FILE_SIZE
   ) {
-    throw new Error('未対応または不正な添付暗号manifestです');
+    throw new Error('対応していないファイル形式です');
   }
 
   const expectedChunkCount = attachmentChunkCount(plaintextSize);
@@ -341,12 +341,12 @@ export function validateAttachmentManifest(
     || attachment.ciphertextSizeBytes !== expectedCiphertextSize
     || attachment.downloadPolicy !== 'attachment-only'
   ) {
-    throw new Error('添付サイズと暗号manifestが一致しません');
+    throw new Error('ファイルサイズの情報が一致しません');
   }
 
   const noncePrefix = decodeCanonicalBase64(manifest.noncePrefix, ATTACHMENT_NONCE_PREFIX_BYTES);
   if (attachment.contentNonce !== manifest.noncePrefix) {
-    throw new Error('添付nonce prefixが一致しません');
+    throw new Error('ファイル情報が一致しません');
   }
   return {
     uploadId: manifest.uploadId,
@@ -401,18 +401,18 @@ export function encodeCanonicalBase64(value: ArrayBuffer | Uint8Array): string {
 
 export function decodeCanonicalBase64(value: string, expectedBytes?: number): Uint8Array {
   if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) {
-    throw new Error('不正なbase64です');
+    throw new Error('データの形式が不正です');
   }
   let binary: string;
   try {
     binary = atob(value);
   } catch {
-    throw new Error('不正なbase64です');
+    throw new Error('データの形式が不正です');
   }
   const bytes = new Uint8Array(binary.length);
   for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
   if ((expectedBytes !== undefined && bytes.byteLength !== expectedBytes) || encodeCanonicalBase64(bytes) !== value) {
-    throw new Error('canonical base64ではありません');
+    throw new Error('正しい形式のデータではありません');
   }
   return bytes;
 }

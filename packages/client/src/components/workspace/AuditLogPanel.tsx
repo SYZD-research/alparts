@@ -5,7 +5,12 @@ import {
   type AuditIntegrityStatus,
   type AuditLogEntry,
 } from '../../services/api';
-import { auditResult, safeAuditDetails } from '../../stores/audit-log-model';
+import {
+  auditActionLabel,
+  auditResult,
+  auditTargetLabel,
+  safeAuditDetails,
+} from '../../stores/audit-log-model';
 
 interface AuditLogPanelProps {
   workspaceId: string;
@@ -45,8 +50,8 @@ export function AuditLogPanel({ workspaceId, canView }: AuditLogPanelProps) {
       }
       if (integrityResult.status === 'fulfilled') setIntegrity(integrityResult.value);
       const failures = [
-        pageResult.status === 'rejected' ? `ログ: ${auditLoadError(pageResult.reason)}` : null,
-        integrityResult.status === 'rejected' ? `整合性: ${auditLoadError(integrityResult.reason)}` : null,
+        pageResult.status === 'rejected' ? `履歴: ${auditLoadError(pageResult.reason)}` : null,
+        integrityResult.status === 'rejected' ? `状態: ${auditLoadError(integrityResult.reason)}` : null,
       ].filter((message): message is string => Boolean(message));
       if (failures.length > 0) setError(failures.join(' / '));
     } catch (loadError) {
@@ -98,10 +103,7 @@ export function AuditLogPanel({ workspaceId, canView }: AuditLogPanelProps) {
 
   return (
     <section aria-labelledby="workspace-audit-heading" className="space-y-4">
-      <div className="rounded border border-discord-yellow/50 bg-discord-yellow/10 px-3 py-2 text-sm text-discord-text">
-        <h3 id="workspace-audit-heading" className="font-semibold text-white">監査ログ</h3>
-        <p className="mt-1 text-discord-muted">監査ログと整合性状態の閲覧自体も監査ログへ記録されます。再読込やページ移動も閲覧として記録されます。</p>
-      </div>
+      <h3 id="workspace-audit-heading" className="font-semibold text-white">操作履歴</h3>
 
       {error && (
         <div role="alert" className="flex items-center justify-between gap-3 rounded bg-discord-red/15 px-3 py-2 text-sm text-discord-red">
@@ -111,35 +113,34 @@ export function AuditLogPanel({ workspaceId, canView }: AuditLogPanelProps) {
       )}
 
       <div aria-live="polite" className="rounded bg-discord-input px-3 py-2 text-sm">
-        <span className="font-medium text-white">整合性: </span>
+        <span className="font-medium text-white">記録の状態: </span>
         {loading && !integrity ? (
           <span className="text-discord-muted">確認中…</span>
         ) : integrity ? (
           <span className={integrity.valid ? 'text-discord-green' : 'text-discord-red'}>
-            {integrity.valid ? '検証成功' : '検証失敗'}
+            {integrity.valid ? '問題ありません' : '確認が必要です'}
           </span>
         ) : (
-          <span className="text-discord-muted">未取得</span>
+          <span className="text-discord-muted">未確認</span>
         )}
       </div>
 
       {loading && entries.length === 0 ? (
-        <p role="status" className="py-6 text-center text-discord-muted">監査ログを読み込み中…</p>
+        <p role="status" className="py-6 text-center text-discord-muted">操作履歴を読み込み中…</p>
       ) : entries.length === 0 ? (
-        <p className="py-6 text-center text-discord-muted">表示できる監査ログはありません。</p>
+        <p className="py-6 text-center text-discord-muted">表示できる操作履歴はありません。</p>
       ) : (
-        <ol className="space-y-2" aria-label="監査ログ（新しい順）">
+        <ol className="space-y-2" aria-label="操作履歴（新しい順）">
           {entries.map((entry) => {
             const details = safeAuditDetails(entry.details);
             const result = auditResult(entry);
+            const target = auditTargetLabel(entry.targetType);
             return (
               <li key={entry.id} className="rounded border border-discord-hover bg-discord-bg/40 px-3 py-3 text-sm">
                 <div className="flex flex-wrap items-start justify-between gap-2">
                   <div>
-                    <p className="font-medium text-white">{entry.action}</p>
-                    <p className="mt-0.5 break-all text-xs text-discord-muted">
-                      対象: {entry.targetType || 'なし'}{entry.targetId ? ` / ${entry.targetId}` : ''}
-                    </p>
+                    <p className="font-medium text-white">{auditActionLabel(entry.action)}</p>
+                    {target && <p className="mt-0.5 text-xs text-discord-muted">対象: {target}</p>}
                   </div>
                   <div className="text-right text-xs text-discord-muted">
                     <time dateTime={entry.createdAt}>{formatAuditTime(entry.createdAt)}</time>
@@ -157,9 +158,7 @@ export function AuditLogPanel({ workspaceId, canView }: AuditLogPanelProps) {
                       </div>
                     ))}
                   </dl>
-                ) : (
-                  <p className="mt-2 text-xs text-discord-muted">安全に表示できる詳細はありません。未知の値や秘密情報らしい値は表示しません。</p>
-                )}
+                ) : null}
               </li>
             );
           })}
@@ -184,9 +183,9 @@ export function AuditLogPanel({ workspaceId, canView }: AuditLogPanelProps) {
 
 function auditLoadError(error: unknown): string {
   if (error instanceof ApiError && error.status === 403) {
-    return '監査ログを閲覧する権限がありません。権限が変更された可能性があります。';
+    return '操作履歴を閲覧する権限がありません。';
   }
-  return error instanceof Error && error.message ? error.message : '監査ログを読み込めませんでした';
+  return '操作履歴を読み込めませんでした。もう一度お試しください。';
 }
 
 function formatAuditTime(value: string): string {

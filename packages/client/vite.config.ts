@@ -10,7 +10,7 @@ const developmentCsp = [
   "form-action 'self'",
   "script-src 'self' 'unsafe-inline'",
   "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' data:",
+  "img-src 'self' data: blob:",
   "connect-src 'self' ws: wss:",
 ].join('; ');
 
@@ -39,6 +39,7 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    allowedHosts: ['citrus.taila87037.ts.net'],
     headers: {
       'Content-Security-Policy': developmentCsp,
       'Permissions-Policy': 'camera=(), display-capture=(), geolocation=(), microphone=(self), speaker-selection=(self)',

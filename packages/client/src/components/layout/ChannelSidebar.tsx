@@ -93,8 +93,7 @@ export function ChannelSidebar() {
         channel={channel}
         label={labelFor(channel)}
         preference={preference}
-        mentionCount={mentionScan?.count || 0}
-        mentionBoundaryKnown={mentionScan?.boundaryKnown ?? true}
+        mentionCount={mentionScan?.completeForUnreadWindow ? mentionScan.count : 0}
         active={activeChannelId === channel.id}
         expanded={expandedPreferenceKey === `${instance}:${channel.id}`}
         saving={Boolean(preferenceSaving[channel.id])}
@@ -107,7 +106,7 @@ export function ChannelSidebar() {
   };
 
   return (
-    <div className="flex w-60 flex-col bg-discord-sidebar">
+    <div className="flex h-full w-full flex-col bg-discord-sidebar">
       <div className="flex h-12 items-center justify-between gap-2 border-b border-discord-bg px-4 shadow-sm">
         <h2 className="truncate font-bold text-white">
           {useWorkspaceStore.getState().workspaces.find((workspace) => workspace.id === activeWorkspaceId)?.name || 'ワークスペース'}
@@ -119,7 +118,7 @@ export function ChannelSidebar() {
       </div>
 
       <div className="flex-1 overflow-y-auto px-2 pt-3">
-        {channelStateError && <p role="alert" className="mb-2 rounded bg-discord-red/10 px-2 py-1 text-xs text-discord-red">{channelStateError}</p>}
+        {channelStateError && <p role="alert" className="mb-2 rounded bg-discord-red/10 px-2 py-1 text-xs text-discord-red">チャンネルを読み込めませんでした</p>}
 
         {favoriteChannels.length > 0 && (
           <section className="mb-4" aria-labelledby="favorite-channels-title">
@@ -133,7 +132,7 @@ export function ChannelSidebar() {
             <h3 id="direct-messages-title">ダイレクトメッセージ</h3>
             <button type="button" onClick={() => openDmComposer(activeWorkspaceId)} className="rounded px-1 text-base font-normal hover:bg-discord-hover hover:text-white" aria-label="DMを開始">+</button>
           </div>
-          {dmError && <p role="alert" className="px-2 py-1 text-xs text-discord-red">{dmError}</p>}
+          {dmError && <p role="alert" className="px-2 py-1 text-xs text-discord-red">DMを読み込めませんでした</p>}
           {isLoadingDms && <p role="status" className="px-2 py-1 text-xs text-discord-muted">DMを読み込み中…</p>}
           {!isLoadingDms && !dmError && conversations.length === 0 && <p className="px-2 py-1 text-xs text-discord-muted">まだDMはありません</p>}
           {conversations.map((conversation) => {
@@ -170,7 +169,7 @@ export function ChannelSidebar() {
             {showHidden ? '非表示チャンネルを隠す' : `非表示チャンネルを表示（${hiddenCount}）`}
           </button>
         )}
-        <p className="mt-2 px-2 text-[10px] leading-4 text-discord-muted">ミュートは通知だけ、非表示は一覧表示だけに作用し、どちらも未読集計には含まれます。@* はこの端末で読み込み・復号済みかつ既読境界を確認できる範囲だけの候補数です。</p>
+        <p className="mt-2 px-2 text-[10px] leading-4 text-discord-muted">ミュートすると通知を止め、非表示にすると一覧から隠します。</p>
 
         {canManageChannels && (
           <button type="button" onClick={openChannelManager} className="mt-2 flex w-full items-center rounded px-2 py-1.5 text-sm text-discord-muted hover:bg-discord-hover hover:text-discord-text"><span className="mr-1.5">+</span>チャンネルを追加・管理</button>
@@ -194,7 +193,6 @@ function ChannelRow({
   label,
   preference,
   mentionCount,
-  mentionBoundaryKnown,
   active,
   expanded,
   saving,
@@ -207,7 +205,6 @@ function ChannelRow({
   label: string;
   preference: ChannelReadState;
   mentionCount: number;
-  mentionBoundaryKnown: boolean;
   active: boolean;
   expanded: boolean;
   saving: boolean;
@@ -226,8 +223,7 @@ function ChannelRow({
           <span className="truncate">{label}</span>
           <span className="ml-auto flex shrink-0 items-center gap-1 pl-1">
             {preference.muted && <span title="ミュート中" aria-label="ミュート中">🔕</span>}
-            {mentionCount > 0 && <span title="この端末の復号済み範囲内のメンション候補" className="rounded bg-discord-red px-1 text-[10px] text-white">@{mentionCount}*</span>}
-            {!mentionBoundaryKnown && preference.unreadCount > 0 && preference.notificationLevel === 'mentions' && <span title="既読境界が未読み込みのためメンション件数は不明" className="text-[10px] text-discord-muted">@?</span>}
+            {mentionCount > 0 && <span title={`メンション${mentionCount}件`} className="rounded bg-discord-red px-1 text-[10px] text-white">@{mentionCount}</span>}
             {preference.unreadCount > 0 && <span aria-label={`未読${preference.unreadCount}件`} className="min-w-5 rounded-full bg-discord-accent px-1 text-center text-[10px] text-white">{unreadLabel}</span>}
           </span>
         </button>
@@ -249,7 +245,7 @@ function ChannelRow({
             </select>
           </label>
           {saving && <p role="status" className="text-[10px] text-discord-muted">保存中…</p>}
-          {error && <p role="alert" className="text-[10px] text-discord-red">{error}</p>}
+          {error && <p role="alert" className="text-[10px] text-discord-red">設定を保存できませんでした</p>}
         </div>
       )}
     </div>

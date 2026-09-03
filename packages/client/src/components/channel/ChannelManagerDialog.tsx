@@ -35,7 +35,8 @@ const EMPTY_CHANNEL_FORM: ChannelFormState = {
 
 function mutationError(error: unknown): string {
   if (error instanceof ApiError && error.status === 403) return 'チャンネル管理権限がありません。状態は変更されていません。';
-  return error instanceof Error && error.message ? error.message : '管理操作に失敗しました';
+  if (error instanceof Error && error.message === '位置は0〜1000000の整数で入力してください') return error.message;
+  return '変更を保存できませんでした。もう一度お試しください。';
 }
 
 function parsePosition(value: string): number {
@@ -231,7 +232,7 @@ export function ChannelManagerDialog() {
       await api.addChannelMember(selectedChannel.id, memberToAdd);
       await loadPrivateMembers(selectedChannel);
       setMemberToAdd('');
-      setNotice('privateチャンネルへメンバーを追加しました。');
+      setNotice('非公開チャンネルへメンバーを追加しました。');
     } catch (caught) {
       setError(mutationError(caught));
     } finally {
@@ -263,10 +264,10 @@ export function ChannelManagerDialog() {
           const nextChannels = await refreshWorkspace();
           setActiveChannel(nextChannels.find((channel) => channel.id !== confirmation.channelId)?.id || null);
           setSelectedChannelId('');
-          setNotice('自分をprivateチャンネルから削除しました。');
+          setNotice('自分を非公開チャンネルから削除しました。');
         } else {
           await loadPrivateMembers(selectedChannel);
-          setNotice('privateチャンネルからメンバーを削除しました。鍵ローテーションが必要になる場合があります。');
+          setNotice('非公開チャンネルからメンバーを削除しました。');
         }
       }
       setConfirmation(null);
@@ -287,7 +288,7 @@ export function ChannelManagerDialog() {
       open={open}
       onClose={() => { if (!busy) close(); }}
       title="チャンネルとカテゴリーの管理"
-      description="権限確認はサーバーでも行われ、失敗時に一覧状態は変更されません。"
+      description="ここでの変更は、権限がない場合は保存されません。"
       size="lg"
     >
       {!workspaceId || !canManage ? (
@@ -299,7 +300,7 @@ export function ChannelManagerDialog() {
               ['create', 'チャンネル作成'],
               ['edit', 'チャンネル編集'],
               ['categories', 'カテゴリー'],
-              ['permissions', '権限override'],
+              ['permissions', '権限設定'],
             ] as Array<[ManagerTab, string]>).map(([value, label]) => (
               <button
                 key={value}
@@ -320,7 +321,7 @@ export function ChannelManagerDialog() {
             <div role="alertdialog" aria-label="削除の確認" className="rounded border border-discord-red/60 bg-discord-red/10 p-4">
               <p className="text-sm text-discord-text">{confirmation.label}</p>
               {confirmation.kind === 'remove-member' && (
-                <p className="mt-2 text-xs text-discord-muted">配布済み鍵がある場合、以後の送信前に鍵ローテーションが必要です。</p>
+                <p className="mt-2 text-xs text-discord-muted">削除したメンバーは、このチャンネルの履歴にアクセスできなくなります。</p>
               )}
               <div className="mt-3 flex justify-end gap-2">
                 <button type="button" onClick={() => setConfirmation(null)} className="rounded px-3 py-2 text-sm text-discord-muted hover:bg-discord-hover">キャンセル</button>
@@ -345,9 +346,9 @@ export function ChannelManagerDialog() {
                 <>
                   <ChannelForm form={form} setForm={setForm} categories={categories} submit={submitUpdateChannel} busy={busy} submitLabel="変更を保存" isEditing />
                   <section className="rounded bg-discord-bg p-4">
-                    <h3 className="font-medium text-white">privateメンバー</h3>
+                    <h3 className="font-medium text-white">非公開チャンネルのメンバー</h3>
                     {!selectedChannel.isPrivate ? (
-                      <p className="mt-2 text-sm text-discord-muted">privateチャンネルに変更して保存するとメンバー管理を利用できます。</p>
+                      <p className="mt-2 text-sm text-discord-muted">非公開に変更して保存すると、メンバーを選べるようになります。</p>
                     ) : isLoadingMembers ? (
                       <p className="mt-2 text-sm text-discord-muted">読み込み中…</p>
                     ) : (
@@ -370,8 +371,8 @@ export function ChannelManagerDialog() {
                                   channelId: selectedChannel.id,
                                   userId: member.id,
                                   label: member.id === currentUser?.id
-                                    ? '自分をこのprivateチャンネルから削除します。直ちにアクセスできなくなります。'
-                                    : `${member.displayName}をこのprivateチャンネルから削除します。`,
+                                    ? '自分をこの非公開チャンネルから削除します。直ちに閲覧できなくなります。'
+                                    : `${member.displayName}をこの非公開チャンネルから削除します。`,
                                   self: member.id === currentUser?.id,
                                 })}
                                 className="rounded px-2 py-1 text-xs text-discord-red hover:bg-discord-red hover:text-white"
@@ -494,8 +495,8 @@ function ChannelForm({ form, setForm, categories, submit, busy, submitLabel, isE
       <label className="flex items-start gap-3 rounded bg-discord-bg p-3 text-sm text-discord-text">
         <input type="checkbox" checked={form.isPrivate} onChange={(event) => setForm((current) => ({ ...current, isPrivate: event.target.checked }))} className="mt-0.5 h-4 w-4 accent-discord-accent" />
         <span>
-          privateチャンネル
-          <span className="mt-1 block text-xs text-discord-muted">公開からprivateへ変更すると、保存した管理者だけが最初の明示メンバーになります。</span>
+          非公開チャンネル
+          <span className="mt-1 block text-xs text-discord-muted">非公開にすると、保存した管理者だけが最初のメンバーになります。</span>
         </span>
       </label>
       <div className="flex justify-end">

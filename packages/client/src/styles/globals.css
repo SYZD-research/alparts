@@ -30,9 +30,22 @@
     outline-offset: 2px;
   }
 
+  [data-self-mention='true'] {
+    background-color: rgb(249 115 22 / 0.10);
+    box-shadow: inset 2px 0 0 #fb923c;
+  }
+
+  [data-self-mention='true']:hover {
+    background-color: rgb(249 115 22 / 0.15);
+  }
+
   [data-permalink-highlight='true'] {
     background-color: rgb(88 101 242 / 0.28);
     box-shadow: inset 3px 0 0 #aeb5ff;
+  }
+
+  [data-permalink-highlight='true']:hover {
+    background-color: rgb(88 101 242 / 0.28);
   }
 
   @media (prefers-reduced-motion: reduce) {

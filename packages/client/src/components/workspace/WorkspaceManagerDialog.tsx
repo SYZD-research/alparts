@@ -44,7 +44,7 @@ export function WorkspaceManagerDialog() {
     ...(canManageMembers ? [{ id: 'invitations' as const, label: '招待を管理' }] : []),
     { id: 'roles', label: 'ロール' },
     { id: 'permissions', label: '権限の理由' },
-    ...(canViewAudit ? [{ id: 'audit' as const, label: '監査ログ' }] : []),
+    ...(canViewAudit ? [{ id: 'audit' as const, label: '操作履歴' }] : []),
   ], [canManageMembers, canViewAudit]);
 
   const loadRoles = useCallback(async () => {
@@ -55,10 +55,10 @@ export function WorkspaceManagerDialog() {
     try {
       const nextRoles = await api.getRoles(activeWorkspaceId);
       if (request === roleRequest.current) setRoles(nextRoles);
-    } catch (error) {
+    } catch {
       if (request === roleRequest.current) {
         setRoles([]);
-        setRolesError(error instanceof Error ? error.message : 'ロールを読み込めませんでした');
+        setRolesError('ロールを読み込めませんでした。もう一度お試しください。');
       }
     } finally {
       if (request === roleRequest.current) setRolesLoading(false);
@@ -105,7 +105,7 @@ export function WorkspaceManagerDialog() {
       open={open && Boolean(activeWorkspaceId)}
       onClose={close}
       title={`${workspaceName || 'ワークスペース'}の管理`}
-      description="招待、ロール、実効権限と、許可されている場合は監査ログを安全に管理します。"
+      description="招待、ロール、権限、操作履歴を管理します。"
       size="lg"
     >
       {open && activeWorkspaceId && (

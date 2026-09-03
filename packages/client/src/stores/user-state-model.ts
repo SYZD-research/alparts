@@ -3,6 +3,7 @@ import type {
   ChannelReadState,
   MessageBookmark,
 } from '@alparts/shared';
+import { messageMentionsCurrentUser } from '../services/mention-model';
 
 export interface OrderedBaseMessage {
   id: string;
@@ -82,17 +83,13 @@ export interface LoadedMentionScan {
 }
 
 const NON_CONTENT_MARKERS = new Set([
-  '[未検証の旧形式メッセージ]',
-  '[署名検証に失敗したメッセージ]',
-  '[復号鍵を利用できません]',
+  '[表示できないメッセージ]',
+  '[メッセージを検証できませんでした]',
   '[改ざんを検出しました]',
 ]);
 
 function containsLocalMention(content: string, userId: string, displayName: string): boolean {
-  const normalized = content.normalize('NFKC').toLocaleLowerCase();
-  const normalizedName = displayName.trim().normalize('NFKC').toLocaleLowerCase();
-  return normalized.includes(`<@${userId.toLocaleLowerCase()}>`)
-    || Boolean(normalizedName && normalized.includes(`@${normalizedName}`));
+  return messageMentionsCurrentUser(content, [{ userId, displayName }], userId, false);
 }
 
 function containsAuthenticatedBroadcastMention(message: MentionCandidateMessage): boolean {

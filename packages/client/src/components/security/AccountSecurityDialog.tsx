@@ -17,12 +17,29 @@ function formatDate(value: string): string {
 }
 
 function sessionDescription(session: AuthSession): string {
-  if (!session.deviceInfo || Object.keys(session.deviceInfo).length === 0) return '端末情報なし';
-  const entries = Object.entries(session.deviceInfo)
-    .filter(([, value]) => typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean')
-    .slice(0, 3)
-    .map(([key, value]) => `${key}: ${String(value).slice(0, 80)}`);
-  return entries.join(' / ') || '端末情報なし';
+  const platform = friendlyPlatform(session.deviceInfo?.platform);
+  const browser = friendlyBrowser(session.deviceInfo?.browser);
+  return [platform, browser].filter(Boolean).join('・') || '名前のない端末';
+}
+
+function friendlyPlatform(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  if (/iphone/i.test(value)) return 'iPhone';
+  if (/ipad/i.test(value)) return 'iPad';
+  if (/android/i.test(value)) return 'Android';
+  if (/win/i.test(value)) return 'Windows';
+  if (/mac/i.test(value)) return 'Mac';
+  if (/linux/i.test(value)) return 'Linux';
+  return null;
+}
+
+function friendlyBrowser(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  if (/edg\//i.test(value)) return 'Edge';
+  if (/firefox\//i.test(value)) return 'Firefox';
+  if (/chrome\//i.test(value)) return 'Chrome';
+  if (/safari\//i.test(value)) return 'Safari';
+  return null;
 }
 
 export function AccountSecurityDialog() {
@@ -47,8 +64,8 @@ export function AccountSecurityDialog() {
       const [nextSessions, nextDevices] = await Promise.all([api.getSessions(), api.getDevices()]);
       setSessions(nextSessions);
       setDevices(nextDevices);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'セキュリティ情報を読み込めませんでした');
+    } catch {
+      setError('ログイン中の端末を読み込めませんでした。もう一度お試しください。');
     } finally {
       setIsLoading(false);
     }
@@ -79,8 +96,8 @@ export function AccountSecurityDialog() {
       await loadSecurityState();
     } catch (caught) {
       setError(caught instanceof ApiError && caught.status === 403
-        ? 'このセキュリティ操作を行う権限がありません。'
-        : caught instanceof Error ? caught.message : 'セキュリティ操作に失敗しました');
+        ? 'この操作を行う権限がありません。'
+        : '操作を完了できませんでした。もう一度お試しください。');
       setPending(null);
     } finally {
       setIsMutating(false);
@@ -91,26 +108,26 @@ export function AccountSecurityDialog() {
     <Dialog
       open={open}
       onClose={() => { if (!isMutating) close(); }}
-      title="アカウントのセキュリティ"
-      description="ログインセッションと暗号化端末を確認・失効できます。"
+      title="ログイン中の端末"
+      description="不要なログインを終了したり、端末の登録を解除できます。"
       size="lg"
     >
       <div className="space-y-6">
         {error && <div role="alert" className="rounded bg-discord-red/15 px-3 py-2 text-sm text-discord-red">{error}</div>}
         {pending && (
-          <section role="alertdialog" aria-label="失効の確認" className="rounded border border-discord-red/60 bg-discord-red/10 p-4">
+          <section role="alertdialog" aria-label="操作の確認" className="rounded border border-discord-red/60 bg-discord-red/10 p-4">
             <h3 className="font-bold text-white">この操作を確認してください</h3>
             <p className="mt-2 text-sm text-discord-text">{pending.label}</p>
             {pending.requiresLogin && (
-              <p className="mt-2 text-sm font-medium text-discord-red">現在の認証が失効するため、完了後は再ログインが必要です。</p>
+              <p className="mt-2 text-sm font-medium text-discord-red">この端末からログアウトするため、完了後に再ログインが必要です。</p>
             )}
             {pending.kind === 'device' && (
-              <p className="mt-2 text-xs text-discord-muted">端末に配布済みのチャンネル鍵がある場合、対象チャンネルは鍵ローテーション待ちになります。</p>
+              <p className="mt-2 text-xs text-discord-muted">解除した端末を再び使うには、ログインと端末の設定が必要です。</p>
             )}
             <div className="mt-4 flex justify-end gap-2">
               <button type="button" onClick={() => setPending(null)} disabled={isMutating} className="rounded px-3 py-2 text-sm text-discord-muted hover:bg-discord-hover">キャンセル</button>
               <button type="button" onClick={() => { void executePending(); }} disabled={isMutating} className="rounded bg-discord-red px-3 py-2 text-sm font-medium text-white disabled:opacity-50">
-                {isMutating ? '失効中…' : '理解して失効する'}
+                {isMutating ? '処理中…' : pending.kind === 'device' ? '登録を解除' : 'ログアウト'}
               </button>
             </div>
           </section>
@@ -122,14 +139,14 @@ export function AccountSecurityDialog() {
           <>
             <section aria-labelledby="sessions-heading">
               <div className="mb-3 flex items-center justify-between gap-3">
-                <h3 id="sessions-heading" className="font-bold text-white">ログインセッション</h3>
+                <h3 id="sessions-heading" className="font-bold text-white">現在のログイン</h3>
                 <button
                   type="button"
-                  onClick={() => setPending({ kind: 'all-sessions', label: 'すべてのログインセッションを失効します。', requiresLogin: true })}
+                  onClick={() => setPending({ kind: 'all-sessions', label: 'すべての端末からログアウトします。', requiresLogin: true })}
                   disabled={sessions.length === 0 || isMutating}
                   className="rounded border border-discord-red px-3 py-1.5 text-xs text-discord-red hover:bg-discord-red hover:text-white disabled:opacity-40"
                 >
-                  すべて失効
+                  すべてログアウト
                 </button>
               </div>
               <div className="space-y-2">
@@ -137,26 +154,26 @@ export function AccountSecurityDialog() {
                   <article key={session.id} className="flex items-start justify-between gap-4 rounded bg-discord-bg p-3">
                     <div className="min-w-0 text-sm">
                       <div className="font-medium text-discord-text">
-                        {session.current ? '現在のセッション' : 'ログインセッション'}
+                        {session.current ? 'この端末' : 'ログイン中'}
                         {session.current && <span className="ml-2 rounded bg-discord-green/20 px-2 py-0.5 text-xs text-discord-green">現在</span>}
                       </div>
                       <p className="mt-1 break-words text-xs text-discord-muted">
                         {devices.find((device) => device.id === session.deviceId)?.name || sessionDescription(session)}
                       </p>
-                      <p className="mt-1 text-xs text-discord-muted">開始: {formatDate(session.createdAt)} / 期限: {formatDate(session.expiresAt)}</p>
+                      <p className="mt-1 text-xs text-discord-muted">ログイン: {formatDate(session.createdAt)} / 自動ログアウト: {formatDate(session.expiresAt)}</p>
                     </div>
                     <button
                       type="button"
                       onClick={() => setPending({
                         kind: 'session',
                         id: session.id,
-                        label: session.current ? '現在のセッションを失効します。' : `${formatDate(session.createdAt)} に開始したセッションを失効します。`,
+                        label: session.current ? 'この端末からログアウトします。' : `${formatDate(session.createdAt)} に開始したログインを終了します。`,
                         requiresLogin: session.current,
                       })}
                       disabled={isMutating}
                       className="shrink-0 rounded px-3 py-1.5 text-xs text-discord-red hover:bg-discord-red hover:text-white"
                     >
-                      失効
+                      ログアウト
                     </button>
                   </article>
                 ))}
@@ -164,7 +181,7 @@ export function AccountSecurityDialog() {
             </section>
 
             <section aria-labelledby="devices-heading">
-              <h3 id="devices-heading" className="mb-3 font-bold text-white">暗号化端末</h3>
+              <h3 id="devices-heading" className="mb-3 font-bold text-white">登録済みの端末</h3>
               <div className="space-y-2">
                 {devices.map((device) => {
                   const current = device.id === currentDeviceId;
@@ -183,13 +200,13 @@ export function AccountSecurityDialog() {
                         onClick={() => setPending({
                           kind: 'device',
                           id: device.id,
-                          label: current ? `現在の暗号化端末「${device.name}」を失効します。` : `暗号化端末「${device.name}」を失効します。`,
+                          label: current ? `現在の端末「${device.name}」の登録を解除します。` : `端末「${device.name}」の登録を解除します。`,
                           requiresLogin: current,
                         })}
                         disabled={isMutating}
                         className="shrink-0 rounded px-3 py-1.5 text-xs text-discord-red hover:bg-discord-red hover:text-white"
                       >
-                        端末を失効
+                        登録を解除
                       </button>
                     </article>
                   );

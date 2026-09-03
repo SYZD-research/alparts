@@ -66,6 +66,13 @@ describe('user state model', () => {
     expect(scan.count).toBe(0);
   });
 
+  it('does not count a longer unknown @name as a mention of a prefix-matching member', () => {
+    const scan = scanLoadedMentionUnread([
+      { ...messages[1], authorId: 'other', content: '@AliceCo deployment' },
+    ], { id: 'user-1', displayName: 'Alice' }, null, false);
+    expect(scan.count).toBe(0);
+  });
+
   it('counts an authenticated broadcast mention flag', () => {
     const scan = scanLoadedMentionUnread([
       { ...messages[1], authorId: 'other', content: '@everyone deployment', broadcastMention: true },

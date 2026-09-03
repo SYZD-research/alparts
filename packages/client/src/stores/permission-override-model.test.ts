@@ -21,7 +21,7 @@ describe('permission override model', () => {
     masks = setOverridePermissionState(masks.allowMask, masks.denyMask, Permissions.VIEW_CHANNELS, 'allow');
     expect(masks).toEqual({ allowMask: Permissions.VIEW_CHANNELS, denyMask: 0 });
     expect(validateOverrideMasks(Permissions.VIEW_CHANNELS, Permissions.VIEW_CHANNELS)).toContain('両方');
-    expect(validateOverrideMasks(channelScopedPermissionMask | Permissions.MANAGE_ROLES, 0)).toContain('スコープ外');
+    expect(validateOverrideMasks(channelScopedPermissionMask | Permissions.MANAGE_ROLES, 0)).toContain('変更できない権限');
   });
 
   it('copies both preview revisions exactly into write and delete bodies', () => {
@@ -84,7 +84,7 @@ describe('permission override model', () => {
     expect(formatChannelPermissionReason({ source: 'channel', effect: 'deny', roleId: 'role-1' }, roles))
       .toContain('Members');
     expect(formatChannelPermissionReason({ source: 'future', secret: 'do-not-render' } as never, roles))
-      .toBe('詳細を表示できないサーバー判定');
+      .toBe('詳細を確認できません');
   });
 });
 

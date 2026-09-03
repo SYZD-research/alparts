@@ -17,9 +17,8 @@ export interface LoadedMessageSearchResult {
 }
 
 const NON_CONTENT_MARKERS = new Set([
-  '[未検証の旧形式メッセージ]',
-  '[署名検証に失敗したメッセージ]',
-  '[復号鍵を利用できません]',
+  '[表示できないメッセージ]',
+  '[メッセージを検証できませんでした]',
   '[改ざんを検出しました]',
 ]);
 

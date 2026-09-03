@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import type { User } from '@alparts/shared';
-import { api } from '../services/api';
+import { api, ApiError } from '../services/api';
 import { clearActiveDevice, ensureDeviceSession } from '../services/crypto.service';
 import { connectSocket, disconnectSocket, setSocketUnauthorizedHandler } from '../services/socket';
 import { resetAuthenticatedState } from './reset';
@@ -21,8 +21,22 @@ async function initializeAuthenticatedClient(user: User, stepUpPassword?: string
   connectSocket();
 }
 
-function authErrorMessage(error: unknown): string {
-  return error instanceof Error && error.message ? error.message : '認証に失敗しました';
+function authErrorMessage(error: unknown, action: 'login' | 'register'): string {
+  if (error instanceof ApiError) {
+    if (error.code === 'UNAUTHORIZED') return 'メールアドレスまたはパスワードが正しくありません。';
+    if (error.code === 'INVITE_REQUIRED') return '招待コードが正しくないか、有効期限が切れています。';
+    if (error.code === 'SESSION_LIMIT_REACHED') return 'ログイン中の端末が上限に達しています。別の端末からログアウトしてお試しください。';
+    if (error.code === 'DEVICE_LIMIT_REACHED') return '登録済みの端末が上限に達しています。不要な端末の登録を解除してください。';
+    if (error.code === 'WORKSPACE_MEMBER_LIMIT') return 'このワークスペースは参加人数の上限に達しています。';
+    if (error.code === 'VALIDATION') {
+      return action === 'register'
+        ? '入力内容を確認してください。パスワードは12文字以上必要です。'
+        : 'メールアドレスとパスワードを確認してください。';
+    }
+  }
+  return action === 'register'
+    ? 'アカウントを作成できませんでした。もう一度お試しください。'
+    : 'ログインできませんでした。もう一度お試しください。';
 }
 
 export const useAuthStore = create<AuthState>((set, get) => ({
@@ -45,7 +59,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       await api.logout().catch(() => undefined);
       resetAuthenticatedState();
       clearActiveDevice();
-      set({ user: null, error: authErrorMessage(error), isLoading: false, isInitialized: true });
+      set({ user: null, error: authErrorMessage(error, 'login'), isLoading: false, isInitialized: true });
       throw error;
     }
   },
@@ -56,7 +70,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       await api.register(email, password, displayName, inviteToken);
       await get().login(email, password);
     } catch (error) {
-      set({ error: authErrorMessage(error), isLoading: false, isInitialized: true });
+      set({ error: authErrorMessage(error, 'register'), isLoading: false, isInitialized: true });
       throw error;
     }
   },
@@ -96,7 +110,7 @@ function invalidateExpiredSession(): void {
     user: null,
     isLoading: false,
     isInitialized: true,
-    error: 'セッションの有効期限が切れたか、失効されました。再度ログインしてください。',
+    error: 'ログインの有効期限が切れました。もう一度ログインしてください。',
   });
 }
 

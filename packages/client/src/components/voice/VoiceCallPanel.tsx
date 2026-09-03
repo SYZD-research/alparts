@@ -53,7 +53,7 @@ export function VoiceCallPanel({ channelId }: Props) {
         <div className="min-w-0">
           <p className="text-sm font-medium text-discord-text">音声通話</p>
           <p className="truncate text-xs text-discord-muted">
-            {status === 'joining' ? 'マイクと暗号化接続を準備しています…' : '最大8人のP2P音声通話'}
+            {status === 'joining' ? 'マイクを準備しています…' : '最大8人のグループ音声通話'}
           </p>
           {error && <p role="alert" className="mt-1 text-xs text-discord-red">{error}</p>}
         </div>
@@ -74,7 +74,7 @@ export function VoiceCallPanel({ channelId }: Props) {
       <div className="flex flex-wrap items-center gap-2">
         <div className="mr-auto min-w-40">
           <p className="text-sm font-semibold text-discord-green">音声接続済み</p>
-          <p className="text-xs text-discord-muted">P2P・DTLS-SRTP · {qualityLabel(quality)}</p>
+          <p className="text-xs text-discord-muted">{qualityLabel(quality)}</p>
         </div>
         <button
           type="button"

@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import type { Attachment, Device, Message, Reaction, ReadPosition, UserStatusType } from '@alparts/shared';
-import { ensureChannelKey, getActiveDevice } from '../services/crypto.service';
+import { getActiveDevice } from '../services/crypto.service';
 import { getSocket } from '../services/socket';
 import type { DirectMessageConversation } from '../services/api';
 import { useAttachmentStore } from '../stores/attachment.store';
@@ -59,6 +59,10 @@ export function useSocketEvents() {
         || useMessageStore.getState().loadingByChannel[channelId] === true
       )
     );
+    const isAuthorizedKeySyncChannel = (channelId: string) => {
+      const channel = useChannelStore.getState().channels.find((candidate) => candidate.id === channelId);
+      return Boolean(channel && (channel.type === 'dm' || isAuthorizedLoadedChannel(channelId)));
+    };
 
     const enqueueAuthorizationWork = (operation: () => Promise<void>) => {
       // Revocation handlers erase the affected security scope before entering
@@ -77,7 +81,11 @@ export function useSocketEvents() {
 
     const scheduleKeySync = (channelIds: string[]) => {
       for (const channelId of channelIds) {
-        if (isAuthorizedLoadedChannel(channelId)) pendingKeySyncIds.add(channelId);
+        // DM recipients must acknowledge a newly proposed key even before they
+        // open that conversation. Otherwise both online users can deadlock with
+        // the proposer waiting forever for a recipient that never sees the
+        // channel as "loaded".
+        if (isAuthorizedKeySyncChannel(channelId)) pendingKeySyncIds.add(channelId);
       }
       if (keySyncRunning || pendingKeySyncIds.size === 0) return;
       keySyncRunning = true;
@@ -85,10 +93,9 @@ export function useSocketEvents() {
         while (!disposed && pendingKeySyncIds.size > 0) {
           const channelId = pendingKeySyncIds.values().next().value as string;
           pendingKeySyncIds.delete(channelId);
-          if (!isAuthorizedLoadedChannel(channelId)) continue;
+          if (!isAuthorizedKeySyncChannel(channelId)) continue;
           try {
-            await ensureChannelKey(channelId);
-            useMessageStore.getState().retryUnavailableMessages(channelId);
+            await useMessageStore.getState().reconcileChannelKey(channelId);
           } catch {
             // Another device may complete distribution. Missing/revoked keys
             // remain fail-closed and surface through the message flow.
@@ -201,7 +208,9 @@ export function useSocketEvents() {
     };
     const onDmCreated = (data: { dm: DirectMessageConversation }) => {
       upsertDm(data.dm);
-      if (data.dm.workspaceId === useWorkspaceStore.getState().activeWorkspaceId) void loadChannels(data.dm.workspaceId);
+      if (data.dm.workspaceId === useWorkspaceStore.getState().activeWorkspaceId) {
+        void loadChannels(data.dm.workspaceId).then(() => scheduleKeySync([data.dm.channelId]));
+      }
     };
     const onReadUpdated = (position: ReadPosition) => {
       if (position.userId === userId && isAuthorizedLoadedChannel(position.channelId)) applySocketReadPosition(position);

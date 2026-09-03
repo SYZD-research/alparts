@@ -7,8 +7,8 @@ import type { Message } from '@alparts/shared';
 import { useUserStateStore } from '../../stores/user-state.store';
 import { latestReadableMessageId } from '../../stores/user-state-model';
 import { useWorkspaceStore } from '../../stores/workspace.store';
-import { countLoadedThreadReplies, loadedThreadReplies } from '../../stores/thread-model';
-import { ThreadPanel } from './ThreadPanel';
+import { focusMessageElement } from '../../services/message-navigation';
+import { MessageContent } from './MessageContent';
 
 interface Props {
   channelId: string;
@@ -17,16 +17,18 @@ interface Props {
 const EMPTY_MESSAGES: Message[] = [];
 
 export function MessageList({ channelId }: Props) {
-  const [threadRootId, setThreadRootId] = useState<string | null>(null);
+  const [jumpError, setJumpError] = useState<string | null>(null);
   const messages = useMessageStore((state) => state.messagesByChannel[channelId] || EMPTY_MESSAGES);
   const isLoading = useMessageStore((state) => Boolean(state.loadingByChannel[channelId]));
   const isLoadingMore = useMessageStore((state) => Boolean(state.loadingMoreByChannel[channelId]));
   const hasMore = useMessageStore((state) => Boolean(state.hasMore[channelId]));
   const loadMoreMessages = useMessageStore((state) => state.loadMoreMessages);
+  const loadMessageThroughHistory = useMessageStore((state) => state.loadMessageThroughHistory);
   const outboxItems = useOutboxStore((state) => state.items);
   const retryOutboxItem = useOutboxStore((state) => state.retry);
   const user = useAuthStore((state) => state.user);
   const activeWorkspaceId = useWorkspaceStore((state) => state.activeWorkspaceId);
+  const workspaceMembers = useWorkspaceStore((state) => state.members);
   const lastReadMessageId = useUserStateStore((state) => activeWorkspaceId
     ? state.channelStatesByWorkspace[activeWorkspaceId]?.[channelId]?.lastReadMessageId || null
     : null);
@@ -37,15 +39,6 @@ export function MessageList({ channelId }: Props) {
   // Use the logical projection so an append-only delete event removes its
   // target. Edit projections retain the base-message id and ordering.
   const latestBaseMessageId = useMemo(() => latestReadableMessageId(messages), [messages]);
-  const threadCounts = useMemo(() => countLoadedThreadReplies(messages), [messages]);
-  const threadRoot = useMemo(
-    () => messages.find((message) => message.id === threadRootId) || null,
-    [messages, threadRootId],
-  );
-  const threadReplies = useMemo(
-    () => threadRootId ? loadedThreadReplies(messages, threadRootId) : [],
-    [messages, threadRootId],
-  );
   const channelOutboxItems = Object.values(outboxItems)
     .filter((item) => item.channelId === channelId)
     .sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id));
@@ -55,7 +48,7 @@ export function MessageList({ channelId }: Props) {
   const shouldStickToBottom = useRef(true);
 
   useEffect(() => {
-    setThreadRootId(null);
+    setJumpError(null);
   }, [channelId]);
 
   useLayoutEffect(() => {
@@ -121,6 +114,15 @@ export function MessageList({ channelId }: Props) {
     }
   };
 
+  const jumpToReferencedMessage = async (messageId: string) => {
+    setJumpError(null);
+    let found = Boolean(document.getElementById(`message-${messageId}`));
+    if (!found) found = await loadMessageThroughHistory(channelId, messageId, 20);
+    if (!found || !await focusMessageElement(messageId)) {
+      setJumpError('返信先のメッセージを読み込めませんでした');
+    }
+  };
+
   if (isLoading && messages.length === 0) {
     return (
       <div className="flex-1 flex items-center justify-center">
@@ -135,18 +137,12 @@ export function MessageList({ channelId }: Props) {
     const prev = messages[i - 1];
     const isFirst = !prev ||
       prev.authorId !== msg.authorId ||
+      Boolean(msg.refMessageId) ||
       new Date(msg.createdAt).getTime() - new Date(prev.createdAt).getTime() > 5 * 60 * 1000;
     groupedMessages.push({ message: msg, isFirst });
   });
 
   return (
-    <>
-      <ThreadPanel
-        channelId={channelId}
-        root={threadRoot}
-        replies={threadReplies}
-        onClose={() => setThreadRootId(null)}
-      />
       <div
         ref={containerRef}
         onScroll={handleScroll}
@@ -155,6 +151,13 @@ export function MessageList({ channelId }: Props) {
       {isLoadingMore && (
         <div className="text-center py-2 text-discord-muted text-sm">
           さらに読み込み中...
+        </div>
+      )}
+
+      {jumpError && (
+        <div role="alert" className="sticky top-1 z-10 mx-4 flex items-center justify-between gap-3 rounded bg-discord-red/15 px-3 py-2 text-sm text-discord-red">
+          <span>{jumpError}</span>
+          <button type="button" onClick={() => setJumpError(null)} className="underline">閉じる</button>
         </div>
       )}
 
@@ -173,8 +176,7 @@ export function MessageList({ channelId }: Props) {
             key={message.id}
             message={message}
             isFirst={isFirst}
-            replyCount={message.refMessageId ? 0 : threadCounts[message.id] || 0}
-            onOpenThread={setThreadRootId}
+            onJumpToMessage={(messageId) => { void jumpToReferencedMessage(messageId); }}
           />
         ))}
 
@@ -192,20 +194,25 @@ export function MessageList({ channelId }: Props) {
               <span className="font-medium text-white">{user?.displayName || '自分'}</span>
               <span className="text-xs text-discord-muted">
                 {item.status === 'sending' && '送信中…'}
-                {item.status === 'queued' && '未送信・自動再送待ち'}
+                {item.status === 'queued' && '未送信・自動送信待ち'}
                 {item.status === 'failed' && '送信失敗'}
               </span>
             </div>
-            <p className="whitespace-pre-wrap break-words text-discord-text">{item.content}</p>
+            <div className="break-words text-discord-text">
+              <MessageContent
+                content={item.content}
+                members={workspaceMembers}
+                currentUserId={user?.id || null}
+              />
+            </div>
             {item.status !== 'sending' && (
               <button type="button" onClick={() => retryOutboxItem(item.id)} className="mt-1 text-xs text-discord-muted underline hover:text-discord-text">
-                {item.error ? `${item.error} — 再試行` : '今すぐ再試行'}
+                {item.status === 'failed' ? '送信できませんでした — 再試行' : '今すぐ再試行'}
               </button>
             )}
           </div>
         </div>
         ))}
       </div>
-    </>
   );
 }

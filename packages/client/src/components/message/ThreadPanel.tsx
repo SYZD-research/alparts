@@ -1,6 +1,7 @@
 import type { Message } from '@alparts/shared';
 import { useMessageStore } from '../../stores/message.store';
 import { Dialog } from '../ui/Dialog';
+import { userFacingMessageText } from '../../services/message-display';
 
 interface ThreadPanelProps {
   channelId: string;
@@ -24,7 +25,6 @@ export function ThreadPanel({ channelId, root, replies, onClose }: ThreadPanelPr
       open={Boolean(root)}
       onClose={onClose}
       title="返信スレッド"
-      description="現在この端末で読み込み・復号済みの同一チャンネル内返信だけを表示します。"
       size="md"
     >
       {root && (
@@ -33,7 +33,7 @@ export function ThreadPanel({ channelId, root, replies, onClose }: ThreadPanelPr
           <section aria-labelledby="loaded-thread-replies-heading">
             <div className="mb-2 flex items-center justify-between gap-3">
               <h3 id="loaded-thread-replies-heading" className="font-semibold text-white">
-                読み込み済み返信（{replies.length}件）
+                返信
               </h3>
               <button
                 type="button"
@@ -45,7 +45,7 @@ export function ThreadPanel({ channelId, root, replies, onClose }: ThreadPanelPr
               </button>
             </div>
             {replies.length === 0 ? (
-              <p className="rounded bg-discord-input px-3 py-4 text-sm text-discord-muted">読み込み済み範囲に返信はありません。</p>
+              <p className="rounded bg-discord-input px-3 py-4 text-sm text-discord-muted">このメッセージへの返信はまだありません。</p>
             ) : (
               <ol className="space-y-2">
                 {replies.map((message) => (
@@ -54,7 +54,6 @@ export function ThreadPanel({ channelId, root, replies, onClose }: ThreadPanelPr
               </ol>
             )}
           </section>
-          <p className="text-xs text-discord-muted">未読み込みの古い履歴は件数に含まれません。このパネルを開いても追加の本文をサーバーから取得しません。</p>
         </div>
       )}
     </Dialog>
@@ -70,7 +69,7 @@ function ThreadMessage({ message, label }: { message: Message; label?: string })
         <time dateTime={message.createdAt} className="text-xs text-discord-muted">{formatMessageTime(message.createdAt)}</time>
       </div>
       <p className="mt-1 whitespace-pre-wrap break-words text-sm text-discord-text">
-        {message.type === 'delete' ? '削除されたメッセージ' : message.content || '（本文なし）'}
+        {message.type === 'delete' ? '削除されたメッセージ' : userFacingMessageText(message.content || '') || '（本文なし）'}
       </p>
     </article>
   );

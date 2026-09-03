@@ -55,7 +55,7 @@ export function LoginPage() {
             </div>
             <div>
               <label className="block text-xs font-bold text-discord-muted uppercase mb-2">
-                招待トークン
+                招待コード
               </label>
               <input
                 type="password"

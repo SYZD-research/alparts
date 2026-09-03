@@ -19,7 +19,7 @@ describe('searchLoadedMessages', () => {
       'channel-1': [
         message({ id: 'valid' }),
         message({ id: 'deleted', type: 'delete' }),
-        message({ id: 'unavailable', content: '[復号鍵を利用できません]' }),
+        message({ id: 'unavailable', content: '[メッセージを検証できませんでした]' }),
       ],
       'not-current-workspace': [message({ id: 'stale', channelId: 'not-current-workspace' })],
     }, [{ id: 'channel-1', name: 'general' }]);

@@ -20,6 +20,8 @@ import { useUserStateStore } from '../../stores/user-state.store';
 import { useMessageStore } from '../../stores/message.store';
 import { api } from '../../services/api';
 import { parseMessageRoute } from '../../stores/permalink-model';
+import { focusMessageElement } from '../../services/message-navigation';
+import { ResizablePane } from './ResizablePane';
 
 type PermalinkNavigationStatus = {
   kind: 'loading' | 'success' | 'error';
@@ -98,11 +100,11 @@ export function AppLayout() {
       return;
     }
     if (messageRoute.kind === 'invalid') {
-      setPermalinkStatus({ kind: 'error', message: 'メッセージリンクのUUID形式が不正です。サーバーへは送信していません。' });
+      setPermalinkStatus({ kind: 'error', message: 'このメッセージへのリンクを開けませんでした。' });
       return;
     }
 
-    setPermalinkStatus({ kind: 'loading', message: 'メッセージリンクを検証し、暗号化履歴を読み込んでいます…' });
+    setPermalinkStatus({ kind: 'loading', message: 'メッセージを開いています…' });
     void (async () => {
       try {
         const authoritativeChannel = await api.getChannel(messageRoute.channelId);
@@ -111,7 +113,7 @@ export function AppLayout() {
           || authoritativeChannel.id !== messageRoute.channelId
           || authoritativeChannel.workspaceId !== messageRoute.workspaceId
         ) {
-          if (request === permalinkRequest.current) throw new Error('リンクのworkspaceとchannelが一致しません');
+          if (request === permalinkRequest.current) throw new Error('リンクの内容が一致しません');
           return;
         }
 
@@ -134,27 +136,25 @@ export function AppLayout() {
 
         const loadedChannel = useChannelStore.getState().channels.find((channel) => channel.id === messageRoute.channelId);
         if (!loadedChannel || loadedChannel.workspaceId !== authoritativeChannel.workspaceId) {
-          throw new Error('検証済みチャンネルをワークスペース内で開けませんでした');
+          throw new Error('リンク先チャンネルを開けませんでした');
         }
         setActiveChannel(messageRoute.channelId);
         const found = await loadMessageThroughHistory(messageRoute.channelId, messageRoute.messageId, 20);
         if (request !== permalinkRequest.current) return;
         if (!found) {
-          const loadError = useMessageStore.getState().securityErrors[messageRoute.channelId];
-          if (loadError) throw new Error(`リンク先履歴を安全に読み込めませんでした: ${loadError}`);
-          throw new Error('過去20ページ以内にリンク先メッセージを見つけられませんでした');
+          throw new Error('リンク先メッセージを見つけられませんでした');
         }
-        if (!await focusPermalinkMessage(messageRoute.messageId)) {
+        if (!await focusMessageElement(messageRoute.messageId)) {
           throw new Error('メッセージは読み込みましたが表示要素を準備できませんでした');
         }
         if (request === permalinkRequest.current) {
           setPermalinkStatus({ kind: 'success', message: 'リンク先メッセージを表示しました。' });
         }
-      } catch (error) {
+      } catch {
         if (request === permalinkRequest.current) {
           setPermalinkStatus({
             kind: 'error',
-            message: error instanceof Error ? error.message : 'メッセージリンクを開けませんでした',
+            message: 'このメッセージを表示できません。削除されたか、閲覧できない可能性があります。',
           });
         }
       }
@@ -183,12 +183,32 @@ export function AppLayout() {
       <WorkspaceManagerDialog />
       <SavedMessagesDialog />
       <WorkspaceSidebar />
-      {activeWorkspaceId && <ChannelSidebar />}
+      {activeWorkspaceId && (
+        <ResizablePane
+          storageKey="alparts:channel-sidebar-width"
+          defaultWidth={240}
+          minWidth={176}
+          maxWidth={420}
+          resizeEdge="right"
+          label="チャンネル一覧の幅を変更"
+        >
+          <ChannelSidebar />
+        </ResizablePane>
+      )}
       <div className="flex flex-1 min-w-0">
         {activeChannelId ? (
           <>
             <ChatArea />
-            <UserList />
+            <ResizablePane
+              storageKey="alparts:member-sidebar-width"
+              defaultWidth={240}
+              minWidth={176}
+              maxWidth={420}
+              resizeEdge="left"
+              label="メンバー一覧の幅を変更"
+            >
+              <UserList />
+            </ResizablePane>
           </>
         ) : (
           <div className="flex-1 flex items-center justify-center bg-discord-bg">
@@ -201,21 +221,4 @@ export function AppLayout() {
       </div>
     </div>
   );
-}
-
-async function focusPermalinkMessage(messageId: string): Promise<boolean> {
-  for (let attempt = 0; attempt < 30; attempt += 1) {
-    const target = document.getElementById(`message-${messageId}`);
-    if (target instanceof HTMLElement) {
-      target.scrollIntoView({ block: 'center', behavior: 'smooth' });
-      target.focus({ preventScroll: true });
-      target.dataset.permalinkHighlight = 'true';
-      window.setTimeout(() => {
-        if (target.dataset.permalinkHighlight === 'true') delete target.dataset.permalinkHighlight;
-      }, 4000);
-      return true;
-    }
-    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-  }
-  return false;
 }

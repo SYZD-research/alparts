@@ -478,7 +478,7 @@ async function processIncomingSignal(
   try {
     directory = await loadDeviceDirectory(envelope.channelId);
   } catch {
-    noteVoiceError('通話相手の端末署名情報を取得できませんでした');
+    noteVoiceError('通話相手の接続情報を確認できませんでした');
     return;
   }
   if (generation !== callGeneration) return;
@@ -981,5 +981,5 @@ function voiceErrorMessage(error: unknown): string {
     if (error.name === 'NotFoundError') return '利用できるマイクが見つかりません';
     if (error.name === 'NotReadableError') return 'マイクをほかのアプリが使用しているため開始できません';
   }
-  return error instanceof Error && error.message ? error.message : '音声通話を開始できませんでした';
+  return '音声通話を開始できませんでした。もう一度お試しください';
 }

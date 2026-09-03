@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { ChannelReadState, Message, User } from '@alparts/shared';
-import { auditResult, safeAuditDetails } from './audit-log-model';
+import {
+  auditActionLabel,
+  auditResult,
+  auditTargetLabel,
+  safeAuditDetails,
+} from './audit-log-model';
 import { insertPastedText, previewLargePaste } from './paste-preview-model';
 import { buildMessagePermalink, parseMessageRoute, safeMessageReturnPath } from './permalink-model';
 import { countLoadedThreadReplies, loadedThreadReplies } from './thread-model';
@@ -71,7 +76,7 @@ describe('workspace unread model', () => {
 });
 
 describe('audit details model', () => {
-  it('shows only allowlisted scalar details and never dumps secret-like or nested values', () => {
+  it('shows only useful labeled details and never dumps identifiers, internal values, secrets, or nested values', () => {
     const details = {
       workspaceId,
       result: 'failure',
@@ -83,12 +88,16 @@ describe('audit details model', () => {
       nested: { password: 'hidden' },
     };
     expect(safeAuditDetails(details)).toEqual([
-      { key: 'workspaceId', value: workspaceId },
-      { key: 'result', value: 'failure' },
-      { key: 'reason', value: 'forbidden' },
-      { key: 'changed', value: 'true' },
+      { key: '変更', value: 'あり' },
     ]);
     expect(auditResult({ details })).toBe('failure');
+  });
+
+  it('uses plain labels instead of internal audit action and target names', () => {
+    expect(auditActionLabel('channel.key.epoch.propose')).toBe('チャンネルの利用準備を更新');
+    expect(auditActionLabel('internal.unknown.operation')).toBe('管理操作');
+    expect(auditTargetLabel('workspace_invitation')).toBe('招待');
+    expect(auditTargetLabel('internal_target')).toBeNull();
   });
 });
 

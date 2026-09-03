@@ -1,23 +1,23 @@
-import { useState } from 'react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
+import { useMemo, useState } from 'react';
 import { useMessageStore } from '../../stores/message.store';
 import { useAuthStore } from '../../stores/auth.store';
 import type { Message } from '@alparts/shared';
 import { useUserStateStore } from '../../stores/user-state.store';
 import { AttachmentItem } from './AttachmentItem';
-import { safeMarkdownHref } from '../../services/url-policy';
 import { useChannelStore } from '../../stores/channel.store';
 import { buildMessagePermalink } from '../../stores/permalink-model';
+import { useWorkspaceStore } from '../../stores/workspace.store';
+import { messageMentionsCurrentUser } from '../../services/mention-model';
+import { MessageContent } from './MessageContent';
+import { userFacingMessageText } from '../../services/message-display';
 
 interface Props {
   message: Message;
   isFirst: boolean;
-  replyCount?: number;
-  onOpenThread?: (messageId: string) => void;
+  onJumpToMessage?: (messageId: string) => void;
 }
 
-export function MessageItem({ message, isFirst, replyCount = 0, onOpenThread }: Props) {
+export function MessageItem({ message, isFirst, onJumpToMessage }: Props) {
   const [showActions, setShowActions] = useState(false);
   const [bookmarkFailure, setBookmarkFailure] = useState<string | null>(null);
   const [copyStatus, setCopyStatus] = useState<string | null>(null);
@@ -36,6 +36,17 @@ export function MessageItem({ message, isFirst, replyCount = 0, onOpenThread }: 
     state.eventsByChannel[message.channelId]?.find((event) => event.id === message.id && event.type === 'message')
   ));
   const user = useAuthStore((state) => state.user);
+  const workspaceMembers = useWorkspaceStore((state) => state.members);
+  const mentionMembers = useMemo(() => workspaceMembers.map((member) => ({
+    userId: member.userId,
+    displayName: member.user.displayName,
+  })), [workspaceMembers]);
+  const mentionsCurrentUser = useMemo(() => messageMentionsCurrentUser(
+    message.content || '',
+    mentionMembers,
+    user?.id || null,
+    message.broadcastMention === true,
+  ), [mentionMembers, message.broadcastMention, message.content, user?.id]);
   const bookmarked = useUserStateStore((state) => Boolean(state.bookmarkedMessageIds[message.id]));
   const bookmarkSaving = useUserStateStore((state) => Boolean(state.bookmarkSavingByMessage[message.id]));
   const toggleBookmark = useUserStateStore((state) => state.toggleBookmark);
@@ -52,7 +63,7 @@ export function MessageItem({ message, isFirst, replyCount = 0, onOpenThread }: 
 
   const handleCopyLink = async () => {
     if (!permalinkPath) {
-      setCopyStatus('安全なメッセージリンクを作成できませんでした');
+      setCopyStatus('メッセージへのリンクを作成できませんでした');
       return;
     }
     const link = new URL(permalinkPath, window.location.origin).toString();
@@ -81,16 +92,6 @@ export function MessageItem({ message, isFirst, replyCount = 0, onOpenThread }: 
         >
           リンク
         </button>
-        {replyCount > 0 && onOpenThread && (
-          <button
-            type="button"
-            onClick={() => onOpenThread(message.id)}
-            className="ml-2 text-xs not-italic text-discord-accent underline"
-            aria-label={`${replyCount}件の読み込み済み返信を開く`}
-          >
-            {replyCount}件の返信
-          </button>
-        )}
         {copyStatus && <span role="status" className="ml-2 text-xs not-italic">{copyStatus}</span>}
         {fallbackLink && (
           <label className="mt-1 block text-xs not-italic">
@@ -131,15 +132,18 @@ export function MessageItem({ message, isFirst, replyCount = 0, onOpenThread }: 
 
   const handleBookmark = () => {
     setBookmarkFailure(null);
-    void toggleBookmark(message.id).catch((error: unknown) => {
-      setBookmarkFailure(error instanceof Error ? error.message : 'ブックマークを更新できませんでした');
+    void toggleBookmark(message.id).catch(() => {
+      setBookmarkFailure('保存状態を更新できませんでした。もう一度お試しください');
     });
   };
 
   return (
     <div
       id={`message-${message.id}`}
-      className={`group relative flex gap-4 py-0.5 px-4 hover:bg-discord-hover/30 ${
+      data-self-mention={mentionsCurrentUser ? 'true' : undefined}
+      className={`group relative flex gap-4 px-4 py-0.5 ${
+        mentionsCurrentUser ? '' : 'hover:bg-discord-hover/30'
+      } ${
         isFirst ? 'mt-4 pt-2' : ''
       }`}
       onMouseEnter={() => setShowActions(true)}
@@ -151,16 +155,42 @@ export function MessageItem({ message, isFirst, replyCount = 0, onOpenThread }: 
       tabIndex={0}
     >
       {isFirst ? (
-        <div className="flex-shrink-0 w-10 h-10 rounded-full bg-discord-accent flex items-center justify-center text-white font-bold mt-0.5">
+        <div className={`flex-shrink-0 w-10 h-10 rounded-full bg-discord-accent flex items-center justify-center text-white font-bold ${message.refMessageId ? 'mt-6' : 'mt-0.5'}`}>
           {(message.author?.displayName || '?').slice(0, 1).toUpperCase()}
         </div>
       ) : (
-        <div className="flex-shrink-0 w-10 text-xs text-discord-muted text-center opacity-0 group-hover:opacity-100 pt-1">
+        <div className={`flex-shrink-0 w-10 text-xs text-discord-muted text-center opacity-0 group-hover:opacity-100 ${message.refMessageId ? 'pt-7' : 'pt-1'}`}>
           {timestamp}
         </div>
       )}
 
       <div className="flex-1 min-w-0">
+        {message.refMessageId && (
+          <button
+            type="button"
+            onClick={() => onJumpToMessage?.(message.refMessageId!)}
+            disabled={!onJumpToMessage}
+            className="relative mb-1 flex max-w-full items-center gap-1.5 text-left text-xs text-discord-muted hover:text-discord-text disabled:cursor-default"
+            aria-label="返信先のメッセージへ移動"
+          >
+            <span aria-hidden="true" className="absolute -left-9 top-1/2 h-4 w-9 -translate-y-px rounded-tl-md border-l-2 border-t-2 border-discord-hover" />
+            <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-discord-accent text-[9px] font-bold text-white">
+              {(referencedMessage?.author?.displayName || '?').slice(0, 1).toUpperCase()}
+            </span>
+            {referencedMessage ? (
+              <>
+                <span className="shrink-0 font-semibold text-discord-text">{referencedMessage.author?.displayName || '不明なユーザー'}</span>
+                <span className="truncate">
+                  {referencedMessage.type === 'delete'
+                    ? '削除されたメッセージ'
+                    : userFacingMessageText(referencedMessage.content || '') || (referencedMessage.attachments?.length ? '添付ファイル' : '本文なし')}
+                </span>
+              </>
+            ) : (
+              <span className="truncate hover:underline">元のメッセージを表示</span>
+            )}
+          </button>
+        )}
         {isFirst && (
           <div className="flex items-baseline gap-2 mb-0.5">
             <span className="font-medium text-white hover:underline cursor-pointer">
@@ -172,34 +202,13 @@ export function MessageItem({ message, isFirst, replyCount = 0, onOpenThread }: 
           </div>
         )}
 
-        {referencedMessage && (
-          <div className="mb-1 border-l-2 border-discord-muted pl-2 text-xs text-discord-muted">
-            <span className="font-medium">{referencedMessage.author.displayName}: </span>
-            <span className="line-clamp-1">{referencedMessage.type === 'delete' ? '削除されたメッセージ' : referencedMessage.content}</span>
-          </div>
-        )}
-
         <div className="text-discord-text leading-relaxed break-words prose prose-invert prose-sm max-w-none">
-          <ReactMarkdown
-            remarkPlugins={[remarkGfm]}
-            components={{
-              img: ({ alt }) => (
-                <span role="img" aria-label={alt || '外部画像'} className="text-discord-muted italic">
-                  [外部画像は自動取得しません{alt ? `: ${alt}` : ''}]
-                </span>
-              ),
-              a: ({ href, children }) => {
-                const safeHref = safeMarkdownHref(href);
-                return safeHref ? (
-                  <a href={safeHref} target="_blank" rel="noopener noreferrer" referrerPolicy="no-referrer">
-                    {children}
-                  </a>
-                ) : <span title="安全でないURL schemeを除外しました">{children}</span>;
-              },
-            }}
-          >
-            {message.content || ''}
-          </ReactMarkdown>
+          <MessageContent
+            content={message.content || ''}
+            members={workspaceMembers}
+            currentUserId={user?.id || null}
+            authenticatedBroadcastMention={message.broadcastMention === true}
+          />
           {message.type === 'edit' && <span className="ml-1 text-xs text-discord-muted">（編集済み）</span>}
           {message.isPinned && <span className="ml-2 text-xs text-discord-yellow">📌 ピン留め</span>}
           {bookmarked && <span className="ml-2 text-xs text-discord-accent">🔖 保存済み</span>}
@@ -212,16 +221,6 @@ export function MessageItem({ message, isFirst, replyCount = 0, onOpenThread }: 
           />
         ))}
         {bookmarkFailure && <p role="alert" className="mt-1 text-xs text-discord-red">{bookmarkFailure}</p>}
-        {replyCount > 0 && onOpenThread && (
-          <button
-            type="button"
-            onClick={() => onOpenThread(message.id)}
-            className="mt-1 text-xs font-medium text-discord-accent hover:underline"
-            aria-label={`${replyCount}件の読み込み済み返信を開く`}
-          >
-            {replyCount}件の返信（読み込み済み）
-          </button>
-        )}
         {copyStatus && <p role="status" className="mt-1 text-xs text-discord-muted">{copyStatus}</p>}
         {fallbackLink && (
           <label className="mt-1 block text-xs text-discord-muted">
@@ -296,8 +295,8 @@ export function MessageItem({ message, isFirst, replyCount = 0, onOpenThread }: 
             onClick={() => { void handleCopyLink(); }}
             disabled={!permalinkPath}
             className="px-2 py-1 text-sm text-discord-muted hover:bg-discord-hover hover:text-discord-text disabled:opacity-40"
-            title="恒久リンクをコピー"
-            aria-label="メッセージへの恒久リンクをコピー"
+            title="リンクをコピー"
+            aria-label="メッセージへのリンクをコピー"
           >
             🔗
           </button>

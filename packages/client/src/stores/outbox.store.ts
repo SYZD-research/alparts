@@ -161,7 +161,7 @@ export const useOutboxStore = create<OutboxState>((set, get) => ({
         set((state) => ({
           errorsByChannel: {
             ...state.errorsByChannel,
-            [channelId]: errorMessage(error, 'メッセージを暗号化outboxへ保存できませんでした'),
+            [channelId]: errorMessage(error, '未送信メッセージを保存できませんでした'),
           },
         }));
       }

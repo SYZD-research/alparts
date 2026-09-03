@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { serializeChannelKeyAcknowledgement } from '@alparts/shared';
 import type { ChannelKeyDelivery } from './api';
 import {
+  ChannelKeyActivationPendingError,
   hasActiveEpochAuthority,
   isDecryptableChannelKeyEpoch,
+  isChannelKeyActivationPendingError,
   orderChannelKeyDeliveries,
   tryChannelKeyDeliveries,
 } from './crypto.service';
@@ -57,6 +59,13 @@ describe('two-phase channel-key delivery selection', () => {
     expect(isDecryptableChannelKeyEpoch('aborted')).toBe(false);
     expect(isDecryptableChannelKeyEpoch('active')).toBe(true);
     expect(isDecryptableChannelKeyEpoch('retired')).toBe(true);
+  });
+
+  it('classifies recipient acknowledgement waiting as availability rather than a security failure', () => {
+    const pending = new ChannelKeyActivationPendingError(2);
+    expect(isChannelKeyActivationPendingError(pending)).toBe(true);
+    expect(pending.message).toContain('あと2台');
+    expect(isChannelKeyActivationPendingError(new Error('invalid signature'))).toBe(false);
   });
 
   it('permits pending cleanup after total active-holder loss without claiming old-key access', () => {

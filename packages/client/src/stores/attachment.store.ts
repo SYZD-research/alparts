@@ -114,9 +114,9 @@ function taskErrorMessage(error: unknown): string {
   if (error instanceof ApiError) {
     if (error.status === 403) return 'このチャンネルで添付ファイルを送信する権限がありません';
     if (error.status === 413) return 'ストレージ容量またはファイルサイズの上限を超えました';
-    if (error.status === 410 && error.code === 'UPLOAD_EXPIRED') return '添付アップロードの有効期限が切れました。新しい暗号attemptで再試行してください';
-    if (error.status === 409) return '添付アップロードの状態が競合しました。履歴を再読込して確認してください';
-    if (error.status === 429) return '添付アップロードが混雑しています。しばらくして再試行してください';
+    if (error.status === 410 && error.code === 'UPLOAD_EXPIRED') return 'アップロードの有効期限が切れました。自動的にやり直します';
+    if (error.status === 409) return 'アップロード状態が競合しました。一覧を再読み込みして確認してください';
+    if (error.status === 429) return 'アップロードが混雑しています。しばらくして再試行してください';
   }
   return error instanceof Error && error.message ? error.message : '添付ファイルを送信できませんでした';
 }
@@ -194,7 +194,7 @@ async function prepareUpload(runtime: UploadRuntime, signal: AbortSignal): Promi
 async function createReservationAttempt(runtime: UploadRuntime): Promise<ReservationAttempt> {
   const { file, message } = runtime;
   const channelKey = await getChannelKeyForVersion(message.channelId, message.keyVersion);
-  if (!channelKey) throw new Error('メッセージのチャンネル鍵を利用できません');
+  if (!channelKey) throw new Error('このチャンネルは現在ファイルを送信できません');
   const preparedKey = await prepareAttachmentFileKey(file.name, message.id);
   try {
     if (preparedKey.filenameEnc.length > 8192) throw new Error('添付ファイル名が長すぎます');

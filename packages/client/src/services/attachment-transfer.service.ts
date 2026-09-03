@@ -21,6 +21,11 @@ import {
   boundedBackoffDelayMs,
   MAX_RETRY_ATTEMPTS,
 } from './fixed-request-retry';
+import {
+  ATTACHMENT_IMAGE_PREVIEW_MAX_BYTES,
+  canPreviewImage,
+  matchesPreviewImageSignature,
+} from './attachment-preview';
 
 export interface AttachmentDownloadProgress {
   completedBytes: number;
@@ -146,7 +151,75 @@ export function assertAttachmentReservationContract(
     || reservation.crypto.aadFormat !== ATTACHMENT_CHUNK_AAD_FORMAT
     || plaintextSize > reservation.maxPlaintextBytes
   ) {
-    throw new Error('サーバーの添付暗号契約がこのクライアントと一致しません');
+    throw new Error('サーバーとのファイル形式の取り決めが一致しません。最新版で再読み込みしてください');
+  }
+}
+
+/**
+ * Authenticates and decrypts a bounded raster image for an inline preview.
+ * Active formats such as SVG are never accepted, and the returned Blob uses
+ * the signed, normalized MIME type rather than sniffing untrusted content.
+ */
+export async function loadAttachmentImagePreview(
+  message: Pick<Message, 'id' | 'channelId' | 'authorId' | 'keyVersion'>,
+  attachment: Attachment,
+  signal: AbortSignal,
+  onProgress: (progress: AttachmentDownloadProgress) => void,
+): Promise<Blob> {
+  buildSignedAttachmentEnvelope(message, attachment);
+  const manifest = validateAttachmentManifest(attachment, message.id);
+  if (!canPreviewImage(attachment.mimeType, manifest.plaintextSize)) {
+    throw new Error(
+      manifest.plaintextSize > ATTACHMENT_IMAGE_PREVIEW_MAX_BYTES
+        ? '画像が大きいためプレビューできません。ファイルとして保存してください'
+        : 'この画像形式は安全なプレビューに対応していません',
+    );
+  }
+
+  const chunks: ArrayBuffer[] = [];
+  try {
+    const fileKey = await unwrapAttachmentFileKey(message, attachment);
+    let completedBytes = 0;
+    onProgress({
+      completedBytes,
+      totalBytes: manifest.plaintextSize,
+      completedChunks: 0,
+      totalChunks: manifest.chunkCount,
+    });
+
+    for (let index = 0; index < manifest.chunkCount; index += 1) {
+      throwIfAborted(signal);
+      const ciphertext = await withTransientAttachmentRetry(
+        () => api.getAttachmentChunk(attachment.id, index, signal),
+        signal,
+      );
+      throwIfAborted(signal);
+      const plaintext = new Uint8Array(await decryptAttachmentChunk(ciphertext, fileKey, manifest, index));
+      try {
+        if (index === 0 && !matchesPreviewImageSignature(attachment.mimeType, plaintext)) {
+          throw new Error('添付データが指定された画像形式と一致しないため、プレビューを停止しました');
+        }
+        const copy = new Uint8Array(plaintext.byteLength);
+        copy.set(plaintext);
+        chunks.push(copy.buffer);
+        completedBytes += plaintext.byteLength;
+        onProgress({
+          completedBytes,
+          totalBytes: manifest.plaintextSize,
+          completedChunks: index + 1,
+          totalChunks: manifest.chunkCount,
+        });
+      } finally {
+        plaintext.fill(0);
+      }
+    }
+
+    const blob = new Blob(chunks, { type: attachment.mimeType });
+    for (const chunk of chunks) new Uint8Array(chunk).fill(0);
+    return blob;
+  } catch (error) {
+    for (const chunk of chunks) new Uint8Array(chunk).fill(0);
+    throw error;
   }
 }
 

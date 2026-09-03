@@ -7,6 +7,7 @@ import {
   ensureChannelKey,
   getActiveDevice,
   getChannelKeysForVersions,
+  isChannelKeyActivationPendingError,
   signMessageEnvelope,
   verifyMessageSignature,
 } from '../services/crypto.service';
@@ -39,12 +40,14 @@ interface MessageState {
   hasMore: Record<string, boolean>;
   cursors: Record<string, string | null>;
   securityErrors: Record<string, string | null>;
+  channelKeyPending: Record<string, string | null>;
   operationErrors: Record<string, string | null>;
   replyTargets: Record<string, ProjectedMessage | null>;
   editTargets: Record<string, ProjectedMessage | null>;
   loadMessages: (channelId: string) => Promise<void>;
   loadMoreMessages: (channelId: string) => Promise<void>;
   loadMessageThroughHistory: (channelId: string, messageId: string, maxPages?: number) => Promise<boolean>;
+  reconcileChannelKey: (channelId: string) => Promise<boolean>;
   sendMessage: (
     channelId: string,
     content: string,
@@ -142,9 +145,10 @@ function channelUpdate(state: MessageState, channelId: string, events: Message[]
       securityErrors: envelopeConflict
         ? {
             ...omitEvicted(state.securityErrors),
-            [channelId]: '同一メッセージIDに異なる署名済み内容を検出したため隔離しました',
+            [channelId]: '安全のため、このチャンネルの履歴の読み込みを停止しました',
           }
         : omitEvicted(state.securityErrors),
+      channelKeyPending: omitEvicted(state.channelKeyPending),
       operationErrors: omitEvicted(state.operationErrors),
       replyTargets: omitEvicted(state.replyTargets),
       editTargets: omitEvicted(state.editTargets),
@@ -158,7 +162,7 @@ function channelUpdate(state: MessageState, channelId: string, events: Message[]
   if (envelopeConflict) {
     update.securityErrors = {
       ...state.securityErrors,
-      [channelId]: '同一メッセージIDに異なる署名済み内容を検出したため隔離しました',
+      [channelId]: '安全のため、このチャンネルの履歴の読み込みを停止しました',
     };
   }
   return update;
@@ -233,6 +237,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
   hasMore: {},
   cursors: {},
   securityErrors: {},
+  channelKeyPending: {},
   operationErrors: {},
   replyTargets: {},
   editTargets: {},
@@ -249,7 +254,16 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         loadingByChannel: { ...state.loadingByChannel, [channelId]: true },
       }));
       try {
-        await ensureChannelKey(channelId);
+        let keyPending: string | null = null;
+        try {
+          await ensureChannelKey(channelId);
+        } catch (error) {
+          if (!isChannelKeyActivationPendingError(error)) throw error;
+          // A pending epoch is an expected availability state. History remains
+          // readable with previously activated epochs, while writes continue
+          // to fail closed until every recipient acknowledges the new epoch.
+          keyPending = error.message;
+        }
         const result = await api.getMessages(channelId);
         if (!isMessageContextCurrent(channelId, generation, channelEpoch) || loadVersions.get(channelId) !== loadVersion) return;
         set((state) => ({
@@ -257,6 +271,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
           hasMore: { ...state.hasMore, [channelId]: result.hasMore },
           cursors: { ...state.cursors, [channelId]: result.cursor },
           securityErrors: { ...state.securityErrors, [channelId]: null },
+          channelKeyPending: { ...state.channelKeyPending, [channelId]: keyPending },
           loadingByChannel: { ...state.loadingByChannel, [channelId]: false },
           isLoading: false,
         }));
@@ -267,6 +282,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
           isLoading: false,
           loadingByChannel: { ...state.loadingByChannel, [channelId]: false },
           securityErrors: { ...state.securityErrors, [channelId]: errorMessage(error, 'Secure channel initialization failed') },
+          channelKeyPending: { ...state.channelKeyPending, [channelId]: null },
         }));
       }
     })();
@@ -328,6 +344,37 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       if (!get().cursors[channelId] || get().cursors[channelId] === previousCursor) break;
     }
     return containsTarget();
+  },
+
+  reconcileChannelKey: async (channelId) => {
+    const generation = messageStoreGeneration;
+    const channelEpoch = currentChannelEpoch(channelId);
+    try {
+      await ensureChannelKey(channelId);
+      if (!isMessageContextCurrent(channelId, generation, channelEpoch)) return false;
+      set((state) => ({
+        channelKeyPending: { ...state.channelKeyPending, [channelId]: null },
+      }));
+      get().retryUnavailableMessages(channelId);
+      return true;
+    } catch (error) {
+      if (!isMessageContextCurrent(channelId, generation, channelEpoch)) return false;
+      if (isChannelKeyActivationPendingError(error)) {
+        set((state) => ({
+          channelKeyPending: { ...state.channelKeyPending, [channelId]: error.message },
+          securityErrors: { ...state.securityErrors, [channelId]: null },
+        }));
+      } else {
+        set((state) => ({
+          channelKeyPending: { ...state.channelKeyPending, [channelId]: null },
+          securityErrors: {
+            ...state.securityErrors,
+            [channelId]: errorMessage(error, 'Secure channel initialization failed'),
+          },
+        }));
+      }
+      return false;
+    }
   },
 
   sendMessage: async (channelId, content, refMessageId, fixedIdempotencyKey, allowEmpty = false) => {
@@ -627,7 +674,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         if (message.type !== 'message' && message.type !== 'edit' && message.type !== 'delete') return message;
         if (!message.deviceId || !message.signature || (message.type !== 'delete' && !message.contentNonce)) {
           if (message.type !== 'message') return null;
-          return markMessageCryptoVerification({ ...message, content: '[未検証の旧形式メッセージ]' }, false);
+          return markMessageCryptoVerification({ ...message, content: '[表示できないメッセージ]' }, false);
         }
         const identity = identities.get(message.deviceId);
         const envelope: SignedMessageEnvelope = {
@@ -650,7 +697,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         );
         if (invalidSignature) {
           if (message.type !== 'message') return null;
-          return markMessageCryptoVerification({ ...message, content: '[署名検証に失敗したメッセージ]' }, false);
+          return markMessageCryptoVerification({ ...message, content: '[メッセージを検証できませんでした]' }, false);
         }
         if (message.type === 'delete') return markMessageCryptoVerification(message, true);
         const key = keysByVersion.get(message.keyVersion) ?? null;
@@ -759,6 +806,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         hasMore: withoutChannel(state.hasMore, channelId),
         cursors: withoutChannel(state.cursors, channelId),
         securityErrors: withoutChannel(state.securityErrors, channelId),
+        channelKeyPending: withoutChannel(state.channelKeyPending, channelId),
         operationErrors: withoutChannel(state.operationErrors, channelId),
         replyTargets: withoutChannel(state.replyTargets, channelId),
         editTargets: withoutChannel(state.editTargets, channelId),
@@ -783,6 +831,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       hasMore: {},
       cursors: {},
       securityErrors: {},
+      channelKeyPending: {},
       operationErrors: {},
       replyTargets: {},
       editTargets: {},
