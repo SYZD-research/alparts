@@ -10,7 +10,6 @@ on:
 permissions:
   actions: read
   contents: read
-  security-events: write
 
 jobs:
   analyze:
@@ -25,3 +24,7 @@ jobs:
           languages: javascript-typescript
           queries: security-extended
       - uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
+        with:
+          # Advanced Security is not enabled for this repository, so results
+          # cannot be uploaded to code scanning. Keep the local scan only.
+          upload: never
