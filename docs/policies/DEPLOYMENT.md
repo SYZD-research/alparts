@@ -12,7 +12,7 @@ Last verified: 2026-08-30
 | Multi-region production | unsupported | design target only; no leader fencing/conflict/failover model |
 | Air-gapped / edge appliance | conditionally supported at single-host level | pre-stage exact packages/image/tools; provide local durable dependencies, time, certificates and offline backup export |
 
-See [capability levels](./docs/deployment/CAPABILITY_LEVELS.md) for guarantees and non-guarantees.
+See [capability levels](../deployment/CAPABILITY_LEVELS.md) for guarantees and non-guarantees.
 
 ## Configuration model
 
@@ -30,7 +30,7 @@ The service does not silently auto-detect capabilities. Operators select an expl
 Before any production start or update:
 
 1. identify the exact Git revision, immutable OCI digest, Node/pnpm versions, and migration set;
-2. review [limitations](./LIMITATIONS.md) and [open risks](./docs/RISK_REGISTER.md) for the data classification;
+2. review [limitations](./LIMITATIONS.md) and [open risks](../RISK_REGISTER.md) for the data classification;
 3. generate unique secrets outside the repository and provide them through protected files/provider mounts;
 4. verify a dedicated PostgreSQL 16 database/`public` schema, PostgreSQL/MinIO endpoint identity, TLS trust, least-privilege roles, storage durability and capacity;
 5. build, lint, typecheck, test, scan secrets/dependencies, and build the exact image;

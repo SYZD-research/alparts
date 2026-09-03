@@ -39,7 +39,7 @@ jobs:
       - name: Validate generated changes and shell syntax
         run: |
           git diff --check
-          bash -n dev.sh just_run.sh scripts/*.sh scripts/lib/*.sh scripts/tests/*.sh
+          bash -n dev.sh scripts/*.sh scripts/lib/*.sh scripts/tests/*.sh
 
   integration:
     runs-on: ubuntu-24.04

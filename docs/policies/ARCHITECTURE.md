@@ -108,7 +108,7 @@ Quota checks execute under the same logical lock as insertion. Migration `0013_b
 - Uncaught exceptions and unhandled rejections trigger the same bounded shutdown and a non-zero exit so a supervisor can restart the service.
 - Authentication and storage overload return bounded 503 responses with `Retry-After`; queues and retries are finite.
 
-The service remains a single failure domain unless its external database/object store and host are separately protected. See [capability levels](./docs/deployment/CAPABILITY_LEVELS.md).
+The service remains a single failure domain unless its external database/object store and host are separately protected. See [capability levels](../deployment/CAPABILITY_LEVELS.md).
 
 ## Observability
 

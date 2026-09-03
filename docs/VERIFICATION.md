@@ -20,7 +20,7 @@ npx --yes @openai/codex-security@0.1.24 scan /home/konoha/develop/alparts \
 - Coverage: `partial` because the time ceiling deferred terminal reconciliation and left some candidates unvalidated.
 - Result: 13 canonical findings represented by 15 report instances (10 medium, 5 low). This is not a finding-free or exhaustive result.
 
-The scan was intentionally not rerun after remediation merely to manufacture a zero-finding label. Root-cause mapping and residual status are in [the audit record](../SECURITY_AUDIT.md) and [risk register](./RISK_REGISTER.md).
+The scan was intentionally not rerun after remediation merely to manufacture a zero-finding label. Root-cause mapping and residual status are in [the audit record](./policies/SECURITY_AUDIT.md) and [risk register](./RISK_REGISTER.md).
 
 ## Build and automated tests
 

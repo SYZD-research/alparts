@@ -2,13 +2,13 @@
 
 The canonical operator procedures are:
 
-- [Detailed service operations](./docs/OPERATIONS.md)
+- [Detailed service operations](../OPERATIONS.md)
 - [Deployment and migration](./DEPLOYMENT.md)
 - [Reliability and SLOs](./RELIABILITY.md)
-- [Backup/restore](./docs/BACKUP.md)
+- [Backup/restore](../BACKUP.md)
 - [Disaster recovery](./DISASTER_RECOVERY.md)
-- [Incident runbook](./docs/runbooks/INCIDENT_RESPONSE.md)
-- [Risk register](./docs/RISK_REGISTER.md)
+- [Incident runbook](../runbooks/INCIDENT_RESPONSE.md)
+- [Risk register](../RISK_REGISTER.md)
 
 ## Daily operating contract
 

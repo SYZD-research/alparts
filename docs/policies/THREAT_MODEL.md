@@ -2,7 +2,7 @@
 
 最終更新: 2026-08-30
 
-Canonical/current threat model: [`docs/security/THREAT_MODEL.md`](./docs/security/THREAT_MODEL.md). The material below remains as the detailed Phase 1 protocol baseline; where it conflicts, the canonical model, current code/tests, and risk register take precedence.
+Canonical/current threat model: [`docs/security/THREAT_MODEL.md`](../security/THREAT_MODEL.md). The material below remains as the detailed Phase 1 protocol baseline; where it conflicts, the canonical model, current code/tests, and risk register take precedence.
 
 対象はWeb / single-node / basic per-channel key / text中心＋最大8人P2P音声のprototypeである。`SPECIFICATION.md` の正式運用版に対するthreat modelまたはsecurity approvalではない。
 

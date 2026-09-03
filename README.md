@@ -2,7 +2,7 @@
 
 alpartsは、serverへ平文messageを渡さないchannel型communication基盤の **Phase 1 Web prototype** です。React/TypeScript SPA、Node.js/TypeScript API、PostgreSQL、MinIOで構成され、少人数向けP2P音声通話も提供します。
 
-このrepositoryは `SPECIFICATION.md` の正式運用版ではありません。現在の到達点はWeb / single-process / basic per-channel key / text中心＋最大8人P2P音声のprototypeです。2026-08-30に公式npx CLIのDeep Security Scanを実施し、pre-change treeへ13 canonical finding / 15 report instanceを報告しました。検出根本原因を現treeで修正し、fresh PostgreSQL/MinIOを含む回帰検証を行っていますが、scan coverageはtime ceiling等により`partial`で、独立外部reviewでもありません。ゼロデイ、認証情報、Embargo情報には使用しないでください。正確な境界は [docs/INDEX.md](./docs/INDEX.md)、[LIMITATIONS.md](./LIMITATIONS.md)、[risk register](./docs/RISK_REGISTER.md) を参照してください。
+このrepositoryは `SPECIFICATION.md` の正式運用版ではありません。現在の到達点はWeb / single-process / basic per-channel key / text中心＋最大8人P2P音声のprototypeです。2026-08-30に公式npx CLIのDeep Security Scanを実施し、pre-change treeへ13 canonical finding / 15 report instanceを報告しました。検出根本原因を現treeで修正し、fresh PostgreSQL/MinIOを含む回帰検証を行っていますが、scan coverageはtime ceiling等により`partial`で、独立外部reviewでもありません。ゼロデイ、認証情報、Embargo情報には使用しないでください。正確な境界は [docs/INDEX.md](./docs/INDEX.md)、[LIMITATIONS.md](./docs/policies/LIMITATIONS.md)、[risk register](./docs/RISK_REGISTER.md) を参照してください。
 
 ## 現在の到達点
 
@@ -78,10 +78,10 @@ Device private keyとdraft/outbox用AES-GCM keyはnon-extractable WebCrypto `Cry
 ## 運用
 
 - [Documentation index](./docs/INDEX.md): inventory、architecture、security、reliability、deployment、runbookへの入口
-- [運用手順](./OPERATIONS.md): monitoring、migration、probe、audit checkpoint、shutdownの境界
+- [運用手順](./docs/policies/OPERATIONS.md): monitoring、migration、probe、audit checkpoint、shutdownの境界
 - [Backup / restore verification](./docs/BACKUP.md): migration前gate、age暗号化artifact、隔離restore
-- [Deployment](./DEPLOYMENT.md): development、single-host、air-gapped、cluster/multi-region非保証
-- [Disaster recovery](./DISASTER_RECOVERY.md): RPO/RTO objective、資産、復旧順序、演習
+- [Deployment](./docs/policies/DEPLOYMENT.md): development、single-host、air-gapped、cluster/multi-region非保証
+- [Disaster recovery](./docs/policies/DISASTER_RECOVERY.md): RPO/RTO objective、資産、復旧順序、演習
 - `Dockerfile`: non-root runtime、readiness healthcheck、production dependencyのみ
 - `compose.production.yml`: loopback publish、secret mount、read-only/cap-drop/resource limitのsingle-host profile
 - `deploy/alparts.service`: systemd credentials、read-only filesystem hardening、restart/backoff
@@ -90,6 +90,6 @@ External公開時はTLS 1.3を優先するreverse proxyを使用し、PostgreSQL
 
 ## Repository policy
 
-脆弱性の報告方法は [SECURITY.md](./SECURITY.md) を参照してください。過去の監査、完了済みstandard scan、2026-08-27に停止したDeep Scan、および2026-08-30にartifact packagingまで完了したcoverage-partial Deep Scanのfindingと修正結果は [SECURITY_AUDIT.md](./SECURITY_AUDIT.md) で分離しています。
+脆弱性の報告方法は [SECURITY.md](./docs/policies/SECURITY.md) を参照してください。過去の監査、完了済みstandard scan、2026-08-27に停止したDeep Scan、および2026-08-30にartifact packagingまで完了したcoverage-partial Deep Scanのfindingと修正結果は [SECURITY_AUDIT.md](./docs/policies/SECURITY_AUDIT.md) で分離しています。
 
 このrepositoryは現在 `UNLICENSED` であり、公開閲覧できること自体は利用・改変・再配布の許諾を意味しません。Project licenseの選定は権利者判断が必要な正式版TODOです。Production依存の機械的inventoryでは MIT / ISC / BSD-3-Clause / Apache-2.0 / BlueOak-1.0.0 を確認していますが、これはproject licenseの付与または法的助言ではありません。

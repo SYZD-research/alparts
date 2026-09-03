@@ -59,13 +59,13 @@ The systemd and production Compose examples use nonroot operation, read-only fil
 
 ## Cluster and region boundary
 
-Multiple app replicas are prohibited until process-local admission, Socket.IO rooms, upload locks, authorization revision coordination, and the audit checkpoint are replaced or fenced with shared durable coordination. Multi-region writes additionally require an explicit leader/fencing and conflict model. See [capability levels](./docs/deployment/CAPABILITY_LEVELS.md) and [ADR 0004](./docs/adr/0004-deployment-and-ha.md).
+Multiple app replicas are prohibited until process-local admission, Socket.IO rooms, upload locks, authorization revision coordination, and the audit checkpoint are replaced or fenced with shared durable coordination. Multi-region writes additionally require an explicit leader/fencing and conflict model. See [capability levels](../deployment/CAPABILITY_LEVELS.md) and [ADR 0004](../adr/0004-deployment-and-ha.md).
 
 ## Evidence and targets
 
-- Failure details and recovery: [failure-mode analysis](./docs/reliability/FAILURE_MODES.md).
-- Provisional, measurable objectives: [SLI/SLO baseline](./docs/reliability/SLO.md).
-- Operational response: [incident runbook](./docs/runbooks/INCIDENT_RESPONSE.md).
-- Verified commands/results: [verification record](./docs/VERIFICATION.md).
+- Failure details and recovery: [failure-mode analysis](../reliability/FAILURE_MODES.md).
+- Provisional, measurable objectives: [SLI/SLO baseline](../reliability/SLO.md).
+- Operational response: [incident runbook](../runbooks/INCIDENT_RESPONSE.md).
+- Verified commands/results: [verification record](../VERIFICATION.md).
 
 No “five nines” or unmeasured durability claim is made.

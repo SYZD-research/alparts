@@ -8,32 +8,32 @@ This is the navigation root for implementation, architecture, security, operatio
 
 - [Repository overview](../README.md)
 - [System inventory](./SYSTEM_INVENTORY.md)
-- [Architecture](../ARCHITECTURE.md)
-- [Known limitations](../LIMITATIONS.md)
+- [Architecture](./policies/ARCHITECTURE.md)
+- [Known limitations](./policies/LIMITATIONS.md)
 - [Risk register](./RISK_REGISTER.md)
 - [Verification record](./VERIFICATION.md)
 
 ## Security
 
-- [Security policy](../SECURITY.md)
+- [Security policy](./policies/SECURITY.md)
 - [Threat model](./security/THREAT_MODEL.md)
-- [Security audit and Deep Security Scan record](../SECURITY_AUDIT.md)
-- [Legacy top-level threat-model link](../THREAT_MODEL.md)
+- [Security audit and Deep Security Scan record](./policies/SECURITY_AUDIT.md)
+- [Legacy top-level threat-model link](./policies/THREAT_MODEL.md)
 
 ## Reliability and operations
 
-- [Reliability model](../RELIABILITY.md)
+- [Reliability model](./policies/RELIABILITY.md)
 - [Failure-mode analysis](./reliability/FAILURE_MODES.md)
 - [SLI/SLO baseline](./reliability/SLO.md)
-- [Operations](../OPERATIONS.md)
+- [Operations](./policies/OPERATIONS.md)
 - [Detailed operator guide](./OPERATIONS.md)
 - [Backup and restore](./BACKUP.md)
-- [Disaster recovery](../DISASTER_RECOVERY.md)
+- [Disaster recovery](./policies/DISASTER_RECOVERY.md)
 - [Incident runbook](./runbooks/INCIDENT_RESPONSE.md)
 
 ## Deployment
 
-- [Deployment guide](../DEPLOYMENT.md)
+- [Deployment guide](./policies/DEPLOYMENT.md)
 - [Capability levels](./deployment/CAPABILITY_LEVELS.md)
 - [Single-host production Compose](../compose.production.yml)
 - [Container build](../Dockerfile)
@@ -69,8 +69,8 @@ This is the navigation root for implementation, architecture, security, operatio
 
 ## Engineering
 
-- [Contributing and release gates](../CONTRIBUTING.md)
-- [Product specification (aspirational where not implemented)](../SPECIFICATION.md)
-- [Implementation backlog](../IMPLEMENTATION_TODO.md)
+- [Contributing and release gates](./policies/CONTRIBUTING.md)
+- [Product specification (aspirational where not implemented)](./policies/SPECIFICATION.md)
+- [Implementation backlog](./policies/IMPLEMENTATION_TODO.md)
 
 `SPECIFICATION.md` describes a larger intended product. It is not an implementation or compliance claim. In a conflict, executable code/tests plus the current limitations and risk register describe the shipped boundary.

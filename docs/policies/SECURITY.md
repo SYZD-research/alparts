@@ -4,7 +4,7 @@
 
 Only the current default-branch source, frozen lockfile, and an immutable image built from that exact tree receive security fixes. There is no security backport or support promise for older commits, images, browser bundles, or database schemas.
 
-This repository is a Phase 1, single-process prototype. It must not be presented as approved for embargoed vulnerabilities, credentials, regulated data, or other high-impact secrets. Canonical trust boundaries and unresolved risks are documented in [the threat model](./docs/security/THREAT_MODEL.md), [LIMITATIONS.md](./LIMITATIONS.md), and [the risk register](./docs/RISK_REGISTER.md).
+This repository is a Phase 1, single-process prototype. It must not be presented as approved for embargoed vulnerabilities, credentials, regulated data, or other high-impact secrets. Canonical trust boundaries and unresolved risks are documented in [the threat model](../security/THREAT_MODEL.md), [LIMITATIONS.md](./LIMITATIONS.md), and [the risk register](../RISK_REGISTER.md).
 
 ## Reporting a vulnerability
 

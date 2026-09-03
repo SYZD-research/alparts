@@ -77,7 +77,7 @@
 
 ### 添付と外部content
 
-- Serverはobjectをinline表示せず、authorization確認後にopaque attachmentとして返す。Web clientはMarkdown imageを自動取得しない。
+- Serverはobjectをinline表示せず、authorization確認後にopaque attachmentとして返す。Web clientはMarkdown imageを自動取得しない。署名・AEAD検証済みの添付については、SVGを除く許可済みraster MIMEを25 MiBまで端末内の短命Blob URLでプレビューする。
 - Client attachment flowは上記Prototype境界で利用できる。OS quarantine属性、sandboxed malware/PoC viewer、archive bomb/image parser防御、endpoint malware analysisはない。
 - File System Access API非対応browserでは100 MiBを超えるdownloadを保存できず、それ以下はmemory上のBlob fallbackを使う。対応browserは逐次書き込みを使う。
 - ServerはJSON/chunk bodyをparser前のContent-Length、aggregate byte、source/user、concurrency budgetへ通し、download/object-storage leaseをstream終端まで保持する。これはsingle-process内のresource boundであり、distributed edge protectionや無制限に遅い正規downloadを保証するものではない。

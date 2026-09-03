@@ -38,7 +38,7 @@ This is a recovery building block, not automatic DR. The repository does not pro
 6. Retain a minimum of 7 daily copies for 30 days by default. The pruning tool is dry-run by default, refuses broad targets, only matches exact artifact names, and requires an explicit acknowledgement to delete.
 7. Restore-verify a selected backup to an isolated DB/bucket at least monthly. Run a full application/audit/client decrypt exercise at least quarterly and after material storage/migration changes.
 
-See [the exact backup contract](./docs/BACKUP.md).
+See [the exact backup contract](../BACKUP.md).
 
 ## Recovery decision
 

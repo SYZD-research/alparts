@@ -135,4 +135,4 @@ PostgreSQL接続はmode `0600`のlibpq service fileとsection名で渡し、MinI
 
 このrepositoryは、PITR/continuous WAL archive、WORM/object lock、automatic off-site replication、scheduled automatic restore、full application automatic recovery、failover、HA、実施済みquarterly DR、実測RTO/RPO、72-hour soakを提供しない。安全側のlocal retentionとdaily systemd scheduleは実装したが、同一host内だけではDRではない。Auditのexternal SIEM/WORM転送、data retention/export、signed update/release provenanceも未実装である。
 
-これらは [LIMITATIONS.md](../LIMITATIONS.md) のformal release blockerであり、manual backup roundtrip成功で解除されない。
+これらは [LIMITATIONS.md](./policies/LIMITATIONS.md) のformal release blockerであり、manual backup roundtrip成功で解除されない。
