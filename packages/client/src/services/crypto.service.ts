@@ -20,6 +20,12 @@ import {
   type ChannelKeyRecipientState,
 } from './api';
 import { ChannelKeyScopeGuard, type ChannelKeyScopeToken } from './channel-key-scope';
+import {
+  deleteDesktopSecret,
+  getDesktopBridge,
+  getDesktopSecret,
+  setDesktopSecret,
+} from './desktop.service';
 
 const DB_NAME = 'alparts-crypto';
 const STORE_NAME = 'keys';
@@ -29,6 +35,24 @@ interface DevicePublicBundle {
   version: 1;
   encryptionKey: JsonWebKey;
   signingKey: JsonWebKey;
+}
+
+interface DesktopDevicePrivateBundle {
+  version: 1;
+  identityKey: string;
+  encryptionPrivateKey: JsonWebKey;
+  signingPrivateKey: JsonWebKey;
+}
+
+interface DeviceKeyMaterial {
+  identityKey: string;
+  encryptionPrivateKey: CryptoKey;
+  signingPrivateKey: CryptoKey;
+}
+
+interface DesktopSecretPointer {
+  version: 1;
+  desktopSecret: true;
 }
 
 interface ActiveDevice {
@@ -164,21 +188,8 @@ export async function ensureDeviceSession(user: User, stepUpPassword?: string): 
 
 async function initializeDeviceSession(user: User, stepUpPassword?: string): Promise<ActiveDevice> {
   const prefix = devicePrefix(user.id);
-  let encryptionPrivateKey = await loadValue<CryptoKey>(`${prefix}:encryption-private`);
-  let signingPrivateKey = await loadValue<CryptoKey>(`${prefix}:signing-private`);
-  let identityKey = await loadValue<string>(`${prefix}:identity`);
-
-  if (!(encryptionPrivateKey instanceof CryptoKey) || !(signingPrivateKey instanceof CryptoKey) || !identityKey) {
-    const generated = await generateDeviceKeys();
-    encryptionPrivateKey = generated.encryptionPrivateKey;
-    signingPrivateKey = generated.signingPrivateKey;
-    identityKey = generated.identityKey;
-    await saveValues([
-      [`${prefix}:encryption-private`, encryptionPrivateKey],
-      [`${prefix}:signing-private`, signingPrivateKey],
-      [`${prefix}:identity`, identityKey],
-    ]);
-  }
+  let material = await loadDeviceKeyMaterial(user.id, prefix) ?? await generateDeviceKeys(user.id, prefix);
+  let { encryptionPrivateKey, signingPrivateKey, identityKey } = material;
 
   const storedDeviceId = await loadValue<string>(`${prefix}:id`);
   const devices = await api.getDevices();
@@ -187,16 +198,9 @@ async function initializeDeviceSession(user: User, stepUpPassword?: string): Pro
   // A persisted id that disappeared from the active-device list was revoked.
   // Never resurrect its long-term identity by registering the same key again.
   if (storedDeviceId && !matching) {
-    const generated = await generateDeviceKeys();
-    encryptionPrivateKey = generated.encryptionPrivateKey;
-    signingPrivateKey = generated.signingPrivateKey;
-    identityKey = generated.identityKey;
+    material = await generateDeviceKeys(user.id, prefix);
+    ({ encryptionPrivateKey, signingPrivateKey, identityKey } = material);
     matching = undefined;
-    await saveValues([
-      [`${prefix}:encryption-private`, encryptionPrivateKey],
-      [`${prefix}:signing-private`, signingPrivateKey],
-      [`${prefix}:identity`, identityKey],
-    ]);
   }
   let device;
   if (matching) {
@@ -220,15 +224,8 @@ async function initializeDeviceSession(user: User, stepUpPassword?: string): Pro
       // A missing local :id can leave a revoked keypair behind. Rotate the
       // complete identity atomically before one bounded registration retry;
       // never retry the rejected identity and never loop on a second 409.
-      const generated = await generateDeviceKeys();
-      encryptionPrivateKey = generated.encryptionPrivateKey;
-      signingPrivateKey = generated.signingPrivateKey;
-      identityKey = generated.identityKey;
-      await saveValues([
-        [`${prefix}:encryption-private`, encryptionPrivateKey],
-        [`${prefix}:signing-private`, signingPrivateKey],
-        [`${prefix}:identity`, identityKey],
-      ]);
+      material = await generateDeviceKeys(user.id, prefix);
+      ({ encryptionPrivateKey, signingPrivateKey, identityKey } = material);
       const challenge = await api.getDeviceChallenge();
       const proof = await signDeviceChallenge(user.id, challenge.challenge, signingPrivateKey);
       device = await api.registerDevice(
@@ -277,28 +274,135 @@ export function isRevokedIdentityRegistrationError(error: unknown): boolean {
   return error instanceof ApiError && error.status === 409 && error.code === 'IDENTITY_REVOKED';
 }
 
-async function generateDeviceKeys() {
+async function generateDeviceKeys(userId: string, prefix: string): Promise<DeviceKeyMaterial> {
+  const desktop = Boolean(getDesktopBridge());
   const encryption = await crypto.subtle.generateKey({
     name: 'RSA-OAEP',
     modulusLength: 3072,
     publicExponent: new Uint8Array([1, 0, 1]),
     hash: 'SHA-256',
-  }, false, ['encrypt', 'decrypt']);
+  }, desktop, ['encrypt', 'decrypt']);
   const signing = await crypto.subtle.generateKey({
     name: 'ECDSA',
     namedCurve: 'P-256',
-  }, false, ['sign', 'verify']);
+  }, desktop, ['sign', 'verify']);
 
   const encryptionKey = await crypto.subtle.exportKey('jwk', encryption.publicKey);
   const signingKey = await crypto.subtle.exportKey('jwk', signing.publicKey);
   encryptionKey.alg = 'RSA-OAEP-256';
   signingKey.alg = 'ES256';
   const bundle: DevicePublicBundle = { version: 1, encryptionKey, signingKey };
-  return {
-    encryptionPrivateKey: encryption.privateKey,
-    signingPrivateKey: signing.privateKey,
-    identityKey: JSON.stringify(bundle),
+  const identityKey = JSON.stringify(bundle);
+  if (!desktop) {
+    await saveValues([
+      [`${prefix}:encryption-private`, encryption.privateKey],
+      [`${prefix}:signing-private`, signing.privateKey],
+      [`${prefix}:identity`, identityKey],
+    ]);
+    return { encryptionPrivateKey: encryption.privateKey, signingPrivateKey: signing.privateKey, identityKey };
+  }
+
+  const encryptionPrivateKey = await crypto.subtle.exportKey('jwk', encryption.privateKey);
+  const signingPrivateKey = await crypto.subtle.exportKey('jwk', signing.privateKey);
+  encryptionPrivateKey.alg = 'RSA-OAEP-256';
+  signingPrivateKey.alg = 'ES256';
+  const stored: DesktopDevicePrivateBundle = {
+    version: 1,
+    identityKey,
+    encryptionPrivateKey,
+    signingPrivateKey,
   };
+  if (!await setDesktopSecret(`device:${userId}`, JSON.stringify(stored))) {
+    throw new Error('SECURE_DEVICE_STORAGE_UNAVAILABLE');
+  }
+  await saveValue(`${prefix}:identity`, identityKey);
+  await Promise.all([
+    deleteValue(`${prefix}:encryption-private`),
+    deleteValue(`${prefix}:signing-private`),
+  ]);
+  return importDesktopDeviceKeys(stored);
+}
+
+async function loadDeviceKeyMaterial(userId: string, prefix: string): Promise<DeviceKeyMaterial | null> {
+  if (!getDesktopBridge()) {
+    const [encryptionPrivateKey, signingPrivateKey, identityKey] = await Promise.all([
+      loadValue<CryptoKey>(`${prefix}:encryption-private`),
+      loadValue<CryptoKey>(`${prefix}:signing-private`),
+      loadValue<string>(`${prefix}:identity`),
+    ]);
+    return encryptionPrivateKey instanceof CryptoKey && signingPrivateKey instanceof CryptoKey && identityKey
+      ? { encryptionPrivateKey, signingPrivateKey, identityKey }
+      : null;
+  }
+
+  const encoded = await getDesktopSecret(`device:${userId}`);
+  if (encoded === null) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(encoded);
+  } catch {
+    throw new Error('SECURE_DEVICE_STORAGE_INVALID');
+  }
+  const material = await importDesktopDeviceKeys(parsed);
+  await saveValue(`${prefix}:identity`, material.identityKey);
+  await Promise.all([
+    deleteValue(`${prefix}:encryption-private`),
+    deleteValue(`${prefix}:signing-private`),
+  ]);
+  return material;
+}
+
+async function importDesktopDeviceKeys(value: unknown): Promise<DeviceKeyMaterial> {
+  if (!value || typeof value !== 'object') throw new Error('SECURE_DEVICE_STORAGE_INVALID');
+  const candidate = value as Partial<DesktopDevicePrivateBundle>;
+  if (
+    candidate.version !== 1
+    || typeof candidate.identityKey !== 'string'
+    || !candidate.encryptionPrivateKey
+    || !candidate.signingPrivateKey
+    || candidate.encryptionPrivateKey.kty !== 'RSA'
+    || candidate.encryptionPrivateKey.alg !== 'RSA-OAEP-256'
+    || candidate.signingPrivateKey.kty !== 'EC'
+    || candidate.signingPrivateKey.crv !== 'P-256'
+    || candidate.signingPrivateKey.alg !== 'ES256'
+  ) throw new Error('SECURE_DEVICE_STORAGE_INVALID');
+  let publicBundle: DevicePublicBundle;
+  try {
+    publicBundle = JSON.parse(candidate.identityKey) as DevicePublicBundle;
+  } catch {
+    throw new Error('SECURE_DEVICE_STORAGE_INVALID');
+  }
+  if (
+    publicBundle.version !== 1
+    || publicBundle.encryptionKey.kty !== 'RSA'
+    || publicBundle.encryptionKey.n !== candidate.encryptionPrivateKey.n
+    || publicBundle.encryptionKey.e !== candidate.encryptionPrivateKey.e
+    || publicBundle.signingKey.kty !== 'EC'
+    || publicBundle.signingKey.crv !== 'P-256'
+    || publicBundle.signingKey.x !== candidate.signingPrivateKey.x
+    || publicBundle.signingKey.y !== candidate.signingPrivateKey.y
+  ) throw new Error('SECURE_DEVICE_STORAGE_INVALID');
+  try {
+    const [encryptionPrivateKey, signingPrivateKey] = await Promise.all([
+      crypto.subtle.importKey(
+        'jwk',
+        candidate.encryptionPrivateKey,
+        { name: 'RSA-OAEP', hash: 'SHA-256' },
+        false,
+        ['decrypt'],
+      ),
+      crypto.subtle.importKey(
+        'jwk',
+        candidate.signingPrivateKey,
+        { name: 'ECDSA', namedCurve: 'P-256' },
+        false,
+        ['sign'],
+      ),
+    ]);
+    return { encryptionPrivateKey, signingPrivateKey, identityKey: candidate.identityKey };
+  } catch {
+    throw new Error('SECURE_DEVICE_STORAGE_INVALID');
+  }
 }
 
 export async function ensureChannelKey(channelId: string): Promise<ChannelKey> {
@@ -375,7 +479,7 @@ async function ensureChannelKeyAttempt(
         ) {
           await abortPendingChannelKeyEpoch(channelId, state, device);
           channelKeyScopes.assertCurrent(scope);
-          await deleteValue(channelStorageId(device, channelId, state.pendingVersion!)).catch(() => undefined);
+          await deletePersistedChannelKey(channelStorageId(device, channelId, state.pendingVersion!)).catch(() => undefined);
           continue;
         }
         throw new Error('Invalid pending channel key epoch requires an authorized manager to abort it');
@@ -388,7 +492,7 @@ async function ensureChannelKeyAttempt(
         ) {
           await abortPendingChannelKeyEpoch(channelId, state, device);
           channelKeyScopes.assertCurrent(scope);
-          await deleteValue(channelStorageId(device, channelId, state.pendingVersion!)).catch(() => undefined);
+          await deletePersistedChannelKey(channelStorageId(device, channelId, state.pendingVersion!)).catch(() => undefined);
           continue;
         }
         throw new Error('This device has not received a valid pending channel key delivery');
@@ -446,6 +550,7 @@ async function ensureChannelKeyAttempt(
           channelStorageId(device, channelId, state.nextVersion),
           key,
           scope,
+          raw,
         );
         // Delivery ids are server-generated. Refetch before signing the exact
         // candidate acknowledgement; a locally reconstructed row is unsafe.
@@ -588,7 +693,7 @@ async function loadChannelKeyDelivery(
   if (deliveries.length === 0) return null;
   const attempted = await tryChannelKeyDeliveries(deliveries, async (delivery) => {
     const storageId = channelStorageId(device, channelId, delivery.version);
-    const stored = await loadValue<CryptoKey>(storageId);
+    const stored = await loadPersistedChannelKey(storageId);
     channelKeyScopes.assertCurrent(scope);
     if (stored instanceof CryptoKey && delivery.confirmedAt) {
       return { key: stored, acknowledged: false };
@@ -600,7 +705,7 @@ async function loadChannelKeyDelivery(
     if (!raw) return null;
     try {
       const key = await importChannelKey(raw);
-      await saveChannelKeyForScope(storageId, key, scope);
+      await saveChannelKeyForScope(storageId, key, scope, raw);
       let acknowledged = false;
       if (!delivery.confirmedAt && shouldAcknowledge(delivery)) {
         await acknowledgeCommittedChannelKey(channelId, delivery, device);
@@ -806,16 +911,23 @@ export async function deletePersistedChannelKeys(channelId: string): Promise<voi
 async function deletePersistedChannelKeysForPrefix(prefix: string): Promise<void> {
   const db = await getDb();
   return new Promise((resolve, reject) => {
+    const desktopKeys: string[] = [];
     const tx = db.transaction(STORE_NAME, 'readwrite');
     const request = tx.objectStore(STORE_NAME).openCursor(IDBKeyRange.bound(prefix, `${prefix}\uffff`));
     request.onsuccess = () => {
       const cursor = request.result;
       if (!cursor) return;
-      if (isChannelStorageKeyForPrefix(cursor.key, prefix)) cursor.delete();
+      if (isChannelStorageKeyForPrefix(cursor.key, prefix)) {
+        if (getDesktopBridge()) desktopKeys.push(String(cursor.key));
+        cursor.delete();
+      }
       cursor.continue();
     };
     request.onerror = () => reject(request.error);
-    tx.oncomplete = () => { db.close(); resolve(); };
+    tx.oncomplete = () => {
+      db.close();
+      void Promise.all(desktopKeys.map((key) => deleteDesktopSecret(key))).then(() => resolve(), reject);
+    };
     tx.onerror = () => { db.close(); reject(tx.error); };
     tx.onabort = () => { db.close(); reject(tx.error); };
   });
@@ -835,14 +947,55 @@ async function saveChannelKeyForScope(
   storageId: string,
   key: CryptoKey,
   scope: ChannelKeyScopeToken,
+  raw?: Uint8Array,
 ): Promise<void> {
   channelKeyScopes.assertCurrent(scope);
-  await saveValue(storageId, key);
+  if (getDesktopBridge()) {
+    if (!raw || raw.byteLength !== 32) throw new Error('SECURE_CHANNEL_STORAGE_INVALID');
+    if (!await setDesktopSecret(storageId, arrayBufferToBase64(raw))) {
+      throw new Error('SECURE_CHANNEL_STORAGE_UNAVAILABLE');
+    }
+    const pointer: DesktopSecretPointer = { version: 1, desktopSecret: true };
+    await saveValue(storageId, pointer);
+  } else {
+    await saveValue(storageId, key);
+  }
   if (channelKeyScopes.isCurrent(scope)) return;
   // A revocation can race the IDB transaction after its cursor already
   // passed this key. Remove the late write before rejecting the operation.
-  await deleteValue(storageId).catch(() => undefined);
+  await deletePersistedChannelKey(storageId).catch(() => undefined);
   channelKeyScopes.assertCurrent(scope);
+}
+
+async function loadPersistedChannelKey(storageId: string): Promise<CryptoKey | null> {
+  const stored = await loadValue<CryptoKey | DesktopSecretPointer>(storageId);
+  if (!getDesktopBridge()) return stored instanceof CryptoKey ? stored : null;
+  if (!stored || stored instanceof CryptoKey || stored.version !== 1 || stored.desktopSecret !== true) return null;
+  const encoded = await getDesktopSecret(storageId);
+  if (encoded === null) {
+    await deleteValue(storageId).catch(() => undefined);
+    return null;
+  }
+  let raw: Uint8Array;
+  try {
+    raw = new Uint8Array(base64ToArrayBuffer(encoded));
+  } catch {
+    throw new Error('SECURE_CHANNEL_STORAGE_INVALID');
+  }
+  if (raw.byteLength !== 32 || arrayBufferToBase64(raw) !== encoded) {
+    raw.fill(0);
+    throw new Error('SECURE_CHANNEL_STORAGE_INVALID');
+  }
+  try {
+    return await importChannelKey(raw);
+  } finally {
+    raw.fill(0);
+  }
+}
+
+async function deletePersistedChannelKey(storageId: string): Promise<void> {
+  await deleteValue(storageId);
+  if (getDesktopBridge()) await deleteDesktopSecret(storageId);
 }
 
 export function buildChannelStoragePrefix(userId: string, deviceId: string, channelId: string): string {
@@ -976,7 +1129,7 @@ function isUuid(value: string): boolean {
 function browserDeviceName(): string {
   const nav = navigator as Navigator & { userAgentData?: { platform?: string } };
   const platform = nav.userAgentData?.platform || navigator.platform || 'Web';
-  return `Web (${platform.slice(0, 60)})`;
+  return `${getDesktopBridge() ? 'Desktop' : 'Web'} (${platform.slice(0, 60)})`;
 }
 
 function arrayBufferToBase64(buffer: ArrayBuffer | Uint8Array): string {

@@ -35,6 +35,7 @@ interface VoiceState {
   channelId: string | null;
   self: VoiceParticipant | null;
   participants: VoiceParticipant[];
+  participantsByChannel: Record<string, VoiceParticipant[]>;
   muted: boolean;
   speaking: boolean;
   mode: VoiceCallMode;
@@ -54,6 +55,9 @@ interface VoiceState {
   setInputDevice: (deviceId: string) => Promise<void>;
   setOutputDevice: (deviceId: string) => void;
   refreshDevices: () => Promise<void>;
+  setChannelParticipants: (channelId: string, participants: VoiceParticipant[]) => void;
+  replaceChannelParticipants: (channelIds: string[], entries: Array<{ channelId: string; participants: VoiceParticipant[] }>) => void;
+  clearChannelParticipants: (channelId: string) => void;
   reset: () => void;
 }
 
@@ -124,9 +128,13 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
   selectedInputId: '',
   selectedOutputId: '',
   remoteStreamRevision: 0,
+  participantsByChannel: {},
 
   join: async (channelId) => {
-    if (get().status === 'connected' && get().channelId === channelId) return;
+    if (
+      get().channelId === channelId
+      && (get().status === 'connected' || get().status === 'joining')
+    ) return;
     teardownVoiceRuntime(true);
     const generation = ++callGeneration;
     set({
@@ -189,6 +197,10 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
         channelId,
         self: joined.self,
         participants: [joined.self, ...joined.participants],
+        participantsByChannel: {
+          ...get().participantsByChannel,
+          [channelId]: [joined.self, ...joined.participants],
+        },
         muted: false,
         speaking: false,
         quality: joined.participants.length > 0 ? 'connecting' : 'good',
@@ -215,6 +227,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       set({
         ...idleProjection,
         status: 'error',
+        channelId,
         error: voiceErrorMessage(error),
       });
     }
@@ -310,6 +323,24 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
     }
   },
 
+  setChannelParticipants: (channelId, participants) => set((state) => ({
+    participantsByChannel: { ...state.participantsByChannel, [channelId]: [...participants] },
+  })),
+
+  replaceChannelParticipants: (channelIds, entries) => set((state) => {
+    const participantsByChannel = { ...state.participantsByChannel };
+    for (const channelId of channelIds) delete participantsByChannel[channelId];
+    for (const entry of entries) participantsByChannel[entry.channelId] = [...entry.participants];
+    return { participantsByChannel };
+  }),
+
+  clearChannelParticipants: (channelId) => set((state) => {
+    if (!Object.prototype.hasOwnProperty.call(state.participantsByChannel, channelId)) return state;
+    const participantsByChannel = { ...state.participantsByChannel };
+    delete participantsByChannel[channelId];
+    return { participantsByChannel };
+  }),
+
   reset: () => {
     teardownVoiceRuntime(true);
     set({
@@ -319,6 +350,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       outputDevices: [],
       selectedInputId: '',
       selectedOutputId: '',
+      participantsByChannel: {},
     });
   },
 }));
@@ -399,10 +431,12 @@ function attachVoiceListeners(socket: Socket, generation: number, channelId: str
     if (existing && (existing.userId !== participant.userId || existing.deviceId !== participant.deviceId)) return;
     if (!existing && state.participants.length >= MAX_VOICE_PARTICIPANTS) return;
     directoryPromise = null;
+    const participants = existing
+      ? state.participants.map((entry) => entry.participantId === participant.participantId ? participant : entry)
+      : [...state.participants, participant];
     useVoiceStore.setState({
-      participants: existing
-        ? state.participants.map((entry) => entry.participantId === participant.participantId ? participant : entry)
-        : [...state.participants, participant],
+      participants,
+      participantsByChannel: { ...state.participantsByChannel, [channelId]: participants },
       quality: 'connecting',
     });
   };
@@ -413,17 +447,23 @@ function attachVoiceListeners(socket: Socket, generation: number, channelId: str
     const state = useVoiceStore.getState();
     const existing = state.participants.find((entry) => entry.participantId === participant.participantId);
     if (!existing || existing.userId !== participant.userId || existing.deviceId !== participant.deviceId) return;
+    const participants = state.participants.map((entry) => entry.participantId === participant.participantId ? participant : entry);
     useVoiceStore.setState({
-      participants: state.participants.map((entry) => entry.participantId === participant.participantId ? participant : entry),
+      participants,
+      participantsByChannel: { ...state.participantsByChannel, [channelId]: participants },
     });
   };
   const left = (value: unknown) => {
     if (!isParticipantLeft(value, channelId) || generation !== callGeneration) return;
     removePeer(value.participantId);
-    useVoiceStore.setState((state) => ({
-      participants: state.participants.filter((entry) => entry.participantId !== value.participantId),
-      quality: state.participants.length <= 3 ? 'good' : state.quality,
-    }));
+    useVoiceStore.setState((state) => {
+      const participants = state.participants.filter((entry) => entry.participantId !== value.participantId);
+      return {
+        participants,
+        participantsByChannel: { ...state.participantsByChannel, [channelId]: participants },
+        quality: state.participants.length <= 3 ? 'good' : state.quality,
+      };
+    });
   };
   const disconnected = () => {
     if (generation !== callGeneration) return;
@@ -431,7 +471,9 @@ function attachVoiceListeners(socket: Socket, generation: number, channelId: str
     useVoiceStore.setState({
       ...idleProjection,
       status: 'error',
-      error: 'リアルタイム接続が切断されたため、通話を終了しました',
+      channelId,
+      participantsByChannel: {},
+      error: '接続が切れたため、通話を終了しました',
     });
   };
   socket.on('voice:signal', signal);
@@ -779,9 +821,15 @@ function updateSelfProjection(): void {
   const state = useVoiceStore.getState();
   if (!state.self) return;
   const self = { ...state.self, muted: state.muted, speaking: state.muted ? false : state.speaking };
+  const participants = state.participants.map((participant) => (
+    participant.participantId === self.participantId ? self : participant
+  ));
   useVoiceStore.setState({
     self,
-    participants: state.participants.map((participant) => participant.participantId === self.participantId ? self : participant),
+    participants,
+    ...(state.channelId ? {
+      participantsByChannel: { ...state.participantsByChannel, [state.channelId]: participants },
+    } : {}),
   });
 }
 
@@ -879,6 +927,7 @@ function teardownVoiceRuntime(notifyServer: boolean): void {
   inputSwitchGeneration += 1;
   const socket = listeners?.socket;
   const channelId = serverJoinedChannelId;
+  const current = useVoiceStore.getState();
   detachVoiceListeners();
   if (notifyServer && channelId && socket?.connected) socket.emit('voice:leave', { channelId });
   serverJoinedChannelId = null;
@@ -904,7 +953,12 @@ function teardownVoiceRuntime(notifyServer: boolean): void {
   }
   stopStream(localStream);
   localStream = null;
-  useVoiceStore.setState(idleProjection);
+  const participantsByChannel = { ...current.participantsByChannel };
+  if (current.channelId && current.self) {
+    participantsByChannel[current.channelId] = (participantsByChannel[current.channelId] || current.participants)
+      .filter((participant) => participant.participantId !== current.self?.participantId);
+  }
+  useVoiceStore.setState({ ...idleProjection, participantsByChannel });
 }
 
 function stopStream(stream: MediaStream | null): void {

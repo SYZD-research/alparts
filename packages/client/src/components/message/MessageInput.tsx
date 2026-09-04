@@ -20,6 +20,7 @@ import {
 } from '../../services/attachment-preview';
 import {
   applyMentionCompletion,
+  extractMentionedUserIds,
   filterMentionMembers,
   findActiveMentionQuery,
   type ActiveMentionQuery,
@@ -186,6 +187,7 @@ export function MessageInput({ channelId, sendDisabled = false }: Props) {
 
     setIsSending(true);
     setAttachmentError(null);
+    const mentionedUserIds = extractMentionedUserIds(content.trim(), mentionMembers);
     try {
       if (editTarget) {
         await editMessage(editTarget.id, channelId, content.trim());
@@ -193,7 +195,7 @@ export function MessageInput({ channelId, sendDisabled = false }: Props) {
         setEditTarget(channelId, null);
       } else if (selectedFiles.length > 0) {
         if (!isOnline) throw new Error('添付ファイルはオンライン時のみ送信できます');
-        const message = await sendMessage(channelId, content.trim(), replyTarget?.id, undefined, true);
+        const message = await sendMessage(channelId, content.trim(), replyTarget?.id, undefined, true, mentionedUserIds);
         const files = selectedFiles;
         // Register upload runtimes immediately after the durable base message.
         // Draft persistence must not delay or accidentally suppress the file
@@ -206,7 +208,7 @@ export function MessageInput({ channelId, sendDisabled = false }: Props) {
         await clearDraft(channelId);
         setReplyTarget(channelId, null);
       } else {
-        await enqueue(channelId, content.trim(), replyTarget?.id);
+        await enqueue(channelId, content.trim(), replyTarget?.id, mentionedUserIds);
         await clearDraft(channelId);
         setReplyTarget(channelId, null);
       }
@@ -344,6 +346,16 @@ export function MessageInput({ channelId, sendDisabled = false }: Props) {
   };
 
   const handlePaste = (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const imageFiles = clipboardImageFiles(event.clipboardData);
+    if (imageFiles.length > 0) {
+      event.preventDefault();
+      if (sendDisabled) {
+        setAttachmentError('準備が完了してから画像を追加してください');
+        return;
+      }
+      addSelectedFiles(imageFiles);
+      return;
+    }
     const text = event.clipboardData.getData('text/plain');
     const preview = previewLargePaste(text);
     if (!preview) return;
@@ -358,6 +370,40 @@ export function MessageInput({ channelId, sendDisabled = false }: Props) {
       preview,
     });
   };
+
+  useEffect(() => {
+    const focusAndInsert = (event: KeyboardEvent) => {
+      if (
+        event.defaultPrevented
+        || event.ctrlKey
+        || event.metaKey
+        || event.altKey
+        || isEditableTarget(event.target)
+        || document.querySelector('[role="dialog"], [role="alertdialog"]')
+      ) return;
+      const textarea = textareaRef.current;
+      if (!textarea) return;
+      if (event.key === 'Process' || event.isComposing) {
+        textarea.focus();
+        return;
+      }
+      if (!isPrintableKey(event.key)) return;
+      if (event.key === ' ' && isInteractiveTarget(event.target)) return;
+      const start = content.length;
+      const nextContent = `${content}${event.key}`;
+      if (nextContent.length > MAX_MESSAGE_LENGTH) return;
+      event.preventDefault();
+      if (editTarget) setEditContent(nextContent);
+      else setDraft(channelId, nextContent);
+      setActiveMention(findActiveMentionQuery(nextContent, nextContent.length));
+      setActiveMentionIndex(0);
+      handleTyping();
+      textarea.focus();
+      requestAnimationFrame(() => textarea.setSelectionRange(start + event.key.length, start + event.key.length));
+    };
+    window.addEventListener('keydown', focusAndInsert);
+    return () => window.removeEventListener('keydown', focusAndInsert);
+  }, [channelId, content, editTarget, handleTyping, setDraft]);
 
   const closePastePreview = () => {
     setPendingPaste(null);
@@ -739,6 +785,33 @@ function PendingFilePreview({ file, onRemove }: { file: File; onRemove: () => vo
 
 function fileIdentity(file: File): string {
   return `${file.name}:${file.size}:${file.lastModified}:${file.type}`;
+}
+
+function clipboardImageFiles(data: DataTransfer): File[] {
+  const itemFiles = Array.from(data.items)
+    .filter((item) => item.kind === 'file')
+    .flatMap((item) => {
+      const file = item.getAsFile();
+      return file ? [file] : [];
+    })
+    .filter((file) => file.type.toLocaleLowerCase().startsWith('image/'));
+  return itemFiles.length > 0
+    ? itemFiles
+    : Array.from(data.files).filter((file) => file.type.toLocaleLowerCase().startsWith('image/'));
+}
+
+function isEditableTarget(target: EventTarget | null): boolean {
+  return target instanceof HTMLElement && (
+    target.isContentEditable || Boolean(target.closest('input, textarea, select, [contenteditable]'))
+  );
+}
+
+function isInteractiveTarget(target: EventTarget | null): boolean {
+  return target instanceof HTMLElement && Boolean(target.closest('button, a, summary'));
+}
+
+function isPrintableKey(key: string): boolean {
+  return key.length > 0 && !/[\u0000-\u001f\u007f]/u.test(key) && Array.from(key).length === 1;
 }
 
 function attachmentTaskLabel(status: string): string {

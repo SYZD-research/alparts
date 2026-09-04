@@ -16,6 +16,8 @@ interface AuthState {
   loadUser: () => Promise<void>;
 }
 
+let authenticationGeneration = 0;
+
 async function initializeAuthenticatedClient(user: User, stepUpPassword?: string): Promise<void> {
   await ensureDeviceSession(user, stepUpPassword);
   connectSocket();
@@ -76,6 +78,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   logout: async () => {
+    authenticationGeneration += 1;
     await api.logout().catch(() => undefined);
     disconnectSocket();
     clearActiveDevice();
@@ -84,14 +87,22 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   loadUser: async () => {
+    const generation = authenticationGeneration;
     set({ isLoading: true });
     try {
       const user = await api.getMe();
+      if (generation !== authenticationGeneration) return;
       if (get().user?.id && get().user?.id !== user.id) {
         clearActiveDevice();
         resetAuthenticatedState();
       }
       await initializeAuthenticatedClient(user);
+      if (generation !== authenticationGeneration) {
+        disconnectSocket();
+        clearActiveDevice();
+        resetAuthenticatedState();
+        return;
+      }
       set({ user, isLoading: false, isInitialized: true });
     } catch {
       disconnectSocket();
@@ -102,7 +113,38 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 }));
 
+/** Clear decrypted state without ending the durable server session. */
+export function lockAuthenticatedClient(): User | null {
+  const user = useAuthStore.getState().user;
+  authenticationGeneration += 1;
+  disconnectSocket();
+  clearActiveDevice();
+  resetAuthenticatedState();
+  useAuthStore.setState({ user: null, isLoading: false, isInitialized: true, error: null });
+  return user;
+}
+
+/** Re-open a locally locked desktop session after checking the account password. */
+export async function unlockAuthenticatedClient(expectedUser: User | null, password: string): Promise<User> {
+  const generation = authenticationGeneration;
+  const user = await api.reauthenticate(password);
+  if (
+    generation !== authenticationGeneration
+    || (expectedUser !== null && user.id !== expectedUser.id)
+  ) throw new Error('UNLOCK_SESSION_CHANGED');
+  await initializeAuthenticatedClient(user, password);
+  if (generation !== authenticationGeneration) {
+    disconnectSocket();
+    clearActiveDevice();
+    resetAuthenticatedState();
+    throw new Error('UNLOCK_SESSION_CHANGED');
+  }
+  useAuthStore.setState({ user, isLoading: false, isInitialized: true, error: null });
+  return user;
+}
+
 function invalidateExpiredSession(): void {
+  authenticationGeneration += 1;
   disconnectSocket();
   clearActiveDevice();
   resetAuthenticatedState();

@@ -1,5 +1,11 @@
 import { and, desc, eq, inArray, isNotNull, isNull, lt, or, sql } from 'drizzle-orm';
-import { Permissions, MESSAGES_PER_PAGE, type SignedMessageEnvelope } from '@alparts/shared';
+import {
+  MAX_DIRECT_MENTION_RECIPIENTS_PER_MESSAGE,
+  Permissions,
+  MESSAGES_PER_PAGE,
+  type AttentionNotificationKind,
+  type SignedMessageEnvelope,
+} from '@alparts/shared';
 import { db } from '../db/index.js';
 import {
   channelKeyEpochRecipients,
@@ -17,6 +23,7 @@ import { verifyMessageEnvelopeSignature } from '../security/message.js';
 import { getAttachmentsForMessages } from './file.service.js';
 import {
   getChannelAuthorizationFromStore,
+  getChannelViewerIdsFromStore,
   isVisibleChannelAuthorization,
   lockWorkspaceForAuthorization,
 } from './authorization.service.js';
@@ -131,6 +138,7 @@ export async function createMessage(
   authorId: string,
   input: CryptoEventInput,
   refMessageId?: string,
+  mentionedUserIds: string[] = [],
 ) {
   return auditedTransaction(async (transaction) => {
     const authorization = await lockAndAuthorizeCryptoWrite(
@@ -142,9 +150,22 @@ export async function createMessage(
       'message',
       refMessageId,
     );
-    if (refMessageId) await assertReferenceInChannel(transaction, refMessageId, channelId);
+    const reference = refMessageId
+      ? await assertReferenceInChannel(transaction, refMessageId, channelId)
+      : null;
     const stored = await insertCryptoEvent(transaction, channelId, authorId, input, 'message', refMessageId);
-    return { ...stored, workspaceId: authorization.workspaceId };
+    const attentionRecipients = stored.isNewEvent
+      ? await resolveAttentionRecipients(
+        transaction,
+        channelId,
+        authorization.workspaceId,
+        authorId,
+        input.broadcastMention,
+        mentionedUserIds,
+        reference?.authorId,
+      )
+      : [];
+    return { ...stored, workspaceId: authorization.workspaceId, attentionRecipients };
   }, (result) => ({
     actorId: authorId,
     action: result.isNewEvent ? 'message.create' : 'message.create.replay',
@@ -520,6 +541,7 @@ async function lockAndAuthorizeCryptoWrite(
     where: eq(channels.id, channelId),
   });
   if (!channel || channel.workspaceId !== channelLocation.workspaceId) throw new Error('CHANNEL_NOT_FOUND');
+  if (channel.type === 'voice') throw new Error('CHANNEL_NOT_FOUND');
   const authorization = await getChannelAuthorizationFromStore(store, userId, channel);
   if (!isVisibleChannelAuthorization(authorization)) throw new Error('CHANNEL_NOT_FOUND');
   if ((authorization.permissions & permission) !== permission) throw new Error('NOT_AUTHORIZED');
@@ -577,10 +599,61 @@ async function assertReferenceInChannel(store: any, messageId: string, channelId
   try {
     const reference = await lockActiveBaseMessage(store, messageId, 'share');
     if (reference.channelId !== channelId) throw new Error('INVALID_REFERENCE');
+    return reference;
   } catch (error: any) {
     if (error?.message === 'MESSAGE_NOT_FOUND') throw new Error('INVALID_REFERENCE');
     throw error;
   }
+}
+
+async function resolveAttentionRecipients(
+  store: any,
+  channelId: string,
+  workspaceId: string,
+  authorId: string,
+  broadcastMention: boolean,
+  mentionedUserIds: string[],
+  replyAuthorId?: string,
+): Promise<Array<{ userId: string; workspaceId: string; kind: AttentionNotificationKind }>> {
+  if (!broadcastMention && mentionedUserIds.length === 0 && !replyAuthorId) return [];
+  const channel = await store.query.channels.findFirst({ where: eq(channels.id, channelId) });
+  if (!channel || channel.workspaceId !== workspaceId) return [];
+  return buildAttentionRecipients(
+    await getChannelViewerIdsFromStore(store, channel),
+    workspaceId,
+    authorId,
+    broadcastMention,
+    mentionedUserIds,
+    replyAuthorId,
+  );
+}
+
+export function buildAttentionRecipients(
+  viewerIds: string[],
+  workspaceId: string,
+  authorId: string,
+  broadcastMention: boolean,
+  mentionedUserIds: string[],
+  replyAuthorId?: string,
+): Array<{ userId: string; workspaceId: string; kind: AttentionNotificationKind }> {
+  const viewers = new Set(viewerIds);
+  const byUser = new Map<string, Set<AttentionNotificationKind>>();
+  const add = (userId: string | undefined, kind: AttentionNotificationKind) => {
+    if (!userId || userId === authorId || !viewers.has(userId)) return;
+    const kinds = byUser.get(userId) || new Set<AttentionNotificationKind>();
+    kinds.add(kind);
+    byUser.set(userId, kinds);
+  };
+  if (broadcastMention) {
+    for (const userId of viewers) add(userId, 'mention');
+  }
+  for (const userId of mentionedUserIds.slice(0, MAX_DIRECT_MENTION_RECIPIENTS_PER_MESSAGE)) {
+    add(userId, 'mention');
+  }
+  add(replyAuthorId, 'reply');
+  return [...byUser.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .flatMap(([userId, kinds]) => [...kinds].sort().map((kind) => ({ userId, workspaceId, kind })));
 }
 
 async function getOriginalMessage(messageId: string, store: any = db) {

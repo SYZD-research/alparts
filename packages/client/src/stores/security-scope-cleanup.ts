@@ -10,6 +10,7 @@ import { useUiStore } from './ui.store';
 import { useUserStateStore } from './user-state.store';
 import { useWorkspaceStore } from './workspace.store';
 import { useVoiceStore } from './voice.store';
+import { useAttentionStore } from './attention.store';
 
 /**
  * Remove plaintext, authenticated runtime state, encrypted local queues and
@@ -19,6 +20,8 @@ import { useVoiceStore } from './voice.store';
  */
 export async function clearChannelSecurityScope(workspaceId: string, channelId: string): Promise<void> {
   if (useVoiceStore.getState().channelId === channelId) useVoiceStore.getState().leave();
+  useVoiceStore.getState().clearChannelParticipants(channelId);
+  useAttentionStore.getState().clearChannel(channelId);
   // Calling this first synchronously blocks late ensure/get key work before
   // any plaintext store teardown yields to the event loop.
   const keyDeletion = deletePersistedChannelKeys(channelId);

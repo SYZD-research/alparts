@@ -19,7 +19,7 @@ interface ChannelFormState {
   name: string;
   topic: string;
   categoryId: string;
-  type: 'text' | 'announcement';
+  type: 'text' | 'announcement' | 'voice';
   isPrivate: boolean;
   position: string;
 }
@@ -50,7 +50,7 @@ function channelForm(channel: Channel): ChannelFormState {
     name: channel.name,
     topic: channel.topic || '',
     categoryId: channel.categoryId || '',
-    type: channel.type === 'announcement' ? 'announcement' : 'text',
+    type: channel.type === 'announcement' || channel.type === 'voice' ? channel.type : 'text',
     isPrivate: channel.isPrivate,
     position: String(channel.position),
   };
@@ -169,7 +169,7 @@ export function ChannelManagerDialog() {
         position: parsePosition(form.position),
       });
       await refreshWorkspace();
-      setActiveChannel(created.id);
+      if (created.type !== 'voice') setActiveChannel(created.id);
       setSelectedChannelId(created.id);
       setTab('edit');
       setNotice(`「${created.name}」を作成しました。`);
@@ -247,7 +247,7 @@ export function ChannelManagerDialog() {
       if (confirmation.kind === 'delete-channel') {
         await api.deleteChannel(confirmation.id);
         const nextChannels = await refreshWorkspace();
-        const next = nextChannels.find((channel) => channel.type !== 'dm') || nextChannels[0] || null;
+        const next = nextChannels.find((channel) => channel.type !== 'dm' && channel.type !== 'voice') || null;
         if (activeChannelId === confirmation.id) setActiveChannel(next?.id || null);
         setSelectedChannelId(next?.id || '');
         setNotice('チャンネルを削除しました。');
@@ -262,7 +262,9 @@ export function ChannelManagerDialog() {
         await api.removeChannelMember(confirmation.channelId, confirmation.userId);
         if (confirmation.self) {
           const nextChannels = await refreshWorkspace();
-          setActiveChannel(nextChannels.find((channel) => channel.id !== confirmation.channelId)?.id || null);
+          setActiveChannel(nextChannels.find((channel) => (
+            channel.id !== confirmation.channelId && channel.type !== 'voice'
+          ))?.id || null);
           setSelectedChannelId('');
           setNotice('自分を非公開チャンネルから削除しました。');
         } else {
@@ -389,7 +391,13 @@ export function ChannelManagerDialog() {
                     <h3 className="font-medium text-discord-red">危険な操作</h3>
                     <button
                       type="button"
-                      onClick={() => setConfirmation({ kind: 'delete-channel', id: selectedChannel.id, label: `チャンネル「${selectedChannel.name}」と履歴を削除します。この操作は元に戻せません。` })}
+                      onClick={() => setConfirmation({
+                        kind: 'delete-channel',
+                        id: selectedChannel.id,
+                        label: selectedChannel.type === 'voice'
+                          ? `音声チャンネル「${selectedChannel.name}」を削除します。この操作は元に戻せません。`
+                          : `チャンネル「${selectedChannel.name}」と履歴を削除します。この操作は元に戻せません。`,
+                      })}
                       className="mt-3 rounded bg-discord-red px-3 py-2 text-sm text-white"
                     >
                       チャンネルを削除
@@ -486,9 +494,10 @@ function ChannelForm({ form, setForm, categories, submit, busy, submitLabel, isE
       {!isEditing && (
         <label className="block text-sm text-discord-text">
           種類
-          <select value={form.type} onChange={(event) => setForm((current) => ({ ...current, type: event.target.value as 'text' | 'announcement' }))} className="mt-1 w-full rounded bg-discord-input px-3 py-2">
+          <select value={form.type} onChange={(event) => setForm((current) => ({ ...current, type: event.target.value as ChannelFormState['type'] }))} className="mt-1 w-full rounded bg-discord-input px-3 py-2">
             <option value="text">テキスト</option>
             <option value="announcement">アナウンス</option>
+            <option value="voice">音声</option>
           </select>
         </label>
       )}

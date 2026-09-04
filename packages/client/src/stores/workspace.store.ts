@@ -74,7 +74,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       if (generation !== workspaceSelectionGeneration || get().activeWorkspaceId !== id) return;
 
       set({ categories, members, isLoading: false });
-      const firstChannel = channels.find((channel) => channel.type === 'text') ?? channels[0] ?? null;
+      const firstChannel = channels.find((channel) => channel.type !== 'voice') ?? null;
       useChannelStore.getState().setActiveChannel(firstChannel?.id ?? null);
     } catch (error) {
       if (generation !== workspaceSelectionGeneration || get().activeWorkspaceId !== id) return;

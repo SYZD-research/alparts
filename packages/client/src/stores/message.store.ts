@@ -1,5 +1,12 @@
 import { create } from 'zustand';
-import { MAX_MESSAGE_LENGTH, type Attachment, type Message, type Reaction, type SignedMessageEnvelope } from '@alparts/shared';
+import {
+  MAX_DIRECT_MENTION_RECIPIENTS_PER_MESSAGE,
+  MAX_MESSAGE_LENGTH,
+  type Attachment,
+  type Message,
+  type Reaction,
+  type SignedMessageEnvelope,
+} from '@alparts/shared';
 import { api, ApiError } from '../services/api';
 import {
   decryptMessage,
@@ -54,6 +61,7 @@ interface MessageState {
     refMessageId?: string,
     idempotencyKey?: string,
     allowEmpty?: boolean,
+    mentionedUserIds?: string[],
   ) => Promise<Message>;
   addMessage: (channelId: string, message: Message) => void;
   applyAttachment: (channelId: string, attachment: Attachment) => void;
@@ -377,7 +385,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     }
   },
 
-  sendMessage: async (channelId, content, refMessageId, fixedIdempotencyKey, allowEmpty = false) => {
+  sendMessage: async (channelId, content, refMessageId, fixedIdempotencyKey, allowEmpty = false, mentionedUserIds = []) => {
     const generation = messageStoreGeneration;
     const channelEpoch = currentChannelEpoch(channelId);
     set((state) => ({ operationErrors: { ...state.operationErrors, [channelId]: null } }));
@@ -402,6 +410,9 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       const encrypted = await encryptMessage(content, channelKey.key, unsigned);
       const envelope: SignedMessageEnvelope = { ...unsigned, encryptedContent: encrypted.encrypted, contentNonce: encrypted.nonce };
       const signature = await signMessageEnvelope(envelope);
+      const notificationRecipientIds = [...new Set(mentionedUserIds)]
+        .sort()
+        .slice(0, MAX_DIRECT_MENTION_RECIPIENTS_PER_MESSAGE);
       const request = {
         encryptedContent: envelope.encryptedContent,
         contentNonce: envelope.contentNonce,
@@ -410,6 +421,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         idempotencyKey: envelope.idempotencyKey,
         signature,
         broadcastMention,
+        ...(notificationRecipientIds.length ? { mentionedUserIds: notificationRecipientIds } : {}),
         refMessageId: refMessageId || undefined,
       };
       // Network retries reuse the exact authenticated envelope. Re-encrypting

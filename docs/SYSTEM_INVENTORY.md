@@ -1,12 +1,13 @@
 # System inventory
 
-Last verified: 2026-08-30. This inventory covers first-party source, build, test, deployment, and operating artifacts. Generated `dist/`, dependency trees, `.git`, and ignored local secret files are not implementation sources.
+Last verified: 2026-09-04. This inventory covers first-party source, build, test, deployment, and operating artifacts. Generated `dist/`, dependency trees, `.git`, and ignored local secret files are not implementation sources.
 
 ## Repository map
 
 | Location | Contents | Owner boundary |
 | --- | --- | --- |
 | `packages/client/src` | React SPA, browser crypto, stores, WebRTC, UI tests | Endpoint/plaintext plane |
+| `packages/desktop` | Electron main/preload, OS vault, native file save, package configuration | Desktop host boundary |
 | `packages/server/src/routes` | REST adapters and validation | HTTP boundary |
 | `packages/server/src/websocket` | Socket.IO admission, rooms, presence, typing, voice | Realtime boundary |
 | `packages/server/src/services` | Domain state transitions, authorization, storage adapter | Application/domain plane |
@@ -34,6 +35,18 @@ Last verified: 2026-08-30. This inventory covers first-party source, build, test
 - **Failure/retry/idempotency:** durable server events are deduplicated; outbox uses stable idempotency keys and capped exponential/jitter retry; every API response has a 60-second total deadline and propagates caller cancellation; missing keys fail closed rather than showing ciphertext as plaintext. Draft writes coalesce to one running and one latest pending operation per channel.
 - **Scaling/availability:** per browser; no cross-device local-state replication. Each device stores at most 100 encrypted outbox commands. Message verification has one active plus one coalesced pending pass per channel, a cancel-aware 30-second lifetime, 64-way crypto batches, and resident ceilings of 1,000 events/channel, 5,000 events total and 32 channels; cancelled work retains its slot until it unwinds, and unloaded/evicted state reconciles from REST. Authorization/voice queues, attachment runtimes, and key-scope history are also bounded. Server outage preserves already encrypted local drafts but blocks durable collaboration.
 - **Operate/test:** serve only the built same-origin bundle with CSP; `pnpm --filter @alparts/client test`, typecheck, build.
+
+### Desktop host
+
+- **Location:** `packages/desktop/src`, `packages/desktop/scripts`, package build configuration, `.github/workflows/desktop.yml`.
+- **Purpose/responsibility:** package the shared client for Windows/macOS/Linux, serve only bundled UI assets at the selected deployment origin, protect endpoint keys with the OS, lock local plaintext state, and stream decrypted attachments to a user-selected file.
+- **Non-responsibility:** authoritative authorization, server TLS termination, Passkey/OIDC, signed automatic updates, notarization, or mobile clients.
+- **Input/output:** one validated HTTPS deployment origin (loopback HTTP only for development), a narrow context-bridge API, encrypted OS-vault records, and user-selected attachment files.
+- **Dependencies/persistence:** Electron `safeStorage`, Chromium session storage, Windows DPAPI/macOS Keychain/Linux Secret Service, opaque files under Electron user data. Linux plaintext fallback is rejected.
+- **Security boundary:** sandbox and context isolation are mandatory; Node integration/webviews/renderer navigation/display capture are disabled; IPC accepts only the top frame of the one trusted window; external URLs go to the system browser; CSP prevents remote application code.
+- **Failure/retry/idempotency:** invalid origins and vault records fail closed. Settings/vault writes use same-directory temporary files and rename. Attachment saves are limited to two active handles, 100 MiB/file and 5 MiB/write; partial files are removed on failure/cancel/quit.
+- **Scaling/availability:** one local process and one window. Every deployment has a separate cookie/storage/vault namespace; changing it clears the old namespace.
+- **Operate/test:** see `docs/DESKTOP.md`; run desktop unit/type checks, native platform packaging, fuse inspection, and signed-release verification.
 
 ### Cryptographic protocol and channel-key state
 

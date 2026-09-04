@@ -1,10 +1,10 @@
 # Phase 1 Prototype threat model (legacy location)
 
-最終更新: 2026-08-30
+最終更新: 2026-09-04
 
 Canonical/current threat model: [`docs/security/THREAT_MODEL.md`](../security/THREAT_MODEL.md). The material below remains as the detailed Phase 1 protocol baseline; where it conflicts, the canonical model, current code/tests, and risk register take precedence.
 
-対象はWeb / single-node / basic per-channel key / text中心＋最大8人P2P音声のprototypeである。`SPECIFICATION.md` の正式運用版に対するthreat modelまたはsecurity approvalではない。
+対象はWindows・macOS・Linux desktop / Web / single-node / basic per-channel key / text中心＋最大8人P2P音声のprototypeである。`SPECIFICATION.md` の正式運用版に対するthreat modelまたはsecurity approvalではない。
 
 ## Assets
 
@@ -21,7 +21,7 @@ Canonical/current threat model: [`docs/security/THREAT_MODEL.md`](../security/TH
 
 - 未認証Internet client、別workspaceの認証user
 - malicious/removed workspace member、盗まれたsessionを持つ攻撃者
-- compromised browser profileまたはsame-origin JavaScriptを実行できる攻撃者
+- compromised browser profile、改ざんされたdesktop配布物、またはclient JavaScriptを実行できる攻撃者
 - PostgreSQL、MinIO、backup storage、application hostのoperatorまたは侵害者
 - malicious dependency/build/release actor
 - malicious call participant、STUN/TURNまたはsignaling operator
@@ -30,6 +30,7 @@ Canonical/current threat model: [`docs/security/THREAT_MODEL.md`](../security/TH
 ## Trust boundaries
 
 1. **Browser origin:** plaintextとclient keyはbrowser processに存在する。Non-extractable `CryptoKey`はexportを防ぐが、同一originで実行されるcodeからの利用を防がない。CSPとthird-party script排除はriskを下げるが、origin compromiseを閉じない。
+1a. **Desktop host:** rendererは署名対象の同梱UIだけを読み込み、sandbox/context isolation下で狭いIPCを使う。Private materialはOS保護領域でwrapするが、実行中rendererまたは改ざん済み配布物は正規操作としてkeyを利用できる。IPC、package署名、OS account、endpoint integrityは独立した境界である。
 2. **Browser ↔ ingress:** TLSはreverse proxy/deployment edgeの責任である。TLSの内側でも、すべてのREST/WebSocket actionにlive sessionとresource authorizationが必要である。
 3. **Application process:** serverはrouting、membership、device、object metadataを扱い、availabilityとkey directory提示を制御する。Message plaintextを保持しないことはmetadata confidentiality、availability、rollback resistanceを意味しない。
 4. **PostgreSQL / MinIO:** message confidentialityについてuntrusted storeとして扱う。Remote接続はauthenticated TLSとleast-privilege credentialを必要とする。Attachmentはclient crypto unit vectorと隔離PostgreSQL/MinIOのprotocol-level resume/download SHAを組み合わせて検証するが、store自体はupload byteが正しいplaintextから生成されたことを証明できない。
@@ -59,7 +60,7 @@ Canonical/current threat model: [`docs/security/THREAT_MODEL.md`](../security/TH
 - JSON/attachment bodyはparser前にContent-Length、aggregate bytes、concurrent request、source/user budgetを確認する。Object storage transportはactive/pending workを制限し、response header待ちとstream inactivityを設定上限内でtimeoutする。Download leaseとobject-storage leaseはresponse stream終端まで保持する。Remote object I/OをDB transaction中に実行せず、resume/finalizeでは短いauthorization/quota transaction間でobjectを照合してcommit直前に再確認する。同一uploadのmutationは単一process内で直列化する。
 - Workspace membershipの追加は一回限りinvitation consent経路だけに限定し、member removalは専用`KICK_MEMBERS`とrole hierarchyをworkspace lock取得後に再確認する。DMは2人以上のdistinct participantを要求し、generic channel mutation/permission overrideから隔離する。
 - Category/channel permission overrideはallow/deny継承、private membership、owner保護、両revision、適用前preview、room退出、rekeyをfresh integration matrixで検証する。
-- Attachmentはfile別key、暗号化filename、固定chunk AEAD、resume/retry/finalize、opaque download decrypt、危険形式警告を実装し、複数chunkの中断再開からdownload SHA一致までを検証する。
+- Attachmentはfile別key、暗号化filename、固定chunk AEAD、resume/retry/finalize、opaque download decrypt、危険形式警告を実装し、複数chunkの中断再開からdownload SHA一致までを検証する。Desktopはopaque native handleへchunk保存し、危険形式へOS隔離属性または非実行権限を付ける。
 - Voice signalingはlive session、active device、channel authorization、channel room、最大8 participant registryへbindingし、参加ごとにfresh participant IDを発行する。SDP/ICE envelopeはchannel・sender/target participant・sender device・単調sequenceを含めてP-256署名し、受信clientがdevice directory binding、exact shape、signature、sender別sequenceを検証する。失権またはroom退出はregistryとofficial clientのlocal media/peer connectionを終了させる。Media本文はP2P DTLS-SRTPに留まり、serverはrelay対象を変更できても署名済みDTLS fingerprintを無検出で書き換えられない。
 
 ## Residual risks / formal blockers
@@ -68,17 +69,17 @@ Canonical/current threat model: [`docs/security/THREAT_MODEL.md`](../security/TH
 - 新端末へのhistorical epoch backfill/recoveryはなく、全holder喪失時の旧ciphertextは復旧不能である。1 workspaceは50 member、1 userは8 active device、1回のatomic key fan-outは最大400 active recipient deviceである。Small-team境界を超えるcapacityと履歴復旧は未保証である。
 - Append-only key transparency、consistency proof、independent witness、existing-device approvalがなく、malicious serverのsplit viewを形式的に検出できない。
 - WebAuthn/Passkey、OIDC、一般の管理操作step-up、二者approval、閾値recoveryがない。新device identityの登録だけはcurrent-password step-upを実装しているが、password/session compromiseは主要riskとして残る。
-- Same-origin IndexedDBのdevice/local-state keyはOS secure storageではない。Origin、browser extension、browser profile、endpoint compromiseはplaintext/key利用へ到達しうる。
+- Web版のsame-origin IndexedDB keyはOS secure storageではない。Desktop版はOS保護領域を利用するが、実行中client、browser extension、改ざん済みpackage、OS account、endpoint compromiseはplaintext/key利用へ到達しうる。
 - Loaded-message search以外のencrypted persistent index、cross-device sync、full offline cacheがない。
 - Server/operatorはmembership、device routing、message/attachment IDと時刻、ciphertext size、attachment MIME type・chunk count・transfer timing、opaque storage keyなどのmetadataを観測する。完全なmetadata inventory/public disclosureはない。
 - Presence/typing/readをuserまたはworkspace単位で無効化する設定、notificationのcategory継承、Push/background deliveryはない。
-- File System Access API非対応browserのdownloadは100 MiB以下のBlob fallbackに限られ、OS quarantine、安全な検体viewer、archive/image parser防御はない。
+- File System Access API非対応browserのdownloadは100 MiB以下のBlob fallbackに限られる。Desktopは隔離属性相当を付けるが、安全な検体viewer、archive/image parser防御はない。
 - Workspace管理は作成・一覧・member removalまでで、rename/delete/owner transferや組織policy管理はない。
 - Audit checkpointのoperator independenceは別権限mountの場合だけ成立し、external SIEM/WORM/retention alertはない。
 - Backup roundtripはDB rowと最新ciphertext objectの再現だけを検証する。PITR、WORM、off-site、scheduled restore、RTO/RPO、full application DRはない。
 - Single-node/single-DBで、HA、broker、failover、rolling upgrade、cluster migrationはない。
 - P2P DTLS-SRTP音声以外のmedia architecture（SFU/SFrame、映像、画面共有、録音表示、正式なparticipant-change group rekey）はない。Device directory transparencyがないため、malicious serverによるidentity split viewを通話でも形式的に閉じていない。P2P peer/IP metadata露出、TURN credential配布、NAT到達性、mesh scalabilityも残存riskである。
-- Retention/export、Restricted profile、signed update/SBOM/SLSA、desktop/mobile、Bot/Webhook、独立外部security reviewはない。
+- Retention/export、Restricted profile、signed update/SLSA、mobile、Bot/Webhook、独立外部security reviewはない。
 - Project codeは現在 `UNLICENSED` で、権利者によるOSI承認または同等licenseの選定とthird-party noticeの法務確認が未完了である。
 - Authorized recipientによるcopy/screenshot、受信済みdataの完全消去、serverに対する完全metadata秘匿は提供しない。
 

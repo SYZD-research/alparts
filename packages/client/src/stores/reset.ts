@@ -10,10 +10,12 @@ import { useUiStore } from './ui.store';
 import { useUserStateStore } from './user-state.store';
 import { useAttachmentStore } from './attachment.store';
 import { useVoiceStore } from './voice.store';
+import { useAttentionStore } from './attention.store';
 
 /** Remove all decrypted and authentication-scoped in-memory state. */
 export function resetAuthenticatedState(): void {
   useVoiceStore.getState().reset();
+  useAttentionStore.getState().reset();
   useAttachmentStore.getState().reset();
   useDraftStore.getState().reset();
   useDmStore.getState().reset();

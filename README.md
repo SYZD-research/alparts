@@ -1,8 +1,8 @@
 # alparts
 
-alpartsは、serverへ平文messageを渡さないchannel型communication基盤の **Phase 1 Web prototype** です。React/TypeScript SPA、Node.js/TypeScript API、PostgreSQL、MinIOで構成され、少人数向けP2P音声通話も提供します。
+alpartsは、serverへ平文messageを渡さないchannel型communication基盤の **Phase 1 Web / desktop prototype** です。React/TypeScript SPA、Electron、Node.js/TypeScript API、PostgreSQL、MinIOで構成され、少人数向けP2P音声通話も提供します。
 
-このrepositoryは `SPECIFICATION.md` の正式運用版ではありません。現在の到達点はWeb / single-process / basic per-channel key / text中心＋最大8人P2P音声のprototypeです。2026-08-30に公式npx CLIのDeep Security Scanを実施し、pre-change treeへ13 canonical finding / 15 report instanceを報告しました。検出根本原因を現treeで修正し、fresh PostgreSQL/MinIOを含む回帰検証を行っていますが、scan coverageはtime ceiling等により`partial`で、独立外部reviewでもありません。ゼロデイ、認証情報、Embargo情報には使用しないでください。正確な境界は [docs/INDEX.md](./docs/INDEX.md)、[LIMITATIONS.md](./docs/policies/LIMITATIONS.md)、[risk register](./docs/RISK_REGISTER.md) を参照してください。
+このrepositoryは `SPECIFICATION.md` の正式運用版ではありません。現在の到達点はWindows・macOS・Linux desktop / Web / single-process / basic per-channel key / text中心＋最大8人P2P音声のprototypeです。2026-08-30に公式npx CLIのDeep Security Scanを実施し、pre-change treeへ13 canonical finding / 15 report instanceを報告しました。検出根本原因を現treeで修正し、fresh PostgreSQL/MinIOを含む回帰検証を行っていますが、scan coverageはtime ceiling等により`partial`で、独立外部reviewでもありません。ゼロデイ、認証情報、Embargo情報には使用しないでください。正確な境界は [docs/INDEX.md](./docs/INDEX.md)、[LIMITATIONS.md](./docs/policies/LIMITATIONS.md)、[risk register](./docs/RISK_REGISTER.md) を参照してください。
 
 ## 現在の到達点
 
@@ -16,6 +16,7 @@ alpartsは、serverへ平文messageを渡さないchannel型communication基盤�
 - すでに読み込み・復号済みのmessageだけを対象にするlocal search
 - preview/revision/effective reasonを備えたcategory/channel role permission overrideと、失権時のroom退出・rekey・client局所消去
 - file別key、暗号化filename、5 MiB chunk AEAD、中断再開、opaque download復号、危険形式警告を備えた添付flow
+- 同梱UIだけを読み込むWindows・macOS・Linux向けElectron client、OS保護領域を使う鍵保存、OS/idle連動app lock、隔離属性付きnative添付保存
 - 最大8人のP2P WebRTC音声通話、署名付きSDP/ICE、参加・退出、ミュート、音声検出／プッシュトゥトーク、入出力device切替、発言者・接続品質表示
 - HMAC chained audit、起動時検証、監査閲覧の自己監査、設定可能なHMAC checkpoint
 - startup/liveness/readiness、fatal pathを含むgraceful shutdown、structured correlation log、private bearer-protected metrics
@@ -24,7 +25,7 @@ alpartsは、serverへ平文messageを渡さないchannel型communication基盤�
 - age recipientで暗号化するbackup gate、systemd daily schedule、安全なlocal retention、空の隔離DB/bucketだけを対象にするrestore verification
 - tenant/resource/database/object listing/password/audit/upload work、およびbrowser outbox/realtime/voice/attachment workのtransactional・bounded admissionとbulk authorization snapshot
 
-Category/channel permission override、client attachment flow、音声signalingは、fresh PostgreSQL/MinIOを使う認可matrix・複数chunk再開/download SHA・2端末の通話参加/relay/失権退出まで確認しています。MLS、device approval/key transparency、WebAuthn/OIDC、desktop/mobile、Restricted profile、HA、PITR/WORM/off-site/automatic DR、retention/export、signed updates、映像・画面共有・SFU/SFrame、Bot/Webhook、独立外部reviewは正式版blockerとして未実装です。
+Category/channel permission override、client attachment flow、音声signalingは、fresh PostgreSQL/MinIOを使う認可matrix・複数chunk再開/download SHA・2端末の通話参加/relay/失権退出まで確認しています。MLS、device approval/key transparency、WebAuthn/OIDC、mobile、Restricted profile、HA、PITR/WORM/off-site/automatic DR、retention/export、signed updates、映像・画面共有・SFU/SFrame、Bot/Webhook、独立外部reviewは正式版blockerとして未実装です。
 
 ## ローカル起動
 
@@ -46,6 +47,7 @@ Category/channel permission override、client attachment flow、音声signaling�
 
 - Web: `http://localhost:5173`
 - API: `http://localhost:3000`
+- Desktop（別terminal）: `pnpm dev:desktop` を実行し、初回画面へ `http://localhost:5173` を入力
 - Process停止: 実行中terminalで `Ctrl+C`
 - 依存serviceも停止: `./dev.sh down`
 
@@ -73,11 +75,12 @@ DB integrationは、既存dataを含まない一意な使い捨てPostgreSQL/Min
 
 Message本文はbrowserでAES-256-GCM暗号化し、device P-256 keyでcontext付きprotocol-v3 envelopeへ署名します。Channel-key epochは共通SHA-256 commitmentとfrozen recipient snapshotを持つ`pending`として提案され、全required端末が復号・commitment・server発行のexact deliveryを検証して署名ackした場合だけ`active`になります。Pending epochはmessage/attachment writeに使えず、abort後もversionを再利用しません。全accepted holderを失った場合は旧ciphertextを復旧できたと装わず、`historyRecoveryRequired`を示して新端末から将来用epochだけを確立します。Serverはciphertext、signature、配送に必要なmetadataを保持します。現在のgroup keyはbasic per-channel epoch方式で、MLS相当のforward secrecy/post-compromise securityを提供しません。
 
-Device private keyとdraft/outbox用AES-GCM keyはnon-extractable WebCrypto `CryptoKey`としてsame-origin IndexedDBへ保存されます。これはOS secure storageではありません。Web originが侵害されると、悪性JavaScriptはkeyをexportせず暗号操作へ利用できます。Searchはmemory上の読み込み済み復号messageだけを対象とし、永続暗号化indexや端末間同期はありません。
+Web版では、device private keyとdraft/outbox用AES-GCM keyをnon-extractable WebCrypto `CryptoKey`としてsame-origin IndexedDBへ保存します。Desktop版ではprivate materialをOS保護領域でwrapし、IndexedDBには参照情報だけを置きます。どちらも実行中の正規clientは鍵を利用できるため、client code侵害への完全な防御ではありません。Searchはmemory上の読み込み済み復号messageだけを対象とし、永続暗号化indexや端末間同期はありません。
 
 ## 運用
 
 - [Documentation index](./docs/INDEX.md): inventory、architecture、security、reliability、deployment、runbookへの入口
+- [Desktop client](./docs/DESKTOP.md): 開発起動、3 OS向けpackage、trust boundary、検証
 - [運用手順](./docs/policies/OPERATIONS.md): monitoring、migration、probe、audit checkpoint、shutdownの境界
 - [Backup / restore verification](./docs/BACKUP.md): migration前gate、age暗号化artifact、隔離restore
 - [Deployment](./docs/policies/DEPLOYMENT.md): development、single-host、air-gapped、cluster/multi-region非保証

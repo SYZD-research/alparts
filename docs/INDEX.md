@@ -1,6 +1,6 @@
 # Documentation index
 
-Last verified: 2026-08-30 against the current working tree.
+Last verified: 2026-09-04 against the current working tree.
 
 This is the navigation root for implementation, architecture, security, operations, and recovery material. Statements marked **implemented** are backed by the linked code or tests. Statements marked **target** are not current guarantees.
 
@@ -8,6 +8,7 @@ This is the navigation root for implementation, architecture, security, operatio
 
 - [Repository overview](../README.md)
 - [System inventory](./SYSTEM_INVENTORY.md)
+- [Desktop client](./DESKTOP.md)
 - [Architecture](./policies/ARCHITECTURE.md)
 - [Known limitations](./policies/LIMITATIONS.md)
 - [Risk register](./RISK_REGISTER.md)
@@ -64,6 +65,7 @@ This is the navigation root for implementation, architecture, security, operatio
 - [Runtime schema catalog gate](../packages/server/src/db/schema-catalog.ts)
 - [Shared protocol types and canonical serialization](../packages/shared/src)
 - [Web client](../packages/client/src)
+- [Electron desktop client](../packages/desktop/src)
 - [Database migrations](../packages/server/src/db/migrations)
 - [Backup/restore scripts](../scripts)
 

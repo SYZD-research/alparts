@@ -1,11 +1,17 @@
 import type { Server as SocketServer } from 'socket.io';
 import { z } from 'zod';
-import { MAX_MESSAGE_LENGTH, Permissions } from '@alparts/shared';
+import {
+  MAX_DIRECT_MENTION_RECIPIENTS_PER_MESSAGE,
+  MAX_MESSAGE_LENGTH,
+  Permissions,
+  type WsAttentionNotification,
+} from '@alparts/shared';
 import * as messageService from '../services/message.service.js';
 import { logError } from '../security/logger.js';
 import { authorizeSocketChannel, consumeSocketRate, type AuthenticatedSocket } from './security.js';
 
 const ciphertextMax = Math.ceil((MAX_MESSAGE_LENGTH * 4 + 16) / 3) * 4;
+const uuid = z.string().uuid();
 const cryptoFields = {
   deviceId: z.string().uuid(),
   keyVersion: z.number().int().min(1).max(1_000_000),
@@ -20,6 +26,10 @@ const sendSchema = z.object({
   contentNonce,
   refMessageId: z.string().uuid().optional(),
   broadcastMention: z.boolean(),
+  mentionedUserIds: z.array(uuid)
+    .max(MAX_DIRECT_MENTION_RECIPIENTS_PER_MESSAGE)
+    .refine((ids) => new Set(ids).size === ids.length)
+    .optional(),
   ...cryptoFields,
 }).strict();
 const editSchema = z.object({
@@ -43,8 +53,20 @@ export type MessageDeletedPayload = Pick<MessageDeletedResult, 'messageId' | 'ch
 export type ReactionUpdatedPayload = Awaited<ReturnType<typeof messageService.toggleReaction>>;
 export type PinUpdatedPayload = Awaited<ReturnType<typeof messageService.pinMessage>>;
 
-export function broadcastMessageCreated(io: SocketServer, message: MessageEvent) {
+export function broadcastMessageCreated(
+  io: SocketServer,
+  message: MessageEvent,
+  attentionRecipients: StoredMessageResult['attentionRecipients'] = [],
+) {
   io.to(`channel:${message.channelId}`).emit('message:new', { message });
+  for (const recipient of attentionRecipients) {
+    io.to(`user:${recipient.userId}`).emit('attention:new', {
+      notificationId: message.id,
+      workspaceId: recipient.workspaceId,
+      channelId: message.channelId,
+      kind: recipient.kind,
+    } satisfies WsAttentionNotification);
+  }
 }
 
 export function broadcastMessageEdited(io: SocketServer, message: MessageEvent) {
@@ -70,8 +92,14 @@ export function handleMessageEvents(io: SocketServer, socket: AuthenticatedSocke
       const value = sendSchema.parse(data);
       if (value.deviceId !== socket.deviceId) throw new Error('DEVICE_MISMATCH');
       if (!await authorizeSocketChannel(socket, value.channelId, Permissions.SEND_MESSAGES)) throw new Error('FORBIDDEN');
-      const result = await messageService.createMessage(value.channelId, socket.userId!, value, value.refMessageId);
-      if (result.isNewEvent) broadcastMessageCreated(io, result.event);
+      const result = await messageService.createMessage(
+        value.channelId,
+        socket.userId!,
+        value,
+        value.refMessageId,
+        value.mentionedUserIds,
+      );
+      if (result.isNewEvent) broadcastMessageCreated(io, result.event, result.attentionRecipients);
     } catch (error) {
       logError('websocket.message_send', error);
       socket.emit('operation:error', { code: 'MESSAGE_REJECTED' });

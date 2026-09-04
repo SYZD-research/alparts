@@ -1,10 +1,10 @@
 # LIMITATIONS.md — Phase 1 Prototype 制限事項
 
-最終更新: 2026-08-30
+最終更新: 2026-09-04
 
 > **現在の境界**
 >
-> - Client: Webのみ（React/TypeScript SPA）
+> - Client: Web、およびWindows・Linux・macOS desktop（React/TypeScript + Electron）
 > - Server: Linux上のsingle-node / single-process Node.js + PostgreSQL + MinIO
 > - Crypto: basic per-channel epoch key（MLSではない）
 > - Product: text-centered + 最大8人P2P音声のsmall-team prototype
@@ -13,12 +13,12 @@
 
 ## 現在利用できるPrototype境界
 
-- Webクライアントでworkspace/category/channel、private channel、基本的な暗号化text message、返信、編集、削除、reaction、pin、bookmarkを利用できる。
+- Webおよびdesktopクライアントでworkspace/category/channel、private channel、基本的な暗号化text message、返信、編集、削除、reaction、pin、bookmarkを利用できる。
 - 1対1 DM/group DMのAPI、鍵受信者となるmember model、一覧・作成UIがある。
 - message eventはREST/Socketの耐久化後経路から取り込まれ、client projectorが`(createdAt, id)`順序、重複排除、edit/delete/reaction/pin stateを決定的に投影する。
 - workspace作成・一覧・member removal、category/channel管理、private member管理、role CRUD/割当/変更preview/有効権限理由、session/device一覧と失効UIがある。
 - Category/channel role permission overrideはallow/deny/inherit、適用前preview、override・認可の両revision、実効権限理由、失権時のroom退出とrekey、公式clientの局所消去に対応する。
-- Attachmentはfile別key、暗号化filename、5 MiB chunk AEAD、中断再開、取消、短命予約、opaque download復号、危険形式警告に対応する。Protocol-levelの複数chunk中断再開からdownload SHA一致を隔離PostgreSQL/MinIOで確認している。
+- Attachmentはfile別key、暗号化filename、5 MiB chunk AEAD、中断再開、取消、短命予約、opaque download復号、危険形式警告に対応する。Desktop保存では平文をbounded native streamへ渡し、危険形式にWindows/macOSの隔離属性またはLinuxの非実行権限を付ける。Protocol-levelの複数chunk中断再開からdownload SHA一致を隔離PostgreSQL/MinIOで確認している。
 - 音声はchannelに紐づく最大8人のP2P WebRTC meshとして、参加・退出、ミュート、音声検出／プッシュトゥトーク、入出力device切替、発言者・接続品質表示に対応する。Signalingの参加認可・中継・失権退出を隔離integrationで確認している。
 - 招待は一回限り、期限付き、個別失効、任意email bindingに対応し、管理UIで作成・一覧・失効できる。tokenの配送はoperatorによる安全なout-of-band共有であり、email配送機能はない。
 - channel別draftと未送信outboxは暗号化してIndexedDBへ保存される。同じidempotency keyと同一署名済みrequestで、上限付きexponential backoff+jitterによりonline復帰時に再送し、queued/sending/failedを区別する。Outboxはactive deviceごとに100件を上限とする。
@@ -57,10 +57,10 @@
 - 公式clientのkey取得は`scope=current`を使う。履歴は1 request最大64 unique version、response最大864 deliveryで明示取得する。更新前tab向けのqueryなし経路は新しい順に最大16のactive/pending/retired epochだけを返しdeprecation headerを付けるため、長期間更新されないtabがそれより古い履歴を取得できる保証はない。
 - Server/operatorはuser/workspace/channel membership、device routing、message/attachment ID・時刻、ciphertext size、attachment MIME type・chunk count・upload/download timing、opaque storage keyを観測できる。完全なmetadata inventory/public disclosureはなく、配送拒否、削除、rollback、可用性妨害も可能である。正規受信者によるcopy、screenshot、外部撮影、受信済みdataの完全遠隔消去も防止できない。
 
-### Browser local stateとoffline
+### Client local stateとoffline
 
-- Device private keyとdraft/outbox用AES-GCM keyはいずれもnon-extractable WebCrypto `CryptoKey`としてsame-origin IndexedDBへstructured clone保存される。OS keychain、TPM、Secure Enclave相当の別trust boundaryではない。
-- Draft/outboxのciphertextとその復号keyが同じoriginのIndexedDBにあるため、disk上の単純な平文露出は避けても、compromised originが配信するJavaScriptはkeyをexportせずに暗号操作へ利用できる。
+- Web版ではdevice private keyとdraft/outbox用AES-GCM keyをnon-extractable WebCrypto `CryptoKey`としてsame-origin IndexedDBへstructured clone保存する。Desktop版ではprivate JWK、channel key、draft/outbox keyをOS保護領域でwrapし、IndexedDBにはpublic identityまたはopaque pointerだけを置く。Linuxで保護されたsecret serviceを利用できない場合、desktopはfail closedで開始しない。
+- Web版ではdraft/outboxのciphertextとその復号keyが同じoriginのIndexedDBにある。Desktop版を含め、compromised client codeはkeyをexportできなくても正規process内で暗号操作へ利用できるため、client code侵害をOS保護領域だけで防ぐものではない。
 - Logout/user切替は復号済みmemory stateとkey cacheを消すが、同じ有効deviceで再開できるよう暗号化recordは残る。browser profile削除やIndexedDB喪失からの復旧、複数端末draft同期、Service Workerによるfull offline history cacheはない。
 - Outboxの非同期保存・送信・削除は開始時のuser/device/generationへ固定し、principal切替後のcallbackを破棄する。同じ有効device向けの暗号化recordを保持する設計であり、logoutだけでbrowser disk上のrecordを物理消去する保証ではない。
 - Message projectorの「検証済み」はnetwork JSONのbooleanではなくprocess-localな到達不能markerで伝播する。同じevent IDへ異なる署名済みenvelopeが届いた場合はlast-write-winsにせずsticky conflictとしてquarantineする。Reload/reconciliationが必要になり得る一方、依存するdirectory/keyを取得不能なeventを検証済みとして昇格しない。
@@ -129,7 +129,7 @@
 | --- | --- |
 | MLS、key transparency、independent witness、既存端末approval | 延期 |
 | WebAuthn/Passkey、OIDC、step-up、二者approval、recovery | 延期 |
-| Windows/Linux/macOS desktop、iOS/Android、OS secure storage | 延期 |
+| iOS/Android、desktop配布署名・notarization・署名検証update | 延期 |
 | HA、broker、DB failover、cluster migration、PITR/WORM/off-site/自動DR | 延期 |
 | Retention、user/org export、Restricted profile | 延期 |
 | SBOM/SLSA、release signing、signed update/downgrade protection | 延期 |

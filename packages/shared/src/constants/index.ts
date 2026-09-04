@@ -48,6 +48,7 @@ export const ChannelType = {
   TEXT: 'text',
   DM: 'dm',
   ANNOUNCEMENT: 'announcement',
+  VOICE: 'voice',
 } as const;
 
 export const MessageType = {
@@ -66,5 +67,6 @@ export const UserStatus = {
 } as const;
 
 export const MAX_MESSAGE_LENGTH = 4000;
+export const MAX_DIRECT_MENTION_RECIPIENTS_PER_MESSAGE = 50;
 export const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB
 export const MESSAGES_PER_PAGE = 50;

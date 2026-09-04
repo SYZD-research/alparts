@@ -31,12 +31,18 @@ const loginSchema = z.object({
     language: z.string().max(32).optional(),
   }).strict().optional(),
 }).strict();
+const reauthenticateSchema = z.object({ password: loginPassword }).strict();
 
 const registrationLimit = rateLimit({ windowMs: 60 * 60 * 1000, max: 5, key: credentialRateLimitKey });
 const loginLimit = rateLimit({ windowMs: 15 * 60 * 1000, max: 8, key: credentialRateLimitKey });
 const loginAccountLimit = rateLimit({ windowMs: 15 * 60 * 1000, max: 12, key: credentialAccountRateLimitKey });
 const registrationIpLimit = rateLimit({ windowMs: 60 * 60 * 1000, max: 30 });
 const loginIpLimit = rateLimit({ windowMs: 15 * 60 * 1000, max: 100 });
+const reauthenticateLimit = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 8,
+  key: (req) => (req as AuthRequest).userId || req.ip || req.socket.remoteAddress || 'unknown',
+});
 const sessionIdSchema = z.string().uuid();
 
 router.post('/register', registrationIpLimit, registrationLimit, async (req, res) => {
@@ -92,6 +98,25 @@ router.post('/logout', authMiddleware, async (req: AuthRequest, res) => {
   res.setHeader('Set-Cookie', expiredSessionCookie());
   res.setHeader('Cache-Control', 'no-store');
   res.json({ success: true });
+});
+
+router.post('/reauthenticate', authMiddleware, reauthenticateLimit, async (req: AuthRequest, res) => {
+  try {
+    const body = reauthenticateSchema.parse(req.body);
+    const user = await authService.reauthenticate(req.userId!, body.password);
+    res.setHeader('Cache-Control', 'no-store');
+    res.json(user);
+  } catch (error: any) {
+    if (error.message === 'INVALID_CREDENTIALS') {
+      res.status(403).json({ error: 'INVALID_CREDENTIALS', message: 'Password verification failed', statusCode: 403 });
+      return;
+    }
+    if (error.name === 'ZodError') {
+      res.status(400).json({ error: 'VALIDATION', message: 'Invalid password data', statusCode: 400 });
+      return;
+    }
+    throw error;
+  }
 });
 
 router.get('/me', authMiddleware, async (req: AuthRequest, res) => {

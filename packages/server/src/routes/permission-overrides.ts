@@ -6,7 +6,7 @@ import { authMiddleware, type AuthRequest } from '../middleware/auth.js';
 import { requireChannelPermission, requireWorkspacePermission } from '../middleware/rbac.js';
 import * as overrideService from '../services/permission-override.service.js';
 import type { ChannelViewerEffect } from '../services/authorization.service.js';
-import { joinAuthorizedUserToChannelRoom } from '../websocket/room-membership.js';
+import { joinAuthorizedUserToChannelRoom, leaveUserChannelRooms } from '../websocket/room-membership.js';
 
 const router = Router();
 const uuid = z.string().uuid();
@@ -190,7 +190,7 @@ async function applyRealtimeEffects(req: AuthRequest, effects: ChannelViewerEffe
         workspaceId: req.params.wid,
         channelId: effect.channelId,
       });
-      io.in(`user:${userId}`).socketsLeave(`channel:${effect.channelId}`);
+      leaveUserChannelRooms(io, userId, effect.channelId);
     }
     for (const userId of effect.gainedUserIds) {
       await joinAuthorizedUserToChannelRoom(io, userId, effect.channelId);

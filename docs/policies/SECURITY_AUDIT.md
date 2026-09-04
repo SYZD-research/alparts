@@ -169,4 +169,4 @@ TAC advisory取得は認証されていない実行環境のため利用でき�
 
 ## Release conclusion
 
-現時点の結論は **Prototype / formal production use未承認** である。MLS、approval/key transparency、WebAuthn/OIDC、desktop/mobile、Restricted profile、HA、PITR/WORM/off-site/automatic DR、retention/export、signed updates、media、Bot/Webhook、独立外部security reviewなどのarchitectural blockerはlocalized findingの修正とは別であり、`LIMITATIONS.md` と `THREAT_MODEL.md` に残る。
+現時点の結論は **Prototype / formal production use未承認** である。MLS、approval/key transparency、WebAuthn/OIDC、mobile、Restricted profile、HA、PITR/WORM/off-site/automatic DR、retention/export、signed updates、media、Bot/Webhook、独立外部security reviewなどのarchitectural blockerはlocalized findingの修正とは別であり、`LIMITATIONS.md` と `THREAT_MODEL.md` に残る。

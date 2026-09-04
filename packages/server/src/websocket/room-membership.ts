@@ -10,6 +10,7 @@ import {
   isVisibleChannelAuthorization,
   lockWorkspaceForAuthorization,
 } from '../services/authorization.service.js';
+import { voicePresenceRoom } from './voice-rooms.js';
 
 type AuthorizationStore = Parameters<typeof lockWorkspaceForAuthorization>[0];
 
@@ -83,4 +84,18 @@ export async function joinAuthorizedUserToChannelRoom(
     logError('websocket.channel_room_grant', error);
     return false;
   }
+}
+
+/** Remove both message/call membership and voice-list presence visibility. */
+export function leaveUserChannelRooms(io: SocketServer, userId: string, channelId: string): void {
+  const userRoom = `user:${userId}`;
+  io.in(userRoom).socketsLeave(voicePresenceRoom(channelId));
+  io.in(userRoom).socketsLeave(`channel:${channelId}`);
+}
+
+/** Remove every socket from a deleted channel without retaining voice presence access. */
+export function clearDeletedChannelRooms(io: SocketServer, channelId: string): void {
+  const presenceRoom = voicePresenceRoom(channelId);
+  io.in(presenceRoom).socketsLeave(presenceRoom);
+  io.in(`channel:${channelId}`).socketsLeave(`channel:${channelId}`);
 }

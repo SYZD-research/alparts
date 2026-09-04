@@ -4,6 +4,7 @@ import {
   parseOutboxCommand,
   type OutboxCommand,
 } from '../stores/outbox-model';
+import { getDesktopBridge, getDesktopSecret, setDesktopSecret } from './desktop.service';
 
 const DB_NAME = 'alparts-local-state';
 const DB_VERSION = 2;
@@ -276,6 +277,38 @@ async function getLocalKey(context: DeviceContext): Promise<CryptoKey> {
   const generation = localStateGeneration;
   let initialization: Promise<CryptoKey>;
   initialization = (async () => {
+    if (getDesktopBridge()) {
+      const secretName = `local:${context.userId}:${context.deviceId}`;
+      let encoded = await getDesktopSecret(secretName);
+      if (encoded === null) {
+        const raw = crypto.getRandomValues(new Uint8Array(32));
+        try {
+          encoded = toBase64(raw);
+          if (!await setDesktopSecret(secretName, encoded)) throw new Error('SECURE_LOCAL_STORAGE_UNAVAILABLE');
+        } finally {
+          raw.fill(0);
+        }
+      }
+      let raw: Uint8Array;
+      try {
+        raw = new Uint8Array(fromBase64(encoded));
+      } catch {
+        throw new Error('SECURE_LOCAL_STORAGE_INVALID');
+      }
+      if (raw.byteLength !== 32 || toBase64(raw) !== encoded) {
+        raw.fill(0);
+        throw new Error('SECURE_LOCAL_STORAGE_INVALID');
+      }
+      try {
+        const key = await crypto.subtle.importKey('raw', raw.buffer as ArrayBuffer, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+        await deleteRecord(KEY_STORE, id).catch(() => undefined);
+        if (generation === localStateGeneration) localKeyCache.set(id, key);
+        return key;
+      } finally {
+        raw.fill(0);
+      }
+    }
+
     const stored = await getRecord<StoredLocalKey>(KEY_STORE, id);
     let key: CryptoKey;
     if (isUsableLocalKey(stored, context)) {

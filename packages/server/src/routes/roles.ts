@@ -13,6 +13,7 @@ import * as roleService from '../services/role.service.js';
 import {
   joinAuthorizedUserToChannelRoom,
   joinAuthorizedUserToWorkspaceRoom,
+  leaveUserChannelRooms,
 } from '../websocket/room-membership.js';
 
 const router = Router();
@@ -172,14 +173,14 @@ async function applyRealtimeEffects(req: AuthRequest, result: {
       membershipRemoved: false,
     });
     io.in(`user:${userId}`).socketsLeave(`workspace:${req.params.wid}`);
-    for (const channelId of result.allChannelIds) io.in(`user:${userId}`).socketsLeave(`channel:${channelId}`);
+    for (const channelId of result.allChannelIds) leaveUserChannelRooms(io, userId, channelId);
   }
   for (const userId of result.gainedAccessUserIds) {
     await joinAuthorizedUserToWorkspaceRoom(io, userId, req.params.wid);
   }
   for (const effect of result.roomEffects ?? []) {
     for (const userId of effect.lostUserIds) {
-      io.in(`user:${userId}`).socketsLeave(`channel:${effect.channelId}`);
+      leaveUserChannelRooms(io, userId, effect.channelId);
     }
     for (const userId of effect.gainedUserIds) {
       await joinAuthorizedUserToChannelRoom(io, userId, effect.channelId);

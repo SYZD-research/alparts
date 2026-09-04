@@ -19,6 +19,8 @@ import { clearChannelSecurityScope, clearWorkspaceSecurityScope } from '../store
 import { useUserStateStore } from '../stores/user-state.store';
 import { useUiStore } from '../stores/ui.store';
 import { useWorkspaceStore } from '../stores/workspace.store';
+import { parseAttentionNotification } from '../services/attention-model';
+import { useAttentionStore } from '../stores/attention.store';
 
 export function useSocketEvents() {
   const addMessage = useMessageStore((state) => state.addMessage);
@@ -40,6 +42,7 @@ export function useSocketEvents() {
   const setActiveWorkspace = useWorkspaceStore((state) => state.setActiveWorkspace);
   const userId = useAuthStore((state) => state.user?.id);
   const resumeFailedUploads = useAttachmentStore((state) => state.resumeFailedUploads);
+  const addAttention = useAttentionStore((state) => state.add);
 
   useEffect(() => {
     const socket = getSocket();
@@ -278,6 +281,20 @@ export function useSocketEvents() {
     const onTypingUpdate = (data: { channelId: string; userId: string; isTyping: boolean }) => {
       if (isAuthorizedLoadedChannel(data.channelId)) setTyping(data.channelId, data.userId, data.isTyping);
     };
+    const onAttention = (value: unknown) => {
+      const notification = parseAttentionNotification(value);
+      if (!notification) return;
+      const state = useUserStateStore.getState();
+      if (Object.prototype.hasOwnProperty.call(state.channelStatesByWorkspace, notification.workspaceId)) {
+        if (state.channelStatesByWorkspace[notification.workspaceId]?.[notification.channelId]) {
+          addAttention(notification);
+        }
+        return;
+      }
+      void loadWorkspaceState(notification.workspaceId).then((channelStates) => {
+        if (channelStates[notification.channelId]) addAttention(notification);
+      });
+    };
 
     const rejoinActiveChannel = (attempt = 0) => {
       const workspaceId = useWorkspaceStore.getState().activeWorkspaceId;
@@ -316,6 +333,7 @@ export function useSocketEvents() {
     socket.on('presence:changed', onPresenceChanged);
     socket.on('typing:update', onTypingUpdate);
     socket.on('read:updated', onReadUpdated);
+    socket.on('attention:new', onAttention);
     socket.on('device:registered', onDeviceRegistered);
     socket.on('workspace:member-added', onWorkspaceMembershipChanged);
     socket.on('workspace:roles-changed', onWorkspaceMembershipChanged);
@@ -347,6 +365,7 @@ export function useSocketEvents() {
       socket.off('presence:changed', onPresenceChanged);
       socket.off('typing:update', onTypingUpdate);
       socket.off('read:updated', onReadUpdated);
+      socket.off('attention:new', onAttention);
       socket.off('device:registered', onDeviceRegistered);
       socket.off('workspace:member-added', onWorkspaceMembershipChanged);
       socket.off('workspace:roles-changed', onWorkspaceMembershipChanged);
@@ -359,7 +378,7 @@ export function useSocketEvents() {
       socket.off('channel:member-added', onChannelRecipientsChanged);
       socket.off('channel:key-rotation-required', onChannelRecipientsChanged);
     };
-  }, [addMessage, applyAttachment, applyPinUpdate, applyReactionUpdate, applySocketReadPosition,
+  }, [addAttention, addMessage, applyAttachment, applyPinUpdate, applyReactionUpdate, applySocketReadPosition,
     flushOutbox, loadChannels, loadMembers, loadMessages, loadWorkspaces, loadWorkspaceState,
     noteBaseMessage, removeMessage, resumeFailedUploads, setActiveWorkspace, setStatus, setTyping,
     upsertDm, userId]);

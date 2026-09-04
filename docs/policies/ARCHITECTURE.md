@@ -1,19 +1,20 @@
 # Architecture
 
-Last verified: 2026-08-30
+Last verified: 2026-09-04
 
 ## Status and scope
 
-Alparts is currently a small-team, browser-based encrypted collaboration prototype. The supported runtime topology is one Node.js application process backed by PostgreSQL and one S3-compatible object store. A hardened single-host deployment is provided. Horizontal application scaling, automatic failover, multi-region consistency, and multi-cloud operation are target capabilities, not current guarantees.
+Alparts is currently a small-team Web and Electron desktop encrypted collaboration prototype. The supported runtime topology is one Node.js application process backed by PostgreSQL and one S3-compatible object store. A hardened single-host deployment is provided. Horizontal application scaling, automatic failover, multi-region consistency, and multi-cloud operation are target capabilities, not current guarantees.
 
-The design deliberately keeps the server out of message and attachment plaintext while acknowledging that the served browser origin, endpoint, application process, and authorization metadata remain security-critical.
+The design deliberately keeps the server out of message and attachment plaintext while acknowledging that the Web origin, signed desktop package, endpoint, application process, and authorization metadata remain security-critical. Windows, macOS, and Linux desktop builds use the same client core; the desktop host packages UI assets locally and moves persistent private material into OS-protected storage.
 
 ## Current architecture
 
 ```text
-Browser SPA
+Web SPA / packaged Electron renderer
   ├─ WebCrypto: device signatures, channel/file AEAD, local-state AEAD
-  ├─ IndexedDB: non-extractable keys, encrypted drafts/outbox
+  ├─ IndexedDB: encrypted drafts/outbox and bounded client state
+  ├─ Desktop host: bundled UI, OS-protected key vault, app lock, native file save
   ├─ REST ───────────────────────────────┐
   └─ Socket.IO / WebRTC signaling ──────┤ exact-origin + live session/device
                                         v

@@ -211,6 +211,13 @@ export async function getUserById(userId: string) {
   return user ? publicUser(user) : null;
 }
 
+export async function reauthenticate(userId: string, password: string) {
+  await verifyCurrentPasswordSnapshot(userId, password);
+  const user = await getUserById(userId);
+  if (!user) throw new Error('INVALID_CREDENTIALS');
+  return user;
+}
+
 /**
  * Performs the expensive password KDF before callers acquire an audit, key,
  * or database lock. The returned hash is an opaque revision token; callers

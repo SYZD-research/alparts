@@ -1864,15 +1864,40 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
     await onceConnected(bobSocket);
     assert.equal(await joinChannel(bobSocket, channelId), true);
 
-    const aliceVoiceJoin = await joinVoice(aliceSocket, channelId);
+    const voiceChannelResponse = await request(`/api/workspaces/${workspace.id}/channels`, {
+      method: 'POST',
+      cookie: alice.cookie,
+      body: {
+        name: 'team-voice',
+        type: 'voice',
+        categoryId: overrideTarget.categoryId,
+        position: 1_000_000,
+      },
+    });
+    assert.equal(voiceChannelResponse.status, 201);
+    const voiceChannel = await json<{ id: string }>(voiceChannelResponse);
+
+    assert.deepEqual(await emitSocketAck(bobSocket, 'voice:watch', { channelIds: [voiceChannel.id] }), {
+      ok: true,
+      channels: [{ channelId: voiceChannel.id, participants: [] }],
+    });
+    const alicePresenceChanged = onceSocketEvent<{
+      channelId: string;
+      participants: import('@alparts/shared').VoiceParticipant[];
+    }>(bobSocket, 'voice:participants-changed');
+    const aliceVoiceJoin = await joinVoice(aliceSocket, voiceChannel.id);
     assert.equal(aliceVoiceJoin.ok, true);
     assert.equal(aliceVoiceJoin.self?.deviceId, aliceDevice.id);
     assert.deepEqual(aliceVoiceJoin.participants, []);
+    assert.deepEqual(await alicePresenceChanged, {
+      channelId: voiceChannel.id,
+      participants: [aliceVoiceJoin.self!],
+    });
     const bobJoinedVoice = onceSocketEvent<{ participantId: string; deviceId: string }>(
       aliceSocket,
       'voice:participant-joined',
     );
-    const bobVoiceJoin = await joinVoice(bobSocket, channelId);
+    const bobVoiceJoin = await joinVoice(bobSocket, voiceChannel.id);
     assert.equal(bobVoiceJoin.ok, true);
     assert.equal(bobVoiceJoin.self?.deviceId, bobDevice.id);
     assert.deepEqual(
@@ -1880,14 +1905,14 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
       [aliceVoiceJoin.self!.participantId],
     );
     assert.deepEqual(await bobJoinedVoice, bobVoiceJoin.self);
-    const unauthorizedVoiceJoin = await joinVoice(mallorySocket, channelId);
+    const unauthorizedVoiceJoin = await joinVoice(mallorySocket, voiceChannel.id);
     assert.deepEqual(unauthorizedVoiceJoin, { ok: false, error: 'FORBIDDEN' });
 
     const voiceEnvelope: SignedVoiceSignalEnvelope = {
       type: 'voice-signal',
       signalId: randomUUID(),
       sequence: 1,
-      channelId,
+      channelId: voiceChannel.id,
       senderParticipantId: aliceVoiceJoin.self!.participantId,
       senderDeviceId: aliceDevice.id,
       targetParticipantId: bobVoiceJoin.self!.participantId,
@@ -1926,7 +1951,7 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
       bobSocket,
       'voice:participant-updated',
     );
-    aliceSocket.emit('voice:state', { channelId, muted: true, speaking: true });
+    aliceSocket.emit('voice:state', { channelId: voiceChannel.id, muted: true, speaking: true });
     assert.deepEqual(await aliceVoiceState, {
       ...aliceVoiceJoin.self!,
       muted: true,
@@ -2062,7 +2087,7 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
     assert.equal(categoryOverrideApply.status, 200);
     assert.deepEqual(await channelAccessRevoked, { workspaceId: workspace.id, channelId });
     assert.deepEqual(await bobRemovedFromVoice, {
-      channelId,
+      channelId: voiceChannel.id,
       participantId: bobVoiceJoin.self!.participantId,
     });
     await delay(50);
@@ -2431,6 +2456,19 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
     assert.equal(serializedMessageAudit.includes('👍'), false);
     assert.equal(serializedMessageAudit.includes(messageRequest.body.signature), false);
     assert.equal(serializedMessageAudit.includes(messageRequest.body.idempotencyKey), false);
+
+    assert.equal((await request('/api/auth/reauthenticate', {
+      method: 'POST', body: { password: alice.password },
+    })).status, 401);
+    assert.equal((await request('/api/auth/reauthenticate', {
+      method: 'POST', cookie: alice.cookie, body: { password: 'not-the-password' },
+    })).status, 403);
+    const reauthenticated = await request('/api/auth/reauthenticate', {
+      method: 'POST', cookie: alice.cookie, body: { password: alice.password },
+    });
+    assert.equal(reauthenticated.status, 200);
+    assert.equal((await json<{ id: string }>(reauthenticated)).id, alice.user.id);
+    assert.equal((await request('/api/auth/me', { cookie: alice.cookie })).status, 200);
 
     const disconnected = new Promise<void>((resolve) => aliceSocket.once('disconnect', () => resolve()));
     const logout = await request('/api/auth/logout', { method: 'POST', cookie: alice.cookie, body: {} });

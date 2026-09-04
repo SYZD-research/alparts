@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   applyMentionCompletion,
+  extractMentionedUserIds,
   filterMentionMembers,
   findActiveMentionQuery,
   messageMentionsCurrentUser,
@@ -40,5 +41,26 @@ describe('mention model', () => {
   it('only treats an authenticated broadcast marker as targeting the current user', () => {
     expect(messageMentionsCurrentUser('@everyone', members, 'user-alice', false)).toBe(false);
     expect(messageMentionsCurrentUser('@everyone', members, 'user-alice', true)).toBe(true);
+  });
+
+  it('extracts only canonical, unambiguous member recipients for notifications', () => {
+    expect(extractMentionedUserIds('@Alice, <@user-bob>, @Alice', members)).toEqual([
+      'user-alice',
+      'user-bob',
+    ]);
+    expect(extractMentionedUserIds('@everyone and unknown@example.test', members)).toEqual([]);
+    expect(extractMentionedUserIds('@Same', [
+      { userId: 'first', displayName: 'Same' },
+      { userId: 'second', displayName: 'Same' },
+    ])).toEqual([]);
+  });
+
+  it('bounds direct notification recipients for one message', () => {
+    const manyMembers = Array.from({ length: 55 }, (_, index) => ({
+      userId: `user-${String(index).padStart(2, '0')}`,
+      displayName: `Member ${index}`,
+    }));
+    const content = manyMembers.map((member) => `<@${member.userId}>`).join(' ');
+    expect(extractMentionedUserIds(content, manyMembers)).toHaveLength(50);
   });
 });

@@ -69,6 +69,23 @@ describe('management security invariants', () => {
     assert.throws(() => assertValidCategoryPosition(-1), /INVALID_POSITION/);
   });
 
+  it('routes generic attention events only to authorized viewers', async () => {
+    const { buildAttentionRecipients } = await import('./message.service.js');
+    assert.deepEqual(buildAttentionRecipients(
+      ['author', 'mentioned', 'replied', 'broadcast'],
+      'workspace-a',
+      'author',
+      true,
+      ['mentioned', 'outsider', 'mentioned'],
+      'replied',
+    ), [
+      { userId: 'broadcast', workspaceId: 'workspace-a', kind: 'mention' },
+      { userId: 'mentioned', workspaceId: 'workspace-a', kind: 'mention' },
+      { userId: 'replied', workspaceId: 'workspace-a', kind: 'mention' },
+      { userId: 'replied', workspaceId: 'workspace-a', kind: 'reply' },
+    ]);
+  });
+
   it('normalizes email bindings and hashes invitation tokens without retaining plaintext', async () => {
     const {
       assertValidInvitationLifetime,

@@ -1,0 +1,67 @@
+name: Desktop packages
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/desktop.yml
+      - package.json
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - packages/client/**
+      - packages/desktop/**
+      - packages/shared/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CI: "true"
+  CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+jobs:
+  package:
+    name: ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: Linux
+            os: ubuntu-24.04
+            target: linux
+          - platform: Windows
+            os: windows-2022
+            target: windows
+          - platform: macOS
+            os: macos-14
+            target: macos
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24.8.0"
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @alparts/desktop typecheck
+      - run: pnpm --filter @alparts/desktop test
+      - run: pnpm --filter @alparts/desktop run dist:${{ matrix.target }}
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: alparts-${{ matrix.target }}-unsigned
+          path: |
+            packages/desktop/release/*.AppImage
+            packages/desktop/release/*.deb
+            packages/desktop/release/*.exe
+            packages/desktop/release/*.dmg
+            packages/desktop/release/*.zip
+          if-no-files-found: error
+          retention-days: 7

@@ -1,3 +1,5 @@
+import { MAX_DIRECT_MENTION_RECIPIENTS_PER_MESSAGE } from '@alparts/shared';
+
 export interface MentionMember {
   userId: string;
   displayName: string;
@@ -207,6 +209,14 @@ export function messageMentionsCurrentUser(
   if (!currentUserId) return false;
   return splitMentionText(content, members, currentUserId, authenticatedBroadcastMention)
     .some((segment) => segment.kind === 'mention' && segment.targetsCurrentUser);
+}
+
+/** Extract canonical recipients for content-free mention notifications. */
+export function extractMentionedUserIds(content: string, members: MentionMember[]): string[] {
+  return [...new Set(splitMentionText(content, members, null, false)
+    .flatMap((segment) => segment.kind === 'mention' && segment.userId ? [segment.userId] : []))]
+    .sort()
+    .slice(0, MAX_DIRECT_MENTION_RECIPIENTS_PER_MESSAGE);
 }
 
 function mentionNode(segment: MentionSegment): MarkdownNode {

@@ -10,14 +10,18 @@ import {
   requireWorkspaceMembership,
   requireWorkspacePermission,
 } from '../middleware/rbac.js';
-import { joinAuthorizedUserToChannelRoom } from '../websocket/room-membership.js';
+import {
+  clearDeletedChannelRooms,
+  joinAuthorizedUserToChannelRoom,
+  leaveUserChannelRooms,
+} from '../websocket/room-membership.js';
 
 const router = Router();
 const position = z.number().int().min(0).max(1_000_000);
 const createChannelSchema = z.object({
   name: z.string().trim().min(1).max(100),
   categoryId: z.string().uuid().optional(),
-  type: z.enum(['text', 'announcement']).optional(),
+  type: z.enum(['text', 'announcement', 'voice']).optional(),
   isPrivate: z.boolean().optional(),
   topic: z.string().trim().max(500).optional(),
   position: position.optional(),
@@ -101,7 +105,7 @@ router.put('/channels/:id', authMiddleware, requireChannelPermission(Permissions
         workspaceId: result.workspaceId,
         channelId: req.params.id,
       });
-      io?.in(`user:${userId}`).socketsLeave(`channel:${req.params.id}`);
+      if (io) leaveUserChannelRooms(io, userId, req.params.id);
     }
     if (io) {
       for (const userId of result.gainedUserIds) {
@@ -143,7 +147,7 @@ router.delete('/channels/:id', authMiddleware, requireChannelPermission(Permissi
         workspaceId: result.workspaceId,
       });
     }
-    io?.in(`channel:${req.params.id}`).socketsLeave(`channel:${req.params.id}`);
+    if (io) clearDeletedChannelRooms(io, req.params.id);
     res.json({ success: true });
   } catch (error: any) {
     if (error.message === 'CHANNEL_NOT_FOUND') {
@@ -203,7 +207,7 @@ router.delete('/channels/:id/members/:userId', authMiddleware, requireChannelPer
           workspaceId: result.workspaceId,
           channelId: effect.channelId,
         });
-        io?.in(`user:${lostUserId}`).socketsLeave(`channel:${effect.channelId}`);
+        if (io) leaveUserChannelRooms(io, lostUserId, effect.channelId);
       }
     }
     io?.to(`channel:${req.params.id}`).emit('channel:member-removed', result);
@@ -291,7 +295,7 @@ router.delete('/workspaces/:wid/categories/:categoryId', authMiddleware, require
           workspaceId: result.workspaceId,
           channelId: effect.channelId,
         });
-        io?.in(`user:${userId}`).socketsLeave(`channel:${effect.channelId}`);
+        if (io) leaveUserChannelRooms(io, userId, effect.channelId);
       }
       if (io) {
         for (const userId of effect.gainedUserIds) {

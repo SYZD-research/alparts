@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import type { Attachment, Message } from '@alparts/shared';
 import {
   decryptAttachmentFilename,
@@ -14,7 +15,6 @@ import {
   canPreviewImage,
   isPreviewableImageMimeType,
 } from '../../services/attachment-preview';
-import { Dialog } from '../ui/Dialog';
 
 interface Props {
   attachment: Attachment;
@@ -41,7 +41,7 @@ export function AttachmentItem({ attachment, message }: Props) {
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [previewAttempt, setPreviewAttempt] = useState(0);
-  const [isPreviewOpen, setIsPreviewOpen] = useState(false);
+  const [expanded, setExpanded] = useState(false);
   const controllerRef = useRef<AbortController | null>(null);
   const previewControllerRef = useRef<AbortController | null>(null);
   const attachmentIdentity = attachmentSecurityIdentity(attachment);
@@ -52,6 +52,7 @@ export function AttachmentItem({ attachment, message }: Props) {
     setMetadataVerified(false);
     setFilenameError(null);
     setAcknowledged(false);
+    setExpanded(false);
     void decryptAttachmentFilename(message, attachment).then((decrypted) => {
       if (!disposed) {
         setMetadataVerified(true);
@@ -89,7 +90,6 @@ export function AttachmentItem({ attachment, message }: Props) {
     previewControllerRef.current?.abort();
     setPreviewUrl(null);
     setPreviewError(null);
-    setIsPreviewOpen(false);
     if (!previewEligible) {
       setPreviewState('idle');
       return;
@@ -137,11 +137,54 @@ export function AttachmentItem({ attachment, message }: Props) {
   }, [previewUrl]);
 
   const markPreviewUnrenderable = () => {
+    setExpanded(false);
     setPreviewUrl(null);
     setPreviewState('error');
     setPreviewError('画像を表示できません。ファイルとして保存できます');
-    setIsPreviewOpen(false);
   };
+
+  const imagePreviewPending = isPreviewableImageMimeType(attachment.mimeType)
+    && attachment.cryptoManifest.plaintextSize <= ATTACHMENT_IMAGE_PREVIEW_MAX_BYTES
+    && !attachment.dangerousMime
+    && !filenameError
+    && (!metadataVerified || (previewEligible && (previewState === 'idle' || previewState === 'loading')));
+
+  if (imagePreviewPending) {
+    return (
+      <div className="mt-2 max-w-xl" aria-live="polite">
+        <progress value={previewPercentage} max={100} aria-label={`画像を準備中 ${previewPercentage}%`} className="h-1.5 w-full overflow-hidden rounded accent-discord-accent" />
+      </div>
+    );
+  }
+
+  if (previewUrl && previewState === 'ready') {
+    return (
+      <>
+        <button
+          type="button"
+          aria-label="画像を拡大表示"
+          aria-haspopup="dialog"
+          aria-expanded={expanded}
+          onClick={() => setExpanded(true)}
+          className="mt-2 block max-w-full cursor-zoom-in rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-discord-accent"
+        >
+          <img
+            src={previewUrl}
+            alt={filename || '添付画像'}
+            className="max-h-80 max-w-full rounded object-contain"
+            onError={markPreviewUnrenderable}
+          />
+        </button>
+        <ExpandedImage
+          open={expanded}
+          src={previewUrl}
+          alt={filename || '添付画像'}
+          onClose={() => setExpanded(false)}
+          onError={markPreviewUnrenderable}
+        />
+      </>
+    );
+  }
 
   const startDownload = async () => {
     if (!filename || filenameError || downloadState === 'downloading' || (dangerous && !acknowledged)) return;
@@ -151,7 +194,7 @@ export function AttachmentItem({ attachment, message }: Props) {
     setDownloadError(null);
     setProgress({ ...EMPTY_PROGRESS, totalBytes: attachment.plaintextSizeBytes || 0, totalChunks: attachment.chunkCount });
     try {
-      await downloadAttachment(message, attachment, filename, controller.signal, setProgress);
+      await downloadAttachment(message, attachment, filename, controller.signal, setProgress, dangerous);
       setDownloadState('saved');
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') {
@@ -166,22 +209,6 @@ export function AttachmentItem({ attachment, message }: Props) {
   };
 
   return (
-    <>
-      <Dialog
-        open={Boolean(isPreviewOpen && previewUrl)}
-        onClose={() => setIsPreviewOpen(false)}
-        title={filename || '画像プレビュー'}
-        size="lg"
-      >
-        {previewUrl && (
-          <img
-            src={previewUrl}
-            alt={filename || '添付画像'}
-            className="mx-auto max-h-[75vh] max-w-full object-contain"
-            onError={markPreviewUnrenderable}
-          />
-        )}
-      </Dialog>
       <section
         aria-label="添付ファイル"
         className="mt-2 max-w-xl rounded border border-discord-hover bg-discord-sidebar/70 p-3 text-sm"
@@ -218,30 +245,6 @@ export function AttachmentItem({ attachment, message }: Props) {
       )}
 
       {filenameError && <p role="alert" className="mt-2 text-xs text-discord-red">{filenameError}</p>}
-      {previewState === 'loading' && (
-        <div className="mt-3" aria-live="polite">
-          <div className="mb-1 flex items-center justify-between text-xs text-discord-muted">
-            <span>画像を準備中…</span>
-            <span>{previewPercentage}%</span>
-          </div>
-          <progress value={previewPercentage} max={100} aria-label={`画像プレビュー準備 ${previewPercentage}%`} className="h-1.5 w-full overflow-hidden rounded accent-discord-accent" />
-        </div>
-      )}
-      {previewUrl && previewState === 'ready' && (
-        <button
-          type="button"
-          onClick={() => setIsPreviewOpen(true)}
-          className="mt-3 block overflow-hidden rounded bg-discord-bg/70 focus:ring-2 focus:ring-discord-accent"
-          aria-label={`${filename || '添付画像'}を拡大表示`}
-        >
-          <img
-            src={previewUrl}
-            alt={filename || '添付画像'}
-            className="max-h-80 max-w-full object-contain"
-            onError={markPreviewUnrenderable}
-          />
-        </button>
-      )}
       {previewError && (
         <div role="alert" className="mt-2 flex items-center gap-2 text-xs text-discord-red">
           <span>{previewError}</span>
@@ -294,7 +297,78 @@ export function AttachmentItem({ attachment, message }: Props) {
         )}
       </div>
       </section>
-    </>
+  );
+}
+
+function ExpandedImage({
+  open,
+  src,
+  alt,
+  onClose,
+  onError,
+}: {
+  open: boolean;
+  src: string;
+  alt: string;
+  onClose: () => void;
+  onError: () => void;
+}) {
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const onCloseRef = useRef(onClose);
+
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
+
+  useEffect(() => {
+    if (!open) return;
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const bodyAlreadyLocked = document.body.classList.contains('overflow-hidden');
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        onCloseRef.current();
+      } else if (event.key === 'Tab') {
+        event.preventDefault();
+        closeButtonRef.current?.focus();
+      }
+    };
+    document.body.classList.add('overflow-hidden');
+    document.addEventListener('keydown', handleKeyDown);
+    requestAnimationFrame(() => closeButtonRef.current?.focus());
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+      if (!bodyAlreadyLocked) document.body.classList.remove('overflow-hidden');
+      previous?.focus();
+    };
+  }, [open]);
+
+  if (!open || typeof document === 'undefined') return null;
+  return createPortal(
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="画像を拡大表示"
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/85 p-4"
+      onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}
+    >
+      <img
+        src={src}
+        alt={alt}
+        className="max-h-[calc(100vh-2rem)] max-w-[calc(100vw-2rem)] object-contain"
+        onError={onError}
+      />
+      <button
+        ref={closeButtonRef}
+        type="button"
+        onClick={onClose}
+        aria-label="閉じる"
+        className="absolute right-4 top-4 flex h-10 w-10 items-center justify-center rounded-full bg-black/70 text-2xl text-white hover:bg-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
+      >
+        ×
+      </button>
+    </div>,
+    document.body,
   );
 }
 

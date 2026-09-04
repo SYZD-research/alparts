@@ -1,6 +1,7 @@
 packages:
   - 'packages/*'
 allowBuilds:
+  electron-winstaller: false
   esbuild: true
 overrides:
   esbuild: ^0.28.2

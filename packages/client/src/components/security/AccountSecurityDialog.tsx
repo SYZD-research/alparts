@@ -5,6 +5,7 @@ import { getActiveDevice } from '../../services/crypto.service';
 import { useAuthStore } from '../../stores/auth.store';
 import { useUiStore } from '../../stores/ui.store';
 import { Dialog } from '../ui/Dialog';
+import { DesktopSecuritySettings } from '../desktop/DesktopSecuritySettings';
 
 type PendingAction =
   | { kind: 'session'; id: string; label: string; requiresLogin: boolean }
@@ -215,6 +216,7 @@ export function AccountSecurityDialog() {
             </section>
           </>
         )}
+        <DesktopSecuritySettings />
       </div>
     </Dialog>
   );

@@ -1,13 +1,17 @@
+import { MAX_DIRECT_MENTION_RECIPIENTS_PER_MESSAGE } from '@alparts/shared';
+
 export interface OutboxCommand {
   version: 1;
   idempotencyKey: string;
   channelId: string;
   content: string;
   refMessageId?: string;
+  mentionedUserIds?: string[];
   createdAt: string;
 }
 
 export const MAX_OUTBOX_COMMANDS_PER_DEVICE = 100;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export type OutboxStatus = 'queued' | 'sending' | 'failed';
 
@@ -16,6 +20,7 @@ export interface OutboxItem {
   channelId: string;
   content: string;
   refMessageId?: string;
+  mentionedUserIds?: string[];
   createdAt: string;
   status: OutboxStatus;
   error: string | null;
@@ -30,6 +35,7 @@ interface CreateOutboxCommandInput {
   channelId: string;
   content: string;
   refMessageId?: string;
+  mentionedUserIds?: string[];
 }
 
 export function createOutboxCommand(
@@ -37,12 +43,16 @@ export function createOutboxCommand(
   createId: () => string = () => crypto.randomUUID(),
   now: () => string = () => new Date().toISOString(),
 ): OutboxCommand {
+  const mentionedUserIds = [...new Set(input.mentionedUserIds || [])]
+    .sort()
+    .slice(0, MAX_DIRECT_MENTION_RECIPIENTS_PER_MESSAGE);
   return {
     version: 1,
     idempotencyKey: createId(),
     channelId: input.channelId,
     content: input.content,
     ...(input.refMessageId ? { refMessageId: input.refMessageId } : {}),
+    ...(mentionedUserIds.length ? { mentionedUserIds } : {}),
     createdAt: now(),
   };
 }
@@ -58,6 +68,12 @@ export function parseOutboxCommand(value: unknown): OutboxCommand | null {
     || typeof candidate.content !== 'string'
     || typeof candidate.createdAt !== 'string'
     || (candidate.refMessageId !== undefined && typeof candidate.refMessageId !== 'string')
+    || (candidate.mentionedUserIds !== undefined && (
+      !Array.isArray(candidate.mentionedUserIds)
+      || candidate.mentionedUserIds.length > MAX_DIRECT_MENTION_RECIPIENTS_PER_MESSAGE
+      || candidate.mentionedUserIds.some((userId) => typeof userId !== 'string' || !UUID_PATTERN.test(userId))
+      || new Set(candidate.mentionedUserIds).size !== candidate.mentionedUserIds.length
+    ))
   ) return null;
   return candidate as OutboxCommand;
 }
@@ -68,6 +84,7 @@ export function outboxItemFromCommand(command: OutboxCommand): OutboxItem {
     channelId: command.channelId,
     content: command.content,
     ...(command.refMessageId ? { refMessageId: command.refMessageId } : {}),
+    ...(command.mentionedUserIds?.length ? { mentionedUserIds: [...command.mentionedUserIds] } : {}),
     createdAt: command.createdAt,
     status: 'queued',
     error: null,

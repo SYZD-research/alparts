@@ -1,8 +1,8 @@
 # Phase 1 Prototype operations
 
-最終更新: 2026-08-30
+最終更新: 2026-09-04
 
-この文書はWeb / single-node / basic per-channel key / text中心＋最大8人P2P音声のprototypeだけを対象とする。Embargoed vulnerability、credential、その他のhigh-impact secretを扱うproduction approvalではない。
+この文書はWindows・macOS・Linux desktop / Web / single-node / basic per-channel key / text中心＋最大8人P2P音声のprototypeだけを対象とする。Embargoed vulnerability、credential、その他のhigh-impact secretを扱うproduction approvalではない。
 
 ## Startup contract
 

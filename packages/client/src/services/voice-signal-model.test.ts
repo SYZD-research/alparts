@@ -4,7 +4,9 @@ import {
   VoiceSignalSequenceTracker,
   normalizeVoiceIceServers,
   parseIncomingVoiceSignal,
+  parseVoiceChannelPresence,
   parseVoiceJoinResult,
+  parseVoiceWatchResult,
 } from './voice-signal-model';
 
 const envelope = {
@@ -58,6 +60,18 @@ describe('voice signaling model', () => {
       participants: [participant('socket_b')],
       iceServers: ice,
     })?.participants?.length).toBe(1);
+  });
+
+  it('validates bounded voice-channel presence snapshots', () => {
+    const presence = {
+      channelId: envelope.channelId,
+      participants: [participant('socket_a'), participant('socket_b')],
+    };
+    expect(parseVoiceChannelPresence(presence)).toEqual(presence);
+    expect(parseVoiceWatchResult({ ok: true, channels: [presence] })).toEqual({ ok: true, channels: [presence] });
+    expect(parseVoiceChannelPresence({ ...presence, participants: [participant('socket_a'), participant('socket_a')] })).toBeNull();
+    expect(parseVoiceWatchResult({ ok: true, channels: [presence, presence] })).toBeNull();
+    expect(parseVoiceWatchResult({ ok: false, channels: [], extra: true })).toBeNull();
   });
 });
 

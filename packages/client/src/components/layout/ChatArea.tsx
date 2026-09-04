@@ -10,7 +10,6 @@ import { useDmStore } from '../../stores/dm.store';
 import { useAuthStore } from '../../stores/auth.store';
 import { directMessageTitle } from '../../stores/dm-model';
 import { useUiStore } from '../../stores/ui.store';
-import { VoiceCallPanel } from '../voice/VoiceCallPanel';
 
 export function ChatArea() {
   const activeChannelId = useChannelStore((state) => state.activeChannelId);
@@ -84,8 +83,6 @@ export function ChatArea() {
           🔖 保存済み
         </button>
       </div>
-
-      <VoiceCallPanel channelId={activeChannelId} />
 
       {securityError ? (
         <div role="alert" className="flex flex-1 flex-col items-center justify-center gap-3 px-8 text-center text-discord-red">

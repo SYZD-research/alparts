@@ -5,6 +5,7 @@ import {
   MAX_VOICE_PARTICIPANTS,
   Permissions,
   type SignedVoiceSignalEnvelope,
+  type VoiceChannelPresence,
   type VoiceIceServer,
   type VoiceParticipant,
 } from '@alparts/shared';
@@ -18,7 +19,9 @@ import {
   lockWorkspaceForAuthorization,
 } from '../services/authorization.service.js';
 import { logError } from '../security/logger.js';
+import { MAX_CHANNELS_PER_WORKSPACE } from '../security/limits.js';
 import { authorizeSocketChannel, consumeSocketRate, type AuthenticatedSocket } from './security.js';
+import { VOICE_PRESENCE_ROOM_PREFIX, voicePresenceRoom } from './voice-rooms.js';
 
 const uuid = z.string().uuid();
 const participantId = z.string().min(1).max(128).regex(/^[A-Za-z0-9_-]+$/);
@@ -68,6 +71,9 @@ const voiceSignalSchema = z.discriminatedUnion('kind', [
 ]);
 const joinSchema = z.object({ channelId: uuid }).strict();
 const leaveSchema = z.object({ channelId: uuid }).strict();
+const watchSchema = z.object({
+  channelIds: z.array(uuid).max(MAX_CHANNELS_PER_WORKSPACE).refine((ids) => new Set(ids).size === ids.length),
+}).strict();
 const stateSchema = z.object({
   channelId: uuid,
   muted: z.boolean(),
@@ -205,9 +211,12 @@ type JoinAcknowledgement = (result: {
 }) => void;
 
 type BasicAcknowledgement = (result: { ok: boolean }) => void;
+type WatchAcknowledgement = (result: { ok: boolean; channels: VoiceChannelPresence[] }) => void;
 
 export class VoiceSignalingHub {
   readonly registry: VoiceParticipantRegistry;
+  private readonly watchVersions = new Map<string, number>();
+  private readonly watchQueues = new Map<string, Promise<void>>();
 
   constructor(
     private readonly io: SocketServer,
@@ -221,6 +230,56 @@ export class VoiceSignalingHub {
   }
 
   attach(socket: AuthenticatedSocket): void {
+    socket.on('voice:watch', async (value: unknown, acknowledge?: WatchAcknowledgement) => {
+      if (!consumeSocketRate(socket, 'voice-watch', 30, 60_000)) {
+        acknowledge?.({ ok: false, channels: [] });
+        return;
+      }
+      const parsed = watchSchema.safeParse(value);
+      if (!parsed.success) {
+        acknowledge?.({ ok: false, channels: [] });
+        return;
+      }
+      const version = (this.watchVersions.get(socket.id) ?? 0) + 1;
+      this.watchVersions.set(socket.id, version);
+      const previous = this.watchQueues.get(socket.id) ?? Promise.resolve();
+      const operation = previous.catch(() => undefined).then(async () => {
+        if (this.watchVersions.get(socket.id) !== version || !socket.connected) return;
+        try {
+          const requestedRooms = new Set(parsed.data.channelIds.map(voicePresenceRoom));
+          for (const room of socket.rooms) {
+            if (this.watchVersions.get(socket.id) !== version || !socket.connected) return;
+            if (room.startsWith(VOICE_PRESENCE_ROOM_PREFIX) && !requestedRooms.has(room)) {
+              await socket.leave(room);
+            }
+          }
+
+          const visibleChannelIds: string[] = [];
+          for (const channelId of parsed.data.channelIds) {
+            if (this.watchVersions.get(socket.id) !== version || !socket.connected) return;
+            if (await this.joinPresenceUnderAuthorizationLock(socket, channelId)) {
+              visibleChannelIds.push(channelId);
+            }
+          }
+          if (this.watchVersions.get(socket.id) === version && socket.connected) {
+            // Snapshot all authorized rooms in one JS turn so an older per-room
+            // snapshot cannot overwrite a newer presence event at the client.
+            const visible = visibleChannelIds.map((channelId) => ({
+              channelId,
+              participants: this.registry.list(channelId),
+            }));
+            acknowledge?.({ ok: true, channels: visible });
+          }
+        } catch (error) {
+          logError('websocket.voice_watch', error);
+          if (this.watchVersions.get(socket.id) === version) acknowledge?.({ ok: false, channels: [] });
+        }
+      });
+      this.watchQueues.set(socket.id, operation);
+      await operation;
+      if (this.watchQueues.get(socket.id) === operation) this.watchQueues.delete(socket.id);
+    });
+
     socket.on('voice:join', async (value: unknown, acknowledge?: JoinAcknowledgement) => {
       if (!consumeSocketRate(socket, 'voice-join', 20, 60_000)) {
         acknowledge?.({ ok: false, error: 'INVALID_REQUEST' });
@@ -257,13 +316,21 @@ export class VoiceSignalingHub {
           acknowledge?.({ ok: false, error: 'FORBIDDEN' });
           return;
         }
-        if (joined.previous) this.notifyParticipantLeft(joined.previous);
+        if (joined.previous) {
+          try {
+            await socket.leave(`channel:${joined.previous.channelId}`);
+          } catch (error) {
+            logError('websocket.voice_switch_room', error);
+          }
+          this.notifyParticipantLeft(joined.previous);
+        }
         if (joined.joined) this.notifyParticipants(
           parsed.data.channelId,
           'voice:participant-joined',
           joined.participant,
           joined.participant.participantId,
         );
+        this.broadcastPresence(parsed.data.channelId);
         acknowledge?.({
           ok: true,
           self: joined.participant,
@@ -271,6 +338,10 @@ export class VoiceSignalingHub {
           iceServers: this.iceServers,
         });
       } catch (error) {
+        if (this.registry.get(socket.id)?.channelId !== parsed.data.channelId) {
+          void Promise.resolve(socket.leave(`channel:${parsed.data.channelId}`))
+            .catch((leaveError) => logError('websocket.voice_join_cleanup', leaveError));
+        }
         if (error instanceof Error && error.message === 'VOICE_CHANNEL_FULL') {
           acknowledge?.({ ok: false, error: 'VOICE_CHANNEL_FULL' });
           return;
@@ -280,7 +351,7 @@ export class VoiceSignalingHub {
       }
     });
 
-    socket.on('voice:leave', (value: unknown, acknowledge?: BasicAcknowledgement) => {
+    socket.on('voice:leave', async (value: unknown, acknowledge?: BasicAcknowledgement) => {
       const parsed = leaveSchema.safeParse(value);
       const current = this.registry.get(socket.id);
       if (!parsed.success || !current || current.channelId !== parsed.data.channelId) {
@@ -288,7 +359,14 @@ export class VoiceSignalingHub {
         return;
       }
       const departed = this.registry.leave(socket.id);
-      if (departed) this.notifyParticipantLeft(departed);
+      if (departed) {
+        try {
+          await socket.leave(`channel:${departed.channelId}`);
+        } catch (error) {
+          logError('websocket.voice_leave_room', error);
+        }
+        this.notifyParticipantLeft(departed);
+      }
       acknowledge?.({ ok: true });
     });
 
@@ -303,6 +381,7 @@ export class VoiceSignalingHub {
         participant,
         participant.participantId,
       );
+      if (participant) this.broadcastPresence(parsed.data.channelId);
     });
 
     socket.on('voice:signal', (value: unknown, acknowledge?: BasicAcknowledgement) => {
@@ -337,15 +416,20 @@ export class VoiceSignalingHub {
       });
       acknowledge?.({ ok: true });
     });
+
+    socket.once('disconnect', () => {
+      this.watchVersions.delete(socket.id);
+      this.watchQueues.delete(socket.id);
+    });
   }
 
   private async joinUnderAuthorizationLock(socket: AuthenticatedSocket, channelId: string): Promise<boolean> {
     if (!await authorizeSocketChannel(socket, channelId, Permissions.VIEW_CHANNELS)) return false;
     const location = await db.query.channels.findFirst({
-      columns: { workspaceId: true },
+      columns: { workspaceId: true, type: true },
       where: eq(channels.id, channelId),
     });
-    if (!location) return false;
+    if (!location || location.type !== 'voice') return false;
     return db.transaction(async (transaction) => {
       await lockWorkspaceForAuthorization(transaction, location.workspaceId, 'share');
       const authorization = await getChannelAuthorizationFromStore(transaction, socket.userId!, channelId);
@@ -355,8 +439,34 @@ export class VoiceSignalingHub {
         || !isVisibleChannelAuthorization(authorization)
         || (authorization.permissions & Permissions.VIEW_CHANNELS) !== Permissions.VIEW_CHANNELS
       ) return false;
-      if (!socket.rooms.has(`channel:${channelId}`)) await socket.join(`channel:${channelId}`);
-      return socket.connected && socket.rooms.has(`channel:${channelId}`);
+      const channelRoom = `channel:${channelId}`;
+      const presenceRoom = voicePresenceRoom(channelId);
+      if (!socket.rooms.has(channelRoom) || !socket.rooms.has(presenceRoom)) {
+        await socket.join([channelRoom, presenceRoom]);
+      }
+      return socket.connected && socket.rooms.has(channelRoom) && socket.rooms.has(presenceRoom);
+    });
+  }
+
+  private async joinPresenceUnderAuthorizationLock(socket: AuthenticatedSocket, channelId: string): Promise<boolean> {
+    if (!await authorizeSocketChannel(socket, channelId, Permissions.VIEW_CHANNELS)) return false;
+    const location = await db.query.channels.findFirst({
+      columns: { workspaceId: true, type: true },
+      where: eq(channels.id, channelId),
+    });
+    if (!location || location.type !== 'voice') return false;
+    return db.transaction(async (transaction) => {
+      await lockWorkspaceForAuthorization(transaction, location.workspaceId, 'share');
+      const authorization = await getChannelAuthorizationFromStore(transaction, socket.userId!, channelId);
+      if (
+        !socket.connected
+        || authorization?.workspaceId !== location.workspaceId
+        || !isVisibleChannelAuthorization(authorization)
+        || (authorization.permissions & Permissions.VIEW_CHANNELS) !== Permissions.VIEW_CHANNELS
+      ) return false;
+      const room = voicePresenceRoom(channelId);
+      if (!socket.rooms.has(room)) await socket.join(room);
+      return socket.connected && socket.rooms.has(room);
     });
   }
 
@@ -374,6 +484,14 @@ export class VoiceSignalingHub {
       { channelId: participant.channelId, participantId: participant.participantId },
       participant.participantId,
     );
+    this.broadcastPresence(participant.channelId);
+  }
+
+  private broadcastPresence(channelId: string): void {
+    this.io.to(voicePresenceRoom(channelId)).emit('voice:participants-changed', {
+      channelId,
+      participants: this.registry.list(channelId),
+    } satisfies VoiceChannelPresence);
   }
 
   private notifyParticipants(channelId: string, event: string, payload: unknown, excludedId?: string): void {

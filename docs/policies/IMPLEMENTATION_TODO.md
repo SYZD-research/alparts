@@ -1,8 +1,8 @@
 # 実装 TODO / 要件ステータス
 
-最終更新: 2026-08-30
+最終更新: 2026-09-04
 
-この表が完成対象として扱うのは、`LIMITATIONS.md` で定義した **Web / single-node / basic per-channel key / text中心＋最大8人P2P音声のPhase 1 prototype** だけである。`SPECIFICATION.md` の初期正式版全体を実装した、または正式運用へ承認されたという意味ではない。
+この表が完成対象として扱うのは、`LIMITATIONS.md` で定義した **Windows・Linux・macOS desktop / Web / single-node / basic per-channel key / text中心＋最大8人P2P音声のPhase 1 prototype** だけである。`SPECIFICATION.md` の初期正式版全体を実装した、または正式運用へ承認されたという意味ではない。
 
 ## ステータス規約
 
@@ -37,6 +37,7 @@
 | AUTHZ-OVR-01 | SEC-01, MGT-01, KEY-01 | 完了 | category/channel role override、deny/allow、両revision、preview、effective reason、room membership/rekey連動、client管理UI | fresh migrationで継承・allow/deny優先順位・private member・owner保護・stale revision 409・閲覧喪失時room退出/rekeyを認可matrixで検証 |
 | AUD-01 | SEC-01 | 完了 | canonical HMAC chainをPostgreSQL advisory lock下で直列化し、message/reaction/pin/preference/bookmarkを含む重要state変更とaudit appendを同一transaction化。Read cursor/provisional upload metadataも共通admissionへ入れ、外部checkpoint、descendant proof、atomic CAS相当更新、active 1+pending 64+30秒deadlineのprocess-local sticky fail-closedを実装 | required checkpoint欠落、runtime rollback、checkpoint write failure、guarded operation非実行、anchor削除/改変/末尾不整合、integration chain、auditへのciphertext/signature/idempotency/emoji非混入を確認。失敗後は次のauthoritative write/readinessを拒否。Advisory presence/activity、operator独立性、multi-process witnessは別境界 |
 | BKP-01 | RUN-01, AUD-01 | 完了 | quiesced migration gate、private credential delivery、DB+object manifest/checksum、age暗号化、空隔離restore/verify、systemd daily schedule、non-overlap/restart trap、安全なlocal retention | 隔離roundtripとbackup security/retention testsが成功。Off-host copy、PITR/WORM、scheduled restore/full DRは延期 |
+| DESKTOP-01 | FILE-CLI-01, LOCAL-01 | 完了 | Windows・Linux・macOS向けElectron shell、同梱UI、sandbox/context isolation、top-frame限定IPC、OS保護領域、OS/idle lock、HTTPS接続先固定、external browser、bounded native添付保存、3 OS package設定 | desktop policy/vault/settings/file unit、client typecheck/test、Linux unpacked package、Electron fuseを確認。各OSの署名済みrelease受入はPhase 2 gate |
 | FINAL-01 | 上記Prototype項目 | 完了 | 現working tree全体の最終受入、通常のrepository-wide単一pass scan、全findingの修正・再検証 | fresh PostgreSQL/MinIO migration、非skip integration、`pnpm typecheck/test/build/audit`、backup security/roundtrip、OCI runtime probe、`git diff --check`が成功。scan `1e2517d2-1dad-4360-9e0d-855dfd224047` のMedium 4 / Low 3を修正し、独立patch review後の迂回経路も閉鎖 |
 | SEC-DEEP-REC-01 | FINAL-01 | 完了 | 完了前に停止したDeep Security Scan child `c677fed2-242f-40e5-92c9-26e44f2de49d` の保存済み34 findingを23根本原因へdedupeし、共有認証・認可・crypto・resource-admission境界で修正 | Fresh migration、悪性/alternate/正規control、skipなしintegration 2/2、server 49/49、client 77/77、全typecheck/build/audit、独立read-only bypass review（具体的残存bypass 0）、artifact `fix_report.md`を完了。Deep Scan自体の完了とは扱わない |
 | HARDEN-20260830 | FINAL-01 | 完了 | 公式npx Deep Security Scan `160868a8-5398-4707-ac05-e4c99c18fdd8` の13 canonical / 15 instanceを根本原因へ統合して修正し、bounded tenant/auth/storage/audit/client、observability、deployment/CI/backup/DR/docsを強化 | Scan coverageはpartialのまま明示。Fresh migration/replay、integration 4/4、server 73/73、client 98/98、lint/type/build、secret/dependency/backup/OCI/Compose/Trivy/SBOM/smokeを通過し、独立read-only reviewで新規P0/P1なし、承認済みsecurity policyと検証記録を反映 |
@@ -47,7 +48,7 @@
 次はコードが一部存在しても、対応する正式要件全体を「完了」とは扱わない。
 
 - `SCP-07`: 基本的な返信・編集・削除・reaction・pinに加え、読み込み済み履歴だけのthread panel、UUID message link（最大20 page遡及）、大量貼付previewは利用できる。Server-backedな完全thread取得・履歴完全性とrole/channel mentionは延期。
-- `SCP-08` / `FILE-01..13`: Prototypeの暗号化upload/resume/download経路は完了。隔離viewer、OS quarantine相当、archive/image parser防御、malware分析は延期。
+- `SCP-08` / `FILE-01..13`: Prototypeの暗号化upload/resume/download経路とdesktopの隔離属性相当保存は完了。隔離viewer、archive/image parser防御、malware分析は延期。
 - `SCP-09` / `SEARCH-01..12`: `SEARCH-LITE-01` はロード済み復号履歴だけ。暗号化永続index、端末間同期、全履歴・複数workspace検索は延期。
 - `AUTHZ-01..10`: workspace/category/channel RBAC、preview、実効理由はPrototype境界で完了。二者承認は延期。
 - `BKP-01..12`: 暗号化snapshot/隔離restore検証、single-host daily schedule、安全なlocal retentionが完了。PITR、WORM、automatic off-site、自動restore、完全DRは延期。
@@ -77,7 +78,7 @@ DB/MinIOを使う試験は、既存データを含まない一意な使い捨て
 | --- | --- | --- |
 | MLS / 鍵透明性 / 端末承認 | 延期 | RFC 9420相当のforward secrecy/post-compromise security、append-only directory、consistency proof、independent witness、既存端末承認 |
 | 強固な認証と承認 | 延期 | WebAuthn/Passkey、OIDC、step-up、破壊的操作・export・recoveryの二者承認 |
-| Client platform | 延期 | Windows/Linux/macOS desktop、iOS/Android、OS secure storage、signed distribution |
+| Client platform | 一部完了 | Windows/Linux/macOS desktopとOS保護領域は完了。iOS/Android、signed/notarized distribution、署名検証updateは延期 |
 | Restricted profile | 延期 | Web無効化、参加後履歴、通知制限、external user approval、閾値recoveryなどのpolicy enforcement |
 | Data lifecycle | 延期 | retention、client cache削除、user/org export、export approval/監査 |
 | Availability / recovery | 一部完了 | single-host supervisor/daily backup/local retentionは完了。HA、broker、DB failover、cluster移行、PITR、WORM、off-site、自動restore、四半期DRは延期 |

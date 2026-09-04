@@ -10,7 +10,11 @@ interface ChannelState {
   channels: Channel[];
   error: string | null;
   loadChannels: (workspaceId: string) => Promise<Channel[]>;
-  createChannel: (workspaceId: string, name: string, options?: { categoryId?: string; isPrivate?: boolean }) => Promise<void>;
+  createChannel: (workspaceId: string, name: string, options?: {
+    categoryId?: string;
+    isPrivate?: boolean;
+    type?: 'text' | 'announcement' | 'voice';
+  }) => Promise<void>;
   removeChannel: (channelId: string, workspaceId?: string) => void;
   reset: () => void;
 }
@@ -25,7 +29,11 @@ export const useChannelStore = create<ChannelState>((set) => ({
   error: null,
 
   setActiveChannel: (id) => {
-    set({ activeChannelId: id });
+    set((state) => {
+      if (id === null) return { activeChannelId: null };
+      const channel = state.channels.find((candidate) => candidate.id === id);
+      return channel && isMessageChannel(channel) ? { activeChannelId: id } : state;
+    });
   },
 
   loadChannels: async (workspaceId) => {
@@ -40,7 +48,7 @@ export const useChannelStore = create<ChannelState>((set) => ({
           const activeStillVisible = state.workspaceId === workspaceId
             && Boolean(state.activeChannelId)
             && channels.some((channel) => channel.id === state.activeChannelId);
-          const firstChannel = channels.find((channel) => channel.type === 'text') ?? channels[0] ?? null;
+          const firstChannel = channels.find(isMessageChannel) ?? null;
           return {
             channels,
             workspaceId,
@@ -81,7 +89,7 @@ export const useChannelStore = create<ChannelState>((set) => ({
     set((state) => {
       const channels = state.channels.filter((channel) => channel.id !== channelId);
       const nextActive = state.activeChannelId === channelId
-        ? (channels.find((channel) => channel.type === 'text') ?? channels[0] ?? null)?.id ?? null
+        ? (channels.find(isMessageChannel) ?? null)?.id ?? null
         : state.activeChannelId;
       return { channels, activeChannelId: nextActive };
     });
@@ -93,3 +101,7 @@ export const useChannelStore = create<ChannelState>((set) => ({
     set({ activeChannelId: null, workspaceId: null, channels: [], error: null });
   },
 }));
+
+function isMessageChannel(channel: Channel): boolean {
+  return channel.type !== 'voice';
+}

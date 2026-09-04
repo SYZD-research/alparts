@@ -105,7 +105,7 @@ export interface Channel {
   workspaceId: string;
   categoryId: string | null;
   name: string;
-  type: 'text' | 'dm' | 'announcement';
+  type: 'text' | 'dm' | 'announcement' | 'voice';
   isPrivate: boolean;
   keyRotationRequired?: boolean;
   topic: string | null;
@@ -118,7 +118,7 @@ export interface Channel {
 export interface ChannelCreateRequest {
   name: string;
   categoryId?: string;
-  type?: 'text' | 'dm' | 'announcement';
+  type?: 'text' | 'dm' | 'announcement' | 'voice';
   isPrivate?: boolean;
   topic?: string;
   position?: number;
@@ -347,6 +347,16 @@ export interface WsChannelCreated {
 export interface WsKeyRotated {
   channelId: string;
   version: number;
+}
+
+export type AttentionNotificationKind = 'mention' | 'reply';
+
+/** A content-free realtime notification. Message plaintext is never included. */
+export interface WsAttentionNotification {
+  notificationId: string;
+  workspaceId: string;
+  channelId: string;
+  kind: AttentionNotificationKind;
 }
 
 // === API Responses ===

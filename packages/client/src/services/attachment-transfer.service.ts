@@ -26,6 +26,7 @@ import {
   canPreviewImage,
   matchesPreviewImageSignature,
 } from './attachment-preview';
+import { getDesktopBridge } from './desktop.service';
 
 export interface AttachmentDownloadProgress {
   completedBytes: number;
@@ -229,21 +230,30 @@ export async function downloadAttachment(
   filename: string,
   signal: AbortSignal,
   onProgress: (progress: AttachmentDownloadProgress) => void,
-): Promise<'filesystem' | 'browser'> {
+  dangerous = false,
+): Promise<'desktop' | 'filesystem' | 'browser'> {
   // Reject missing/mismatched signed fields synchronously before offering a
   // save location. Cryptographic signature verification happens in unwrap.
   buildSignedAttachmentEnvelope(message, attachment);
   const manifest = validateAttachmentManifest(attachment, message.id);
   const safeFilename = sanitizeAttachmentFilename(filename);
+  const desktopFiles = getDesktopBridge()?.files;
   const picker = getSaveFilePicker();
   // Call the picker before the first await so the browser still considers this
   // operation part of the user's click activation.
-  const handlePromise = picker ? picker({ suggestedName: safeFilename }) : null;
+  const desktopTokenPromise = desktopFiles
+    ? desktopFiles.beginSave(safeFilename, manifest.plaintextSize, dangerous)
+    : null;
+  const handlePromise = !desktopFiles && picker ? picker({ suggestedName: safeFilename }) : null;
+  let desktopToken: string | null = null;
   let writable: WritableFileLike | null = null;
   const fallbackChunks: ArrayBuffer[] = [];
 
   try {
-    if (handlePromise) {
+    if (desktopTokenPromise) {
+      desktopToken = await desktopTokenPromise;
+      if (!desktopToken) throw new DOMException('操作はキャンセルされました', 'AbortError');
+    } else if (handlePromise) {
       const handle = await handlePromise;
       writable = await handle.createWritable();
     } else if (manifest.plaintextSize > ATTACHMENT_FALLBACK_BLOB_LIMIT_BYTES) {
@@ -268,7 +278,9 @@ export async function downloadAttachment(
       throwIfAborted(signal);
       const plaintext = new Uint8Array(await decryptAttachmentChunk(ciphertext, fileKey, manifest, index));
       try {
-        if (writable) {
+        if (desktopFiles && desktopToken) {
+          await desktopFiles.writeSave(desktopToken, plaintext.buffer);
+        } else if (writable) {
           await writable.write(plaintext);
         } else {
           // Blob construction copies each part. Keeping only 5MiB pieces avoids
@@ -287,6 +299,12 @@ export async function downloadAttachment(
       } finally {
         plaintext.fill(0);
       }
+    }
+
+    if (desktopFiles && desktopToken) {
+      await desktopFiles.finishSave(desktopToken);
+      desktopToken = null;
+      return 'desktop';
     }
 
     if (writable) {
@@ -313,6 +331,7 @@ export async function downloadAttachment(
     }
     return 'browser';
   } catch (error) {
+    if (desktopFiles && desktopToken) await desktopFiles.cancelSave(desktopToken).catch(() => undefined);
     if (writable) await writable.abort(error).catch(() => undefined);
     for (const chunk of fallbackChunks) new Uint8Array(chunk).fill(0);
     throw error;

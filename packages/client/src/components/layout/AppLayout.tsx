@@ -22,6 +22,8 @@ import { api } from '../../services/api';
 import { parseMessageRoute } from '../../stores/permalink-model';
 import { focusMessageElement } from '../../services/message-navigation';
 import { ResizablePane } from './ResizablePane';
+import { useVoiceChannelPresence } from '../../hooks/useVoiceChannelPresence';
+import { AttentionNotifications } from '../notification/AttentionNotifications';
 
 type PermalinkNavigationStatus = {
   kind: 'loading' | 'success' | 'error';
@@ -30,6 +32,7 @@ type PermalinkNavigationStatus = {
 
 export function AppLayout() {
   useSocketEvents();
+  useVoiceChannelPresence();
 
   const location = useLocation();
   const navigate = useNavigate();
@@ -135,7 +138,7 @@ export function AppLayout() {
         if (request !== permalinkRequest.current) return;
 
         const loadedChannel = useChannelStore.getState().channels.find((channel) => channel.id === messageRoute.channelId);
-        if (!loadedChannel || loadedChannel.workspaceId !== authoritativeChannel.workspaceId) {
+        if (!loadedChannel || loadedChannel.type === 'voice' || loadedChannel.workspaceId !== authoritativeChannel.workspaceId) {
           throw new Error('リンク先チャンネルを開けませんでした');
         }
         setActiveChannel(messageRoute.channelId);
@@ -177,6 +180,7 @@ export function AppLayout() {
         </div>
       )}
       <MessageSearch />
+      <AttentionNotifications />
       <DmComposerDialog />
       <AccountSecurityDialog />
       <ChannelManagerDialog />

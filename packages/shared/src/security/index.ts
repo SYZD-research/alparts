@@ -261,6 +261,11 @@ export interface VoiceParticipant {
   joinedAt: string;
 }
 
+export interface VoiceChannelPresence {
+  channelId: string;
+  participants: VoiceParticipant[];
+}
+
 export interface VoiceIceServer {
   urls: string[];
   username?: string;

@@ -60,7 +60,10 @@ if (isProduction && !configuredCorsOrigins) {
   throw new Error('CORS_ORIGINS must be explicitly configured in production');
 }
 
-const corsOrigins = parseCorsOrigins(configuredCorsOrigins || 'http://localhost:5173', isProduction);
+const corsOrigins = parseCorsOrigins(
+  configuredCorsOrigins || 'http://localhost:5173,http://localhost:3000,http://127.0.0.1:3000',
+  isProduction,
+);
 const databaseRuntimeConfig = loadDatabaseRuntimeConfig(env, nodeEnv);
 
 export const config = {

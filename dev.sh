@@ -54,7 +54,7 @@ MINIO_REQUEST_TIMEOUT_MS=10000
 JWT_SECRET=$(rand_hex 48)
 AUDIT_INTEGRITY_KEY=$(rand_hex 48)
 REGISTRATION_INVITE_SECRET=$(rand_hex 48)
-CORS_ORIGINS=http://localhost:5173
+CORS_ORIGINS=http://localhost:5173,http://localhost:3000,http://127.0.0.1:3000
 VOICE_ICE_SERVERS_JSON=[]
 EOF
   chmod 600 .env

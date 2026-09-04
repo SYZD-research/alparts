@@ -1,5 +1,6 @@
 import type {
   SignedVoiceSignalEnvelope,
+  VoiceChannelPresence,
   VoiceIceServer,
   VoiceParticipant,
 } from '@alparts/shared';
@@ -19,6 +20,11 @@ export interface VoiceJoinResult {
   self?: VoiceParticipant;
   participants?: VoiceParticipant[];
   iceServers?: VoiceIceServer[];
+}
+
+export interface VoiceWatchResult {
+  ok: boolean;
+  channels: VoiceChannelPresence[];
 }
 
 export class VoiceSignalSequenceTracker {
@@ -158,6 +164,27 @@ export function parseVoiceJoinResult(value: unknown): VoiceJoinResult | null {
   const iceServers = normalizeVoiceIceServers(candidate.iceServers);
   if (!iceServers) return null;
   return { ok: true, self, participants: participants as VoiceParticipant[], iceServers };
+}
+
+export function parseVoiceChannelPresence(value: unknown): VoiceChannelPresence | null {
+  if (!isExactObject(value, ['channelId', 'participants'])) return null;
+  if (typeof value.channelId !== 'string' || !UUID.test(value.channelId)) return null;
+  if (!Array.isArray(value.participants) || value.participants.length > 8) return null;
+  const participants = value.participants.map(parseVoiceParticipant);
+  if (participants.some((participant) => !participant)) return null;
+  const participantIds = new Set((participants as VoiceParticipant[]).map((participant) => participant.participantId));
+  if (participantIds.size !== participants.length) return null;
+  return { channelId: value.channelId, participants: participants as VoiceParticipant[] };
+}
+
+export function parseVoiceWatchResult(value: unknown): VoiceWatchResult | null {
+  if (!isExactObject(value, ['ok', 'channels']) || typeof value.ok !== 'boolean') return null;
+  if (!Array.isArray(value.channels) || value.channels.length > 100) return null;
+  const channels = value.channels.map(parseVoiceChannelPresence);
+  if (channels.some((channel) => !channel)) return null;
+  const channelIds = new Set((channels as VoiceChannelPresence[]).map((channel) => channel.channelId));
+  if (channelIds.size !== channels.length) return null;
+  return { ok: value.ok, channels: channels as VoiceChannelPresence[] };
 }
 
 export function normalizeVoiceIceServers(value: unknown): VoiceIceServer[] | null {

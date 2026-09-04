@@ -1,7 +1,12 @@
 import { Router } from 'express';
 import type { Server as SocketServer } from 'socket.io';
 import { z } from 'zod';
-import { MAX_MESSAGE_LENGTH, MESSAGES_PER_PAGE, Permissions } from '@alparts/shared';
+import {
+  MAX_DIRECT_MENTION_RECIPIENTS_PER_MESSAGE,
+  MAX_MESSAGE_LENGTH,
+  MESSAGES_PER_PAGE,
+  Permissions,
+} from '@alparts/shared';
 import * as messageService from '../services/message.service.js';
 import { authMiddleware, type AuthRequest } from '../middleware/auth.js';
 import { requireChannelAccess, requireChannelPermission, requireMessagePermission } from '../middleware/rbac.js';
@@ -29,6 +34,10 @@ const createMessageSchema = z.object({
   contentNonce: nonce,
   refMessageId: z.string().uuid().optional(),
   broadcastMention: z.boolean(),
+  mentionedUserIds: z.array(z.string().uuid())
+    .max(MAX_DIRECT_MENTION_RECIPIENTS_PER_MESSAGE)
+    .refine((ids) => new Set(ids).size === ids.length)
+    .optional(),
   ...cryptoFields,
 }).strict();
 const editMessageSchema = z.object({
@@ -70,13 +79,17 @@ router.post('/channels/:id/messages', authMiddleware, requireChannelPermission(P
       idempotencyKey: body.idempotencyKey,
       signature: body.signature,
       broadcastMention: body.broadcastMention,
-    }, body.refMessageId);
+    }, body.refMessageId, body.mentionedUserIds);
     const io = getSocketServer(req);
-    if (io && result.isNewEvent) broadcastMessageCreated(io, result.event);
+    if (io && result.isNewEvent) broadcastMessageCreated(io, result.event, result.attentionRecipients);
     res.status(201).json(result.event);
   } catch (error: any) {
     if (error.message === 'IDEMPOTENCY_CONFLICT') {
       res.status(409).json({ error: 'IDEMPOTENCY_CONFLICT', message: 'Idempotency key was already used', statusCode: 409 });
+      return;
+    }
+    if (error.message === 'CHANNEL_NOT_FOUND') {
+      res.status(404).json({ error: 'NOT_FOUND', message: 'Channel not found', statusCode: 404 });
       return;
     }
     if (isInvalidCryptoRequest(error)) {

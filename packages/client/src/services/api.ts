@@ -519,6 +519,13 @@ class ApiService {
     return this.request<SuccessResponse>('/auth/logout', { method: 'POST' });
   }
 
+  async reauthenticate(password: string) {
+    return this.request<User>('/auth/reauthenticate', {
+      method: 'POST',
+      body: JSON.stringify({ password }),
+    });
+  }
+
   async getMe() {
     return this.request<User>('/auth/me');
   }
@@ -686,7 +693,7 @@ class ApiService {
 
   async createChannel(workspaceId: string, name: string, options?: {
     categoryId?: string;
-    type?: 'text' | 'announcement';
+    type?: 'text' | 'announcement' | 'voice';
     isPrivate?: boolean;
     topic?: string;
     position?: number;
@@ -809,6 +816,7 @@ class ApiService {
     idempotencyKey: string;
     signature: string;
     broadcastMention: boolean;
+    mentionedUserIds?: string[];
     refMessageId?: string;
   }) {
     return this.request<Message>(`/channels/${channelId}/messages`, {
