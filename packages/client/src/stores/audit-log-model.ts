@@ -50,6 +50,7 @@ const ACTION_LABELS: Record<string, string> = {
   'category.permission-override.delete': 'カテゴリー権限を削除',
   'channel.key.epoch.propose': 'チャンネルの利用準備を更新',
   'channel.key.epoch.recovery.propose': 'チャンネルの利用準備を復旧',
+  'channel.key.epoch.fresh_start': '過去のメッセージを使わずチャンネルを再開',
   'channel.key.delivery.add': 'チャンネルの利用準備を更新',
   'channel.key.acknowledge': 'チャンネルの利用準備を確認',
   'channel.key.epoch.abort': 'チャンネルの利用準備を中止',

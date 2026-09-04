@@ -22,6 +22,11 @@ const distributionSchema = z.object({
     signature: z.string().length(88).regex(/^[A-Za-z0-9+/]{86}==$/),
   }).strict()).min(1).max(MAX_KEY_RECIPIENTS),
 }).strict();
+const freshStartSchema = distributionSchema.extend({
+  signature: z.string().length(88).regex(/^[A-Za-z0-9+/]{86}==$/),
+  currentPassword: z.string().min(1).max(72)
+    .refine((value) => Buffer.byteLength(value, 'utf8') <= 72),
+}).strict();
 const acknowledgementSchema = z.object({
   deliveryId: z.string().uuid(),
   signature: z.string().length(88).regex(/^[A-Za-z0-9+/]{86}==$/),
@@ -61,6 +66,11 @@ const keyMutationLimit = rateLimit({
 const keyAbortLimit = rateLimit({
   windowMs: 60 * 60 * 1000,
   max: 10,
+  key: (req) => `${(req as AuthRequest).userId || req.ip || 'unknown'}:${req.params.id || 'unknown'}`,
+});
+const keyFreshStartLimit = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 5,
   key: (req) => `${(req as AuthRequest).userId || req.ip || 'unknown'}:${req.params.id || 'unknown'}`,
 });
 
@@ -188,6 +198,60 @@ router.post('/channels/:id/keys', authMiddleware, keyMutationLimit, requireChann
       'KEY_CANDIDATE_IMMUTABLE',
     ].includes(error.message) || error?.code === '23505') {
       res.status(409).json({ error: 'CONFLICT', message: 'Key was already distributed', statusCode: 409 });
+      return;
+    }
+    if (error.message === 'KEY_RECIPIENT_LIMIT') {
+      res.status(409).json({ error: 'KEY_RECIPIENT_LIMIT', message: 'Channel key recipient limit reached', statusCode: 409 });
+      return;
+    }
+    throw error;
+  }
+});
+
+router.post('/channels/:id/keys/start-fresh', authMiddleware, keyFreshStartLimit, requireChannelAccess('id'), async (req: AuthRequest, res) => {
+  if (!req.deviceId) {
+    res.status(428).json({ error: 'DEVICE_REQUIRED', message: 'A bound device is required', statusCode: 428 });
+    return;
+  }
+  try {
+    const body = freshStartSchema.parse(req.body);
+    const result = await keyService.startFreshChannelKey(
+      req.params.id,
+      req.userId!,
+      req.deviceId,
+      body.version,
+      body.keyCommitment,
+      body.keys,
+      body.signature,
+      body.currentPassword,
+    );
+    emitKeyStateChanged(req, req.params.id);
+    res.status(201).json(result);
+  } catch (error: any) {
+    if (error.message === 'INVALID_CREDENTIALS') {
+      res.status(403).json({ error: 'INVALID_CREDENTIALS', message: 'Password verification failed', statusCode: 403 });
+      return;
+    }
+    if (error.message === 'KEY_FRESH_START_FORBIDDEN') {
+      res.status(403).json({ error: 'FORBIDDEN', message: 'Starting without history is not permitted', statusCode: 403 });
+      return;
+    }
+    if (error.name === 'ZodError' || [
+      'INVALID_KEY_FRESH_START',
+      'INVALID_KEY_RECIPIENTS',
+      'INCOMPLETE_KEY_DISTRIBUTION',
+      'INVALID_KEY_SIGNATURE',
+    ].includes(error.message)) {
+      res.status(400).json({ error: 'INVALID_KEY_DISTRIBUTION', message: 'Invalid key distribution', statusCode: 400 });
+      return;
+    }
+    if ([
+      'KEY_FRESH_START_NOT_REQUIRED',
+      'KEY_FRESH_START_CONFLICT',
+      'KEY_ABORT_FAILED',
+      'KEY_EPOCH_PENDING',
+    ].includes(error.message) || error?.code === '23505') {
+      res.status(409).json({ error: 'CONFLICT', message: 'Channel state changed; retry the operation', statusCode: 409 });
       return;
     }
     if (error.message === 'KEY_RECIPIENT_LIMIT') {

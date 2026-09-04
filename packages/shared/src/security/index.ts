@@ -73,6 +73,25 @@ export function serializeChannelKeyEpochAbort(envelope: SignedChannelKeyEpochAbo
   ]);
 }
 
+export interface SignedChannelKeyFreshStart {
+  channelId: string;
+  keyVersion: number;
+  keyCommitment: string;
+  deviceId: string;
+}
+
+/** Proof that one device explicitly chose to continue without prior history. */
+export function serializeChannelKeyFreshStart(envelope: SignedChannelKeyFreshStart): string {
+  return JSON.stringify([
+    1,
+    'channel-key-fresh-start',
+    envelope.channelId,
+    envelope.keyVersion,
+    envelope.keyCommitment,
+    envelope.deviceId,
+  ]);
+}
+
 export interface SignedMessageEnvelope {
   channelId: string;
   authorId: string;

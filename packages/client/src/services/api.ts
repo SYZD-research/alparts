@@ -173,6 +173,8 @@ export interface ChannelKeyRecipientState {
   canAbortPending: boolean;
   distributedDeviceIds: string[];
   pendingAcknowledgedDeviceIds: string[];
+  /** Omitted by older servers, where every pending recipient was required. */
+  pendingRequiredDeviceIds?: string[];
   recipients: Array<{ deviceId: string; userId: string; identityKey: string }>;
 }
 
@@ -1004,6 +1006,31 @@ class ApiService {
     return this.request(`/channels/${channelId}/keys`, {
       method: 'POST',
       body: JSON.stringify({ version, keyCommitment, keys }),
+    });
+  }
+
+  async startFreshChannelKey(
+    channelId: string,
+    version: number,
+    keyCommitment: string,
+    keys: Array<{ deviceId: string; encryptedKey: string; signature: string }>,
+    signature: string,
+    currentPassword: string,
+  ) {
+    return this.request<{
+      version: number;
+      recipientCount: number;
+      insertedCount: number;
+      freshStart: true;
+    }>(`/channels/${channelId}/keys/start-fresh`, {
+      method: 'POST',
+      body: JSON.stringify({
+        version,
+        keyCommitment,
+        keys,
+        signature,
+        currentPassword,
+      }),
     });
   }
 

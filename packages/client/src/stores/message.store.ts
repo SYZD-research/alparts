@@ -17,6 +17,7 @@ import {
   isChannelKeyActivationPendingError,
   isChannelKeyDeliveryPendingError,
   signMessageEnvelope,
+  startChannelWithoutHistory as establishFreshChannel,
   verifyMessageSignature,
 } from '../services/crypto.service';
 import { retryFixedRequest } from '../services/fixed-request-retry';
@@ -58,6 +59,7 @@ interface MessageState {
   loadMessageThroughHistory: (channelId: string, messageId: string, maxPages?: number) => Promise<boolean>;
   reconcileChannelKey: (channelId: string) => Promise<boolean>;
   retryChannelPreparation: (channelId: string) => Promise<boolean>;
+  startChannelWithoutHistory: (channelId: string, currentPassword: string) => Promise<void>;
   sendMessage: (
     channelId: string,
     content: string,
@@ -275,7 +277,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
           if (!isChannelKeyActivationPendingError(error)) throw error;
           // A pending epoch is an expected availability state. History remains
           // readable with previously activated epochs, while writes continue
-          // to fail closed until every recipient acknowledges the new epoch.
+          // to fail closed until every required recipient acknowledges it.
           keyPending = error.message;
         }
         const result = await api.getMessages(channelId);
@@ -426,6 +428,21 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     if (!await get().reconcileChannelKey(channelId)) return false;
     if (reloadMessages) await get().loadMessages(channelId);
     return true;
+  },
+
+  startChannelWithoutHistory: async (channelId, currentPassword) => {
+    const generation = messageStoreGeneration;
+    const channelEpoch = currentChannelEpoch(channelId);
+    await establishFreshChannel(channelId, currentPassword);
+    if (!isMessageContextCurrent(channelId, generation, channelEpoch)) return;
+    set((state) => ({
+      securityErrors: { ...state.securityErrors, [channelId]: null },
+      channelKeyPending: { ...state.channelKeyPending, [channelId]: null },
+      channelRecoveryPending: { ...state.channelRecoveryPending, [channelId]: false },
+      operationErrors: { ...state.operationErrors, [channelId]: null },
+    }));
+    get().retryUnavailableMessages(channelId);
+    await get().loadMessages(channelId);
   },
 
   sendMessage: async (channelId, content, refMessageId, fixedIdempotencyKey, allowEmpty = false, mentionedUserIds = []) => {

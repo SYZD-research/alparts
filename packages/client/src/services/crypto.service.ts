@@ -3,6 +3,7 @@ import {
   serializeDeviceChallengeProof,
   serializeChannelKeyAcknowledgement,
   serializeChannelKeyEpochAbort,
+  serializeChannelKeyFreshStart,
   serializeChannelKeyWrap,
   serializeMessageAad,
   serializeMessageEnvelope,
@@ -73,7 +74,7 @@ export const CHANNEL_KEY_DELIVERY_PENDING = 'CHANNEL_KEY_DELIVERY_PENDING';
 
 /**
  * The candidate key is valid, but the server cannot activate it until every
- * frozen recipient device has acknowledged its exact delivery. This is an
+ * required recipient device has acknowledged its exact delivery. This is an
  * availability state, not evidence of a cryptographic failure.
  */
 export class ChannelKeyActivationPendingError extends Error {
@@ -434,6 +435,64 @@ export async function ensureChannelKey(channelId: string): Promise<ChannelKey> {
   return ensureChannelKeyAttempt(channelId, scope);
 }
 
+/**
+ * Explicitly establish a new writable epoch without requiring this endpoint
+ * to possess the previous epoch. Historical ciphertext remains untouched and
+ * unavailable here; every current endpoint still receives the new signed key.
+ */
+export async function startChannelWithoutHistory(
+  channelId: string,
+  currentPassword: string,
+): Promise<ChannelKey> {
+  const scope = channelKeyScopes.capture(channelId);
+  const device = getActiveDevice();
+  channelKeyScopes.assertCurrent(scope);
+  const state = await api.getKeyRecipients(channelId);
+  channelKeyScopes.assertCurrent(scope);
+  assertKeyRecipientState(state);
+  if (!state.recipients.some((recipient) => recipient.deviceId === device.deviceId)) {
+    throw new Error('Current device is not an authorized key recipient');
+  }
+
+  const raw = crypto.getRandomValues(new Uint8Array(32));
+  try {
+    const keyCommitment = await computeKeyCommitment(raw);
+    const keys = await wrapForRecipients(raw, state.recipients, {
+      channelId,
+      version: state.nextVersion,
+      keyCommitment,
+    });
+    const signature = await signDevicePayload(serializeChannelKeyFreshStart({
+      channelId,
+      keyVersion: state.nextVersion,
+      keyCommitment,
+      deviceId: device.deviceId,
+    }));
+    const created = await api.startFreshChannelKey(
+      channelId,
+      state.nextVersion,
+      keyCommitment,
+      keys,
+      signature,
+      currentPassword,
+    );
+    channelKeyScopes.assertCurrent(scope);
+    if (created.version !== state.nextVersion || created.freshStart !== true) {
+      throw new Error('Server returned an invalid fresh channel state');
+    }
+    const key = await importChannelKey(raw);
+    await saveChannelKeyForScope(
+      channelStorageId(device, channelId, state.nextVersion),
+      key,
+      scope,
+      raw,
+    );
+  } finally {
+    raw.fill(0);
+  }
+  return ensureChannelKeyAttempt(channelId, scope);
+}
+
 async function ensureChannelKeyAttempt(
   channelId: string,
   scope: ChannelKeyScopeToken,
@@ -525,7 +584,13 @@ async function ensureChannelKeyAttempt(
 
       if (!state.pendingAcknowledgedDeviceIds.includes(device.deviceId)) continue;
       const acknowledged = new Set(state.pendingAcknowledgedDeviceIds);
-      const missing = state.recipients.filter((recipient) => !acknowledged.has(recipient.deviceId));
+      const required = new Set(
+        state.pendingRequiredDeviceIds
+        ?? state.recipients.map((recipient) => recipient.deviceId),
+      );
+      const missing = state.recipients.filter((recipient) => (
+        required.has(recipient.deviceId) && !acknowledged.has(recipient.deviceId)
+      ));
       if (missing.length === 0) continue;
       try {
         await distributeFromDelivery(channelId, pending.delivery, missing, device);
@@ -686,6 +751,7 @@ function hasAdjacentEpochStatus(
 }
 
 function assertKeyRecipientState(state: ChannelKeyRecipientState): void {
+  const recipientIds = new Set(state.recipients.map((recipient) => recipient.deviceId));
   if (
     typeof state.pendingInvalid !== 'boolean'
     || typeof state.historyRecoveryRequired !== 'boolean'
@@ -706,6 +772,21 @@ function assertKeyRecipientState(state: ChannelKeyRecipientState): void {
   }
   if (state.nextVersion <= state.currentVersion || (state.pendingVersion !== null && state.nextVersion <= state.pendingVersion)) {
     throw new Error('Server returned a non-monotonic channel key version');
+  }
+  if (
+    new Set(state.pendingAcknowledgedDeviceIds).size !== state.pendingAcknowledgedDeviceIds.length
+    || state.pendingAcknowledgedDeviceIds.some((deviceId) => !recipientIds.has(deviceId))
+    || (state.pendingVersion === null && state.pendingAcknowledgedDeviceIds.length > 0)
+  ) {
+    throw new Error('Server returned an invalid pending channel key acknowledgement state');
+  }
+  if (state.pendingRequiredDeviceIds !== undefined && (
+    new Set(state.pendingRequiredDeviceIds).size !== state.pendingRequiredDeviceIds.length
+    || state.pendingRequiredDeviceIds.some((deviceId) => !recipientIds.has(deviceId))
+    || (state.pendingVersion === null && state.pendingRequiredDeviceIds.length > 0)
+    || (state.pendingVersion !== null && state.pendingRequiredDeviceIds.length === 0)
+  )) {
+    throw new Error('Server returned an invalid pending channel key requirement state');
   }
 }
 

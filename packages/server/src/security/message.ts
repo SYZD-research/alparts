@@ -5,6 +5,7 @@ import {
   serializeDeviceChallengeProof,
   serializeChannelKeyAcknowledgement,
   serializeChannelKeyEpochAbort,
+  serializeChannelKeyFreshStart,
   serializeChannelKeyWrap,
   serializeMessageEnvelope,
   type SignedAttachmentEnvelope,
@@ -12,6 +13,7 @@ import {
   type SignedChannelKeyWrap,
   type SignedChannelKeyAcknowledgement,
   type SignedChannelKeyEpochAbort,
+  type SignedChannelKeyFreshStart,
 } from '@alparts/shared';
 
 const base64Url = z.string().min(1).max(2048).regex(/^[A-Za-z0-9_-]+$/);
@@ -120,6 +122,14 @@ export function verifyChannelKeyEpochAbortSignature(
   signature: string,
 ): boolean {
   return verifyDeviceSignature(identityKey, serializeChannelKeyEpochAbort(envelope), signature);
+}
+
+export function verifyChannelKeyFreshStartSignature(
+  identityKey: string,
+  envelope: SignedChannelKeyFreshStart,
+  signature: string,
+): boolean {
+  return verifyDeviceSignature(identityKey, serializeChannelKeyFreshStart(envelope), signature);
 }
 
 export function verifyMessageEnvelopeSignature(

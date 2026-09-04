@@ -10,12 +10,15 @@ import { useDmStore } from '../../stores/dm.store';
 import { useAuthStore } from '../../stores/auth.store';
 import { directMessageTitle } from '../../stores/dm-model';
 import { useUiStore } from '../../stores/ui.store';
+import { ApiError } from '../../services/api';
+import { Dialog } from '../ui/Dialog';
 
 export function ChatArea() {
   const activeChannelId = useChannelStore((state) => state.activeChannelId);
   const channel = useChannelStore((state) => state.channels.find((candidate) => candidate.id === state.activeChannelId));
   const loadMessages = useMessageStore((state) => state.loadMessages);
   const retryChannelPreparation = useMessageStore((state) => state.retryChannelPreparation);
+  const startChannelWithoutHistory = useMessageStore((state) => state.startChannelWithoutHistory);
   const securityError = useMessageStore((state) => activeChannelId ? state.securityErrors[activeChannelId] : null);
   const channelKeyPending = useMessageStore((state) => activeChannelId ? state.channelKeyPending[activeChannelId] : null);
   const channelRecoveryPending = useMessageStore((state) => activeChannelId ? state.channelRecoveryPending[activeChannelId] : false);
@@ -30,6 +33,47 @@ export function ChatArea() {
     : undefined);
   const openSavedMessages = useUiStore((state) => state.openSavedMessages);
   const [isRetryingKey, setIsRetryingKey] = useState(false);
+  const [showFreshStart, setShowFreshStart] = useState(false);
+  const [freshStartPassword, setFreshStartPassword] = useState('');
+  const [freshStartError, setFreshStartError] = useState<string | null>(null);
+  const [isStartingFresh, setIsStartingFresh] = useState(false);
+
+  useEffect(() => {
+    setShowFreshStart(false);
+    setFreshStartPassword('');
+    setFreshStartError(null);
+    setIsStartingFresh(false);
+  }, [activeChannelId]);
+
+  const closeFreshStart = () => {
+    if (isStartingFresh) return;
+    setShowFreshStart(false);
+    setFreshStartPassword('');
+    setFreshStartError(null);
+  };
+
+  const confirmFreshStart = async () => {
+    if (!activeChannelId || isStartingFresh || freshStartPassword.length === 0) return;
+    setIsStartingFresh(true);
+    setFreshStartError(null);
+    try {
+      await startChannelWithoutHistory(activeChannelId, freshStartPassword);
+      setShowFreshStart(false);
+      setFreshStartPassword('');
+    } catch (error) {
+      if (error instanceof ApiError && error.code === 'INVALID_CREDENTIALS') {
+        setFreshStartError('パスワードが正しくありません。');
+      } else if (error instanceof ApiError && error.status === 403) {
+        setFreshStartError('この操作を行う権限がありません。チャンネルの管理者へ依頼してください。');
+      } else if (error instanceof ApiError && error.status === 409) {
+        setFreshStartError('チャンネルの状態が変わりました。閉じてから、もう一度お試しください。');
+      } else {
+        setFreshStartError('新しいメッセージを開始できませんでした。もう一度お試しください。');
+      }
+    } finally {
+      setIsStartingFresh(false);
+    }
+  };
 
   useEffect(() => {
     if (activeChannelId) {
@@ -68,6 +112,50 @@ export function ChatArea() {
 
   return (
     <div className="flex-1 flex flex-col min-w-0 bg-discord-bg">
+      <Dialog
+        open={showFreshStart}
+        onClose={closeFreshStart}
+        title="新しいメッセージから開始しますか？"
+        description="以前のメッセージは削除されませんが、この端末では表示できないままになります。"
+        size="sm"
+      >
+        <form
+          className="space-y-4"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void confirmFreshStart();
+          }}
+        >
+          <p className="rounded border border-discord-red/60 bg-discord-red/10 p-3 text-sm text-discord-text">
+            チャンネルは新しいメッセージから再開されます。この操作は元に戻せません。
+          </p>
+          <label className="block text-sm text-discord-text">
+            パスワード
+            <input
+              autoFocus
+              type="password"
+              autoComplete="current-password"
+              value={freshStartPassword}
+              onChange={(event) => setFreshStartPassword(event.target.value)}
+              disabled={isStartingFresh}
+              className="mt-1 w-full rounded bg-discord-input px-3 py-2 text-white outline-none focus:ring-2 focus:ring-discord-accent disabled:opacity-50"
+            />
+          </label>
+          {freshStartError && (
+            <p role="alert" className="rounded bg-discord-red/15 px-3 py-2 text-sm text-discord-red">
+              {freshStartError}
+            </p>
+          )}
+          <div className="flex justify-end gap-2">
+            <button type="button" onClick={closeFreshStart} disabled={isStartingFresh} className="rounded px-3 py-2 text-sm text-discord-muted hover:bg-discord-hover disabled:opacity-50">
+              キャンセル
+            </button>
+            <button type="submit" disabled={isStartingFresh || freshStartPassword.length === 0} className="rounded bg-discord-red px-3 py-2 text-sm font-medium text-white disabled:opacity-50">
+              {isStartingFresh ? '開始中…' : '新しく開始'}
+            </button>
+          </div>
+        </form>
+      </Dialog>
       {/* Channel header */}
       <div className="h-12 px-4 flex items-center border-b border-discord-sidebar shadow-sm">
         <span className="text-discord-muted mr-2">{dmConversation ? '@' : '#'}</span>
@@ -111,6 +199,16 @@ export function ChatArea() {
           >
             {isRetryingKey ? '再試行中…' : '再試行'}
           </button>
+          <button
+            type="button"
+            onClick={() => {
+              setFreshStartError(null);
+              setShowFreshStart(true);
+            }}
+            className="rounded px-3 py-2 text-sm text-discord-red underline hover:bg-discord-red/10"
+          >
+            過去のメッセージを使わず開始
+          </button>
         </div>
       ) : (
         <>
@@ -118,17 +216,29 @@ export function ChatArea() {
           {channelKeyPending && (
             <div role="status" className="mx-4 mb-2 flex items-center justify-between gap-3 rounded border border-discord-yellow/40 bg-discord-yellow/10 px-3 py-2 text-sm text-discord-yellow">
               <span>メッセージを送信できるよう準備しています。しばらくお待ちください。</span>
-              <button
-                type="button"
-                disabled={isRetryingKey}
-                onClick={() => {
-                  setIsRetryingKey(true);
-                  void retryChannelPreparation(activeChannelId).finally(() => setIsRetryingKey(false));
-                }}
-                className="shrink-0 rounded px-2 py-1 underline hover:bg-discord-hover disabled:opacity-50"
-              >
-                {isRetryingKey ? '再試行中…' : '再試行'}
-              </button>
+              <div className="flex shrink-0 items-center gap-2">
+                <button
+                  type="button"
+                  disabled={isRetryingKey}
+                  onClick={() => {
+                    setIsRetryingKey(true);
+                    void retryChannelPreparation(activeChannelId).finally(() => setIsRetryingKey(false));
+                  }}
+                  className="rounded px-2 py-1 underline hover:bg-discord-hover disabled:opacity-50"
+                >
+                  {isRetryingKey ? '再試行中…' : '再試行'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setFreshStartError(null);
+                    setShowFreshStart(true);
+                  }}
+                  className="rounded px-2 py-1 text-discord-red underline hover:bg-discord-red/10"
+                >
+                  過去を使わず開始
+                </button>
+              </div>
             </div>
           )}
           {operationError && (

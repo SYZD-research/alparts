@@ -23,6 +23,7 @@ import {
   serializeAttachmentEnvelope,
   serializeChannelKeyAcknowledgement,
   serializeChannelKeyEpochAbort,
+  serializeChannelKeyFreshStart,
   serializeChannelKeyWrap,
   serializeDeviceChallengeProof,
   serializeMessageAad,
@@ -225,6 +226,128 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
         keys: retryDeviceKeys,
       }],
     });
+
+    // A newly enrolled manager may explicitly leave unavailable history
+    // behind and start a fresh writable epoch. Every current endpoint gets a
+    // signed wrap, while only the initiating endpoint gates activation so an
+    // offline old endpoint cannot block new messages.
+    const freshStartLogin = await request('/api/auth/login', {
+      method: 'POST',
+      body: { email: 'device-retry@example.test', password: 'Correct-Horse-Battery-10!' },
+    });
+    assert.equal(freshStartLogin.status, 200);
+    const freshStartCookie = freshStartLogin.headers.get('set-cookie')!.split(';', 1)[0];
+    const freshStartKeys = deviceFixture();
+    const freshStartDevice = await registerDevice(
+      { ...retryDeviceAccount, cookie: freshStartCookie },
+      freshStartKeys,
+      'Fresh start identity',
+    );
+    const freshStartState = await json<{
+      nextVersion: number;
+      recipients: Array<{ deviceId: string; identityKey: string }>;
+    }>(await request(`/api/channels/${recoveryChannel.id}/key-recipients`, { cookie: freshStartCookie }));
+    assert.equal(freshStartState.nextVersion, 2);
+    const freshStartKey = randomBytes(32);
+    const freshStartCommitment = createHash('sha256').update(freshStartKey).digest('base64url');
+    const freshStartWraps = freshStartState.recipients.map((recipient) => signedChannelKeyWrap({
+      channelId: recoveryChannel.id,
+      version: freshStartState.nextVersion,
+      keyCommitment: freshStartCommitment,
+      rawKey: freshStartKey,
+      recipient,
+      senderKeys: freshStartKeys,
+    }));
+    const freshStartSignature = sign('sha256', Buffer.from(serializeChannelKeyFreshStart({
+      channelId: recoveryChannel.id,
+      keyVersion: freshStartState.nextVersion,
+      keyCommitment: freshStartCommitment,
+      deviceId: freshStartDevice.id,
+    })), {
+      key: freshStartKeys.signingPrivateKey,
+      dsaEncoding: 'ieee-p1363',
+    }).toString('base64');
+    const rejectedFreshStart = await request(`/api/channels/${recoveryChannel.id}/keys/start-fresh`, {
+      method: 'POST',
+      cookie: freshStartCookie,
+      body: {
+        version: freshStartState.nextVersion,
+        keyCommitment: freshStartCommitment,
+        keys: freshStartWraps,
+        signature: freshStartSignature,
+        currentPassword: 'Synthetic-Wrong-Password-0!',
+      },
+    });
+    assert.equal(rejectedFreshStart.status, 403);
+    assert.equal((await json<{ error: string }>(rejectedFreshStart)).error, 'INVALID_CREDENTIALS');
+    const freshStartResponse = await request(`/api/channels/${recoveryChannel.id}/keys/start-fresh`, {
+      method: 'POST',
+      cookie: freshStartCookie,
+      body: {
+        version: freshStartState.nextVersion,
+        keyCommitment: freshStartCommitment,
+        keys: freshStartWraps,
+        signature: freshStartSignature,
+        currentPassword: retryDeviceAccount.password,
+      },
+    });
+    assert.equal(freshStartResponse.status, 201);
+    assert.equal((await json<{ freshStart: boolean }>(freshStartResponse)).freshStart, true);
+    const proposedFreshState = await json<{
+      pendingRequiredDeviceIds: string[];
+    }>(await request(`/api/channels/${recoveryChannel.id}/key-recipients`, { cookie: freshStartCookie }));
+    assert.deepEqual(proposedFreshState.pendingRequiredDeviceIds, [freshStartDevice.id]);
+    const oldEndpointWrap = freshStartWraps.find((key) => key.deviceId === firstRetryDevice.id);
+    assert.ok(oldEndpointWrap);
+    const optionalAcknowledgement = await acknowledgeChannelKeyDelivery({
+      channelId: recoveryChannel.id,
+      version: 2,
+      keyCommitment: freshStartCommitment,
+      encryptedKey: oldEndpointWrap.encryptedKey,
+      deviceId: firstRetryDevice.id,
+      cookie: retryDeviceAccount.cookie,
+      keys: retryDeviceKeys,
+    });
+    assert.equal(optionalAcknowledgement.status, 'pending');
+    assert.equal(optionalAcknowledgement.activated, false);
+    const freshStartDelivery = freshStartWraps.find((key) => key.deviceId === freshStartDevice.id);
+    assert.ok(freshStartDelivery);
+    const freshStartAcknowledgement = await acknowledgeChannelKeyDelivery({
+      channelId: recoveryChannel.id,
+      version: 2,
+      keyCommitment: freshStartCommitment,
+      encryptedKey: freshStartDelivery.encryptedKey,
+      deviceId: freshStartDevice.id,
+      cookie: freshStartCookie,
+      keys: freshStartKeys,
+    });
+    assert.equal(freshStartAcknowledgement.status, 'active');
+    assert.equal(freshStartAcknowledgement.activated, true);
+    const oldEndpointDeliveries = await json<Array<{ version: number; encryptedKey: string }>>(
+      await request(`/api/channels/${recoveryChannel.id}/keys?version=2`, { cookie: retryDeviceAccount.cookie }),
+    );
+    const oldEndpointDelivery = oldEndpointDeliveries.find((delivery) => delivery.version === 2);
+    assert.ok(oldEndpointDelivery);
+    assert.deepEqual(unwrapKey(oldEndpointDelivery.encryptedKey, retryDeviceKeys.encryptionPrivateKey), freshStartKey);
+    const freshStartWrite = await request(`/api/channels/${recoveryChannel.id}/messages`, {
+      method: 'POST',
+      cookie: freshStartCookie,
+      body: encryptedMessage(
+        recoveryChannel.id,
+        retryDeviceAccount.user.id,
+        freshStartDevice.id,
+        freshStartKeys.signingPrivateKey,
+        freshStartKey,
+        'fresh messages do not wait for the old endpoint',
+        undefined,
+        2,
+      ).body,
+    });
+    assert.equal(freshStartWrite.status, 201);
+    assert.equal((await request(`/api/devices/${freshStartDevice.id}`, {
+      method: 'DELETE', cookie: freshStartCookie,
+    })).status, 200);
+
     const recoveryLogin = await request('/api/auth/login', {
       method: 'POST',
       body: { email: 'device-retry@example.test', password: 'Correct-Horse-Battery-10!' },
@@ -284,7 +407,7 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
     const recoveredChannelKey = randomBytes(32);
     await distributeAndAcknowledgeChannelKey({
       channelId: recoveryChannel.id,
-      version: 2,
+      version: 3,
       rawKey: recoveredChannelKey,
       senderCookie: recoveryCookie,
       senderKeys: recoveryKeys,
@@ -301,7 +424,7 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
         recoveredChannelKey,
         'future writes survive total key-holder loss',
         undefined,
-        2,
+        3,
       ).body,
     });
     assert.equal(recoveredWrite.status, 201);
@@ -310,6 +433,7 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
       { method: 'POST', cookie: recoveryCookie, body: {} },
     ));
     assert.equal(recoveryAudit.data.some((entry) => entry.action === 'channel.key.epoch.recovery.propose'), true);
+    assert.equal(recoveryAudit.data.some((entry) => entry.action === 'channel.key.epoch.fresh_start'), true);
     // Keep this account from becoming an unintended recipient in the shared
     // workspace scenarios below. Self-revocation also proves that the newly
     // recovered epoch remains subject to the same fail-closed holder-loss rule.

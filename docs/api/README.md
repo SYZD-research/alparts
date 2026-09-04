@@ -77,6 +77,7 @@ DMs are represented by a channel plus conversation/member rows but cannot be man
 | `GET /api/channels/:id/device-directory?ids=<uuid,...>` | at most 64 explicitly requested public signing identities, returned only when current-eligible or referenced by a message/attachment in this channel |
 | `GET /api/channels/:id/device-directory` | deprecated bounded rollout bridge: union of current devices and historical message/attachment signers, maximum 400, with `Deprecation: true`; clients must migrate to explicit IDs |
 | `POST /api/channels/:id/keys` | propose immutable signed recipient deliveries/epoch commitment |
+| `POST .../keys/start-fresh` | password-confirmed, device-signed fresh epoch for an authorized manager/DM participant that explicitly continues without unavailable history |
 | `POST .../keys/acknowledge`, `POST .../keys/abort` | exact-delivery acknowledgement or signed abort/state transition |
 
 ## Attachments

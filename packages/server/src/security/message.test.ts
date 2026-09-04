@@ -9,6 +9,7 @@ import {
   serializeAttachmentWrappedKeyAad,
   serializeChannelKeyAcknowledgement,
   serializeChannelKeyEpochAbort,
+  serializeChannelKeyFreshStart,
   serializeChannelKeyWrap,
   serializeMessageAad,
   serializeMessageEnvelope,
@@ -22,6 +23,7 @@ import {
   verifyChannelKeyWrapSignature,
   verifyChannelKeyAcknowledgementSignature,
   verifyChannelKeyEpochAbortSignature,
+  verifyChannelKeyFreshStartSignature,
   verifyMessageEnvelopeSignature,
 } from './message.js';
 
@@ -227,6 +229,45 @@ describe('signed message envelopes', () => {
     assert.equal(verifyChannelKeyEpochAbortSignature(
       keys.identityKey,
       { ...envelope, keyVersion: 4 },
+      signature,
+    ), false);
+  });
+
+  it('binds an explicit fresh start to its channel, version, commitment, and device', () => {
+    const keys = fixture();
+    const envelope = {
+      channelId: '00000000-0000-4000-8000-000000000001',
+      keyVersion: 4,
+      keyCommitment: 'BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB',
+      deviceId: '00000000-0000-4000-8000-000000000002',
+    };
+    const signature = sign('sha256', Buffer.from(serializeChannelKeyFreshStart(envelope)), {
+      key: keys.signingPrivateKey,
+      dsaEncoding: 'ieee-p1363',
+    }).toString('base64');
+    assert.equal(
+      serializeChannelKeyFreshStart(envelope),
+      '[1,"channel-key-fresh-start","00000000-0000-4000-8000-000000000001",4,"BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB","00000000-0000-4000-8000-000000000002"]',
+    );
+    assert.equal(verifyChannelKeyFreshStartSignature(keys.identityKey, envelope, signature), true);
+    assert.equal(verifyChannelKeyFreshStartSignature(
+      keys.identityKey,
+      { ...envelope, channelId: '00000000-0000-4000-8000-000000000099' },
+      signature,
+    ), false);
+    assert.equal(verifyChannelKeyFreshStartSignature(
+      keys.identityKey,
+      { ...envelope, keyVersion: 5 },
+      signature,
+    ), false);
+    assert.equal(verifyChannelKeyFreshStartSignature(
+      keys.identityKey,
+      { ...envelope, keyCommitment: 'CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC' },
+      signature,
+    ), false);
+    assert.equal(verifyChannelKeyFreshStartSignature(
+      keys.identityKey,
+      { ...envelope, deviceId: '00000000-0000-4000-8000-000000000099' },
       signature,
     ), false);
   });
