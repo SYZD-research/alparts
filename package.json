@@ -14,7 +14,7 @@
     "dev": "pnpm run build:shared && pnpm -r --parallel run dev",
     "dev:server": "pnpm run build:shared && pnpm --filter @alparts/server run dev",
     "dev:client": "pnpm run build:shared && pnpm --filter @alparts/client run dev",
-    "dev:desktop": "pnpm run build:shared && pnpm --filter @alparts/client run build && pnpm --filter @alparts/desktop run start",
+    "dev:desktop": "pnpm --filter @alparts/desktop run start",
     "build": "pnpm -r run build",
     "desktop:pack": "pnpm --filter @alparts/desktop run pack",
     "desktop:dist": "pnpm --filter @alparts/desktop run dist",

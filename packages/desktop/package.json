@@ -15,14 +15,15 @@
   "description": "alparts desktop client for Windows, macOS, and Linux",
   "scripts": {
     "build": "tsc -p tsconfig.json && esbuild src/preload.ts --bundle --platform=node --format=cjs --external:electron --outfile=dist/preload.cjs",
+    "build:renderer": "pnpm --filter @alparts/shared run build && pnpm --filter @alparts/client run build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "tsx --test src/**/*.test.ts",
-    "start": "pnpm run build && electron .",
-    "pack": "pnpm --filter @alparts/client run build && pnpm run build && electron-builder --dir --publish never",
-    "dist": "pnpm --filter @alparts/client run build && pnpm run build && electron-builder --publish never",
-    "dist:windows": "pnpm --filter @alparts/client run build && pnpm run build && electron-builder --win --publish never",
-    "dist:macos": "pnpm --filter @alparts/client run build && pnpm run build && electron-builder --mac --publish never",
-    "dist:linux": "pnpm --filter @alparts/client run build && pnpm run build && electron-builder --linux --publish never"
+    "start": "pnpm run build:renderer && pnpm run build && electron .",
+    "pack": "pnpm run build:renderer && pnpm run build && electron-builder --dir --publish never",
+    "dist": "pnpm run build:renderer && pnpm run build && electron-builder --publish never",
+    "dist:windows": "pnpm run build:renderer && pnpm run build && electron-builder --win --publish never",
+    "dist:macos": "pnpm run build:renderer && pnpm run build && electron-builder --mac --publish never",
+    "dist:linux": "pnpm run build:renderer && pnpm run build && electron-builder --linux --publish never"
   },
   "devDependencies": {
     "@electron/fuses": "2.1.3",
