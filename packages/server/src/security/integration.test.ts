@@ -796,6 +796,32 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
       ],
     });
 
+    // Keep the new-device backfill notification isolated from the primary
+    // message channel, because the secondary device is revoked later and that
+    // correctly dirties every active epoch in which it accepted a delivery.
+    const backfillChannelResponse = await request(`/api/workspaces/${workspace.id}/channels`, {
+      method: 'POST', cookie: alice.cookie, body: { name: 'device-backfill' },
+    });
+    assert.equal(backfillChannelResponse.status, 201);
+    const backfillChannel = await json<{ id: string }>(backfillChannelResponse);
+    const backfillRecipients = await json<{
+      recipients: Array<{ deviceId: string; identityKey: string }>;
+    }>(await request(`/api/channels/${backfillChannel.id}/key-recipients`, { cookie: alice.cookie }));
+    const backfillKey = randomBytes(32);
+    const backfillDistribution = await distributeAndAcknowledgeChannelKey({
+      channelId: backfillChannel.id,
+      version: 1,
+      rawKey: backfillKey,
+      senderCookie: alice.cookie,
+      senderKeys: aliceKeys,
+      recipients: backfillRecipients.recipients,
+      acknowledgements: [
+        { deviceId: aliceDevice.id, cookie: alice.cookie, keys: aliceKeys },
+        { deviceId: bobDevice.id, cookie: bob.cookie, keys: bobKeys },
+      ],
+    });
+    assert.equal(await joinChannel(aliceSocket, backfillChannel.id), true);
+
     // Revocation must remain constant-work with respect to device history and
     // must fail closed at each channel's bounded active-recipient boundary.
     const secondaryLogin = await request('/api/auth/login', {
@@ -810,6 +836,47 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
       secondaryKeys,
       'Alice revocation boundary device',
     );
+    const postEnrollmentRecipients = await json<{
+      recipients: Array<{ deviceId: string; identityKey: string }>;
+    }>(await request(`/api/channels/${backfillChannel.id}/key-recipients`, { cookie: alice.cookie }));
+    const secondaryBackfillRecipient = postEnrollmentRecipients.recipients.find(
+      (recipient) => recipient.deviceId === secondaryDevice.id,
+    );
+    assert.ok(secondaryBackfillRecipient);
+    const secondaryBackfill = signedChannelKeyWrap({
+      channelId: backfillChannel.id,
+      version: 1,
+      keyCommitment: backfillDistribution.keyCommitment,
+      rawKey: backfillKey,
+      recipient: secondaryBackfillRecipient,
+      senderKeys: aliceKeys,
+    });
+    const backfillAvailable = onceSocketEventMatching<{ channelId: string }>(
+      aliceSocket,
+      'channel:key-rotation-required',
+      (event) => event.channelId === backfillChannel.id,
+    );
+    const backfillResponse = await request(`/api/channels/${backfillChannel.id}/keys`, {
+      method: 'POST',
+      cookie: alice.cookie,
+      body: {
+        version: 1,
+        keyCommitment: backfillDistribution.keyCommitment,
+        keys: [secondaryBackfill],
+      },
+    });
+    assert.equal(backfillResponse.status, 201);
+    assert.equal((await json<{ insertedCount: number }>(backfillResponse)).insertedCount, 1);
+    assert.equal((await backfillAvailable).channelId, backfillChannel.id);
+    await acknowledgeChannelKeyDelivery({
+      channelId: backfillChannel.id,
+      version: 1,
+      keyCommitment: backfillDistribution.keyCommitment,
+      encryptedKey: secondaryBackfill.encryptedKey,
+      deviceId: secondaryDevice.id,
+      cookie: secondaryCookie,
+      keys: secondaryKeys,
+    });
     const revocationChannelResponse = await request(`/api/workspaces/${workspace.id}/channels`, {
       method: 'POST', cookie: alice.cookie, body: { name: 'revocation-boundary' },
     });

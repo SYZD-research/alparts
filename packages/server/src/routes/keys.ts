@@ -156,7 +156,12 @@ router.post('/channels/:id/keys', authMiddleware, keyMutationLimit, requireChann
       body.keyCommitment,
       body.keys,
     );
-    if (result.mode === 'proposal') emitKeyStateChanged(req, req.params.id);
+    // Active-epoch backfills matter to a newly enrolled device just as much as
+    // a proposal. Without this notification, a client that already joined the
+    // channel remains stuck until a manual reload even after delivery commits.
+    if (result.mode === 'proposal' || result.insertedCount > 0) {
+      emitKeyStateChanged(req, req.params.id);
+    }
     const { mode: _mode, ...response } = result;
     res.status(201).json(response);
   } catch (error: any) {

@@ -69,6 +69,7 @@ export interface ChannelKey {
 }
 
 export const CHANNEL_KEY_ACTIVATION_PENDING = 'CHANNEL_KEY_ACTIVATION_PENDING';
+export const CHANNEL_KEY_DELIVERY_PENDING = 'CHANNEL_KEY_DELIVERY_PENDING';
 
 /**
  * The candidate key is valid, but the server cannot activate it until every
@@ -95,6 +96,29 @@ export function isChannelKeyActivationPendingError(
     || (typeof error === 'object'
       && error !== null
       && (error as { code?: unknown }).code === CHANNEL_KEY_ACTIVATION_PENDING);
+}
+
+/**
+ * This device is authorized, but another already-authorized device must wrap
+ * the existing channel key for it. Treat this as recoverable availability,
+ * never as a cryptographic verification failure or a reason to use plaintext.
+ */
+export class ChannelKeyDeliveryPendingError extends Error {
+  readonly code = CHANNEL_KEY_DELIVERY_PENDING;
+
+  constructor() {
+    super('A previously registered device must make this channel available to the current device');
+    this.name = 'ChannelKeyDeliveryPendingError';
+  }
+}
+
+export function isChannelKeyDeliveryPendingError(
+  error: unknown,
+): error is ChannelKeyDeliveryPendingError {
+  return error instanceof ChannelKeyDeliveryPendingError
+    || (typeof error === 'object'
+      && error !== null
+      && (error as { code?: unknown }).code === CHANNEL_KEY_DELIVERY_PENDING);
 }
 
 const MAX_KEY_RECONCILIATION_ATTEMPTS = 6;
@@ -495,6 +519,7 @@ async function ensureChannelKeyAttempt(
           await deletePersistedChannelKey(channelStorageId(device, channelId, state.pendingVersion!)).catch(() => undefined);
           continue;
         }
+        if (pendingDeliveries.length === 0) throw new ChannelKeyDeliveryPendingError();
         throw new Error('This device has not received a valid pending channel key delivery');
       }
 
@@ -561,6 +586,7 @@ async function ensureChannelKeyAttempt(
     }
 
     if (!active || !state.distributedDeviceIds.includes(device.deviceId)) {
+      if (!active && activeDeliveries.length === 0) throw new ChannelKeyDeliveryPendingError();
       throw new Error('This device has not received the active channel key; approve it from an existing device');
     }
 

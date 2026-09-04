@@ -64,7 +64,7 @@ export function useSocketEvents() {
     );
     const isAuthorizedKeySyncChannel = (channelId: string) => {
       const channel = useChannelStore.getState().channels.find((candidate) => candidate.id === channelId);
-      return Boolean(channel && (channel.type === 'dm' || isAuthorizedLoadedChannel(channelId)));
+      return Boolean(channel && channel.type !== 'voice');
     };
 
     const enqueueAuthorizationWork = (operation: () => Promise<void>) => {
@@ -98,7 +98,7 @@ export function useSocketEvents() {
           pendingKeySyncIds.delete(channelId);
           if (!isAuthorizedKeySyncChannel(channelId)) continue;
           try {
-            await useMessageStore.getState().reconcileChannelKey(channelId);
+            await useMessageStore.getState().retryChannelPreparation(channelId);
           } catch {
             // Another device may complete distribution. Missing/revoked keys
             // remain fail-closed and surface through the message flow.
@@ -345,6 +345,12 @@ export function useSocketEvents() {
     socket.on('channel:deleted', onChannelAccessRemoved);
     socket.on('channel:member-added', onChannelRecipientsChanged);
     socket.on('channel:key-rotation-required', onChannelRecipientsChanged);
+    const unsubscribeChannelList = useChannelStore.subscribe((state, previous) => {
+      if (
+        state.workspaceId
+        && (state.workspaceId !== previous.workspaceId || state.channels !== previous.channels)
+      ) syncLoadedWorkspaceKeys(state.workspaceId);
+    });
     // Authentication initializes the socket just before this protected layout
     // mounts. If the handshake already completed, run the same reconciliation
     // path instead of waiting for a future reconnect.
@@ -377,6 +383,7 @@ export function useSocketEvents() {
       socket.off('channel:deleted', onChannelAccessRemoved);
       socket.off('channel:member-added', onChannelRecipientsChanged);
       socket.off('channel:key-rotation-required', onChannelRecipientsChanged);
+      unsubscribeChannelList();
     };
   }, [addAttention, addMessage, applyAttachment, applyPinUpdate, applyReactionUpdate, applySocketReadPosition,
     flushOutbox, loadChannels, loadMembers, loadMessages, loadWorkspaces, loadWorkspaceState,

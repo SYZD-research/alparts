@@ -15,6 +15,7 @@ import {
   getActiveDevice,
   getChannelKeysForVersions,
   isChannelKeyActivationPendingError,
+  isChannelKeyDeliveryPendingError,
   signMessageEnvelope,
   verifyMessageSignature,
 } from '../services/crypto.service';
@@ -48,6 +49,7 @@ interface MessageState {
   cursors: Record<string, string | null>;
   securityErrors: Record<string, string | null>;
   channelKeyPending: Record<string, string | null>;
+  channelRecoveryPending: Record<string, boolean>;
   operationErrors: Record<string, string | null>;
   replyTargets: Record<string, ProjectedMessage | null>;
   editTargets: Record<string, ProjectedMessage | null>;
@@ -55,6 +57,7 @@ interface MessageState {
   loadMoreMessages: (channelId: string) => Promise<void>;
   loadMessageThroughHistory: (channelId: string, messageId: string, maxPages?: number) => Promise<boolean>;
   reconcileChannelKey: (channelId: string) => Promise<boolean>;
+  retryChannelPreparation: (channelId: string) => Promise<boolean>;
   sendMessage: (
     channelId: string,
     content: string,
@@ -85,6 +88,7 @@ interface MessageState {
 let messageStoreGeneration = 0;
 const loadVersions = new Map<string, number>();
 const initialLoadPromises = new Map<string, Promise<void>>();
+const keyReconciliationPromises = new Map<string, Promise<boolean>>();
 const channelEpochs = new Map<string, number>();
 const residentChannelOrder = new Map<string, true>();
 const messageDecryptWorkers = new CoalescedChannelWorker(MAX_RESIDENT_MESSAGE_CHANNELS);
@@ -157,6 +161,7 @@ function channelUpdate(state: MessageState, channelId: string, events: Message[]
           }
         : omitEvicted(state.securityErrors),
       channelKeyPending: omitEvicted(state.channelKeyPending),
+      channelRecoveryPending: omitEvicted(state.channelRecoveryPending),
       operationErrors: omitEvicted(state.operationErrors),
       replyTargets: omitEvicted(state.replyTargets),
       editTargets: omitEvicted(state.editTargets),
@@ -246,6 +251,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
   cursors: {},
   securityErrors: {},
   channelKeyPending: {},
+  channelRecoveryPending: {},
   operationErrors: {},
   replyTargets: {},
   editTargets: {},
@@ -280,17 +286,26 @@ export const useMessageStore = create<MessageState>((set, get) => ({
           cursors: { ...state.cursors, [channelId]: result.cursor },
           securityErrors: { ...state.securityErrors, [channelId]: null },
           channelKeyPending: { ...state.channelKeyPending, [channelId]: keyPending },
+          channelRecoveryPending: { ...state.channelRecoveryPending, [channelId]: false },
           loadingByChannel: { ...state.loadingByChannel, [channelId]: false },
           isLoading: false,
         }));
         await get().decryptMessages(channelId);
       } catch (error) {
         if (!isMessageContextCurrent(channelId, generation, channelEpoch) || loadVersions.get(channelId) !== loadVersion) return;
+        const recoveryPending = isChannelKeyDeliveryPendingError(error);
         set((state) => ({
           isLoading: false,
           loadingByChannel: { ...state.loadingByChannel, [channelId]: false },
-          securityErrors: { ...state.securityErrors, [channelId]: errorMessage(error, 'Secure channel initialization failed') },
-          channelKeyPending: { ...state.channelKeyPending, [channelId]: null },
+          securityErrors: {
+            ...state.securityErrors,
+            [channelId]: recoveryPending ? null : errorMessage(error, 'Secure channel initialization failed'),
+          },
+          channelKeyPending: {
+            ...state.channelKeyPending,
+            [channelId]: recoveryPending ? error.message : null,
+          },
+          channelRecoveryPending: { ...state.channelRecoveryPending, [channelId]: recoveryPending },
         }));
       }
     })();
@@ -355,34 +370,62 @@ export const useMessageStore = create<MessageState>((set, get) => ({
   },
 
   reconcileChannelKey: async (channelId) => {
-    const generation = messageStoreGeneration;
-    const channelEpoch = currentChannelEpoch(channelId);
-    try {
-      await ensureChannelKey(channelId);
-      if (!isMessageContextCurrent(channelId, generation, channelEpoch)) return false;
-      set((state) => ({
-        channelKeyPending: { ...state.channelKeyPending, [channelId]: null },
-      }));
-      get().retryUnavailableMessages(channelId);
-      return true;
-    } catch (error) {
-      if (!isMessageContextCurrent(channelId, generation, channelEpoch)) return false;
-      if (isChannelKeyActivationPendingError(error)) {
-        set((state) => ({
-          channelKeyPending: { ...state.channelKeyPending, [channelId]: error.message },
-          securityErrors: { ...state.securityErrors, [channelId]: null },
-        }));
-      } else {
+    const existing = keyReconciliationPromises.get(channelId);
+    if (existing) return existing;
+    const reconciliation = (async () => {
+      const generation = messageStoreGeneration;
+      const channelEpoch = currentChannelEpoch(channelId);
+      try {
+        await ensureChannelKey(channelId);
+        if (!isMessageContextCurrent(channelId, generation, channelEpoch)) return false;
         set((state) => ({
           channelKeyPending: { ...state.channelKeyPending, [channelId]: null },
-          securityErrors: {
-            ...state.securityErrors,
-            [channelId]: errorMessage(error, 'Secure channel initialization failed'),
-          },
+          channelRecoveryPending: { ...state.channelRecoveryPending, [channelId]: false },
         }));
+        get().retryUnavailableMessages(channelId);
+        return true;
+      } catch (error) {
+        if (!isMessageContextCurrent(channelId, generation, channelEpoch)) return false;
+        if (isChannelKeyActivationPendingError(error)) {
+          set((state) => ({
+            channelKeyPending: { ...state.channelKeyPending, [channelId]: error.message },
+            channelRecoveryPending: { ...state.channelRecoveryPending, [channelId]: false },
+            securityErrors: { ...state.securityErrors, [channelId]: null },
+          }));
+        } else if (isChannelKeyDeliveryPendingError(error)) {
+          set((state) => ({
+            channelKeyPending: { ...state.channelKeyPending, [channelId]: error.message },
+            channelRecoveryPending: { ...state.channelRecoveryPending, [channelId]: true },
+            securityErrors: { ...state.securityErrors, [channelId]: null },
+          }));
+        } else {
+          set((state) => ({
+            channelKeyPending: { ...state.channelKeyPending, [channelId]: null },
+            channelRecoveryPending: { ...state.channelRecoveryPending, [channelId]: false },
+            securityErrors: {
+              ...state.securityErrors,
+              [channelId]: errorMessage(error, 'Secure channel initialization failed'),
+            },
+          }));
+        }
+        return false;
       }
-      return false;
+    })();
+    keyReconciliationPromises.set(channelId, reconciliation);
+    try {
+      return await reconciliation;
+    } finally {
+      if (keyReconciliationPromises.get(channelId) === reconciliation) {
+        keyReconciliationPromises.delete(channelId);
+      }
     }
+  },
+
+  retryChannelPreparation: async (channelId) => {
+    const reloadMessages = Boolean(get().channelRecoveryPending[channelId]);
+    if (!await get().reconcileChannelKey(channelId)) return false;
+    if (reloadMessages) await get().loadMessages(channelId);
+    return true;
   },
 
   sendMessage: async (channelId, content, refMessageId, fixedIdempotencyKey, allowEmpty = false, mentionedUserIds = []) => {
@@ -804,6 +847,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     channelEpochs.set(channelId, currentChannelEpoch(channelId) + 1);
     nextLoadVersion(channelId);
     initialLoadPromises.delete(channelId);
+    keyReconciliationPromises.delete(channelId);
     residentChannelOrder.delete(channelId);
     messageDecryptWorkers.cancel(channelId);
     set((state) => {
@@ -819,6 +863,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         cursors: withoutChannel(state.cursors, channelId),
         securityErrors: withoutChannel(state.securityErrors, channelId),
         channelKeyPending: withoutChannel(state.channelKeyPending, channelId),
+        channelRecoveryPending: withoutChannel(state.channelRecoveryPending, channelId),
         operationErrors: withoutChannel(state.operationErrors, channelId),
         replyTargets: withoutChannel(state.replyTargets, channelId),
         editTargets: withoutChannel(state.editTargets, channelId),
@@ -831,6 +876,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     messageStoreGeneration += 1;
     loadVersions.clear();
     initialLoadPromises.clear();
+    keyReconciliationPromises.clear();
     channelEpochs.clear();
     residentChannelOrder.clear();
     messageDecryptWorkers.reset();
@@ -844,6 +890,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       cursors: {},
       securityErrors: {},
       channelKeyPending: {},
+      channelRecoveryPending: {},
       operationErrors: {},
       replyTargets: {},
       editTargets: {},

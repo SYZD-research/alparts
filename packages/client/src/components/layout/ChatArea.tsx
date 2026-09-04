@@ -15,9 +15,10 @@ export function ChatArea() {
   const activeChannelId = useChannelStore((state) => state.activeChannelId);
   const channel = useChannelStore((state) => state.channels.find((candidate) => candidate.id === state.activeChannelId));
   const loadMessages = useMessageStore((state) => state.loadMessages);
-  const reconcileChannelKey = useMessageStore((state) => state.reconcileChannelKey);
+  const retryChannelPreparation = useMessageStore((state) => state.retryChannelPreparation);
   const securityError = useMessageStore((state) => activeChannelId ? state.securityErrors[activeChannelId] : null);
   const channelKeyPending = useMessageStore((state) => activeChannelId ? state.channelKeyPending[activeChannelId] : null);
+  const channelRecoveryPending = useMessageStore((state) => activeChannelId ? state.channelRecoveryPending[activeChannelId] : false);
   const operationError = useMessageStore((state) => activeChannelId ? state.operationErrors[activeChannelId] : null);
   const clearOperationError = useMessageStore((state) => state.clearOperationError);
   const typingUsers = usePresenceStore((state) => activeChannelId ? state.typingUsers[activeChannelId] : undefined);
@@ -47,7 +48,7 @@ export function ChatArea() {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const retry = async () => {
-      await reconcileChannelKey(activeChannelId);
+      await retryChannelPreparation(activeChannelId);
       if (!cancelled && useMessageStore.getState().channelKeyPending[activeChannelId]) {
         timer = setTimeout(() => { void retry(); }, 5_000);
       }
@@ -57,7 +58,7 @@ export function ChatArea() {
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [activeChannelId, channelKeyPending, reconcileChannelKey]);
+  }, [activeChannelId, channelKeyPending, retryChannelPreparation]);
 
   if (!activeChannelId) return null;
 
@@ -95,6 +96,22 @@ export function ChatArea() {
             再試行
           </button>
         </div>
+      ) : channelRecoveryPending ? (
+        <div role="status" className="flex flex-1 flex-col items-center justify-center gap-3 px-8 text-center text-discord-muted">
+          <p className="text-discord-text">この端末でメッセージを表示する準備をしています。</p>
+          <p className="max-w-lg text-sm">以前使っていた端末でalpartsを開いたままにしてください。準備が終わると自動で表示されます。</p>
+          <button
+            type="button"
+            disabled={isRetryingKey}
+            onClick={() => {
+              setIsRetryingKey(true);
+              void retryChannelPreparation(activeChannelId).finally(() => setIsRetryingKey(false));
+            }}
+            className="rounded bg-discord-hover px-3 py-2 text-sm text-discord-text hover:text-white disabled:opacity-50"
+          >
+            {isRetryingKey ? '再試行中…' : '再試行'}
+          </button>
+        </div>
       ) : (
         <>
           <MessageList channelId={activeChannelId} />
@@ -106,7 +123,7 @@ export function ChatArea() {
                 disabled={isRetryingKey}
                 onClick={() => {
                   setIsRetryingKey(true);
-                  void reconcileChannelKey(activeChannelId).finally(() => setIsRetryingKey(false));
+                  void retryChannelPreparation(activeChannelId).finally(() => setIsRetryingKey(false));
                 }}
                 className="shrink-0 rounded px-2 py-1 underline hover:bg-discord-hover disabled:opacity-50"
               >
