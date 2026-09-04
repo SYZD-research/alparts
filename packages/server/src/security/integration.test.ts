@@ -2061,9 +2061,10 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
     const roleRevisionBeforeOverride = (
       await json<{ authorizationRevision: string }>(rolePreviewBeforeOverride)
     ).authorizationRevision;
-    const channelAccessRevoked = onceSocketEvent<{ workspaceId: string; channelId: string }>(
+    const channelAccessRevoked = onceSocketEventMatching<{ workspaceId: string; channelId: string }>(
       bobSocket,
       'channel:access-revoked',
+      (payload) => payload.workspaceId === workspace.id && payload.channelId === channelId,
     );
     const bobRemovedFromVoice = onceSocketEvent<{ channelId: string; participantId: string }>(
       aliceSocket,
@@ -2980,6 +2981,27 @@ async function onceSocketEvent<T>(
       reject(new Error(`Timed out waiting for ${event}`));
     }, timeoutMs);
     socket.once(event, onEvent);
+  });
+}
+
+async function onceSocketEventMatching<T>(
+  socket: import('socket.io-client').Socket,
+  event: string,
+  predicate: (payload: T) => boolean,
+  timeoutMs = 2_000,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const onEvent = (payload: T) => {
+      if (!predicate(payload)) return;
+      clearTimeout(timer);
+      socket.off(event, onEvent);
+      resolve(payload);
+    };
+    const timer = setTimeout(() => {
+      socket.off(event, onEvent);
+      reject(new Error(`Timed out waiting for matching ${event}`));
+    }, timeoutMs);
+    socket.on(event, onEvent);
   });
 }
 

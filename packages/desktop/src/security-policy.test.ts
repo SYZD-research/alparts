@@ -25,7 +25,7 @@ describe('desktop security policy', () => {
     for (const candidate of [
       'http://chat.example.test',
       'file:///tmp/index.html',
-      'https://user:pass@example.test',
+      'https://user@example.test',
       'https://example.test/subpath',
       'https://example.test/?token=secret',
       'javascript:alert(1)',
