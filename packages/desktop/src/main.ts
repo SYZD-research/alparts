@@ -28,6 +28,7 @@ import {
   normalizeIdleLockMinutes,
   normalizeServerUrl,
   resolveBundledPath,
+  withBackendRequestOrigin,
 } from './security-policy.js';
 import { SettingsStore, type DesktopSettings } from './settings.js';
 import { SecretVault, type VaultCrypto } from './vault.js';
@@ -262,7 +263,10 @@ async function handleWebRequest(target: Session, request: Request): Promise<Resp
   if (!isAllowedBackendRequestDestination(request.destination, request.headers.get('sec-fetch-dest'))) {
     return response(403, 'Forbidden');
   }
-  return target.fetch(request, { bypassCustomProtocolHandlers: true, redirect: 'manual' });
+  return target.fetch(withBackendRequestOrigin(request, configuredOrigin), {
+    bypassCustomProtocolHandlers: true,
+    redirect: 'manual',
+  });
 }
 
 async function serveAppRequest(request: Request): Promise<Response> {

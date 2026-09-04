@@ -91,6 +91,17 @@ export function isAllowedBackendRequestDestination(
   return requestDestination === '' && (headerDestination === '' || headerDestination === 'empty');
 }
 
+/**
+ * Electron's protocol forwarding does not preserve Chromium's generated
+ * Origin header. Re-attach the exact configured origin after the destination
+ * and request type have passed the desktop boundary checks.
+ */
+export function withBackendRequestOrigin(request: Request, serverUrl: string): Request {
+  const headers = new Headers(request.headers);
+  headers.set('Origin', normalizeServerUrl(serverUrl));
+  return new Request(request, { headers });
+}
+
 export function assertSecretName(value: unknown): string {
   if (typeof value !== 'string' || value.length > 180 || !SECRET_NAME.test(value)) {
     throw new Error('INVALID_SECRET_NAME');

@@ -12,6 +12,7 @@ import {
   normalizeIdleLockMinutes,
   normalizeServerUrl,
   resolveBundledPath,
+  withBackendRequestOrigin,
 } from './security-policy.js';
 
 describe('desktop security policy', () => {
@@ -66,6 +67,24 @@ describe('desktop security policy', () => {
     assert.equal(isAllowedBackendRequestDestination('', null), true);
     assert.equal(isAllowedBackendRequestDestination('script', 'script'), false);
     assert.equal(isAllowedBackendRequestDestination('document', 'document'), false);
+  });
+
+  it('restores the exact configured origin when forwarding backend requests', async () => {
+    const incoming = new Request('https://chat.example.test/api/devices/challenge', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Origin: 'https://untrusted.example.test',
+      },
+      body: '{}',
+      credentials: 'same-origin',
+    });
+    const forwarded = withBackendRequestOrigin(incoming, 'https://chat.example.test/');
+
+    assert.equal(forwarded.headers.get('Origin'), 'https://chat.example.test');
+    assert.equal(forwarded.headers.get('Content-Type'), 'application/json');
+    assert.equal(forwarded.credentials, 'same-origin');
+    assert.equal(await forwarded.text(), '{}');
   });
 
   it('validates the three bounded vault namespaces', () => {
