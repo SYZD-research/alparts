@@ -67,12 +67,17 @@
         "filter": [
           "**/*"
         ]
+      },
+      {
+        "from": "build/icon.png",
+        "to": "desktop-icon.png"
       }
     ],
     "afterPack": "scripts/after-pack.cjs",
     "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
     "mac": {
       "executableName": "alparts",
+      "icon": "build/icon.png",
       "target": [
         {
           "target": "dmg",
@@ -99,6 +104,7 @@
     },
     "win": {
       "executableName": "alparts",
+      "icon": "build/icon.png",
       "target": [
         {
           "target": "nsis",
@@ -118,6 +124,7 @@
     },
     "linux": {
       "executableName": "alparts",
+      "icon": "build/icon.png",
       "target": [
         {
           "target": "AppImage",

@@ -37,6 +37,7 @@ import { NativeFileSaveManager } from './file-save.js';
 const PARTITION = 'persist:alparts';
 const MAX_WINDOW_DIMENSION = 16_384;
 const PRELOAD_PATH = fileURLToPath(new URL('./preload.cjs', import.meta.url));
+const DEVELOPMENT_ICON_PATH = fileURLToPath(new URL('../build/icon.png', import.meta.url));
 let DEVELOPMENT_URL: string | null = null;
 let MANAGED_SERVER_URL: string | null = null;
 
@@ -98,6 +99,7 @@ if (singleInstance) {
     DEVELOPMENT_URL = readDevelopmentUrl();
     MANAGED_SERVER_URL = readManagedServerUrl();
     app.setAppUserModelId('org.alparts.desktop');
+    if (process.platform === 'darwin') app.dock?.setIcon(applicationIconPath());
     settingsStore = new SettingsStore(app.getPath('userData'));
     const persistedSettings = await settingsStore.load();
     settings = MANAGED_SERVER_URL
@@ -153,6 +155,7 @@ async function createWindow(): Promise<void> {
     show: false,
     backgroundColor: '#313338',
     title: 'alparts',
+    icon: applicationIconPath(),
     autoHideMenuBar: process.platform !== 'darwin',
     webPreferences: {
       preload: PRELOAD_PATH,
@@ -336,6 +339,12 @@ function rendererRoot(): string {
   return app.isPackaged
     ? path.join(process.resourcesPath, 'renderer')
     : fileURLToPath(new URL('../../client/dist/', import.meta.url));
+}
+
+function applicationIconPath(): string {
+  return app.isPackaged
+    ? path.join(process.resourcesPath, 'desktop-icon.png')
+    : DEVELOPMENT_ICON_PATH;
 }
 
 function registerIpcHandlers(): void {
