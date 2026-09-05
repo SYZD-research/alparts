@@ -88,7 +88,7 @@ function MemberItem({ member, status, canDm, onDm }: {
         )}
       </div>
       {canDm && (
-        <button type="button" onClick={onDm} className="ml-auto rounded px-2 py-1 text-xs text-discord-muted opacity-0 hover:bg-discord-bg hover:text-white group-hover:opacity-100 focus:opacity-100" aria-label={`${member.user.displayName}とDM`}>
+        <button type="button" onClick={onDm} className="ml-auto shrink-0 rounded px-2 py-1 text-xs text-discord-muted md:opacity-0 hover:bg-discord-bg hover:text-white group-hover:opacity-100 focus:opacity-100" aria-label={`${member.user.displayName}とDM`}>
           DM
         </button>
       )}

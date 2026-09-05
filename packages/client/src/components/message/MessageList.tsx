@@ -12,11 +12,12 @@ import { MessageContent } from './MessageContent';
 
 interface Props {
   channelId: string;
+  visible?: boolean;
 }
 
 const EMPTY_MESSAGES: Message[] = [];
 
-export function MessageList({ channelId }: Props) {
+export function MessageList({ channelId, visible: chatVisible = true }: Props) {
   const [jumpError, setJumpError] = useState<string | null>(null);
   const messages = useMessageStore((state) => state.messagesByChannel[channelId] || EMPTY_MESSAGES);
   const isLoading = useMessageStore((state) => Boolean(state.loadingByChannel[channelId]));
@@ -68,7 +69,7 @@ export function MessageList({ channelId }: Props) {
   }, [channelId, channelOutboxItems.length, messages.length]);
 
   useEffect(() => {
-    if (!channelStateReady || !latestBaseMessageId || latestBaseMessageId === lastReadMessageId) return;
+    if (!chatVisible || !channelStateReady || !latestBaseMessageId || latestBaseMessageId === lastReadMessageId) return;
     const container = containerRef.current;
     const target = document.getElementById(`message-${latestBaseMessageId}`);
     if (!container || !target) return;
@@ -96,7 +97,7 @@ export function MessageList({ channelId }: Props) {
       window.removeEventListener('focus', markWhenVisible);
       document.removeEventListener('visibilitychange', markWhenVisible);
     };
-  }, [channelId, channelStateReady, lastReadMessageId, latestBaseMessageId, markRead]);
+  }, [channelId, channelStateReady, chatVisible, lastReadMessageId, latestBaseMessageId, markRead]);
 
   const handleScroll = () => {
     const container = containerRef.current;

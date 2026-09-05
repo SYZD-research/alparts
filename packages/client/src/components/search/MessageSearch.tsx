@@ -3,7 +3,15 @@ import { useChannelStore } from '../../stores/channel.store';
 import { useMessageStore } from '../../stores/message.store';
 import { searchLoadedMessages } from '../../stores/search-loaded-messages';
 
-export function MessageSearch() {
+interface MessageSearchProps {
+  membersOpen: boolean;
+  membersAvailable: boolean;
+  onToggleMembers: () => void;
+  showToolbar: boolean;
+  onNavigateToChat: () => void;
+}
+
+export function MessageSearch({ membersOpen, membersAvailable, onToggleMembers, showToolbar, onNavigateToChat }: MessageSearchProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [query, setQuery] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
@@ -36,6 +44,7 @@ export function MessageSearch() {
 
   const selectResult = (channelId: string, messageId: string) => {
     setActiveChannel(channelId);
+    onNavigateToChat();
     setIsOpen(false);
     window.setTimeout(() => {
       document.getElementById(`message-${messageId}`)?.scrollIntoView({ block: 'center', behavior: 'smooth' });
@@ -44,14 +53,33 @@ export function MessageSearch() {
 
   return (
     <>
+      <div className="chat-toolbar fixed right-2 top-0 z-40 flex h-12 items-center gap-1" hidden={!showToolbar}>
+      <button
+        id="members-toggle"
+        type="button"
+        onClick={onToggleMembers}
+        disabled={!membersAvailable}
+        aria-label="メンバー一覧"
+        title="メンバー一覧"
+        aria-expanded={membersOpen}
+        aria-controls={membersOpen ? 'member-list' : undefined}
+        className={`flex h-11 w-11 items-center justify-center rounded hover:bg-discord-hover disabled:opacity-40 ${membersOpen ? 'text-white bg-discord-hover' : 'text-discord-muted hover:text-white'}`}
+      >
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
+          <circle cx="9" cy="8" r="3" /><path d="M3 20v-2a6 6 0 0 1 12 0v2M16 5a3 3 0 0 1 0 6m2 3a5 5 0 0 1 3 4v2" />
+        </svg>
+      </button>
       <button
         type="button"
         onClick={() => setIsOpen(true)}
-        className="fixed right-4 top-2 z-30 rounded bg-discord-input px-3 py-1 text-xs text-discord-muted hover:text-discord-text"
+        className="flex h-11 min-w-11 items-center justify-center gap-2 rounded px-2 text-xs text-discord-muted hover:bg-discord-hover hover:text-white"
         aria-label="メッセージを検索"
+        title="メッセージを検索"
       >
-        検索 <span className="ml-2 opacity-70">Ctrl/⌘ K</span>
+        <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" /><path d="m16 16 5 5" /></svg>
+        <span className="hidden md:inline">検索 <span className="ml-2 opacity-70">Ctrl/⌘ K</span></span>
       </button>
+      </div>
       {isOpen && (
         <div
           className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 px-4 pt-[10vh]"

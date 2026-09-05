@@ -1,0 +1,11 @@
+<resources>
+    <!-- Keep these in step with packages/client/tailwind.config.ts. -->
+    <color name="alparts_background">#313338</color>
+    <color name="alparts_surface">#2B2D31</color>
+    <color name="alparts_input">#383A40</color>
+    <color name="alparts_text">#DBDEE1</color>
+    <color name="alparts_muted">#949BA4</color>
+    <color name="alparts_accent">#5865F2</color>
+    <color name="alparts_accent_pressed">#4752C4</color>
+    <color name="alparts_error">#ED4245</color>
+</resources>

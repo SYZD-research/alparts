@@ -13,7 +13,7 @@ import { useUiStore } from '../../stores/ui.store';
 import { ApiError } from '../../services/api';
 import { Dialog } from '../ui/Dialog';
 
-export function ChatArea() {
+export function ChatArea({ visible = true }: { visible?: boolean }) {
   const activeChannelId = useChannelStore((state) => state.activeChannelId);
   const channel = useChannelStore((state) => state.channels.find((candidate) => candidate.id === state.activeChannelId));
   const loadMessages = useMessageStore((state) => state.loadMessages);
@@ -111,7 +111,7 @@ export function ChatArea() {
   ));
 
   return (
-    <div className="flex-1 flex flex-col min-w-0 bg-discord-bg">
+    <div className="flex-1 flex flex-col min-w-0 min-h-0 bg-discord-bg">
       <Dialog
         open={showFreshStart}
         onClose={closeFreshStart}
@@ -157,19 +157,19 @@ export function ChatArea() {
         </form>
       </Dialog>
       {/* Channel header */}
-      <div className="h-12 px-4 flex items-center border-b border-discord-sidebar shadow-sm">
+      <div className="chat-header h-12 shrink-0 px-4 flex items-center border-b border-discord-sidebar shadow-sm">
         <span className="text-discord-muted mr-2">{dmConversation ? '@' : '#'}</span>
-        <h3 className="font-bold text-white">
+        <h3 className="truncate font-bold text-white">
           {dmConversation && currentUserId ? directMessageTitle(dmConversation, currentUserId) : channel?.name || 'チャンネル'}
         </h3>
         {channel?.topic && (
           <>
-            <div className="w-px h-6 bg-discord-hover mx-3" />
-            <span className="text-sm text-discord-muted truncate">{channel.topic}</span>
+            <div className="hidden md:block w-px h-6 shrink-0 bg-discord-hover mx-3" />
+            <span className="hidden md:block text-sm text-discord-muted truncate">{channel.topic}</span>
           </>
         )}
-        <button type="button" onClick={openSavedMessages} className="ml-auto shrink-0 rounded px-3 py-1 text-sm text-discord-muted hover:bg-discord-hover hover:text-white" aria-label="保存済みメッセージを開く">
-          🔖 保存済み
+        <button type="button" onClick={openSavedMessages} className="ml-auto h-11 shrink-0 rounded px-3 py-1 text-sm text-discord-muted hover:bg-discord-hover hover:text-white" aria-label="保存済みメッセージを開く">
+          <span aria-hidden="true">🔖</span><span className="hidden md:inline"> 保存済み</span>
         </button>
       </div>
 
@@ -212,7 +212,7 @@ export function ChatArea() {
         </div>
       ) : (
         <>
-          <MessageList channelId={activeChannelId} />
+          <MessageList channelId={activeChannelId} visible={visible} />
           {channelKeyPending && (
             <div role="status" className="mx-4 mb-2 flex items-center justify-between gap-3 rounded border border-discord-yellow/40 bg-discord-yellow/10 px-3 py-2 text-sm text-discord-yellow">
               <span>メッセージを送信できるよう準備しています。しばらくお待ちください。</span>

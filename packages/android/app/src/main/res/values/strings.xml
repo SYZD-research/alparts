@@ -1,0 +1,17 @@
+<resources>
+    <string name="app_name">alparts</string>
+    <string name="connection_title">alpartsへようこそ</string>
+    <string name="connection_description">管理者から案内されたアドレスを入力してください。</string>
+    <string name="connection_label">接続先</string>
+    <string name="connection_hint" translatable="false">https://chat.example.com</string>
+    <string name="connect">接続する</string>
+    <string name="connecting">接続しています…</string>
+    <string name="connection_invalid">接続先を確認してください。</string>
+    <string name="connection_unavailable">接続できませんでした。通信環境と接続先を確認して、もう一度お試しください。</string>
+    <string name="connection_server_unavailable">接続先が応答していません。しばらく待ってから、もう一度お試しください。</string>
+    <string name="connection_not_alparts">接続先を確認できませんでした。管理者から案内されたアドレスを確認してください。</string>
+    <string name="connection_not_allowed">この接続先ではアプリを利用できません。管理者に確認してください。</string>
+    <string name="connection_unsafe">接続先の安全性を確認できませんでした。管理者に確認してください。</string>
+    <string name="connection_save_failed">接続先を保存できませんでした。もう一度お試しください。</string>
+    <string name="unlock">ロックを解除</string>
+</resources>

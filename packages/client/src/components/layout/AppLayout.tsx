@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useWorkspaceStore } from '../../stores/workspace.store';
 import { useChannelStore } from '../../stores/channel.store';
@@ -24,6 +24,8 @@ import { focusMessageElement } from '../../services/message-navigation';
 import { ResizablePane } from './ResizablePane';
 import { useVoiceChannelPresence } from '../../hooks/useVoiceChannelPresence';
 import { AttentionNotifications } from '../notification/AttentionNotifications';
+import { useHorizontalSwipe } from '../../hooks/useHorizontalSwipe';
+import { useMobileLayout } from '../../hooks/useMobileLayout';
 
 type PermalinkNavigationStatus = {
   kind: 'loading' | 'success' | 'error';
@@ -46,8 +48,52 @@ export function AppLayout() {
   const loadBookmarks = useUserStateStore((state) => state.loadBookmarks);
   const loadMessageThroughHistory = useMessageStore((state) => state.loadMessageThroughHistory);
   const [permalinkStatus, setPermalinkStatus] = useState<PermalinkNavigationStatus>(null);
-  const [mobilePanel, setMobilePanel] = useState<'channels' | 'chat' | 'members'>('channels');
-  useEffect(() => { if (activeChannelId) setMobilePanel('chat'); }, [activeChannelId]);
+  const [mobilePanel, setMobilePanel] = useState<'channels' | 'chat'>('channels');
+  const [membersOpen, setMembersOpen] = useState(false);
+  const mobile = useMobileLayout();
+  const drawerRef = useRef<HTMLElement>(null);
+  const chatRef = useRef<HTMLDivElement>(null);
+  const showChat = () => {
+    setMobilePanel('chat');
+    setMembersOpen(false);
+  };
+  const navigationSwipe = useHorizontalSwipe({
+    enabled: mobile && !membersOpen,
+    direction: mobilePanel === 'chat' ? 'right' : 'left',
+    onSwipe: (distance) => {
+      if (distance >= 64) {
+        if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+        setMobilePanel('channels');
+      } else if (distance <= -64) showChat();
+    },
+  });
+  useEffect(() => {
+    if (activeChannelId) setMobilePanel('chat');
+    setMembersOpen(false);
+  }, [activeChannelId]);
+  useEffect(() => {
+    // Keep both panes mounted so drafts and scroll positions survive navigation.
+    if (drawerRef.current) drawerRef.current.inert = mobile && mobilePanel !== 'channels';
+    if (chatRef.current) chatRef.current.inert = mobile && (mobilePanel !== 'chat' || membersOpen);
+  }, [mobile, mobilePanel, membersOpen]);
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (document.querySelector('[role="dialog"]')) return;
+      if (event.key === 'Escape') {
+        if (membersOpen) {
+          setMembersOpen(false);
+          document.getElementById('members-toggle')?.focus();
+        } else if (mobile && activeChannelId) setMobilePanel('chat');
+      }
+      if (mobile && event.altKey && (event.key === 'ArrowRight' || event.key === 'ArrowLeft')) {
+        event.preventDefault();
+        setMembersOpen(false);
+        setMobilePanel(event.key === 'ArrowRight' ? 'channels' : 'chat');
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [activeChannelId, membersOpen, mobile]);
   const permalinkRequest = useRef(0);
   const messageRoute = useMemo(() => parseMessageRoute(location.pathname), [location.pathname]);
   const workspaceIds = useMemo(() => workspaces.map((workspace) => workspace.id), [workspaces]);
@@ -167,12 +213,10 @@ export function AppLayout() {
   }, [loadChannels, loadMessageThroughHistory, loadWorkspaces, messageRoute, setActiveChannel, setActiveWorkspace]);
 
   return (
-    <div className={`app-layout mobile-panel-${mobilePanel} flex h-screen overflow-hidden`}>
-      <nav className="mobile-navigation" aria-label="画面の切り替え">
-        <button type="button" aria-pressed={mobilePanel === 'channels'} onClick={() => setMobilePanel('channels')}>チャンネル</button>
-        <button type="button" aria-pressed={mobilePanel === 'chat'} onClick={() => setMobilePanel('chat')}>チャット</button>
-        <button type="button" aria-pressed={mobilePanel === 'members'} disabled={!activeChannelId} onClick={() => setMobilePanel('members')}>メンバー</button>
-      </nav>
+    <div
+      className={`app-layout mobile-panel-${mobilePanel} ${navigationSwipe.isDragging ? 'navigation-dragging' : ''} flex h-screen overflow-hidden`}
+      style={{ '--navigation-offset': `${navigationSwipe.offsetX}px` } as CSSProperties}
+    >
       {permalinkStatus && (
         <div
           role={permalinkStatus.kind === 'error' ? 'alert' : 'status'}
@@ -186,33 +230,57 @@ export function AppLayout() {
           ) : null}
         </div>
       )}
-      <MessageSearch />
+      <MessageSearch
+        membersOpen={membersOpen}
+        membersAvailable={Boolean(activeChannelId)}
+        onToggleMembers={() => setMembersOpen((open) => !open)}
+        showToolbar={!mobile || mobilePanel === 'chat'}
+        onNavigateToChat={showChat}
+      />
       <AttentionNotifications />
       <DmComposerDialog />
       <AccountSecurityDialog />
       <ChannelManagerDialog />
       <WorkspaceManagerDialog />
       <SavedMessagesDialog />
-      <div className="workspace-navigation flex"><WorkspaceSidebar /></div>
-      {activeWorkspaceId && (
-        <div className="channel-navigation flex">
-        <ResizablePane
-          storageKey="alparts:channel-sidebar-width"
-          defaultWidth={240}
-          minWidth={176}
-          maxWidth={420}
-          resizeEdge="right"
-          label="チャンネル一覧の幅を変更"
-        >
-          <ChannelSidebar />
-        </ResizablePane>
+      <aside ref={drawerRef} className="channel-drawer flex shrink-0" aria-label="ワークスペースとチャンネル" aria-hidden={mobile && mobilePanel !== 'channels'} {...navigationSwipe.handlers}>
+        <div className="workspace-navigation flex"><WorkspaceSidebar /></div>
+        {activeWorkspaceId && (
+          <div className="channel-navigation flex">
+            <ResizablePane
+              storageKey="alparts:channel-sidebar-width"
+              defaultWidth={240}
+              minWidth={176}
+              maxWidth={420}
+              resizeEdge="right"
+              label="チャンネル一覧の幅を変更"
+            >
+              <ChannelSidebar onNavigateToChat={showChat} />
+            </ResizablePane>
+          </div>
+        )}
+      </aside>
+      <div className="conversation-layout relative flex flex-1 min-w-0 min-h-0" {...navigationSwipe.handlers}>
+        <div ref={chatRef} className="chat-content flex flex-1 min-w-0 min-h-0" aria-hidden={mobile && (mobilePanel !== 'chat' || membersOpen)}>
+          {activeChannelId ? (
+            <ChatArea visible={!mobile || (mobilePanel === 'chat' && !membersOpen)} />
+          ) : (
+            <div className="flex-1 flex items-center justify-center bg-discord-bg">
+              <div className="text-center text-discord-muted">
+                <h2 className="text-2xl font-bold mb-2">alparts</h2>
+                <p>チャンネルを選択してください</p>
+              </div>
+            </div>
+          )}
         </div>
-      )}
-      <div className="conversation-layout flex flex-1 min-w-0">
-        {activeChannelId ? (
-          <>
-            <div className="chat-content flex flex-1 min-w-0"><ChatArea /></div>
-            <div className="member-navigation flex">
+        {mobile && mobilePanel === 'channels' && (
+          <button type="button" className="channel-drawer-backdrop absolute inset-0 z-20 bg-black/40" onClick={showChat} aria-label="チャットに戻る" />
+        )}
+      </div>
+      {activeChannelId && membersOpen && (
+        <>
+          {mobile && <button type="button" className="fixed inset-x-0 bottom-0 top-12 z-30 bg-black/40" aria-label="メンバー一覧を閉じる" onClick={() => setMembersOpen(false)} />}
+          <aside id="member-list" className="member-navigation flex shrink-0" aria-label="メンバー一覧">
             <ResizablePane
               storageKey="alparts:member-sidebar-width"
               defaultWidth={240}
@@ -221,19 +289,17 @@ export function AppLayout() {
               resizeEdge="left"
               label="メンバー一覧の幅を変更"
             >
-              <UserList />
+              <div className="flex h-full min-h-0 flex-col bg-discord-sidebar">
+                <div className="flex h-11 shrink-0 items-center justify-between border-b border-discord-hover px-4">
+                  <h2 className="text-sm font-bold text-white">メンバー</h2>
+                  <button type="button" className="h-10 w-10 rounded text-xl text-discord-muted hover:bg-discord-hover hover:text-white" aria-label="メンバー一覧を閉じる" onClick={() => setMembersOpen(false)}>×</button>
+                </div>
+                <div className="min-h-0 flex-1"><UserList /></div>
+              </div>
             </ResizablePane>
-            </div>
-          </>
-        ) : (
-          <div className="flex-1 flex items-center justify-center bg-discord-bg">
-            <div className="text-center text-discord-muted">
-              <h2 className="text-2xl font-bold mb-2">alparts</h2>
-              <p>チャンネルを選択してください</p>
-            </div>
-          </div>
-        )}
-      </div>
+          </aside>
+        </>
+      )}
     </div>
   );
 }

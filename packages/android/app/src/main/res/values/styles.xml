@@ -1,0 +1,11 @@
+<resources>
+    <style name="AlpartsTheme" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:colorAccent">@color/alparts_accent</item>
+        <item name="android:windowBackground">@color/alparts_background</item>
+        <item name="android:statusBarColor">@color/alparts_background</item>
+        <item name="android:navigationBarColor">@color/alparts_background</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+    </style>
+</resources>

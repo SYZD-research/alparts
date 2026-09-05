@@ -2,6 +2,8 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import type { Message } from '@alparts/shared';
 import { MessageItem } from './MessageItem';
+import { canSwipeMessage, messageSwipeAction } from './message-swipe-model';
+import { markMessageCryptoVerification, markMessageKeyUnavailable } from '../../stores/message-projector';
 
 describe('MessageItem reply presentation', () => {
   it('places the main avatar below the reply preview and omits reply-count UI', () => {
@@ -12,6 +14,34 @@ describe('MessageItem reply presentation', () => {
     expect(html).toContain('aria-label="返信先のメッセージへ移動"');
     expect(html).toContain('mt-6');
     expect(html).not.toContain('件の返信');
+  });
+});
+
+describe('message swipe actions', () => {
+  it('replies at 64 pixels and edits an own message at 136 pixels', () => {
+    expect(messageSwipeAction(-63, true)).toBeNull();
+    expect(messageSwipeAction(-64, true)).toBe('reply');
+    expect(messageSwipeAction(-135, true)).toBe('reply');
+    expect(messageSwipeAction(-136, true)).toBe('edit');
+    expect(messageSwipeAction(-220, false)).toBe('reply');
+    expect(messageSwipeAction(180, true)).toBeNull();
+  });
+
+  it('chooses the current release action when returning from the edit threshold', () => {
+    expect(messageSwipeAction(-180, true)).toBe('edit');
+    expect(messageSwipeAction(-90, true)).toBe('reply');
+    expect(messageSwipeAction(-20, true)).toBeNull();
+  });
+
+  it('excludes deleted, reaction, unavailable, and verification-failed messages', () => {
+    const message = replyMessage();
+    expect(canSwipeMessage(message)).toBe(true);
+    expect(canSwipeMessage({ ...message, type: 'edit' })).toBe(true);
+    expect(canSwipeMessage({ ...message, type: 'delete' })).toBe(false);
+    expect(canSwipeMessage({ ...message, type: 'reaction' })).toBe(false);
+    expect(canSwipeMessage({ ...message, content: '[表示できないメッセージ]' })).toBe(false);
+    expect(canSwipeMessage(markMessageCryptoVerification(message, false))).toBe(false);
+    expect(canSwipeMessage(markMessageKeyUnavailable(message))).toBe(false);
   });
 });
 

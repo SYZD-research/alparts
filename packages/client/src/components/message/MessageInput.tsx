@@ -111,6 +111,10 @@ export function MessageInput({ channelId, sendDisabled = false }: Props) {
     }
   }, [channelId, editTarget?.id]);
 
+  useLayoutEffect(() => {
+    if (replyTarget || editTarget) textareaRef.current?.focus({ preventScroll: true });
+  }, [channelId, replyTarget?.id, editTarget?.id]);
+
   useEffect(() => {
     setSelectedFiles([]);
     setAttachmentError(null);

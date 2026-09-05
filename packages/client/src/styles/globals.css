@@ -2,21 +2,44 @@
 @tailwind components;
 @tailwind utilities;
 
-.mobile-navigation { display: none; }
+.chat-toolbar[hidden] { display: none; }
+.chat-header { padding-right: 224px; }
+.member-navigation { padding-top: 48px; }
+.app-layout:has(.member-navigation) .chat-header { padding-right: 64px; }
+@media (pointer: coarse) {
+  /* Keep long code readable where horizontal touch motion is used for replies. */
+  .message-swipe pre, .message-swipe pre code { white-space: pre-wrap; overflow-wrap: anywhere; }
+}
 @media (max-width: 767px) {
-  .app-layout { height: 100dvh; padding-bottom: calc(56px + env(safe-area-inset-bottom)); }
-  .mobile-navigation {
-    display: flex; position: fixed; bottom: 0; left: 0; right: 0; z-index: 45;
-    min-height: 56px; padding-bottom: env(safe-area-inset-bottom); background: #232428;
-    border-top: 1px solid #41434a;
+  .app-layout {
+    --channel-drawer-width: min(360px, calc(100vw - 48px));
+    position: relative; height: 100dvh; padding-bottom: env(safe-area-inset-bottom);
   }
-  .mobile-navigation button { flex: 1; min-height: 48px; font-size: 14px; }
-  .mobile-navigation button[aria-pressed='true'] { color: #b6bcff; background: #303247; }
-  .mobile-navigation button:disabled { opacity: .4; }
-  .mobile-panel-chat .workspace-navigation, .mobile-panel-chat .channel-navigation,
-  .mobile-panel-chat .member-navigation, .mobile-panel-channels .conversation-layout,
-  .mobile-panel-members .workspace-navigation, .mobile-panel-members .channel-navigation,
-  .mobile-panel-members .chat-content { display: none; }
+  .channel-drawer, .conversation-layout { touch-action: pan-y pinch-zoom; transition: transform 180ms ease-out; }
+  /* Touch intent must also be set on the nearest scrolling element. */
+  .channel-drawer .overflow-y-auto, .conversation-layout .overflow-y-auto { touch-action: pan-y pinch-zoom; }
+  .channel-drawer {
+    position: absolute; inset: 0 auto 0 0; z-index: 20; width: var(--channel-drawer-width);
+    padding-bottom: env(safe-area-inset-bottom);
+    transform: translateX(calc(-100% + clamp(0px, var(--navigation-offset, 0px), var(--channel-drawer-width))));
+  }
+  .conversation-layout {
+    width: 100%; flex: 0 0 100%;
+    transform: translateX(clamp(0px, var(--navigation-offset, 0px), var(--channel-drawer-width)));
+  }
+  .mobile-panel-channels .channel-drawer {
+    transform: translateX(clamp(calc(0px - var(--channel-drawer-width)), var(--navigation-offset, 0px), 0px));
+  }
+  .mobile-panel-channels .conversation-layout {
+    transform: translateX(calc(var(--channel-drawer-width) + clamp(calc(0px - var(--channel-drawer-width)), var(--navigation-offset, 0px), 0px)));
+  }
+  .navigation-dragging .channel-drawer, .navigation-dragging .conversation-layout { transition: none; }
+  .member-navigation {
+    position: absolute; top: 48px; right: 0; bottom: 0; z-index: 40;
+    width: min(320px, calc(100% - 48px)); padding-top: 0;
+    box-shadow: -8px 0 24px rgb(0 0 0 / .2);
+  }
+  .chat-header, .app-layout:has(.member-navigation) .chat-header { padding-right: 108px; }
   .channel-navigation, .member-navigation { flex: 1; min-width: 0; }
   .channel-navigation > div, .member-navigation > div { width: 100% !important; }
   .channel-navigation [role='separator'], .member-navigation [role='separator'] { display: none; }

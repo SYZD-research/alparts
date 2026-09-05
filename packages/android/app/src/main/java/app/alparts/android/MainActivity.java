@@ -1,16 +1,23 @@
 package app.alparts.android;
 
+import android.Manifest;
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.app.KeyguardManager;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.PowerManager;
+import android.provider.Settings;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.webkit.CookieManager;
+import android.webkit.PermissionRequest;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
@@ -18,10 +25,13 @@ import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.webkit.WebChromeClient;
 import android.webkit.ValueCallback;
+import android.view.inputmethod.EditorInfo;
+import android.view.inputmethod.InputMethodManager;
 import android.widget.Button;
 import android.widget.EditText;
-import android.widget.LinearLayout;
+import android.widget.FrameLayout;
 import android.widget.TextView;
+import android.widget.Toast;
 import androidx.webkit.JavaScriptReplyProxy;
 import androidx.webkit.WebViewCompat;
 import androidx.webkit.WebViewFeature;
@@ -34,6 +44,9 @@ import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 public final class MainActivity extends Activity {
     private WebView web;
@@ -51,6 +64,16 @@ public final class MainActivity extends Activity {
     private OutputStream saveStream;
     private Uri saveUri;
     private ValueCallback<Uri[]> fileSelection;
+    private final ExecutorService connections = Executors.newSingleThreadExecutor();
+    private Future<?> connectionCheck;
+    private int connectionGeneration;
+    private static final int MICROPHONE_REQUEST = 30;
+    private final MicrophonePermission<PermissionRequest> microphone = new MicrophonePermission<>();
+    private WebView microphoneWeb;
+    private AlertDialog microphoneDialog;
+    private boolean resumed;
+    private boolean microphoneDeniedPermanently;
+    private boolean microphoneRequestCanceled;
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
@@ -65,17 +88,31 @@ public final class MainActivity extends Activity {
     }
 
     private void showStatus(String message) {
-        LinearLayout layout = new LinearLayout(this);
-        layout.setOrientation(LinearLayout.VERTICAL);
-        layout.setPadding(32, 64, 32, 32);
-        TextView text = new TextView(this);
-        text.setText(message);
-        layout.addView(text);
-        Button retry = new Button(this);
-        retry.setText("ロックを解除");
+        View layout = nativeScreen();
+        ((TextView) layout.findViewById(R.id.setup_title)).setText(R.string.app_name);
+        ((TextView) layout.findViewById(R.id.setup_description)).setText(message);
+        layout.findViewById(R.id.connection_fields).setVisibility(View.GONE);
+        Button retry = layout.findViewById(R.id.setup_action);
+        retry.setText(R.string.unlock);
         retry.setOnClickListener(view -> unlock());
-        layout.addView(retry);
+        if (vault == null) retry.setVisibility(View.GONE);
+    }
+
+    private View nativeScreen() {
+        ViewGroup content = findViewById(android.R.id.content);
+        View layout = getLayoutInflater().inflate(R.layout.native_screen, content, false);
+        View card = layout.findViewById(R.id.setup_card);
+        int gutter = Math.round(48 * getResources().getDisplayMetrics().density);
+        int maxWidth = Math.round(448 * getResources().getDisplayMetrics().density);
+        layout.addOnLayoutChangeListener((view, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) -> {
+            int width = Math.min(maxWidth, right - left - view.getPaddingLeft() - view.getPaddingRight() - gutter);
+            if (width > 0 && card.getLayoutParams().width != width) {
+                card.getLayoutParams().width = width;
+                card.requestLayout();
+            }
+        });
         setContentView(layout);
+        return layout;
     }
 
     private void unlock() {
@@ -92,30 +129,87 @@ public final class MainActivity extends Activity {
     }
 
     private void connectionSetup() {
-        LinearLayout layout = new LinearLayout(this);
-        layout.setOrientation(LinearLayout.VERTICAL);
-        layout.setPadding(32, 64, 32, 32);
-        TextView label = new TextView(this);
-        label.setText("管理者から案内された接続先を入力してください。");
-        EditText address = new EditText(this);
-        address.setSingleLine(true);
-        address.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_URI);
-        address.setHint("https://chat.example.com");
-        Button connect = new Button(this);
-        connect.setText("接続する");
-        connect.setOnClickListener(view -> {
-            try {
-                origin = ServerAddress.normalize(address.getText().toString());
-                if (!getPreferences(MODE_PRIVATE).edit().putString("server", origin).commit()) throw new IllegalStateException();
-                openClient();
-            } catch (RuntimeException ignored) { address.setError("接続先を確認してください。"); }
+        View layout = nativeScreen();
+        EditText address = layout.findViewById(R.id.server_address);
+        Button connect = layout.findViewById(R.id.setup_action);
+        TextView error = layout.findViewById(R.id.setup_error);
+        if (origin != null) {
+            address.setText(origin);
+            address.setEnabled(false);
+        }
+        connect.setOnClickListener(view -> connectToServer(address, connect, error));
+        address.setOnEditorActionListener((view, action, event) -> {
+            if (action != EditorInfo.IME_ACTION_GO) return false;
+            connect.performClick();
+            return true;
         });
-        layout.addView(label); layout.addView(address); layout.addView(connect);
-        setContentView(layout);
+        if (origin != null) connect.performClick();
+        resetIdle();
+    }
+
+    private void connectToServer(EditText address, Button connect, TextView error) {
+        if (!unlocked || !connect.isEnabled()) return;
+        String candidate;
+        try { candidate = ServerAddress.normalize(address.getText().toString()); }
+        catch (RuntimeException ignored) {
+            error.setText(R.string.connection_invalid);
+            error.setVisibility(View.VISIBLE);
+            address.requestFocus();
+            return;
+        }
+        error.setVisibility(View.GONE);
+        address.setEnabled(false);
+        connect.setEnabled(false);
+        connect.setAlpha(0.6f);
+        connect.setText(R.string.connecting);
+        InputMethodManager keyboard = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+        keyboard.hideSoftInputFromWindow(address.getWindowToken(), 0);
+        int generation = ++connectionGeneration;
+        connectionCheck = connections.submit(() -> {
+            ServerConnection.Result result = ServerConnection.check(candidate);
+            handler.post(() -> {
+                if (!unlocked || generation != connectionGeneration || isDestroyed()) return;
+                connectionCheck = null;
+                if (result == ServerConnection.Result.READY) {
+                    if (getPreferences(MODE_PRIVATE).edit().putString("server", candidate).commit()) {
+                        origin = candidate;
+                        openWebClient();
+                        return;
+                    }
+                    error.setText(R.string.connection_save_failed);
+                } else {
+                    // Diagnostics stay in logs, never in the connection form.
+                    android.util.Log.w("AlpartsConnection", "Connection probe failed: " + result.name());
+                    error.setText(connectionError(result));
+                }
+                error.setVisibility(View.VISIBLE);
+                // Allow repair of an address saved by an older app before its
+                // first successful connection. Existing data stays scoped to
+                // its original origin; changing this field never deletes it.
+                address.setEnabled(true);
+                connect.setEnabled(true);
+                connect.setAlpha(1f);
+                connect.setText(R.string.connect);
+            });
+        });
+    }
+
+    private int connectionError(ServerConnection.Result result) {
+        switch (result) {
+            case SERVER_UNAVAILABLE: return R.string.connection_server_unavailable;
+            case NOT_ALPARTS: return R.string.connection_not_alparts;
+            case NOT_ALLOWED: return R.string.connection_not_allowed;
+            case UNSAFE: return R.string.connection_unsafe;
+            default: return R.string.connection_unavailable;
+        }
+    }
+
+    private void openClient() {
+        if (unlocked) connectionSetup();
     }
 
     @android.annotation.SuppressLint("SetJavaScriptEnabled") // Only APK code runs; exact-origin, main-frame bridge and CSP are enforced below.
-    private void openClient() {
+    private void openWebClient() {
         if (!unlocked) return;
         if (origin == null) { connectionSetup(); return; }
         if (!WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
@@ -134,10 +228,20 @@ public final class MainActivity extends Activity {
         settings.setCacheMode(WebSettings.LOAD_NO_CACHE);
         settings.setSaveFormData(false);
         settings.setSupportMultipleWindows(false);
+        // Participants' streams arrive asynchronously, after the join button's user gesture.
+        settings.setMediaPlaybackRequiresUserGesture(false);
+        CookieManager.getInstance().setAcceptCookie(true);
         CookieManager.getInstance().setAcceptThirdPartyCookies(web, false);
+        WebView client = web;
         web.setWebChromeClient(new WebChromeClient() {
+            @Override public void onPermissionRequest(PermissionRequest request) {
+                requestMicrophone(client, request);
+            }
+            @Override public void onPermissionRequestCanceled(PermissionRequest request) {
+                if (microphone.isPending(request)) clearMicrophoneRequest(false);
+            }
             @Override public boolean onShowFileChooser(WebView view, ValueCallback<Uri[]> callback, FileChooserParams params) {
-                if (!unlocked || fileSelection != null || saveReply != null) return false;
+                if (!unlocked || fileSelection != null || saveReply != null || microphone.hasPending()) return false;
                 fileSelection = callback;
                 try {
                     startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*"), 21);
@@ -186,14 +290,124 @@ public final class MainActivity extends Activity {
                         : asset.endsWith(".png") ? "image/png" : "application/octet-stream";
                     return new WebResourceResponse(mime, "UTF-8", 200, "OK", Map.of(
                         "Cache-Control", "no-store", "X-Content-Type-Options", "nosniff",
-                        "Content-Security-Policy", "default-src 'none'; script-src " + origin + "/assets/ " + origin + "/android-bridge.js; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self' " + origin.replace("https:", "wss:") + "; frame-src 'none'; worker-src 'none'; base-uri 'none'; form-action 'none'",
+                        "Content-Security-Policy", "default-src 'none'; script-src " + origin + "/assets/ " + origin + "/android-bridge.js; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; media-src 'self' blob:; connect-src 'self' " + origin.replace("https:", "wss:") + "; frame-src 'none'; worker-src 'none'; base-uri 'none'; form-action 'none'",
+                        "Permissions-Policy", "camera=(), display-capture=(), geolocation=(), microphone=(self), speaker-selection=(self)",
                         "Referrer-Policy", "no-referrer"), input);
                 } catch (Exception ignored) { return blocked(); }
             }
         });
-        setContentView(web);
+        FrameLayout container = new FrameLayout(this);
+        container.setFitsSystemWindows(true);
+        container.setBackgroundColor(getColor(R.color.alparts_background));
+        web.setBackgroundColor(getColor(R.color.alparts_background));
+        container.addView(web, new FrameLayout.LayoutParams(-1, -1));
+        setContentView(container);
         web.loadUrl(origin + "/");
         resetIdle();
+    }
+
+    private boolean microphoneGranted() {
+        return checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    private boolean canUseMicrophone(WebView client) {
+        KeyguardManager keyguard = (KeyguardManager) getSystemService(KEYGUARD_SERVICE);
+        PowerManager power = (PowerManager) getSystemService(POWER_SERVICE);
+        return resumed && unlocked && !isFinishing() && !isDestroyed() && client != null && client == web
+            && fileSelection == null && saveReply == null && !keyguard.isKeyguardLocked() && power.isInteractive()
+            && ServerAddress.sameOrigin(origin, client.getUrl());
+    }
+
+    private void requestMicrophone(WebView client, PermissionRequest request) {
+        MicrophonePermission.Decision decision = microphone.begin(request, origin,
+            request.getOrigin().toString(), request.getResources(), canUseMicrophone(client), microphoneGranted());
+        if (decision == MicrophonePermission.Decision.DENY) { request.deny(); return; }
+        if (decision == MicrophonePermission.Decision.GRANT) {
+            request.grant(new String[]{PermissionRequest.RESOURCE_AUDIO_CAPTURE});
+            return;
+        }
+        dismissMicrophoneDialog();
+        microphoneWeb = client;
+        microphoneDeniedPermanently = false;
+        microphoneRequestCanceled = false;
+        if (shouldShowRequestPermissionRationale(Manifest.permission.RECORD_AUDIO)) {
+            microphoneDialog = new AlertDialog.Builder(this)
+                .setMessage("通話に参加するには、マイクの使用を許可してください。")
+                .setPositiveButton("続ける", (dialog, which) -> {
+                    microphoneDialog = null;
+                    launchMicrophonePermission();
+                })
+                .setNegativeButton("キャンセル", (dialog, which) -> clearMicrophoneRequest(true))
+                .setOnCancelListener(dialog -> clearMicrophoneRequest(true)).show();
+        } else launchMicrophonePermission();
+    }
+
+    private void launchMicrophonePermission() {
+        if (!canUseMicrophone(microphoneWeb)) { clearMicrophoneRequest(true); return; }
+        if (!microphone.startRuntimeRequest()) return;
+        resetIdle();
+        try { requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, MICROPHONE_REQUEST); }
+        catch (RuntimeException ignored) {
+            microphone.runtimeResult(false);
+            finishMicrophonePermission();
+        }
+    }
+
+    @Override public void onRequestPermissionsResult(int request, String[] permissions, int[] results) {
+        super.onRequestPermissionsResult(request, permissions, results);
+        if (request != MICROPHONE_REQUEST) return;
+        boolean validResult = permissions.length == 1 && results.length == 1
+            && Manifest.permission.RECORD_AUDIO.equals(permissions[0]);
+        boolean granted = validResult && results[0] == PackageManager.PERMISSION_GRANTED && microphoneGranted();
+        microphoneRequestCanceled = !validResult;
+        microphoneDeniedPermanently = validResult && !granted
+            && !shouldShowRequestPermissionRationale(Manifest.permission.RECORD_AUDIO);
+        microphone.runtimeResult(granted);
+        // Android can deliver this result before onResume. Keep the web request alive
+        // through the permission dialog, and grant only once the app is active again.
+        finishMicrophonePermission();
+    }
+
+    private void finishMicrophonePermission() {
+        boolean ready = canUseMicrophone(microphoneWeb);
+        MicrophonePermission.Resolution<PermissionRequest> resolution = microphone.resolve(
+            resumed, ready && microphoneGranted(), origin);
+        if (resolution == null) return;
+        microphoneWeb = null;
+        if (resolution.granted()) {
+            resolution.request().grant(new String[]{PermissionRequest.RESOURCE_AUDIO_CAPTURE});
+            resetIdle();
+        } else {
+            resolution.request().deny();
+            if (!ready || microphoneRequestCanceled) return;
+            if (microphoneDeniedPermanently) {
+                microphoneDialog = new AlertDialog.Builder(this)
+                    .setMessage("マイクを使用できません。通話に参加するには、設定でマイクの使用を許可してください。")
+                    .setPositiveButton("設定を開く", (dialog, which) -> {
+                        microphoneDialog = null;
+                        try { startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                            Uri.parse("package:" + getPackageName()))); }
+                        catch (RuntimeException ignored) {
+                            Toast.makeText(this, "端末の設定から、alparts のマイクの使用を許可してください。", Toast.LENGTH_LONG).show();
+                        }
+                    })
+                    .setNegativeButton("今はしない", (dialog, which) -> microphoneDialog = null)
+                    .setOnCancelListener(dialog -> microphoneDialog = null).show();
+            } else {
+                Toast.makeText(this, "マイクの使用が許可されなかったため、通話に参加できません。", Toast.LENGTH_LONG).show();
+            }
+        }
+    }
+
+    private void dismissMicrophoneDialog() {
+        if (microphoneDialog != null) { microphoneDialog.dismiss(); microphoneDialog = null; }
+    }
+
+    private void clearMicrophoneRequest(boolean deny) {
+        PermissionRequest pending = microphone.clear();
+        microphoneWeb = null;
+        dismissMicrophoneDialog();
+        if (deny && pending != null) pending.deny();
     }
 
     private WebResourceResponse blocked() {
@@ -225,7 +439,7 @@ public final class MainActivity extends Activity {
                 case "lock": handler.post(this::lock); break;
                 case "unlock": break; // OS authentication gates creation of this WebView.
                 case "beginSave":
-                    if (saveReply != null || saveStream != null) throw new IllegalStateException();
+                    if (saveReply != null || saveStream != null || microphone.hasPending()) throw new IllegalStateException();
                     expectedBytes = args.getLong("expectedBytes");
                     if (expectedBytes < 0 || expectedBytes > 100L * 1024 * 1024) throw new IllegalArgumentException();
                     String name = args.getString("name").replaceAll("[\\\\/\\p{Cntrl}]", "_");
@@ -309,6 +523,9 @@ public final class MainActivity extends Activity {
     @Override public boolean dispatchTouchEvent(MotionEvent event) { resetIdle(); return super.dispatchTouchEvent(event); }
     private void lock() {
         unlocked = false;
+        clearMicrophoneRequest(true);
+        connectionGeneration++;
+        if (connectionCheck != null) { connectionCheck.cancel(true); connectionCheck = null; }
         handler.removeCallbacks(idleLock);
         cancelSave();
         if (fileSelection != null) { fileSelection.onReceiveValue(null); fileSelection = null; }
@@ -318,8 +535,28 @@ public final class MainActivity extends Activity {
     }
     @Override protected void onStop() {
         super.onStop();
+        // A permission dialog only pauses the activity. A real stop still cancels
+        // microphone access and locks, even if an OS permission result is pending.
+        clearMicrophoneRequest(true);
         if (saveReply != null || fileSelection != null) { if (web != null) { web.setVisibility(View.INVISIBLE); web.onPause(); } return; }
         if (unlocked) lock();
     }
-    @Override protected void onDestroy() { handler.removeCallbacks(idleLock); cancelSave(); if (web != null) web.destroy(); super.onDestroy(); }
+    @Override protected void onResume() {
+        super.onResume();
+        resumed = true;
+        finishMicrophonePermission();
+    }
+    @Override protected void onPause() {
+        resumed = false;
+        super.onPause();
+    }
+    @Override protected void onDestroy() {
+        clearMicrophoneRequest(true);
+        connectionGeneration++;
+        connections.shutdownNow();
+        handler.removeCallbacks(idleLock);
+        cancelSave();
+        if (web != null) web.destroy();
+        super.onDestroy();
+    }
 }

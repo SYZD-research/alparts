@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 
 interface DialogProps {
   open: boolean;
@@ -66,8 +67,9 @@ export function Dialog({ open, title, description, onClose, children, size = 'md
   }, [open]);
 
   if (!open) return null;
-  return (
+  const content = (
     <div
+      data-no-swipe
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/65 p-4"
       onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}
     >
@@ -92,4 +94,6 @@ export function Dialog({ open, title, description, onClose, children, size = 'md
       </div>
     </div>
   );
+  // Sliding panes form containing blocks; dialogs must still cover the viewport.
+  return typeof document === 'undefined' ? content : createPortal(content, document.body);
 }

@@ -59,6 +59,15 @@ export class ApiError extends Error {
   }
 }
 
+// Retain fetch's TypeError contract so existing transfer/message retries still
+// treat a lost connection as transient, without confusing it with an HTTP error.
+export class ApiConnectionError extends TypeError {
+  constructor() {
+    super('Could not connect to server');
+    this.name = 'ApiConnectionError';
+  }
+}
+
 export interface AuthSession {
   id: string;
   deviceId: string | null;
@@ -460,14 +469,22 @@ class ApiService {
     if (options.body !== undefined && !headers.has('Content-Type')) {
       headers.set('Content-Type', 'application/json');
     }
-    const response = await fetch(`${API_BASE}${path}`, {
-      ...options,
-      headers,
-      credentials: 'same-origin',
-    });
+    let response: Response;
+    try {
+      response = await fetch(`${API_BASE}${path}`, {
+        ...options,
+        headers,
+        credentials: 'same-origin',
+      });
+    } catch (error) {
+      if (options.signal?.aborted) throw error;
+      throw new ApiConnectionError();
+    }
 
     if (!response.ok) {
-      if (response.status === 401 && path !== '/auth/login') {
+      // An unauthenticated startup probe is normal on a new installation.
+      // loadUser handles it; it must not claim a never-created session expired.
+      if (response.status === 401 && path !== '/auth/login' && path !== '/auth/me') {
         queueMicrotask(() => this.unauthorizedHandler?.());
       }
       const raw = await response.json().catch(() => null) as unknown;

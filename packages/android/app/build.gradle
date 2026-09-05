@@ -20,6 +20,11 @@ android {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
+    testOptions.unitTests.all {
+        // Android's HTTP stack sends Origin. Match it in the host JDK, which
+        // otherwise silently removes this header from the loopback probe tests.
+        systemProperty 'sun.net.http.allowRestrictedHeaders', 'true'
+    }
 }
 
 dependencies {

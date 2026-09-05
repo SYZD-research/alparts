@@ -24,7 +24,7 @@ import { VoiceCallPanel } from '../voice/VoiceCallPanel';
 const EMPTY_DMS: DirectMessageConversation[] = [];
 const EMPTY_CHANNEL_STATES: Record<string, ChannelReadState> = {};
 
-export function ChannelSidebar() {
+export function ChannelSidebar({ onNavigateToChat }: { onNavigateToChat?: () => void }) {
   const { activeWorkspaceId, categories, members } = useWorkspaceStore();
   const { channels, activeChannelId, setActiveChannel } = useChannelStore();
   const { user } = useAuthStore();
@@ -118,7 +118,10 @@ export function ChannelSidebar() {
         voiceActive={channel.type === 'voice' && voiceChannelId === channel.id && (voiceStatus === 'connected' || voiceStatus === 'joining')}
         onSelect={() => {
           if (channel.type === 'voice') void joinVoice(channel.id);
-          else setActiveChannel(channel.id);
+          else {
+            setActiveChannel(channel.id);
+            onNavigateToChat?.();
+          }
         }}
         onToggleSettings={() => setExpandedPreferenceKey((current) => current === `${instance}:${channel.id}` ? null : `${instance}:${channel.id}`)}
         onUpdate={(updates) => updatePreference(activeWorkspaceId, channel.id, updates)}
@@ -127,8 +130,8 @@ export function ChannelSidebar() {
   };
 
   return (
-    <div className="flex h-full w-full flex-col bg-discord-sidebar">
-      <div className="flex h-12 items-center justify-between gap-2 border-b border-discord-bg px-4 shadow-sm">
+    <div className="flex h-full min-h-0 w-full flex-col bg-discord-sidebar">
+      <div className="flex h-12 shrink-0 items-center justify-between gap-2 border-b border-discord-bg px-4 shadow-sm">
         <h2 className="truncate font-bold text-white">
           {useWorkspaceStore.getState().workspaces.find((workspace) => workspace.id === activeWorkspaceId)?.name || 'ワークスペース'}
         </h2>
@@ -200,7 +203,7 @@ export function ChannelSidebar() {
       <VoiceCallPanel />
 
       {user && (
-        <div className="flex h-14 items-center bg-discord-bg/50 px-2">
+        <div className="flex h-14 shrink-0 items-center bg-discord-bg/50 px-2">
           <div className="flex min-w-0 flex-1 items-center gap-2 rounded px-2 py-1">
             <div className="flex h-8 w-8 items-center justify-center rounded-full bg-discord-accent text-sm font-bold text-white">{user.displayName.slice(0, 1).toUpperCase()}</div>
             <div className="min-w-0"><div className="truncate text-sm font-medium text-white">{user.displayName}</div><div className="truncate text-xs text-discord-muted">オンライン</div></div>
