@@ -8,7 +8,7 @@ packages/desktop/release/
 *.dump
 backups/
 .DS_Store
-.commandcode
+.commandcode/
 packages/android/.gradle/
 packages/android/**/build/
 packages/android/local.properties
