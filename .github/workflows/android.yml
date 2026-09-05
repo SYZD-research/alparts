@@ -1,0 +1,67 @@
+name: Android build and provenance
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/android.yml'
+      - 'packages/android/**'
+      - 'packages/client/**'
+      - 'packages/shared/**'
+      - 'scripts/release/**'
+      - 'pnpm-lock.yaml'
+      - 'package.json'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '24.8.0'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test:release
+      - name: Build Android and verify dependencies
+        run: |
+          export JAVA_HOME="$JAVA_HOME_21_X64"
+          pnpm android:build
+          packages/android/gradlew -p packages/android assembleRelease
+      - name: Prepare reviewable release metadata
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          RELEASE_SEQUENCE: ${{ github.run_number }}
+        run: |
+          mkdir -p dist/android-release
+          cp packages/android/app/build/outputs/apk/release/app-release-unsigned.apk dist/android-release/alparts-android-unsigned.apk
+          pnpm release:prepare dist/android-release development "$RELEASE_SEQUENCE" dist/android-release/alparts-android-unsigned.apk
+      - name: Attest isolated build outputs
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: 'dist/android-release/*'
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: alparts-android-review
+          path: |
+            packages/android/app/build/outputs/apk/debug/*.apk
+            packages/android/app/build/reports/
+            dist/android-release/
+          if-no-files-found: error
+          retention-days: 14

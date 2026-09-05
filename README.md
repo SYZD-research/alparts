@@ -6,6 +6,10 @@ alpartsは、serverへ平文messageを渡さないchannel型communication基盤�
 
 ## 現在の到達点
 
+Android 開発クライアントと移行・配布・復元演習の検証ツールを追加しました。
+[Android のビルド手順](docs/ANDROID.md) と [Phase 2 の実装状況・残作業](docs/PHASE2.md) を参照してください。
+Phase 2 全体の完了や正式運用への適合を示すものではありません。
+
 - workspace/category/public・private channelと、基本的なE2EE text投稿、返信、編集、削除、reaction、pin、bookmark
 - 読み込み済み履歴を対象にするthread panel、最大20 pageを遡るUUID message link、大量貼り付け確認preview
 - 1対1 DM/group DMのAPI・member model・一覧/作成UI

@@ -9,3 +9,7 @@ packages/desktop/release/
 backups/
 .DS_Store
 .commandcode
+packages/android/.gradle/
+packages/android/**/build/
+packages/android/local.properties
+packages/android/app/src/main/assets/web/

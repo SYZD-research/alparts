@@ -16,6 +16,7 @@
     "db:migrate:runtime": "node dist/scripts/migrate-runtime.js",
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio",
+    "db:fingerprint": "tsx src/scripts/database-fingerprint.ts",
     "audit:checkpoint:init": "tsx src/scripts/initialize-audit-checkpoint.ts",
     "audit:checkpoint:init:runtime": "node dist/scripts/initialize-audit-checkpoint.js"
   },

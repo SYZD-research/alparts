@@ -46,6 +46,8 @@ export function AppLayout() {
   const loadBookmarks = useUserStateStore((state) => state.loadBookmarks);
   const loadMessageThroughHistory = useMessageStore((state) => state.loadMessageThroughHistory);
   const [permalinkStatus, setPermalinkStatus] = useState<PermalinkNavigationStatus>(null);
+  const [mobilePanel, setMobilePanel] = useState<'channels' | 'chat' | 'members'>('channels');
+  useEffect(() => { if (activeChannelId) setMobilePanel('chat'); }, [activeChannelId]);
   const permalinkRequest = useRef(0);
   const messageRoute = useMemo(() => parseMessageRoute(location.pathname), [location.pathname]);
   const workspaceIds = useMemo(() => workspaces.map((workspace) => workspace.id), [workspaces]);
@@ -165,7 +167,12 @@ export function AppLayout() {
   }, [loadChannels, loadMessageThroughHistory, loadWorkspaces, messageRoute, setActiveChannel, setActiveWorkspace]);
 
   return (
-    <div className="flex h-screen overflow-hidden">
+    <div className={`app-layout mobile-panel-${mobilePanel} flex h-screen overflow-hidden`}>
+      <nav className="mobile-navigation" aria-label="画面の切り替え">
+        <button type="button" aria-pressed={mobilePanel === 'channels'} onClick={() => setMobilePanel('channels')}>チャンネル</button>
+        <button type="button" aria-pressed={mobilePanel === 'chat'} onClick={() => setMobilePanel('chat')}>チャット</button>
+        <button type="button" aria-pressed={mobilePanel === 'members'} disabled={!activeChannelId} onClick={() => setMobilePanel('members')}>メンバー</button>
+      </nav>
       {permalinkStatus && (
         <div
           role={permalinkStatus.kind === 'error' ? 'alert' : 'status'}
@@ -186,8 +193,9 @@ export function AppLayout() {
       <ChannelManagerDialog />
       <WorkspaceManagerDialog />
       <SavedMessagesDialog />
-      <WorkspaceSidebar />
+      <div className="workspace-navigation flex"><WorkspaceSidebar /></div>
       {activeWorkspaceId && (
+        <div className="channel-navigation flex">
         <ResizablePane
           storageKey="alparts:channel-sidebar-width"
           defaultWidth={240}
@@ -198,11 +206,13 @@ export function AppLayout() {
         >
           <ChannelSidebar />
         </ResizablePane>
+        </div>
       )}
-      <div className="flex flex-1 min-w-0">
+      <div className="conversation-layout flex flex-1 min-w-0">
         {activeChannelId ? (
           <>
-            <ChatArea />
+            <div className="chat-content flex flex-1 min-w-0"><ChatArea /></div>
+            <div className="member-navigation flex">
             <ResizablePane
               storageKey="alparts:member-sidebar-width"
               defaultWidth={240}
@@ -213,6 +223,7 @@ export function AppLayout() {
             >
               <UserList />
             </ResizablePane>
+            </div>
           </>
         ) : (
           <div className="flex-1 flex items-center justify-center bg-discord-bg">

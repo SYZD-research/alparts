@@ -24,6 +24,10 @@
     "typecheck": "pnpm -r run typecheck",
     "test": "pnpm run build:shared && pnpm -r --if-present run test",
     "test:backup-security": "bash scripts/tests/backup-security.test.sh",
+    "test:release": "node --test scripts/release/*.test.mjs",
+    "release:prepare": "node scripts/release/create-release.mjs",
+    "dr:drill": "node scripts/release/dr-drill.mjs",
+    "android:build": "pnpm build:shared && pnpm --filter @alparts/client build && cd packages/android && ./gradlew assembleDebug testDebugUnitTest lintDebug runtimeInventory",
     "lint": "oxlint --deny-warnings packages",
     "security:secrets": "bash scripts/check-secrets.sh"
   },

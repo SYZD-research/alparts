@@ -1,0 +1,52 @@
+plugins { id 'com.android.application' }
+
+android {
+    namespace 'app.alparts.android'
+    compileSdk 35
+    defaultConfig {
+        applicationId 'app.alparts.android'
+        minSdk 28
+        targetSdk 35
+        versionCode 1
+        versionName '0.2.0'
+        testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
+    }
+    buildFeatures { buildConfig true }
+    buildTypes {
+        debug { applicationIdSuffix '.debug' }
+        release { minifyEnabled false }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    implementation 'androidx.webkit:webkit:1.12.1'
+    testImplementation 'junit:junit:4.13.2'
+}
+
+tasks.register('bundleWeb', Sync) {
+    from '../../client/dist'
+    into 'src/main/assets/web'
+    doFirst {
+        if (!file('../../client/dist/index.html').exists()) {
+            throw new GradleException('Run pnpm --filter @alparts/client build first')
+        }
+    }
+}
+tasks.named('preBuild').configure { dependsOn 'bundleWeb' }
+
+tasks.register('runtimeInventory') {
+    doLast {
+        def components = configurations.releaseRuntimeClasspath.resolvedConfiguration.resolvedArtifacts.collect { artifact ->
+            def id = artifact.moduleVersion.id
+            def purl = "pkg:maven/${id.group}/${id.name}@${id.version}"
+            [type: 'library', 'bom-ref': purl, group: id.group, name: id.name, version: id.version, purl: purl]
+        }.unique { it.purl }.sort { it.purl }
+        def output = layout.buildDirectory.file('reports/runtime-components.json').get().asFile
+        output.parentFile.mkdirs()
+        output.text = groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(components)) + '\n'
+    }
+}

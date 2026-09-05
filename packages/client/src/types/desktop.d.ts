@@ -1,7 +1,7 @@
 export {};
 
 export interface AlpartsDesktopInfo {
-  platform: 'windows' | 'macos' | 'linux';
+  platform: 'windows' | 'macos' | 'linux' | 'android';
   version: string;
   serverUrl: string | null;
   idleLockMinutes: number;

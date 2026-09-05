@@ -2,6 +2,27 @@
 @tailwind components;
 @tailwind utilities;
 
+.mobile-navigation { display: none; }
+@media (max-width: 767px) {
+  .app-layout { height: 100dvh; padding-bottom: calc(56px + env(safe-area-inset-bottom)); }
+  .mobile-navigation {
+    display: flex; position: fixed; bottom: 0; left: 0; right: 0; z-index: 45;
+    min-height: 56px; padding-bottom: env(safe-area-inset-bottom); background: #232428;
+    border-top: 1px solid #41434a;
+  }
+  .mobile-navigation button { flex: 1; min-height: 48px; font-size: 14px; }
+  .mobile-navigation button[aria-pressed='true'] { color: #b6bcff; background: #303247; }
+  .mobile-navigation button:disabled { opacity: .4; }
+  .mobile-panel-chat .workspace-navigation, .mobile-panel-chat .channel-navigation,
+  .mobile-panel-chat .member-navigation, .mobile-panel-channels .conversation-layout,
+  .mobile-panel-members .workspace-navigation, .mobile-panel-members .channel-navigation,
+  .mobile-panel-members .chat-content { display: none; }
+  .channel-navigation, .member-navigation { flex: 1; min-width: 0; }
+  .channel-navigation > div, .member-navigation > div { width: 100% !important; }
+  .channel-navigation [role='separator'], .member-navigation [role='separator'] { display: none; }
+  input, textarea, select { font-size: 16px; }
+}
+
 @layer base {
   body {
     @apply bg-discord-bg text-discord-text font-sans antialiased;
