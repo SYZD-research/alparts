@@ -33,7 +33,7 @@
   },
   "devDependencies": {
     "@secretlint/secretlint-rule-preset-recommend": "13.0.5",
-    "oxlint": "1.80.0",
+    "oxlint": "1.82.0",
     "secretlint": "13.0.5"
   }
 }
