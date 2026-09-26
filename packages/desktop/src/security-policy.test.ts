@@ -113,3 +113,15 @@ describe('desktop security policy', () => {
     assert.match(deploymentNamespace('https://chat.example.test'), /^[A-Za-z0-9_-]{43}$/);
   });
 });
+
+// Permission queries and requests use this same predicate.
+it('only grants explicit audio capture, never unspecified media or camera', async () => {
+  const { isAllowedMediaPermission } = await import('./security-policy.js');
+  assert.equal(isAllowedMediaPermission('media'), false);
+  assert.equal(isAllowedMediaPermission('media', []), false);
+  assert.equal(isAllowedMediaPermission('media', ['video']), false);
+  assert.equal(isAllowedMediaPermission('media', ['audio', 'video']), false);
+  assert.equal(isAllowedMediaPermission('media', ['audio']), true);
+  assert.equal(isAllowedMediaPermission('speaker-selection'), true);
+  assert.equal(isAllowedMediaPermission('geolocation'), false);
+});

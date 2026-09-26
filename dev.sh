@@ -10,7 +10,7 @@ command -v docker >/dev/null 2>&1 || die "docker が見つかりません"
 docker compose version >/dev/null 2>&1 || die "docker compose プラグインが見つかりません"
 
 compose() {
-  docker compose \
+  sudo docker compose \
     --project-directory "$PWD" \
     --env-file "$PWD/.env" \
     -f "$PWD/docker-compose.yml" \
@@ -32,6 +32,7 @@ rand_hex() { openssl rand -hex "$1"; }
 created_env=0
 if [ ! -f .env ]; then
   info ".env が存在しないため、ランダムなシークレット付きで生成します"
+  umask 077
   db_pass="$(rand_hex 24)"
   cat > .env <<EOF
 POSTGRES_USER=alparts
@@ -51,8 +52,11 @@ MINIO_USE_SSL=false
 MINIO_BUCKET=alparts
 MINIO_REQUEST_TIMEOUT_MS=10000
 
+PASSWORD_PEPPER=$(rand_hex 48)
 JWT_SECRET=$(rand_hex 48)
 AUDIT_INTEGRITY_KEY=$(rand_hex 48)
+AUDIT_CHECKPOINT_PATH=$PWD/.local/audit-checkpoint.json
+AUDIT_CHECKPOINT_REQUIRED=true
 REGISTRATION_INVITE_SECRET=$(rand_hex 48)
 CORS_ORIGINS=http://localhost:5173,http://localhost:3000,http://127.0.0.1:3000
 VOICE_ICE_SERVERS_JSON=[]
@@ -81,13 +85,39 @@ while IFS= read -r line || [ -n "$line" ]; do
     MINIO_ROOT_USER|MINIO_ROOT_PASSWORD|MINIO_ACCESS_KEY|MINIO_SECRET_KEY|MINIO_ENDPOINT|MINIO_PORT|MINIO_CONSOLE_PORT|MINIO_USE_SSL|MINIO_BUCKET|MINIO_REQUEST_TIMEOUT_MS|\
     STORAGE_QUOTA_BYTES_PER_USER|STORAGE_QUOTA_BYTES_PER_WORKSPACE|STORAGE_QUOTA_BYTES_PER_CHANNEL|\
     JWT_SECRET|JWT_ISSUER|JWT_AUDIENCE|JWT_EXPIRES_IN_SECONDS|COOKIE_SECURE|\
-    AUDIT_INTEGRITY_KEY|AUDIT_CHECKPOINT_PATH|AUDIT_CHECKPOINT_REQUIRED|\
+    PASSWORD_PEPPER|PASSWORD_PEPPER_FILE|WEBAUTHN_RP_ID|WEBAUTHN_ORIGINS|AUDIT_INTEGRITY_KEY|AUDIT_CHECKPOINT_PATH|AUDIT_CHECKPOINT_REQUIRED|\
     REGISTRATION_INVITE_SECRET|CORS_ORIGIN|CORS_ORIGINS|TRUSTED_PROXIES|VOICE_ICE_SERVERS_JSON|VOICE_ICE_SERVERS_JSON_FILE|BIND_HOST|PORT)
       ;;
     *) die ".env に未対応の変数があります: ${env_key}" ;;
   esac
   export "$env_key=$env_value"
 done < .env
+
+# 以前の .env には、後から必須になった設定が欠けている場合がある。
+# 実行時エラーになる前に、この場で補う。
+append_env() {
+  if [ -n "$(tail -c 1 .env)" ]; then
+    printf '\n' >> .env
+  fi
+  printf '%s=%s\n' "$1" "$2" >> .env
+}
+
+checkpoint_added=0
+if [ -z "${PASSWORD_PEPPER:-}" ] && [ -z "${PASSWORD_PEPPER_FILE:-}" ]; then
+  info ".env に PASSWORD_PEPPER がないため、新しい値を追加します"
+  PASSWORD_PEPPER="$(rand_hex 48)"
+  append_env PASSWORD_PEPPER "$PASSWORD_PEPPER"
+  export PASSWORD_PEPPER
+fi
+if [ -z "${AUDIT_CHECKPOINT_PATH:-}" ]; then
+  info ".env に監査チェックポイントの設定がないため、ローカルの検証ファイルを追加します"
+  AUDIT_CHECKPOINT_PATH="$PWD/.local/audit-checkpoint.json"
+  AUDIT_CHECKPOINT_REQUIRED=true
+  append_env AUDIT_CHECKPOINT_PATH "$AUDIT_CHECKPOINT_PATH"
+  append_env AUDIT_CHECKPOINT_REQUIRED "$AUDIT_CHECKPOINT_REQUIRED"
+  export AUDIT_CHECKPOINT_PATH AUDIT_CHECKPOINT_REQUIRED
+  checkpoint_added=1
+fi
 
 : "${POSTGRES_USER:?POSTGRES_USER が .env にありません}"
 : "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD が .env にありません}"
@@ -136,7 +166,11 @@ info "依存パッケージをインストールします"
 pnpm install
 
 info "データベースマイグレーションを実行します"
-pnpm --filter @alparts/server db:migrate
+pnpm --filter @alparts/server exec tsx src/scripts/migrate-runtime.ts
+
+if [ "${created_env}" = 1 ] || [ "${checkpoint_added}" = 1 ]; then
+  pnpm --filter @alparts/server audit:checkpoint:init
+fi
 
 info "開発サーバーを起動します (client: http://localhost:5173 / 停止: Ctrl+C, 全停止: ./dev.sh down)"
 exec pnpm dev

@@ -13,4 +13,6 @@
 | [0009](./0009-audit-witness.md) | Atomic DB audit chain plus external single-process witness | Accepted interim |
 | [0010](./0010-schema-image-coupling.md) | Exact migration journal plus bounded PostgreSQL 16 catalog fingerprint | Accepted for Phase 1 |
 
+| [0011](./0011-account-group-security.md) | Approved devices, transparency, MLS-based epochs, passkeys and user-controlled recovery | Implemented; assurance pending |
+
 ADRs describe deliberate decisions, including their limits. They do not override current code, tests, risk register, or deployment acceptance evidence.

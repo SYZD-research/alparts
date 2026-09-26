@@ -1,3 +1,4 @@
+import { displayText } from '../security/display-text.js';
 import { Router } from 'express';
 import type { Server as SocketServer } from 'socket.io';
 import { z } from 'zod';
@@ -11,7 +12,7 @@ import { leaveUserChannelRooms } from '../websocket/room-membership.js';
 const router = Router();
 const uuid = z.string().uuid();
 const createSchema = z.object({
-  name: z.string().trim().min(1).max(100),
+  name: displayText(),
   iconUrl: z.string().url().max(2048).refine((value) => new URL(value).protocol === 'https:').optional(),
 }).strict();
 const createLimit = rateLimit({ windowMs: 60 * 60 * 1000, max: 10 });

@@ -51,9 +51,11 @@ Future features listed only in `SPECIFICATION.md`, general product completeness,
 - Protect `AUDIT_INTEGRITY_KEY` and the checkpoint under authority independent from PostgreSQL where possible. Losing or silently changing either breaks the stated audit guarantee.
 - Configure encrypted off-host backup custody, retention, monitoring, and scheduled isolated restore tests. A local backup file alone is not a durability claim.
 
+Device approval, client-verified directory chains, MLS-based epochs, web passkeys, step-up and user-controlled archive recovery are documented in [the account/group security update](../security/ACCOUNT_AND_GROUP_SECURITY.md).
+
 ## Explicitly unsupported security claims
 
-The current tree does not claim horizontally safe application replicas, automatic HA/failover, multi-region writes, PITR/WORM/off-site custody, MLS, key transparency, phishing-resistant MFA, endpoint compromise resistance, historical-key recovery, formal cryptographic review, or independent penetration-test approval. These are release/deployment blockers or intentional boundaries in the risk register, not capabilities inferred from configuration.
+The current tree does not claim horizontally safe application replicas, automatic HA/failover, multi-region writes, PITR/WORM/off-site custody, independent transparency witnesses, per-message archive forward secrecy, native WebAuthn integration, endpoint compromise resistance, formal cryptographic review, or independent penetration-test approval. These are release/deployment blockers or intentional boundaries in the risk register, not capabilities inferred from configuration.
 
 ## Release gate
 

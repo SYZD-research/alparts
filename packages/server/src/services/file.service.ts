@@ -1,3 +1,4 @@
+import { isEpochRosterCurrent } from './key.service.js';
 import { randomUUID } from 'node:crypto';
 import type { Readable } from 'node:stream';
 import { and, asc, eq, gt, inArray, isNotNull, isNull, lte, sql } from 'drizzle-orm';
@@ -642,10 +643,10 @@ export async function getAuthorizedAttachmentChunk(
   }
 }
 
-export async function getAttachmentsForMessages(messageIds: string[]) {
+export async function getAttachmentsForMessages(messageIds: string[], store: typeof db = db) {
   const grouped = new Map<string, ReturnType<typeof formatAttachment>[]>();
   if (messageIds.length === 0) return grouped;
-  const rows = await db.query.attachments.findMany({
+  const rows = await store.query.attachments.findMany({
     where: inArray(attachments.messageId, messageIds),
     orderBy: [asc(attachments.createdAt), asc(attachments.id)],
     limit: messageIds.length * MAX_ATTACHMENTS_PER_MESSAGE + 1,
@@ -748,19 +749,21 @@ async function loadFinalizationSnapshot(
   const context = await getAuthorizedPendingUpload(store, uploadId, userId, workspaceId);
   const [device] = await store.select()
     .from(devices)
-    .where(and(eq(devices.id, input.deviceId), eq(devices.userId, userId), isNull(devices.revokedAt)))
+    .where(and(eq(devices.id, input.deviceId), eq(devices.userId, userId), isNull(devices.revokedAt), isNotNull(devices.approvedAt)))
     .for('share');
   if (!device) throw new Error('INVALID_DEVICE');
   if (context.channel.keyRotationRequired) throw new Error('KEY_ROTATION_REQUIRED');
   const epoch = await store.query.channelKeyEpochs.findFirst({
-    columns: { version: true },
+    columns: { version: true, createdAt: true },
     where: and(
       eq(channelKeyEpochs.channelId, context.channel.id),
       eq(channelKeyEpochs.version, input.keyVersion),
       eq(channelKeyEpochs.status, 'active'),
+      eq(channelKeyEpochs.protocolVersion, 3),
     ),
   });
   if (!epoch) throw new Error('INVALID_KEY_VERSION');
+  if (Date.now() - epoch.createdAt.getTime() >= 24 * 60 * 60_000 || !await isEpochRosterCurrent(store, context.channel, input.keyVersion)) throw new Error('KEY_ROTATION_REQUIRED');
   if (await hasRevokedEpochRecipient(store, context.channel.id, input.keyVersion)) {
     throw new Error('KEY_ROTATION_REQUIRED');
   }
@@ -951,17 +954,20 @@ async function canViewChannelFromStore(
   return isVisibleChannelAuthorization(await getChannelAuthorizationFromStore(store, userId, channel));
 }
 
-async function getCiphertextUsage(store: any, workspaceId: string, channelId: string, userId: string) {
+export async function getCiphertextUsage(store: any, workspaceId: string, channelId: string, userId: string) {
   const finalizedUserRows = await store.select({
     bytes: sql<string>`coalesce(sum(${attachments.sizeBytes}), 0)::bigint`,
   }).from(attachments)
     .innerJoin(messages, eq(attachments.messageId, messages.id))
-    .where(eq(messages.authorId, userId));
+    .innerJoin(channels, eq(messages.channelId, channels.id))
+    .where(and(eq(messages.authorId, userId), eq(channels.workspaceId, workspaceId)));
   const activeUserRows = await store.select({
     bytes: sql<string>`coalesce(sum(${attachmentUploadChunks.sizeBytes}), 0)::bigint`,
   }).from(attachmentUploadChunks)
     .innerJoin(attachmentUploads, eq(attachmentUploadChunks.uploadId, attachmentUploads.id))
-    .where(and(eq(attachmentUploads.uploaderId, userId), isNull(attachmentUploads.completedAt)));
+    .innerJoin(messages, eq(attachmentUploads.messageId, messages.id))
+    .innerJoin(channels, eq(messages.channelId, channels.id))
+    .where(and(eq(attachmentUploads.uploaderId, userId), eq(channels.workspaceId, workspaceId), isNull(attachmentUploads.completedAt)));
   const finalizedRows = await store.select({
     channelBytes: sql<string>`coalesce(sum(${attachments.sizeBytes}) filter (where ${messages.channelId} = ${channelId}), 0)::bigint`,
     workspaceBytes: sql<string>`coalesce(sum(${attachments.sizeBytes}), 0)::bigint`,

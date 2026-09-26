@@ -1,3 +1,4 @@
+import { displayText } from '../security/display-text.js';
 import { Router } from 'express';
 import type { Server as SocketServer } from 'socket.io';
 import { z } from 'zod';
@@ -19,26 +20,26 @@ import {
 const router = Router();
 const position = z.number().int().min(0).max(1_000_000);
 const createChannelSchema = z.object({
-  name: z.string().trim().min(1).max(100),
+  name: displayText(),
   categoryId: z.string().uuid().optional(),
   type: z.enum(['text', 'announcement', 'voice']).optional(),
   isPrivate: z.boolean().optional(),
-  topic: z.string().trim().max(500).optional(),
+  topic: displayText(500, true).optional(),
   position: position.optional(),
 }).strict();
 const updateChannelSchema = z.object({
-  name: z.string().trim().min(1).max(100).optional(),
-  topic: z.string().trim().max(500).optional(),
+  name: displayText().optional(),
+  topic: displayText(500, true).optional(),
   categoryId: z.string().uuid().nullable().optional(),
   position: position.optional(),
   isPrivate: z.boolean().optional(),
 }).strict().refine((value) => Object.keys(value).length > 0);
 const createCategorySchema = z.object({
-  name: z.string().trim().min(1).max(100),
+  name: displayText(),
   position: position.optional(),
 }).strict();
 const updateCategorySchema = z.object({
-  name: z.string().trim().min(1).max(100).optional(),
+  name: displayText().optional(),
   position: position.optional(),
 }).strict().refine((value) => Object.keys(value).length > 0);
 const channelMemberSchema = z.object({ userId: z.string().uuid() }).strict();

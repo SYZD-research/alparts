@@ -1,3 +1,4 @@
+import { displayText } from '../security/display-text.js';
 import { Router, type Response } from 'express';
 import type { Server as SocketServer } from 'socket.io';
 import { z } from 'zod';
@@ -22,12 +23,12 @@ const permissionMask = z.number().int().min(0).max(0x7fffffff);
 const position = z.number().int().min(0).max(1_000_000);
 const authorizationRevision = z.string().regex(/^[a-f0-9]{64}$/);
 const createRoleSchema = z.object({
-  name: z.string().trim().min(1).max(100),
+  name: displayText(),
   permissions: permissionMask,
   position,
 }).strict();
 const updateRoleSchema = z.object({
-  name: z.string().trim().min(1).max(100).optional(),
+  name: displayText().optional(),
   permissions: permissionMask.optional(),
   position: position.optional(),
   expectedAuthorizationRevision: authorizationRevision,

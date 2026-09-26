@@ -13,7 +13,8 @@ import {
   shell,
   type Session,
 } from 'electron';
-import { stat } from 'node:fs/promises';
+import { stat, readFile } from 'node:fs/promises';
+import { parseTransportPins, matchesTransportPin, type TransportPins } from './transport-pins.js';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
@@ -23,6 +24,7 @@ import {
   deploymentNamespace,
   isAllowedBackendRequestDestination,
   isAllowedExternalUrl,
+  isAllowedMediaPermission,
   isBackendPath,
   isTrustedRendererUrl,
   normalizeIdleLockMinutes,
@@ -64,6 +66,7 @@ let lockTriggered = false;
 let idleTimer: NodeJS.Timeout | null = null;
 let quitAfterCleanup = false;
 let runtimeReady = false;
+let transportPins: TransportPins = {};
 
 const singleInstance = app.requestSingleInstanceLock();
 if (!singleInstance) app.quit();
@@ -97,6 +100,7 @@ app.on('activate', () => {
 if (singleInstance) {
   void app.whenReady().then(async () => {
     DEVELOPMENT_URL = readDevelopmentUrl();
+    transportPins = parseTransportPins(JSON.parse(await readFile(new URL('./transport-pins.json', import.meta.url), 'utf8')), app.isPackaged);
     MANAGED_SERVER_URL = readManagedServerUrl();
     app.setAppUserModelId('org.alparts.desktop');
     if (process.platform === 'darwin') app.dock?.setIcon(applicationIconPath());
@@ -211,25 +215,22 @@ function secureWebContents(window: BrowserWindow): void {
 }
 
 function configureSession(target: Session): void {
+  target.setCertificateVerifyProc((request, callback) => {
+    // -3 preserves Chromium's normal CA/hostname/expiry checks. Never return 0,
+    // which would override a certificate error. Packaged clients require pins.
+    const required = app.isPackaged || Object.hasOwn(transportPins, request.hostname);
+    callback(!required || matchesTransportPin(request.hostname, request.certificate.data, transportPins) ? -3 : -2);
+  });
   target.setPermissionRequestHandler((webContents, permission, callback, details) => {
     if (!webContents || webContents.id !== mainWindow?.webContents.id || !trustedFrame(details.requestingUrl)) {
       callback(false);
       return;
     }
-    if (permission === 'media') {
-      const mediaTypes = (details as { mediaTypes?: string[] }).mediaTypes || [];
-      callback(mediaTypes.length > 0 && mediaTypes.every((type) => type === 'audio'));
-      return;
-    }
-    callback(permission === 'speaker-selection');
+    callback(isAllowedMediaPermission(permission, (details as { mediaTypes?: string[] }).mediaTypes));
   });
   target.setPermissionCheckHandler((webContents, permission, requestingOrigin, details) => {
     if (!webContents || webContents.id !== mainWindow?.webContents.id || !trustedFrame(requestingOrigin)) return false;
-    if (permission === 'media') {
-      const mediaType = details.mediaType;
-      return mediaType === undefined || mediaType === 'audio';
-    }
-    return permission === 'speaker-selection';
+    return isAllowedMediaPermission(permission, details.mediaType ? [details.mediaType] : undefined);
   });
   target.setDevicePermissionHandler(() => false);
   target.setDisplayMediaRequestHandler((_request, callback) => callback({}));

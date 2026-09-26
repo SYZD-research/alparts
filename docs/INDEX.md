@@ -2,6 +2,8 @@
 
 Last verified: 2026-09-04 against the current working tree.
 
+[Account, group security and migration](./security/ACCOUNT_AND_GROUP_SECURITY.md) documents the 2026-09-16 device approval, transparency, MLS epoch, passkey and history-recovery implementation.
+
 This is the navigation root for implementation, architecture, security, operations, and recovery material. Statements marked **implemented** are backed by the linked code or tests. Statements marked **target** are not current guarantees.
 
 ## Start here
@@ -16,8 +18,10 @@ This is the navigation root for implementation, architecture, security, operatio
 
 ## Security
 
+- [audit-alparts remediation and deployment settings (2026-09-26)](./security/AUDIT_ALPARTS_REMEDIATION.md)
 - [Security policy](./policies/SECURITY.md)
 - [Threat model](./security/THREAT_MODEL.md)
+- [Additional security audit remediation (2026-09-17)](../SECURITY_AUDIT_2.md)
 - [Security audit and Deep Security Scan record](./policies/SECURITY_AUDIT.md)
 - [Legacy top-level threat-model link](./policies/THREAT_MODEL.md)
 

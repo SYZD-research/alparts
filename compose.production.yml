@@ -31,6 +31,7 @@ services:
       MINIO_ACCESS_KEY_FILE: /run/secrets/minio_access_key
       MINIO_SECRET_KEY_FILE: /run/secrets/minio_secret_key
       JWT_SECRET_FILE: /run/secrets/jwt_secret
+      PASSWORD_PEPPER_FILE: /run/secrets/password_pepper
       AUDIT_INTEGRITY_KEY_FILE: /run/secrets/audit_integrity_key
       AUDIT_CHECKPOINT_PATH: /var/lib/alparts-audit/checkpoint.json
       AUDIT_CHECKPOINT_REQUIRED: "true"
@@ -43,6 +44,7 @@ services:
       - minio_access_key
       - minio_secret_key
       - jwt_secret
+      - password_pepper
       - audit_integrity_key
       - metrics_token
     volumes:
@@ -72,12 +74,14 @@ services:
     environment:
       NODE_ENV: production
       DATABASE_URL_FILE: /run/secrets/migration_database_url
+      PASSWORD_PEPPER_FILE: /run/secrets/password_pepper
       DB_SSL: ${DB_SSL:-true}
       DB_CONNECT_TIMEOUT_MS: ${DB_CONNECT_TIMEOUT_MS:-5000}
       DB_STATEMENT_TIMEOUT_MS: ${DB_STATEMENT_TIMEOUT_MS:-15000}
       ALLOW_INSECURE_LOOPBACK_DEPENDENCIES: ${ALLOW_INSECURE_LOOPBACK_DEPENDENCIES:-false}
     secrets:
       - migration_database_url
+      - password_pepper
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777
@@ -98,6 +102,8 @@ secrets:
     file: ${MINIO_SECRET_KEY_SECRET_FILE:?set MINIO_SECRET_KEY_SECRET_FILE}
   jwt_secret:
     file: ${JWT_SECRET_SECRET_FILE:?set JWT_SECRET_SECRET_FILE}
+  password_pepper:
+    file: ${PASSWORD_PEPPER_SECRET_FILE:?set PASSWORD_PEPPER_SECRET_FILE}
   audit_integrity_key:
     file: ${AUDIT_INTEGRITY_KEY_SECRET_FILE:?set AUDIT_INTEGRITY_KEY_SECRET_FILE}
   metrics_token:

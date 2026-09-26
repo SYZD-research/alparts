@@ -52,11 +52,11 @@ Last verified: 2026-09-04. This inventory covers first-party source, build, test
 
 - **Location:** `packages/shared/src/security`, client `crypto.service.ts`, server `security/message.ts`, `services/key*.ts`.
 - **Purpose/responsibility:** canonical signed representations, P-256 device signatures, AES-256-GCM message/attachment protection, recipient-bound key wraps, two-phase key epoch activation.
-- **Non-responsibility:** MLS, forward secrecy/post-compromise security, key transparency, independent identity verification, server-side account recovery.
+- **Security update:** MLS-based epoch groups, signed device-directory history, client checkpoint comparison and encrypted history recovery are described in [the protocol document](security/ACCOUNT_AND_GROUP_SECURITY.md). Per-message forward secrecy, independent witness operation and account credential reset remain outside this implementation.
 - **Input/output:** device keys, ciphertext metadata and signatures; verified plaintext only on authorized clients.
 - **Dependencies/persistence:** WebCrypto; PostgreSQL device public keys, commitments, epoch state, acknowledgements, and wrapped keys; private keys remain client-side.
 - **Security boundary:** every message/key/attachment/voice envelope binds its operation, resource, author/device, and security-relevant metadata. Server and recipient both enforce applicable bindings.
-- **Failure/retry/idempotency:** malformed/stale/uncommitted envelopes fail closed; aborted versions are never reused; delivery acknowledgements are idempotent against unique state. If all accepted holders are lost, old ciphertext remains unavailable and `historyRecoveryRequired` permits only a fresh future epoch. A manager/DM participant may also explicitly start without unavailable history after password and device-signature verification; every eligible endpoint receives a wrap, while the initiating endpoint alone gates activation so offline endpoints do not block future writes.
+- **Failure/retry/idempotency:** malformed/stale/uncommitted envelopes fail closed; aborted versions are never reused; delivery acknowledgements are idempotent against unique state. If all accepted holders are lost, archived keys may be restored using the user-held code; without an archive, `historyRecoveryRequired` permits only a fresh future epoch. A manager/DM participant may also explicitly start without unavailable history after exact-action step-up and device-signature verification. Every eligible endpoint must contribute and acknowledge the fresh group epoch; offline endpoints can block writes.
 - **Scaling/availability:** atomic fan-out is capped at 400 active recipient devices. Explicit history lookup is at most 64 versions/864 deliveries; the deprecated no-query bridge is the newest 16 versions. Key rotation blocks new writes until safely active.
 - **Operate/test:** protocol vectors and tamper cases in shared/server/client unit tests plus integration flow.
 
@@ -68,7 +68,7 @@ Last verified: 2026-09-04. This inventory covers first-party source, build, test
 - **Input/output:** JSON REST, cookies or explicit bearer tokens; JSON/errors, ciphertext streams, health and optional metrics.
 - **Dependencies/persistence:** Express/Helmet/CORS; delegates all durable work to services/PostgreSQL/MinIO.
 - **Security boundary:** no public admin bypass; protected resources require live DB-backed session and current membership/permission. Production defaults secure cookies, CSP/HSTS, and exact HTTPS origins.
-- **Failure/retry/idempotency:** 512 KiB JSON ceiling, request/header/server timeouts, bounded admission; stable 4xx/503 responses. Mutation idempotency is service-specific.
+- **Failure/retry/idempotency:** 512 KiB default JSON ceiling (2 MiB for bounded group proposals), request/header/server timeouts, bounded admission; stable 4xx/503 responses. Mutation idempotency is service-specific.
 - **Scaling/availability:** one process only because rate and other admission state is local.
 - **Operate/test:** health endpoints and private metrics; HTTP security, configuration and integration suites.
 
@@ -76,10 +76,10 @@ Last verified: 2026-09-04. This inventory covers first-party source, build, test
 
 - **Location:** `routes/auth.ts`, `routes/devices.ts`, `services/auth.service.ts`, `device.service.ts`, `security/session.ts`, `password-work.ts`.
 - **Purpose/responsibility:** invite-gated registration, bcrypt password verification, hashed session-token persistence, session/device binding, challenge-based device enrollment/revocation.
-- **Non-responsibility:** Passkeys/WebAuthn, OIDC, MFA, email delivery, threshold recovery.
+- **Security update:** WebAuthn/Passkeys and exact-action step-up are implemented. OIDC, email delivery, native-origin WebAuthn and threshold recovery remain outside this implementation.
 - **Input/output:** email/password/invite/challenge/device public keys; secure session cookie or explicit token, public device directory.
 - **Dependencies/persistence:** bcrypt, JWT HS256, cryptographic RNG, PostgreSQL users/devices/sessions/invitations.
-- **Security boundary:** cheap invite preflight occurs before password hashing; bcrypt runs on at most two Worker threads behind a 2-active/16-pending/5-second bulkhead, validates the stored hash/cost before work, and terminates a Worker after a 30-second execution watchdog; current-password KDF completes before audit/key/row locks; live session hash/expiry/revocation and active device are rechecked.
+- **Security boundary:** cheap invite preflight occurs before password hashing; bcrypt has separate public/authenticated pools of at most two Worker threads each; public admission is 2-active/0-pending through audit completion and authenticated admission is 2-active/16-pending/5-seconds, validates pepper-protected stored format and cost 12–15 before work, and terminates a Worker after a 30-second execution watchdog; current-password KDF completes before audit/key/row locks; live session hash/expiry/revocation and active device are rechecked.
 - **Failure/retry/idempotency:** capacity returns 503/Retry-After; at most 16 unexpired sessions/user and 8 active devices/user are admitted; tokens/invitations are single-use where applicable; revoked identity cannot be silently rebound. New-device pending-epoch cleanup is partitioned across at most 50 memberships and 300 channels/workspace. Historical signer lookup is explicitly scoped to at most 64 requested IDs; the deprecated no-ID bridge is capped at 400 current/referenced devices.
 - **Scaling/availability:** password gate and rate limits are process-local; cluster use is unsupported.
 - **Operate/test:** rotate all deployment secrets, revoke compromised sessions/devices; auth/device unit and integration cases.

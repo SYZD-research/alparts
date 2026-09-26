@@ -34,13 +34,11 @@ export function ChatArea({ visible = true }: { visible?: boolean }) {
   const openSavedMessages = useUiStore((state) => state.openSavedMessages);
   const [isRetryingKey, setIsRetryingKey] = useState(false);
   const [showFreshStart, setShowFreshStart] = useState(false);
-  const [freshStartPassword, setFreshStartPassword] = useState('');
   const [freshStartError, setFreshStartError] = useState<string | null>(null);
   const [isStartingFresh, setIsStartingFresh] = useState(false);
 
   useEffect(() => {
     setShowFreshStart(false);
-    setFreshStartPassword('');
     setFreshStartError(null);
     setIsStartingFresh(false);
   }, [activeChannelId]);
@@ -48,19 +46,17 @@ export function ChatArea({ visible = true }: { visible?: boolean }) {
   const closeFreshStart = () => {
     if (isStartingFresh) return;
     setShowFreshStart(false);
-    setFreshStartPassword('');
     setFreshStartError(null);
   };
 
   const confirmFreshStart = async () => {
-    if (!activeChannelId || isStartingFresh || freshStartPassword.length === 0) return;
+    if (!activeChannelId || isStartingFresh) return;
     setIsStartingFresh(true);
     setFreshStartError(null);
     try {
-      await startChannelWithoutHistory(activeChannelId, freshStartPassword);
+      await startChannelWithoutHistory(activeChannelId);
       setShowFreshStart(false);
-      setFreshStartPassword('');
-    } catch (error) {
+      } catch (error) {
       if (error instanceof ApiError && error.code === 'INVALID_CREDENTIALS') {
         setFreshStartError('パスワードが正しくありません。');
       } else if (error instanceof ApiError && error.status === 403) {
@@ -78,10 +74,21 @@ export function ChatArea({ visible = true }: { visible?: boolean }) {
   useEffect(() => {
     if (activeChannelId) {
       const socket = getSocket();
-      socket?.emit('channel:join', activeChannelId, (result: { ok: boolean }) => {
-        if (result.ok) void loadMessages(activeChannelId);
-      });
+      let disposed = false;
+      let retryTimer: ReturnType<typeof setTimeout> | undefined;
+      const join = () => {
+        if (disposed) return;
+        socket?.timeout(3000).emit('channel:join', activeChannelId, (error: Error | null, result?: { ok: boolean }) => {
+          if (disposed) return;
+          void loadMessages(activeChannelId);
+          if (error || !result?.ok) retryTimer = setTimeout(join, 5000);
+        });
+      };
+      void loadMessages(activeChannelId);
+      join();
       return () => {
+        disposed = true;
+        clearTimeout(retryTimer);
         socket?.emit('channel:leave', activeChannelId);
       };
     }
@@ -129,18 +136,6 @@ export function ChatArea({ visible = true }: { visible?: boolean }) {
           <p className="rounded border border-discord-red/60 bg-discord-red/10 p-3 text-sm text-discord-text">
             チャンネルは新しいメッセージから再開されます。この操作は元に戻せません。
           </p>
-          <label className="block text-sm text-discord-text">
-            パスワード
-            <input
-              autoFocus
-              type="password"
-              autoComplete="current-password"
-              value={freshStartPassword}
-              onChange={(event) => setFreshStartPassword(event.target.value)}
-              disabled={isStartingFresh}
-              className="mt-1 w-full rounded bg-discord-input px-3 py-2 text-white outline-none focus:ring-2 focus:ring-discord-accent disabled:opacity-50"
-            />
-          </label>
           {freshStartError && (
             <p role="alert" className="rounded bg-discord-red/15 px-3 py-2 text-sm text-discord-red">
               {freshStartError}
@@ -150,7 +145,7 @@ export function ChatArea({ visible = true }: { visible?: boolean }) {
             <button type="button" onClick={closeFreshStart} disabled={isStartingFresh} className="rounded px-3 py-2 text-sm text-discord-muted hover:bg-discord-hover disabled:opacity-50">
               キャンセル
             </button>
-            <button type="submit" disabled={isStartingFresh || freshStartPassword.length === 0} className="rounded bg-discord-red px-3 py-2 text-sm font-medium text-white disabled:opacity-50">
+            <button type="submit" disabled={isStartingFresh} className="rounded bg-discord-red px-3 py-2 text-sm font-medium text-white disabled:opacity-50">
               {isStartingFresh ? '開始中…' : '新しく開始'}
             </button>
           </div>

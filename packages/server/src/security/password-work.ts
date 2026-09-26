@@ -1,3 +1,5 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { matchesPasswordHash, passwordSalt, protectPasswordHash } from './password-pepper.js';
 import { createRequire } from 'node:module';
 import { Worker } from 'node:worker_threads';
 import { BoundedAsyncGate } from './bounded-async-gate.js';
@@ -16,7 +18,7 @@ const passwordWorkGate = new BoundedAsyncGate(
 
 type PasswordTask =
   | { kind: 'hash'; password: string; rounds: number }
-  | { kind: 'compare'; password: string; hash: string };
+  | { kind: 'derive'; password: string; salt: string };
 
 interface WorkerReply {
   id: number;
@@ -35,6 +37,7 @@ interface PasswordWorkerSlot {
   worker: Worker;
   active: ActiveWorkerTask | null;
   failed: boolean;
+  publicWork: boolean;
 }
 
 const bcryptModulePath = createRequire(import.meta.url).resolve('bcryptjs');
@@ -51,19 +54,15 @@ const workerSource = String.raw`
       if (passwordBytes < 1 || passwordBytes > 72) throw new Error('INVALID_PASSWORD_TASK');
       let value;
       if (task.kind === 'hash') {
-        if (!Number.isSafeInteger(task.rounds) || task.rounds < 4 || task.rounds > 15) {
+        if (!Number.isSafeInteger(task.rounds) || task.rounds < 12 || task.rounds > 15) {
           throw new Error('INVALID_PASSWORD_TASK');
         }
         value = bcrypt.hashSync(task.password, task.rounds);
-      } else if (task.kind === 'compare') {
-        const parsedHash = typeof task.hash === 'string'
-          ? /^\$2[aby]\$(\d{2})\$[./A-Za-z0-9]{53}$/.exec(task.hash)
-          : null;
-        const storedRounds = parsedHash ? Number(parsedHash[1]) : NaN;
-        if (!parsedHash || storedRounds < 4 || storedRounds > 15) {
+      } else if (task.kind === 'derive') {
+        if (typeof task.salt !== 'string' || !/^\$2[aby]\$(12|13|14|15)\$[./A-Za-z0-9]{22}$/.test(task.salt)) {
           throw new Error('INVALID_PASSWORD_TASK');
         }
-        value = bcrypt.compareSync(task.password, task.hash);
+        value = bcrypt.hashSync(task.password, task.salt);
       } else {
         throw new Error('INVALID_PASSWORD_TASK');
       }
@@ -74,21 +73,30 @@ const workerSource = String.raw`
   });
 `;
 
+// Public work holds admission until its audit commit finishes. Consequently at
+// most two unauthenticated requests can occupy the global audit queue.
+const publicAuthenticationGate = new BoundedAsyncGate(2, 0, { busyError: 'AUTH_CAPACITY', timeoutError: 'AUTH_CAPACITY' });
+const publicContext = new AsyncLocalStorage<boolean>();
+export function runPublicAuthentication<T>(operation: () => Promise<T>): Promise<T> {
+  return publicAuthenticationGate.run(() => publicContext.run(true, operation));
+}
+export function publicAuthenticationSnapshot() { return publicAuthenticationGate.snapshot(); }
+
 const workerSlots: PasswordWorkerSlot[] = [];
 let nextTaskId = 1;
 let workersClosing = false;
 
 /** Generic admission hook retained for deterministic bulkhead tests. */
 export function runPasswordWork<T>(operation: () => Promise<T>): Promise<T> {
-  return passwordWorkGate.run(operation, Date.now() + PASSWORD_WORK_WAIT_MS);
+  return publicContext.getStore() ? operation() : passwordWorkGate.run(operation, Date.now() + PASSWORD_WORK_WAIT_MS);
 }
 
 export function hashPassword(password: string, rounds: number): Promise<string> {
-  return runPasswordWork(async () => String(await submitPasswordTask({ kind: 'hash', password, rounds })));
+  return runPasswordWork(async () => protectPasswordHash(String(await submitPasswordTask({ kind: 'hash', password, rounds }))));
 }
 
 export function verifyPassword(password: string, hash: string): Promise<boolean> {
-  return runPasswordWork(async () => Boolean(await submitPasswordTask({ kind: 'compare', password, hash })));
+  return runPasswordWork(async () => matchesPasswordHash(hash, String(await submitPasswordTask({ kind: 'derive', password, salt: passwordSalt(hash) }))));
 }
 
 export function passwordWorkSnapshot() {
@@ -118,9 +126,10 @@ export async function closePasswordWorkers(): Promise<void> {
 
 function submitPasswordTask(task: PasswordTask): Promise<string | boolean> {
   if (workersClosing) return Promise.reject(new Error('AUTH_SHUTDOWN'));
-  let slot = workerSlots.find((candidate) => !candidate.failed && candidate.active === null);
-  if (!slot && workerSlots.length < MAX_CONCURRENT_PASSWORD_WORK) {
-    slot = createPasswordWorker();
+  const publicWork = publicContext.getStore() === true;
+  let slot = workerSlots.find((candidate) => candidate.publicWork === publicWork && !candidate.failed && candidate.active === null);
+  if (!slot && workerSlots.filter((candidate) => candidate.publicWork === publicWork).length < MAX_CONCURRENT_PASSWORD_WORK) {
+    slot = createPasswordWorker(publicWork);
     workerSlots.push(slot);
   }
   if (!slot) return Promise.reject(new Error('AUTH_CAPACITY'));
@@ -140,13 +149,13 @@ function submitPasswordTask(task: PasswordTask): Promise<string | boolean> {
   });
 }
 
-function createPasswordWorker(): PasswordWorkerSlot {
+function createPasswordWorker(publicWork: boolean): PasswordWorkerSlot {
   const worker = new Worker(workerSource, {
     eval: true,
     name: 'alparts-password-worker',
     workerData: { bcryptModulePath },
   });
-  const slot: PasswordWorkerSlot = { worker, active: null, failed: false };
+  const slot: PasswordWorkerSlot = { worker, active: null, failed: false, publicWork };
   worker.on('message', (reply: WorkerReply) => {
     const active = slot.active;
     if (!active || reply.id !== active.id) {

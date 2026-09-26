@@ -18,7 +18,7 @@ Required settings (a *_FILE alternative is accepted for values marked secret):
   MINIO_ACCESS_KEY             Source access key (secret)
   MINIO_SECRET_KEY             Source secret key (secret)
   MINIO_BUCKET                 Source bucket name
-  BACKUP_AGE_RECIPIENT         age recipient public key
+  BACKUP_AGE_RECIPIENT         Hybrid post-quantum age recipient (age1pq1...)
   BACKUP_OUTPUT_DIR            Existing directory for the encrypted artifact
   ALPARTS_BACKUP_QUIESCED      Must be exactly YES_WRITES_ARE_STOPPED
 
@@ -66,6 +66,7 @@ export -n DATABASE_SERVICE_FILE 2>/dev/null || true
 validate_bucket_name "$MINIO_BUCKET"
 [[ "$BACKUP_AGE_RECIPIENT" != AGE-SECRET-KEY-* && "$BACKUP_AGE_RECIPIENT" != *[$'\t\r\n ']* ]] \
   || backup_die 'BACKUP_AGE_RECIPIENT must be a public recipient, not an age identity'
+validate_backup_recipient "$BACKUP_AGE_RECIPIENT"
 [[ -d "$BACKUP_OUTPUT_DIR" && -w "$BACKUP_OUTPUT_DIR" ]] \
   || backup_die 'BACKUP_OUTPUT_DIR must be an existing writable directory'
 

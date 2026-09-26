@@ -1,3 +1,4 @@
+import { normalizeEmail } from '../security/email.js';
 import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { and, desc, eq, gt, inArray, isNotNull, isNull, lt, or, sql } from 'drizzle-orm';
 import { Permissions } from '@alparts/shared';
@@ -15,7 +16,7 @@ import {
 } from '../security/limits.js';
 
 export function normalizeInvitationEmail(email: string): string {
-  return email.trim().toLowerCase();
+  return normalizeEmail(email);
 }
 
 export function hashInvitationToken(token: string): string {

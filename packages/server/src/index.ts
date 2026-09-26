@@ -1,3 +1,4 @@
+import { acquireRuntimeLease } from './security/runtime-lease.js';
 import { createApp } from './app.js';
 import { config } from './config/index.js';
 import { logError, logInfo } from './security/logger.js';
@@ -6,6 +7,7 @@ import { flushAuditCheckpoint, verifyAuditChain } from './middleware/audit.js';
 import { checkDatabaseSchema, closeDb } from './db/index.js';
 import { closePasswordWorkers } from './security/password-work.js';
 
+const runtime = await acquireRuntimeLease();
 const migrationCount = await checkDatabaseSchema();
 logInfo('database.schema_verified', { migrations: migrationCount });
 
@@ -60,6 +62,7 @@ function shutdown(signal: string): Promise<void> {
     }
     await closePasswordWorkers();
     await closeDb();
+    await runtime.close();
     if (auditFlushError) throw auditFlushError;
     logInfo('server.shutdown_complete');
   })().catch((error) => {
@@ -68,6 +71,8 @@ function shutdown(signal: string): Promise<void> {
   });
   return shutdownPromise;
 }
+
+runtime.onLost(() => { void shutdown('runtime-lease-lost'); });
 
 process.once('SIGTERM', () => { void shutdown('SIGTERM'); });
 process.once('SIGINT', () => { void shutdown('SIGINT'); });

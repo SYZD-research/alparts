@@ -1,3 +1,6 @@
+import { displayText } from '../security/display-text.js';
+import { consumeLoginChallenge, issueLoginChallenge } from '../security/login-challenge.js';
+import { normalizeEmail } from '../security/email.js';
 import { Router } from 'express';
 import type { Server as SocketServer } from 'socket.io';
 import { z } from 'zod';
@@ -15,13 +18,13 @@ const router = Router();
 const password = z.string().min(12).max(72).refine((value) => Buffer.byteLength(value, 'utf8') <= 72);
 const loginPassword = z.string().min(1).max(72).refine((value) => Buffer.byteLength(value, 'utf8') <= 72);
 const registerSchema = z.object({
-  email: z.string().email().max(254),
+  email: z.string().max(254).transform(normalizeEmail).pipe(z.string().email().max(254)),
   password,
-  displayName: z.string().trim().min(1).max(100),
+  displayName: displayText(),
   inviteToken: z.string().min(1).max(512),
 }).strict();
 const loginSchema = z.object({
-  email: z.string().email().max(254),
+  email: z.string().max(254).transform(normalizeEmail).pipe(z.string().email().max(254)),
   // bcrypt ignores bytes after 72; reject them so an appended suffix can
   // never authenticate as the same password.
   password: loginPassword,
@@ -35,7 +38,15 @@ const reauthenticateSchema = z.object({ password: loginPassword }).strict();
 
 const registrationLimit = rateLimit({ windowMs: 60 * 60 * 1000, max: 5, key: credentialRateLimitKey });
 const loginLimit = rateLimit({ windowMs: 15 * 60 * 1000, max: 8, key: credentialRateLimitKey });
-const loginAccountLimit = rateLimit({ windowMs: 15 * 60 * 1000, max: 12, key: credentialAccountRateLimitKey });
+const loginAccountLimit = rateLimit({
+  windowMs: 15 * 60 * 1000, max: 12, key: credentialAccountRateLimitKey,
+  onLimit(req, res, next) {
+    const binding = credentialRateLimitKey(req);
+    if (consumeLoginChallenge(binding, req.headers['x-alparts-login-proof'])) { next(); return; }
+    res.setHeader('Cache-Control', 'no-store');
+    res.status(428).json({ error: 'LOGIN_CHALLENGE_REQUIRED', challenge: issueLoginChallenge(binding), statusCode: 428 });
+  },
+});
 const registrationIpLimit = rateLimit({ windowMs: 60 * 60 * 1000, max: 30 });
 const loginIpLimit = rateLimit({ windowMs: 15 * 60 * 1000, max: 100 });
 const reauthenticateLimit = rateLimit({
@@ -67,7 +78,7 @@ router.post('/register', registrationIpLimit, registrationLimit, async (req, res
   }
 });
 
-router.post('/login', loginIpLimit, loginAccountLimit, loginLimit, async (req, res) => {
+router.post('/login', loginIpLimit, loginLimit, loginAccountLimit, async (req, res) => {
   try {
     const body = loginSchema.parse(req.body);
     const result = await authService.login(body.email, body.password, body.deviceInfo);

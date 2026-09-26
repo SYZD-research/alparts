@@ -12,6 +12,7 @@ android {
         testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
     }
     buildFeatures { buildConfig true }
+    sourceSets.main.res.srcDir layout.buildDirectory.dir('generated/transportPins/res')
     buildTypes {
         debug { applicationIdSuffix '.debug' }
         release { minifyEnabled false }
@@ -41,7 +42,49 @@ tasks.register('bundleWeb', Sync) {
         }
     }
 }
-tasks.named('preBuild').configure { dependsOn 'bundleWeb' }
+def pinRegistry = rootProject.file(providers.gradleProperty('alpartsTransportPinsFile')
+    .orElse(providers.environmentVariable('ALPARTS_TRANSPORT_PINS_FILE'))
+    .getOrElse('../desktop/transport-pins.json'))
+def readTransportPins = {
+    def config = new groovy.json.JsonSlurper().parse(pinRegistry)
+    if (config.version != 1 || !(config.hosts instanceof Map) || config.hosts.size() > 32) {
+        throw new GradleException('Invalid transport pin registry')
+    }
+    config.hosts.each { host, pins ->
+        if (!(host ==~ /(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*/)
+                || !(pins instanceof List) || pins.size() < 2 || pins.size() > 8 || pins.toSet().size() != pins.size()
+                || pins.any { !(it instanceof String) || !(it ==~ /[A-Za-z0-9+\/]{43}=/)
+                    || it.decodeBase64().encodeBase64().toString() != it }) {
+            throw new GradleException('Each host requires distinct current and backup SHA-256 SPKI pins')
+        }
+    }
+    config.hosts
+}
+tasks.register('generateTransportPins') {
+    inputs.file pinRegistry
+    outputs.dir layout.buildDirectory.dir('generated/transportPins/res')
+    doLast {
+        def hosts = readTransportPins()
+        def output = layout.buildDirectory.dir('generated/transportPins/res').get().asFile
+        new File(output, 'xml').mkdirs()
+        new File(output, 'values').mkdirs()
+        def domains = hosts.collect { host, pins ->
+            '<domain-config><domain includeSubdomains="false">' + host + '</domain><pin-set>' +
+                pins.collect { '<pin digest="SHA-256">' + it + '</pin>' }.join('') + '</pin-set></domain-config>'
+        }.join('\n')
+        new File(output, 'xml/network_security_config.xml').text =
+            '<?xml version="1.0" encoding="utf-8"?><network-security-config>' +
+            '<base-config cleartextTrafficPermitted="false"><trust-anchors><certificates src="system"/></trust-anchors></base-config>' +
+            domains + '</network-security-config>\n'
+        new File(output, 'values/pinned_hosts.xml').text = '<resources><string-array name="pinned_hosts">' +
+            hosts.keySet().collect { '<item>' + it + '</item>' }.join('') + '</string-array></resources>\n'
+    }
+}
+tasks.register('verifyReleaseTransportPins') {
+    doLast { if (readTransportPins().isEmpty()) throw new GradleException('Configure transport-pins.json before a release build') }
+}
+tasks.named('preBuild').configure { dependsOn 'bundleWeb', 'generateTransportPins' }
+tasks.configureEach { if (name == 'preReleaseBuild') dependsOn 'verifyReleaseTransportPins' }
 
 tasks.register('runtimeInventory') {
     doLast {

@@ -1,12 +1,12 @@
 # LIMITATIONS.md — Phase 1 Prototype 制限事項
 
-最終更新: 2026-09-04
+最終更新: 2026-09-16
 
 > **現在の境界**
 >
 > - Client: Web、およびWindows・Linux・macOS desktop（React/TypeScript + Electron）
 > - Server: Linux上のsingle-node / single-process Node.js + PostgreSQL + MinIO
-> - Crypto: basic per-channel epoch key（MLSではない）
+> - Crypto: MLS-based group per application epoch + separate encrypted archive keys
 > - Product: text-centered + 最大8人P2P音声のsmall-team prototype
 
 このリポジトリは `SPECIFICATION.md` の初期正式版を完成させたものではなく、正式運用へ承認されていない。2026-08-30に公式npx CLIのDeep Security Scanはartifact packagingまで完了し、13 canonical finding / 15 report instanceを出力した。Coverageはtime ceilingとdeferred reconciliationにより`partial`で、検出根本原因を現treeで修正しても、formal architecture blockerまたは独立外部reviewを完了した意味ではない。ゼロデイ、認証情報、Embargo情報などの高影響秘密へ使用しないこと。
@@ -34,13 +34,15 @@
 
 通常のrepository-wide single-pass scan `1e2517d2-1dad-4360-9e0d-855dfd224047` はMedium 4件・Low 3件（Critical/Highなし）を報告し、当時のtreeで全件を修正した。2026-08-30の公式Deep Security Scan `160868a8-5398-4707-ac05-e4c99c18fdd8` はpre-change revisionから13 canonical finding / 15 instance（Medium 10 / Low 5）を報告し、artifactはsealed/completedだがcoverageはpartialである。現treeの根本修正と検証は `SECURITY_AUDIT.md` と `docs/RISK_REGISTER.md` に分離し、「finding 0」またはexhaustiveとは宣言しない。
 
+実装・保証・移行の詳細は[account/group security](../security/ACCOUNT_AND_GROUP_SECURITY.md)を参照。
+
 ## 主要な制限
 
 ### 認証、端末、承認
 
-- 認証は招待制email/passwordであり、WebAuthn/Passkey、OIDC、一般の管理操作のstep-up、管理者へのphishing-resistant authenticator強制はない。新しいdevice identityの登録だけはcurrent passwordとsession-bound one-time challengeへのdevice署名を要求する。
+- 招待制のpassword認証に加えて、Web版のPasskeyと重要操作のstep-upを実装した。Passkey登録後のpassword fallbackは禁止する。OIDC、組織による認証器数の強制、nativeアプリのWebAuthn連携は未実装。
 - bcryptは固定2本のWorker threadで実行し、active 2 / pending 16 / 待機5秒を超えると503でrejectする。保存hashの形式/costを処理前に検証し、実行が30秒を超えたWorkerは失敗として終了する。新端末step-upのKDFはaudit/key/DB row lockより前に完了させる。これはsingle-processのCPU隔離であり、複数replicaを合算したrate limitや外部DDoS防御ではない。
-- sessionは1つのactive deviceへbindingされ、1 userあたり未期限切れ16 sessionを上限とし、既存identityへのbindingにもdevice署名を要求するが、新端末を既存端末で承認するworkflow、端末attestation、組織支援型・閾値型recoveryはない。
+- Sessionは1つの端末にbindingされ、追加端末は既存端末の承認または復旧コードによる確認が必要。端末attestationと組織支援型・閾値型recoveryは未実装。
 - 新端末登録時のpending epoch cleanupは最大50 workspace membershipを安定順にlockし、各workspaceの最大300 channel内でset-basedに実施する。他tenantがaccount-globalな小さい上限を消費して端末回復を恒久妨害する設計ではないが、上限全体を処理する登録は通常より高latencyになり得てstatement timeout内に完了しなければ安全にrollbackする。
 - destructive operation、policy変更、recovery、組織exportの二者承認はない。
 - Workspace管理は作成・一覧・member removalまでで、workspace rename/delete/icon update/owner transfer、組織policy管理はない。
@@ -48,13 +50,13 @@
 ### E2EEと鍵管理
 
 - Message/attachmentはbrowserでAES-256-GCM暗号化し、message protocol v3では認証user ID、mutation target、broadcast-mention flagを含むcontext付きenvelopeへP-256 device keyで署名する。Server/clientはuser-device bindingを再確認し、channel keyがない場合はplaintextへfallbackせず停止する。旧protocol v1 ciphertextは互換復号せずfail closedになり、protocol v2 messageはlegacy互換としてbroadcast mention権限を持たない。
-- Basic per-channel epochはmember/device失効後の将来鍵配布を止めるためのPrototype方式である。RFC 9420 MLS相当のmessage-level forward secrecyまたはpost-compromise securityを提供しない。
-- Channel epochはfrozen recipient snapshotを持つ`pending`として提案され、全required recipient deviceが署名・復号・commitmentを検証し、server発行のexact delivery IDとdistributorへ署名ackした場合だけatomicに`active`となる。`pending`はmessage/attachment write資格を持たず、per-distributor delivery candidateはimmutableである。中断時はmanagerまたはDM participantが署名abortし、次回は単調増加versionで再提案する。ただしappend-only transparencyやindependent witnessはない。
+- 新epochはMLSライブラリのgroup/commit/Welcome/exporterを使用する。各application epochで新groupを作り、長期の履歴鍵を別途保存するため、連続MLS会話の相互運用やmessage単位の完全なforward secrecyを主張しない。独立reviewは未実施。
+- Channel epochはfrozen recipient snapshotを持つ`pending`として提案され、全required recipient deviceが署名・復号・commitmentを検証し、server発行のexact delivery IDとdistributorへ署名ackした場合だけatomicに`active`となる。`pending`はmessage/attachment write資格を持たず、per-distributor delivery candidateはimmutableである。中断時はmanagerまたはDM participantが署名abortし、次回は単調増加versionで再提案する。端末directoryの追記型chainとclient checkpoint照合を実装したが、独立witnessはない。
 - 全required端末のackをactivation barrierにするため、offline端末が残ると新epochは有効化されない。Operatorが黙ってbarrierを迂回する仕組みはなく、管理者は不要端末を失効させたうえでpending epochをabortし、次versionを再提案する必要がある。
-- 履歴を取得できないmanagerまたはDM participantは、password再確認と端末署名を伴う明示操作でfresh epochを開始できる。この場合も全eligible端末へ同一commitmentの署名付きwrapを保存するが、開始端末自身のack後に有効化し、offline端末のackを待たない。受信端末はonline復帰時にwrapを検証し、不正または復号不能ならfail closedする。このavailability優先経路は監査され、過去epochのciphertextを削除・復旧したとは扱わない。
-- 新しい端末へ自動配布するのは現在epochのchannel keyだけで、少なくとも1台の既存key holderが更新済みclientを起動している必要がある。Clientは全閲覧可能channelの不足配送を補完し、新端末は配送を待機・再確認して完了後にmessageを自動再読込する。参加前・端末登録前の過去epoch keyを既存端末から安全にbackfillするworkflowはない。全accepted holderを失効・紛失した場合、`historyRecoveryRequired`を明示し、認可済みの新端末は将来write用の次epochだけを確立できる。過去ciphertextを復旧・再暗号化できたと装わない。
+- 履歴を取得できないmanagerまたはDM参加者は、step-upと端末署名を伴う明示操作で将来用epochを開始できる。この場合も全参加端末の確認が必要で、offline端末を黙って除外しない。
+- 保管済み復旧コードで、事前にserverへ暗号化保存した履歴鍵を復元できる。Accountへのloginは別途必要。未保存の履歴、復旧コードも全端末も失った履歴、失権したchannelは復旧できない。管理者代理復旧はない。
 - 1 userは最大8 active device、1 workspaceは最大50 member、1回のchannel-key配布は最大400 active recipient deviceで、paginationまたは複数batchを跨ぐatomic commitはない。複数端末を含む実recipientがこの上限へ達すると新epochを配布できないため、正式capacity planningまではsmall-team運用に限定する。
-- Device directoryにappend-only transparency log、consistency proof、independent witness、split-view検出がない。悪性serverが利用者ごとに異なるdirectoryを提示する脅威を形式的に閉じていない。公式clientは履歴署名鍵を1 request最大64 device IDで明示し、channel内のcurrent deviceまたはmessage/attachment参照と一致したものだけを受け取る。更新前tab向けのno-ID経路はcurrent＋参照済みsignerを最大400件で返しdeprecation headerを付けるbounded bridgeであり、恒久的な全履歴APIではない。
+- 端末directoryは署名付き追記chainとlocal checkpointを照合し、group rosterおよび任意の端末間確認でsplit viewを検出する。初回はTOFUであり、互いに照合されないviewや初回anchorの偽装を独立witnessなしに検出できるとは主張しない。過去のmessage/attachment/key distributorの公開鍵は履歴検証に使える。
 - 公式clientのkey取得は`scope=current`を使う。履歴は1 request最大64 unique version、response最大864 deliveryで明示取得する。更新前tab向けのqueryなし経路は新しい順に最大16のactive/pending/retired epochだけを返しdeprecation headerを付けるため、長期間更新されないtabがそれより古い履歴を取得できる保証はない。
 - Server/operatorはuser/workspace/channel membership、device routing、message/attachment ID・時刻、ciphertext size、attachment MIME type・chunk count・upload/download timing、opaque storage keyを観測できる。完全なmetadata inventory/public disclosureはなく、配送拒否、削除、rollback、可用性妨害も可能である。正規受信者によるcopy、screenshot、外部撮影、受信済みdataの完全遠隔消去も防止できない。
 
@@ -62,7 +64,7 @@
 
 - Web版ではdevice private keyとdraft/outbox用AES-GCM keyをnon-extractable WebCrypto `CryptoKey`としてsame-origin IndexedDBへstructured clone保存する。Desktop版ではprivate JWK、channel key、draft/outbox keyをOS保護領域でwrapし、IndexedDBにはpublic identityまたはopaque pointerだけを置く。Linuxで保護されたsecret serviceを利用できない場合、desktopはfail closedで開始しない。
 - Web版ではdraft/outboxのciphertextとその復号keyが同じoriginのIndexedDBにある。Desktop版を含め、compromised client codeはkeyをexportできなくても正規process内で暗号操作へ利用できるため、client code侵害をOS保護領域だけで防ぐものではない。
-- Logout/user切替は復号済みmemory stateとkey cacheを消すが、同じ有効deviceで再開できるよう暗号化recordは残る。browser profile削除やIndexedDB喪失からの復旧、複数端末draft同期、Service Workerによるfull offline history cacheはない。
+- Logout/user切替は復号済みmemory stateとkey cacheを消すが、同じ有効deviceで再開できるよう暗号化recordは残る。browser profile喪失後は保存済み復旧コードと暗号化済み履歴に限り復元できる。複数端末draft同期とService Workerによるfull offline history cacheはない。
 - Outboxの非同期保存・送信・削除は開始時のuser/device/generationへ固定し、principal切替後のcallbackを破棄する。同じ有効device向けの暗号化recordを保持する設計であり、logoutだけでbrowser disk上のrecordを物理消去する保証ではない。
 - Message projectorの「検証済み」はnetwork JSONのbooleanではなくprocess-localな到達不能markerで伝播する。同じevent IDへ異なる署名済みenvelopeが届いた場合はlast-write-winsにせずsticky conflictとしてquarantineする。Reload/reconciliationが必要になり得る一方、依存するdirectory/keyを取得不能なeventを検証済みとして昇格しない。
 - Browser APIはresponse bodyを含む総時間を60秒に制限し、scope取消をnetwork requestへ伝播する。Outboxはdeviceごと100件で新規受付を停止し、overflowを暗黙削除しない。Draft永続化はchannelごとに実行中1件と最新待機1件へcoalesceする。Message検証はchannelごとに実行中1件＋coalesced待機1件、cancel-awareな30秒、暗号処理64件/batchで、取消後も実処理が終了するまでは容量slotを保持する。常駐eventは1,000/channel・5,000/global・32 channelまでである。未ロードchannelのrealtime eventは保持せずRESTで再同期し、履歴window到達時は暗黙に無制限保持せずUI errorで停止する。Realtime認可処理、voice signaling/ICE、attachment runtime、channel-key scope履歴にも有限上限があり、上限時はfail-closed、明示error、または再接続reconciliationへ縮退する。
@@ -111,7 +113,7 @@
 - Single process/single DBであり、HA、broker、DB failover、rolling update、single-nodeからclusterへの移行実証はない。
 - Startup/readinessはbundled migration journalに加えてPostgreSQL 16の`public` catalog（relation/column/constraint/index/trigger/policy/function/type/view）を最大4,096 descriptorでexact fingerprint照合する。Dedicated Alparts databaseを要求し、永続的なcovered schema driftはfail closedになるが、row corruption、role/grant drift、`public`外object、physical durability、probe間だけ変更する悪性DBAを検出する仕組みではない。PostgreSQL major upgradeにはreview済みmigration/restore rehearsal/fingerprint更新が必要である。
 - Object-storage requestには既定10秒・最大60秒のheader/stream inactivity timeoutと、単一node内のactive/pending work上限がある。Remote I/OはDB transaction外で行い、DB commit後のobject orphanはcleanupで回収するが、PostgreSQLとMinIOの分散transactionは提供しない。Download開始後に権限が失効しても、すでに送信開始したciphertext streamを遠隔回収することはできない。
-- WebSocketのrate/socket budgetとroom-join serialization、attachment upload serialization、object-storage gateはいずれもprocess-localである。現在はsingle-process前提であり、複数instance化する前に共有coordinationへ置換しなければならない。
+- WebSocketのrate/socket budgetとroom-join serialization、attachment upload serialization、object-storage gateはいずれもprocess-localである。起動時のPostgreSQL session lockで同一DBへの二重起動を拒否し、所有権を失うと受付を停止する。監査commitからcheckpoint保存まで別lockを保持し、次のprocessは終了を待つ。`DB_POOL_MAX >= 2`と専用接続1本が必要。transaction-pooling proxyは未対応。複数instance化する前に共有coordinationへ置換しなければならない。
 - 追加のdurable上限は、1 channel 1,000 pin、1 message 20 distinct emoji・1 user/message 20 reaction・合計1,000 reaction、pending upload 16/user・200/workspaceである。Audited/guarded authoritative commitは共通でprocess内active 1・waiting 64・待機30秒、upload operationは4/upload・64/processに制限する。これは単一processで意図したcorrectness bottleneckであり、大規模write throughputの実測はない。これらは保持期間やarchive workflowの代替ではない。
 - Message履歴とaudit履歴そのものには自動retentionがない。Unread集計はDB上でexact countを行い、audit起動検証は1,000行ずつ走査するため、長期大規模運用のlatency/起動時間は未計測である。停止したkey rotationが長期間蓄積する環境を含むsoak/capacity試験とlifecycle設計は残る。
 
@@ -128,8 +130,8 @@
 
 | 領域 | 状態 |
 | --- | --- |
-| MLS、key transparency、independent witness、既存端末approval | 延期 |
-| WebAuthn/Passkey、OIDC、step-up、二者approval、recovery | 延期 |
+| Group protocolの独立review、independent witness、message単位のforward secrecy | 残作業。MLS epoch、端末approval、directory検証は実装済み |
+| OIDC、native WebAuthn、二者approval、組織支援型recovery | 残作業。Web Passkey、step-up、利用者管理の履歴recoveryは実装済み |
 | iOS/Android、desktop配布署名・notarization・署名検証update | 延期 |
 | HA、broker、DB failover、cluster migration、PITR/WORM/off-site/自動DR | 延期 |
 | Retention、user/org export、Restricted profile | 延期 |

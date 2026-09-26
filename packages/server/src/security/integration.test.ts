@@ -20,6 +20,7 @@ import { and, eq, inArray } from 'drizzle-orm';
 import pg from 'pg';
 import {
   Permissions,
+  canonicalActionBody, isSensitiveAction, serializeDeviceDecision, serializeGroupKeyPackage, serializeMlsEpoch, type MlsEpoch, type GroupKeyPackage,
   serializeAttachmentEnvelope,
   serializeChannelKeyAcknowledgement,
   serializeChannelKeyEpochAbort,
@@ -35,14 +36,18 @@ import {
 } from '@alparts/shared';
 
 const enabled = process.env.RUN_INTEGRATION === '1';
+const fixtureKeys = new Map<string, ReturnType<typeof deviceFixture>>();
+const joinedMlsKeys = new Map<string, Map<string, Buffer>>();
 
 describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
   let baseUrl = '';
   let httpServer: import('node:http').Server;
   let verifyAuditChain: typeof import('../middleware/audit.js').verifyAuditChain;
+  let runtime: import('./runtime-lease.js').RuntimeLease;
   let closeDb: typeof import('../db/index.js').closeDb;
   let auditCheckpointDirectory = '';
   let auditCheckpointPath = '';
+  const credentials = new Map<string, { password: string; userId: string }>();
   const sockets: Array<{ disconnect(): void }> = [];
 
   before(async () => {
@@ -58,12 +63,13 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
     const auditModule = await import('../middleware/audit.js');
     const dbModule = await import('../db/index.js');
     closeDb = dbModule.closeDb;
-    assert.equal(await dbModule.checkDatabaseSchema(), 14);
+    assert.equal(await dbModule.checkDatabaseSchema(), 18);
     verifyAuditChain = auditModule.verifyAuditChain;
     await auditModule.provisionAuditCheckpoint();
     const startupAudit = await verifyAuditChain();
     assert.equal(startupAudit.valid, true);
     const appModule = await import('../app.js');
+    runtime = await (await import('./runtime-lease.js')).acquireRuntimeLease();
     const created = appModule.createApp();
     httpServer = created.httpServer;
     await new Promise<void>((resolve) => httpServer.listen(0, '127.0.0.1', resolve));
@@ -76,6 +82,7 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
     for (const socket of sockets) socket.disconnect();
     await new Promise<void>((resolve, reject) => httpServer.close((error) => error ? reject(error) : resolve()));
     await closeDb();
+    await runtime?.close();
     if (auditCheckpointDirectory) await rm(auditCheckpointDirectory, { recursive: true, force: true });
   });
 
@@ -229,8 +236,7 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
 
     // A newly enrolled manager may explicitly leave unavailable history
     // behind and start a fresh writable epoch. Every current endpoint gets a
-    // signed wrap, while only the initiating endpoint gates activation so an
-    // offline old endpoint cannot block new messages.
+    // signed wrap, while every endpoint gates activation, including the old endpoint.
     const freshStartLogin = await request('/api/auth/login', {
       method: 'POST',
       body: { email: 'device-retry@example.test', password: 'Correct-Horse-Battery-10!' },
@@ -249,54 +255,14 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
     }>(await request(`/api/channels/${recoveryChannel.id}/key-recipients`, { cookie: freshStartCookie }));
     assert.equal(freshStartState.nextVersion, 2);
     const freshStartKey = randomBytes(32);
-    const freshStartCommitment = createHash('sha256').update(freshStartKey).digest('base64url');
-    const freshStartWraps = freshStartState.recipients.map((recipient) => signedChannelKeyWrap({
-      channelId: recoveryChannel.id,
-      version: freshStartState.nextVersion,
-      keyCommitment: freshStartCommitment,
-      rawKey: freshStartKey,
-      recipient,
-      senderKeys: freshStartKeys,
-    }));
-    const freshStartSignature = sign('sha256', Buffer.from(serializeChannelKeyFreshStart({
-      channelId: recoveryChannel.id,
-      keyVersion: freshStartState.nextVersion,
-      keyCommitment: freshStartCommitment,
-      deviceId: freshStartDevice.id,
-    })), {
-      key: freshStartKeys.signingPrivateKey,
-      dsaEncoding: 'ieee-p1363',
-    }).toString('base64');
-    const rejectedFreshStart = await request(`/api/channels/${recoveryChannel.id}/keys/start-fresh`, {
-      method: 'POST',
-      cookie: freshStartCookie,
-      body: {
-        version: freshStartState.nextVersion,
-        keyCommitment: freshStartCommitment,
-        keys: freshStartWraps,
-        signature: freshStartSignature,
-        currentPassword: 'Synthetic-Wrong-Password-0!',
-      },
+    const { keyCommitment: freshStartCommitment, keys: freshStartWraps } = await proposeFixtureMls({
+      channelId: recoveryChannel.id, version: freshStartState.nextVersion, rawKey: freshStartKey,
+      senderCookie: freshStartCookie, senderKeys: freshStartKeys, recipients: freshStartState.recipients, fresh: true,
     });
-    assert.equal(rejectedFreshStart.status, 403);
-    assert.equal((await json<{ error: string }>(rejectedFreshStart)).error, 'INVALID_CREDENTIALS');
-    const freshStartResponse = await request(`/api/channels/${recoveryChannel.id}/keys/start-fresh`, {
-      method: 'POST',
-      cookie: freshStartCookie,
-      body: {
-        version: freshStartState.nextVersion,
-        keyCommitment: freshStartCommitment,
-        keys: freshStartWraps,
-        signature: freshStartSignature,
-        currentPassword: retryDeviceAccount.password,
-      },
-    });
-    assert.equal(freshStartResponse.status, 201);
-    assert.equal((await json<{ freshStart: boolean }>(freshStartResponse)).freshStart, true);
     const proposedFreshState = await json<{
       pendingRequiredDeviceIds: string[];
     }>(await request(`/api/channels/${recoveryChannel.id}/key-recipients`, { cookie: freshStartCookie }));
-    assert.deepEqual(proposedFreshState.pendingRequiredDeviceIds, [freshStartDevice.id]);
+    assert.deepEqual(new Set(proposedFreshState.pendingRequiredDeviceIds), new Set([firstRetryDevice.id, freshStartDevice.id]));
     const oldEndpointWrap = freshStartWraps.find((key) => key.deviceId === firstRetryDevice.id);
     assert.ok(oldEndpointWrap);
     const optionalAcknowledgement = await acknowledgeChannelKeyDelivery({
@@ -338,7 +304,7 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
         freshStartDevice.id,
         freshStartKeys.signingPrivateKey,
         freshStartKey,
-        'fresh messages do not wait for the old endpoint',
+        'fresh messages wait for every current endpoint',
         undefined,
         2,
       ).body,
@@ -354,6 +320,12 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
     });
     assert.equal(recoveryLogin.status, 200);
     const recoveryCookie = recoveryLogin.headers.get('set-cookie')!.split(';', 1)[0];
+    const recoveryKeys = deviceFixture();
+    const recoveryDevice = await registerDevice(
+      { ...retryDeviceAccount, cookie: recoveryCookie },
+      recoveryKeys,
+      'Recovery identity',
+    );
     const postRevocationAttempt = await deviceRegistrationBody(
       retryDeviceAccount,
       retryDeviceKeys,
@@ -373,12 +345,6 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
     });
     assert.equal(revokedIdentityWithFreshSession.status, 409);
     assert.equal((await json<{ error: string }>(revokedIdentityWithFreshSession)).error, 'IDENTITY_REVOKED');
-    const recoveryKeys = deviceFixture();
-    const recoveryDevice = await registerDevice(
-      { ...retryDeviceAccount, cookie: recoveryCookie },
-      recoveryKeys,
-      'Recovery identity',
-    );
     const enrollmentFixtureEpochs = await enrollmentDatabaseModule.db.query.channelKeyEpochs.findMany({
       where: inArray(enrollmentSchemaModule.channelKeyEpochs.channelId, enrollmentFixtureChannelIds),
     });
@@ -534,32 +500,12 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
     const dmBobRecipient = dmRecipients.recipients.find((recipient) => recipient.deviceId === bobDevice.id);
     assert.ok(dmAliceRecipient && dmBobRecipient);
     const provisionalDmKey = randomBytes(32);
-    const provisionalDmCommitment = createHash('sha256').update(provisionalDmKey).digest('base64url');
-    const provisionalAliceWrap = signedChannelKeyWrap({
-      channelId: dm.channelId,
-      version: 1,
-      keyCommitment: provisionalDmCommitment,
-      rawKey: provisionalDmKey,
-      recipient: dmAliceRecipient,
-      senderKeys: aliceKeys,
+    const { keyCommitment: provisionalDmCommitment, keys: provisionalWraps } = await proposeFixtureMls({
+      channelId: dm.channelId, version: 1, rawKey: provisionalDmKey, senderCookie: alice.cookie,
+      senderKeys: aliceKeys, recipients: dmRecipients.recipients, poisonWelcome: true,
     });
-    const provisionalBobWrap = signedChannelKeyWrap({
-      channelId: dm.channelId,
-      version: 1,
-      keyCommitment: provisionalDmCommitment,
-      rawKey: randomBytes(32),
-      recipient: dmBobRecipient,
-      senderKeys: aliceKeys,
-    });
-    assert.equal((await request(`/api/channels/${dm.channelId}/keys`, {
-      method: 'POST',
-      cookie: alice.cookie,
-      body: {
-        version: 1,
-        keyCommitment: provisionalDmCommitment,
-        keys: [provisionalAliceWrap, provisionalBobWrap],
-      },
-    })).status, 201);
+    const provisionalAliceWrap = provisionalWraps.find(k => k.deviceId === aliceDevice.id)!;
+    const provisionalBobWrap = provisionalWraps.find(k => k.deviceId === bobDevice.id)!;
     const provisionalAliceAcknowledgement = await acknowledgeChannelKeyDelivery({
       channelId: dm.channelId,
       version: 1,
@@ -597,13 +543,7 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
       cookie: alice.cookie,
       body: { version: 1, keyCommitment: provisionalDmCommitment, keys: [changedBobWrap] },
     })).status, 409, 'one distributor cannot replace its immutable delivery candidate');
-    assert.notEqual(
-      createHash('sha256')
-        .update(unwrapKey(provisionalBobWrap.encryptedKey, bobKeys.encryptionPrivateKey))
-        .digest('base64url'),
-      provisionalDmCommitment,
-      'the malicious candidate is intentionally undecryptable to the committed key',
-    );
+    assert.throws(() => unwrapKey(provisionalBobWrap.encryptedKey, bobKeys.encryptionPrivateKey), 'a malformed Welcome cannot be joined');
 
     const abortSignature = sign('sha256', Buffer.from(serializeChannelKeyEpochAbort({
       channelId: dm.channelId,
@@ -675,7 +615,7 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
         keyCommitment: forbiddenVersionThreeCommitment,
         keys: forbiddenVersionThreeWraps,
       },
-    })).status, 409, 'a DM participant cannot rotate a healthy active epoch');
+    })).status, 409, 'legacy group proposals are refused even for a healthy active epoch');
     const healthyDmState = await json<{
       currentVersion: number;
       pendingVersion: number | null;
@@ -967,40 +907,17 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
       (recipient) => recipient.deviceId === secondaryDevice.id,
     );
     assert.ok(secondaryBackfillRecipient);
-    const secondaryBackfill = signedChannelKeyWrap({
-      channelId: backfillChannel.id,
-      version: 1,
-      keyCommitment: backfillDistribution.keyCommitment,
-      rawKey: backfillKey,
-      recipient: secondaryBackfillRecipient,
-      senderKeys: aliceKeys,
+    const oldBackfill = await request(`/api/channels/${backfillChannel.id}/keys`, {
+      method: 'POST', cookie: alice.cookie, body: { version: 1, keyCommitment: backfillDistribution.keyCommitment,
+        keys: [signedChannelKeyWrap({ channelId: backfillChannel.id, version: 1, keyCommitment: backfillDistribution.keyCommitment, rawKey: backfillKey, recipient: secondaryBackfillRecipient, senderKeys: aliceKeys })] },
     });
-    const backfillAvailable = onceSocketEventMatching<{ channelId: string }>(
-      aliceSocket,
-      'channel:key-rotation-required',
-      (event) => event.channelId === backfillChannel.id,
-    );
-    const backfillResponse = await request(`/api/channels/${backfillChannel.id}/keys`, {
-      method: 'POST',
-      cookie: alice.cookie,
-      body: {
-        version: 1,
-        keyCommitment: backfillDistribution.keyCommitment,
-        keys: [secondaryBackfill],
-      },
+    assert.equal(oldBackfill.status, 409, 'a new device receives a fresh epoch, never an old MLS secret');
+    const backfillAvailable = onceSocketEventMatching<{channelId:string}>(aliceSocket, 'channel:key-rotation-required', event => event.channelId === backfillChannel.id);
+    await distributeAndAcknowledgeChannelKey({ channelId: backfillChannel.id, version: 2, rawKey: backfillKey,
+      senderCookie: alice.cookie, senderKeys: aliceKeys, recipients: postEnrollmentRecipients.recipients,
+      acknowledgements: [{deviceId:aliceDevice.id,cookie:alice.cookie,keys:aliceKeys},{deviceId:bobDevice.id,cookie:bob.cookie,keys:bobKeys},{deviceId:secondaryDevice.id,cookie:secondaryCookie,keys:secondaryKeys}],
     });
-    assert.equal(backfillResponse.status, 201);
-    assert.equal((await json<{ insertedCount: number }>(backfillResponse)).insertedCount, 1);
     assert.equal((await backfillAvailable).channelId, backfillChannel.id);
-    await acknowledgeChannelKeyDelivery({
-      channelId: backfillChannel.id,
-      version: 1,
-      keyCommitment: backfillDistribution.keyCommitment,
-      encryptedKey: secondaryBackfill.encryptedKey,
-      deviceId: secondaryDevice.id,
-      cookie: secondaryCookie,
-      keys: secondaryKeys,
-    });
     const revocationChannelResponse = await request(`/api/workspaces/${workspace.id}/channels`, {
       method: 'POST', cookie: alice.cookie, body: { name: 'revocation-boundary' },
     });
@@ -1033,20 +950,10 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
       recipients: Array<{ deviceId: string; identityKey: string }>;
     }>(await request(`/api/channels/${pendingRevocationChannel.id}/key-recipients`, { cookie: alice.cookie }));
     const pendingRevocationKey = randomBytes(32);
-    const pendingRevocationCommitment = createHash('sha256').update(pendingRevocationKey).digest('base64url');
-    const pendingRevocationWraps = pendingRevocationRecipients.recipients.map((recipient) => signedChannelKeyWrap({
-      channelId: pendingRevocationChannel.id,
-      version: 1,
-      keyCommitment: pendingRevocationCommitment,
-      rawKey: pendingRevocationKey,
-      recipient,
-      senderKeys: aliceKeys,
-    }));
-    assert.equal((await request(`/api/channels/${pendingRevocationChannel.id}/keys`, {
-      method: 'POST',
-      cookie: alice.cookie,
-      body: { version: 1, keyCommitment: pendingRevocationCommitment, keys: pendingRevocationWraps },
-    })).status, 201);
+    const {keyCommitment: pendingRevocationCommitment, keys: _pendingRevocationWraps} = await proposeFixtureMls({
+      channelId: pendingRevocationChannel.id, version: 1, rawKey: pendingRevocationKey,
+      senderCookie: alice.cookie, senderKeys: aliceKeys, recipients: pendingRevocationRecipients.recipients,
+    });
     assert.equal((await request(`/api/devices/${secondaryDevice.id}`, {
       method: 'DELETE', cookie: alice.cookie,
     })).status, 200);
@@ -2068,6 +1975,28 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
     assert.equal(voiceChannelResponse.status, 201);
     const voiceChannel = await json<{ id: string }>(voiceChannelResponse);
 
+    // Viewing a voice channel does not grant participation or presence access.
+    const voiceOverridePath = `/api/workspaces/${workspace.id}/channels/${voiceChannel.id}/permission-overrides`;
+    const denyVoicePreview = await json<any>(await request(`${voiceOverridePath}/preview`, {
+      method: 'POST', cookie: alice.cookie,
+      body: { operation: 'upsert', roleId: memberRole.id, allowMask: 0, denyMask: Permissions.CONNECT_VOICE },
+    }));
+    assert.equal((await request(`${voiceOverridePath}/${memberRole.id}`, {
+      method: 'PUT', cookie: alice.cookie,
+      body: { allowMask: 0, denyMask: Permissions.CONNECT_VOICE, expectedRevision: 0, expectedAuthorizationRevision: denyVoicePreview.authorizationRevision },
+    })).status, 200);
+    assert.equal((await request(`/api/channels/${voiceChannel.id}`, { cookie: bob.cookie })).status, 200);
+    assert.equal((await joinVoice(bobSocket, voiceChannel.id)).ok, false);
+    const deniedPresence: any = await emitSocketAck(bobSocket, 'voice:watch', { channelIds: [voiceChannel.id] });
+    assert.equal(deniedPresence.channels?.some((entry: any) => entry.channelId === voiceChannel.id) ?? false, false);
+    const restoreVoicePreview = await json<any>(await request(`${voiceOverridePath}/preview`, {
+      method: 'POST', cookie: alice.cookie, body: { operation: 'upsert', roleId: memberRole.id, allowMask: 0, denyMask: 0 },
+    }));
+    assert.equal((await request(`${voiceOverridePath}/${memberRole.id}`, {
+      method: 'PUT', cookie: alice.cookie,
+      body: { allowMask: 0, denyMask: 0, expectedRevision: 1, expectedAuthorizationRevision: restoreVoicePreview.authorizationRevision },
+    })).status, 200);
+
     assert.deepEqual(await emitSocketAck(bobSocket, 'voice:watch', { channelIds: [voiceChannel.id] }), {
       ok: true,
       channels: [{ channelId: voiceChannel.id, participants: [] }],
@@ -2694,7 +2623,7 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
       await client.end();
     }
     const { checkDatabaseSchema } = await import('../db/index.js');
-    assert.equal(await checkDatabaseSchema(), 14);
+    assert.equal(await checkDatabaseSchema(), 18);
   });
 
   it('never re-signs a shortened audit chain after the external checkpoint anchor is deleted', async () => {
@@ -2798,7 +2727,67 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
       body: await deviceRegistrationBody(account, keys, name),
     });
     assert.equal(response.status, 201);
-    return json<{ id: string }>(response);
+    const device = await json<{ id: string; identityKey: string; approvedAt: string | null }>(response);
+    if (!device.approvedAt) {
+      const { db } = await import('../db/index.js'); const { devices } = await import('../db/schema.js');
+      const actor = (await db.query.devices.findMany({ where: eq(devices.userId, account.user.id) })).find((d) => d.approvedAt && !d.revokedAt);
+      assert.ok(actor, 'test fixture must retain an approved device for enrollment');
+      const actorKeys = fixtureKeys.get(JSON.parse(actor.identityKey).signingKey.x)!;
+      const { directoryHead } = await import('../services/directory.service.js');
+      const head = await directoryHead(db, account.user.id);
+      const event = { kind: 'approve' as const, deviceId: device.id, identityKey: device.identityKey, actorDeviceId: actor.id };
+      const proof = sign('sha256', Buffer.from(serializeDeviceDecision(head, event)), { key: actorKeys.signingPrivateKey, dsaEncoding: 'ieee-p1363' }).toString('base64');
+      await (await import('../services/device.service.js')).approveDevice(account.user.id, actor.id, device.id, head, proof);
+    }
+    return device;
+  }
+
+  async function proposeFixtureMls(input: { channelId: string; version: number; rawKey: Buffer; senderCookie: string; senderKeys: ReturnType<typeof deviceFixture>; recipients: Array<{deviceId: string;identityKey: string}>; fresh?: boolean; poisonWelcome?: boolean }) {
+    const crypto = await import('../../../client/src/services/' + 'mls-crypto.ts');
+    const state = await json<any>(await request(`/api/channels/${input.channelId}/key-recipients`, { cookie: input.senderCookie }));
+    const materials = new Map<string, Awaited<ReturnType<typeof crypto.generateEpochKeyPackage>>>();
+    const roster: GroupKeyPackage[] = [];
+    const sender = state.recipients.find((r: any) => JSON.parse(r.identityKey).signingKey.x === JSON.parse(input.senderKeys.identityKey).signingKey.x);
+    assert.ok(sender);
+    for (const recipient of state.recipients) {
+      const keys = fixtureKeys.get(JSON.parse(recipient.identityKey).signingKey.x); assert.ok(keys);
+      const material = await crypto.generateEpochKeyPackage(recipient.deviceId); materials.set(recipient.deviceId, material);
+      const pkg = { ...recipient, packageId: randomUUID(), keyPackage: material.publicPackage };
+      const signature = sign('sha256', Buffer.from(serializeGroupKeyPackage(input.channelId, input.version, pkg)), { key: keys.signingPrivateKey, dsaEncoding: 'ieee-p1363' }).toString('base64');
+      // These fixture endpoints include offline participants. Their protocol
+      // publication is exercised through the service; account-security's suite
+      // separately exercises package/session binding over HTTP.
+      await (await import('../services/mls.service.js')).publishKeyPackage(input.channelId, recipient.userId, recipient.deviceId, input.version, {...pkg, signature});
+      roster.push({...pkg, signature});
+    }
+    const parent = state.currentVersion && state.protocolVersion === 3 ? await json<any>(await request(`/api/channels/${input.channelId}/mls/epochs/${state.currentVersion}`, {cookie: input.senderCookie})) : null;
+    const context = {channelId: input.channelId, version: input.version, previousVersion: state.currentVersion, previousTranscript: parent?.transcript ?? '0'.repeat(64)};
+    const groupId = JSON.stringify(['alparts', input.channelId, input.version, context.previousTranscript]);
+    const group = await crypto.createEpochGroup(groupId, materials.get(sender.deviceId)!, roster.map(p => p.keyPackage));
+    input.rawKey.set(group.raw);
+    const keyCommitment = createHash('sha256').update(input.rawKey).digest('base64url');
+    const { db } = await import('../db/index.js'); const {directoryHead} = await import('../services/directory.service.js');
+    const directoryHeads = await Promise.all([...new Set(roster.map(p => p.userId))].sort().map(id => directoryHead(db, id)));
+    const unsigned = {...context, keyCommitment, roster, directoryHeads, distributorDeviceId: sender.deviceId, welcome: input.poisonWelcome ? Buffer.from('invalid MLS welcome').toString('base64') : group.welcome, commit: group.commit};
+    const epoch: MlsEpoch = {...unsigned, signature: sign('sha256',Buffer.from(serializeMlsEpoch(unsigned)),{key:input.senderKeys.signingPrivateKey,dsaEncoding:'ieee-p1363'}).toString('base64')};
+    const transcript = createHash('sha256').update(serializeMlsEpoch(epoch)).digest('hex');
+    const encryptedKey = Buffer.from(JSON.stringify({mls:1,version:input.version,transcript})).toString('base64');
+    const keys = roster.map(recipient => ({deviceId:recipient.deviceId,encryptedKey,signature:sign('sha256',Buffer.from(serializeChannelKeyWrap({channelId:input.channelId,keyVersion:input.version,keyCommitment,recipientDeviceId:recipient.deviceId,encryptedKey})),{key:input.senderKeys.signingPrivateKey,dsaEncoding:'ieee-p1363'}).toString('base64')}));
+    const joined = new Map<string, Buffer>();
+    for(const member of roster) {
+      const key = fixtureKeys.get(JSON.parse(member.identityKey).signingKey.x)!;
+      if(input.poisonWelcome && member.deviceId !== sender.deviceId) {
+        await assert.rejects(crypto.joinEpochGroup(groupId,materials.get(member.deviceId)!,roster.map(p=>p.keyPackage),epoch.welcome));
+        continue;
+      }
+      const raw = member.deviceId === sender.deviceId ? group.raw : await crypto.joinEpochGroup(groupId,materials.get(member.deviceId)!,roster.map(p=>p.keyPackage),epoch.welcome);
+      assert.deepEqual(raw,group.raw); joined.set(key.encryptionPrivateKey.export({format:'jwk'}).n!,Buffer.from(raw));
+    }
+    joinedMlsKeys.set(encryptedKey,joined);
+    const freshStartSignature = input.fresh ? sign('sha256',Buffer.from(serializeChannelKeyFreshStart({channelId:input.channelId,keyVersion:input.version,keyCommitment,deviceId:sender.deviceId})),{key:input.senderKeys.signingPrivateKey,dsaEncoding:'ieee-p1363'}).toString('base64') : undefined;
+    const response = await request(`/api/channels/${input.channelId}/mls/epochs${input.fresh?'/fresh-start':''}`,{method:'POST',cookie:input.senderCookie,body:{epoch,keys,...(freshStartSignature?{freshStartSignature}:{})}});
+    assert.equal(response.status,201,await response.text());
+    return {keyCommitment,keys};
   }
 
   async function distributeAndAcknowledgeChannelKey(input: {
@@ -2814,21 +2803,7 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
       keys: ReturnType<typeof deviceFixture>;
     }>;
   }) {
-    const keyCommitment = createHash('sha256').update(input.rawKey).digest('base64url');
-    const keys = input.recipients.map((recipient) => signedChannelKeyWrap({
-      channelId: input.channelId,
-      version: input.version,
-      keyCommitment,
-      rawKey: input.rawKey,
-      recipient,
-      senderKeys: input.senderKeys,
-    }));
-    const distribution = await request(`/api/channels/${input.channelId}/keys`, {
-      method: 'POST',
-      cookie: input.senderCookie,
-      body: { version: input.version, keyCommitment, keys },
-    });
-    assert.equal(distribution.status, 201);
+    const {keyCommitment,keys} = await proposeFixtureMls(input);
 
     for (const acknowledgement of input.acknowledgements) {
       const wrapped = keys.find((key) => key.deviceId === acknowledgement.deviceId);
@@ -2918,16 +2893,37 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
     return json<{ version: number; status: string; activated: boolean }>(response);
   }
 
-  async function request(path: string, options: { method?: string; cookie?: string; body?: unknown } = {}) {
+  async function request(path: string, options: { method?: string; cookie?: string; body?: unknown } = {}): Promise<Response> {
     const headers: Record<string, string> = { Origin: 'http://localhost:5173' };
     if (options.cookie) {
       headers.Cookie = options.cookie;
       const addressSeed = createHash('sha256').update(options.cookie).digest();
       headers['X-Forwarded-For'] = `198.18.${addressSeed[0]}.${addressSeed[1]}`;
     }
+    if (options.cookie && options.method === 'DELETE' && /^\/api\/devices\/[^/]+$/.test(path)) {
+      const {db} = await import('../db/index.js'); const {devices} = await import('../db/schema.js');
+      const sessions = await json<any[]>(await request('/api/auth/sessions',{cookie:options.cookie}));
+      const actorId = Array.isArray(sessions) ? sessions.find(s=>s.current)?.deviceId : null;
+      const target = await db.query.devices.findFirst({where:eq(devices.id,path.split('/').at(-1)!)});
+      const actor = actorId ? await db.query.devices.findFirst({where:eq(devices.id,actorId)}) : null;
+      if(actor && target) {
+        const head = await (await import('../services/directory.service.js')).directoryHead(db,actor.userId);
+        const signature = sign('sha256',Buffer.from(serializeDeviceDecision(head,{kind:'revoke',deviceId:target.id,identityKey:target.identityKey,actorDeviceId:actor.id})),{key:fixtureKeys.get(JSON.parse(actor.identityKey).signingKey.x)!.signingPrivateKey,dsaEncoding:'ieee-p1363'}).toString('base64');
+        options = {...options,body:{head,signature}};
+      }
+    }
+    if(options.cookie && credentials.has(options.cookie) && isSensitiveAction(options.method ?? 'GET',path.split('?')[0])) {
+      const purpose = `${options.method} ${path.split('?')[0]} ${createHash('sha256').update(canonicalActionBody(options.body)).digest('base64url')}`;
+      const optionsResponse = await request('/api/auth/step-up/options',{method:'POST',cookie:options.cookie,body:{purpose}});
+      if(optionsResponse.status===200) {
+        const challenge = await json<any>(optionsResponse);
+        const verified = await request('/api/auth/step-up/verify',{method:'POST',cookie:options.cookie,body:{id:challenge.id,purpose,password:credentials.get(options.cookie)!.password}});
+        assert.equal(verified.status,200);headers['X-Alparts-Step-Up']=(await json<any>(verified)).token;
+      }
+    }
     const rawBody = Buffer.isBuffer(options.body) ? options.body : null;
     if (options.body !== undefined) headers['Content-Type'] = rawBody ? 'application/octet-stream' : 'application/json';
-    return fetch(`${baseUrl}${path}`, {
+    const response = await fetch(`${baseUrl}${path}`, {
       method: options.method || 'GET',
       headers,
       body: options.body === undefined
@@ -2936,6 +2932,14 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
           ? new Uint8Array(rawBody)
           : JSON.stringify(options.body),
     });
+    if (response.status === 429 && response.headers.get('RateLimit-Limit') === '300') {
+      // This long scenario now includes real per-action authentication. Respect
+      // the unchanged production source budget rather than bypassing it.
+      await delay(Math.min(60_000, Number(response.headers.get('Retry-After')) * 1000 + 100));
+      return request(path, options);
+    }
+    if(path==='/api/auth/login' && response.status===200) {const login=await response.clone().json() as any;credentials.set(response.headers.get('set-cookie')!.split(';')[0],{password:(options.body as any).password,userId:login.user.id});}
+    return response;
   }
 });
 
@@ -2954,11 +2958,13 @@ function deviceFixture() {
   signingKey.alg = 'ES256';
   signingKey.ext = true;
   signingKey.key_ops = ['verify'];
-  return {
+  const fixture = {
     identityKey: JSON.stringify({ version: 1, encryptionKey, signingKey }),
     encryptionPrivateKey: encryption.privateKey,
     signingPrivateKey: signingKeys.privateKey,
   };
+  fixtureKeys.set(signingKey.x!, fixture);
+  return fixture;
 }
 
 function wrapKey(raw: Buffer, identityKey: string): string {
@@ -2968,6 +2974,8 @@ function wrapKey(raw: Buffer, identityKey: string): string {
 }
 
 function unwrapKey(wrapped: string, privateKey: import('node:crypto').KeyObject): Buffer {
+  const joined = joinedMlsKeys.get(wrapped)?.get(privateKey.export({format:'jwk'}).n!);
+  if (joined) return Buffer.from(joined);
   return privateDecrypt({
     key: privateKey,
     padding: constants.RSA_PKCS1_OAEP_PADDING,

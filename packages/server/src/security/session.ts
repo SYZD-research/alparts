@@ -3,7 +3,7 @@ import jwt from 'jsonwebtoken';
 import { and, eq, gt, isNull } from 'drizzle-orm';
 import { config } from '../config/index.js';
 import { db } from '../db/index.js';
-import { sessions } from '../db/schema.js';
+import { sessions, users } from '../db/schema.js';
 
 export interface ActiveSession {
   userId: string;
@@ -47,6 +47,7 @@ export async function verifySessionToken(token: string): Promise<ActiveSession |
     ),
   });
   if (!session) return null;
+  if (!await accountEnabled(userId)) return null;
 
   const expiresAtMs = Math.min(payload.exp * 1000, session.expiresAt.getTime());
   if (!Number.isFinite(expiresAtMs) || expiresAtMs <= Date.now()) return null;
@@ -68,5 +69,11 @@ export async function isSessionActive(
       gt(sessions.expiresAt, new Date()),
     ),
   });
-  return Boolean(row);
+  return Boolean(row) && await accountEnabled(session.userId);
+}
+
+async function accountEnabled(userId: string): Promise<boolean> {
+  return Boolean(await db.query.users.findFirst({
+    columns: { id: true }, where: and(eq(users.id, userId), isNull(users.disabledAt)),
+  }));
 }

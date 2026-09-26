@@ -1,14 +1,22 @@
 {
   "name": "alparts",
   "version": "0.1.0",
-  "private": true,
-  "license": "UNLICENSED",
-  "packageManager": "pnpm@11.21.0",
-  "engines": {
-    "node": ">=24",
-    "pnpm": ">=11.21.0"
+  "devDependencies": {
+    "@secretlint/secretlint-rule-preset-recommend": "13.0.5",
+    "oxlint": "1.80.0",
+    "secretlint": "13.0.5"
   },
   "description": "Secure communications platform",
+  "engines": {
+    "node": ">=24.8.0",
+    "pnpm": ">=11.21.0"
+  },
+  "license": "UNLICENSED",
+  "overrides": {
+    "esbuild": "^0.28.2"
+  },
+  "packageManager": "pnpm@11.21.0",
+  "private": true,
   "scripts": {
     "build:shared": "pnpm --filter @alparts/shared run build",
     "dev": "pnpm run build:shared && pnpm -r --parallel run dev",
@@ -31,9 +39,5 @@
     "lint": "oxlint --deny-warnings packages",
     "security:secrets": "bash scripts/check-secrets.sh"
   },
-  "devDependencies": {
-    "@secretlint/secretlint-rule-preset-recommend": "13.0.5",
-    "oxlint": "1.80.0",
-    "secretlint": "13.0.5"
-  }
+  "workspaces": ["packages/*"]
 }

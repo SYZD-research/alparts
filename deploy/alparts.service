@@ -16,16 +16,18 @@ LoadCredential=database_url:/etc/alparts/credentials/database_url
 LoadCredential=minio_access_key:/etc/alparts/credentials/minio_access_key
 LoadCredential=minio_secret_key:/etc/alparts/credentials/minio_secret_key
 LoadCredential=jwt_secret:/etc/alparts/credentials/jwt_secret
+LoadCredential=password_pepper:/etc/alparts/credentials/password_pepper
 LoadCredential=audit_integrity_key:/etc/alparts/credentials/audit_integrity_key
 Environment=DATABASE_URL_FILE=%d/database_url
 Environment=MINIO_ACCESS_KEY_FILE=%d/minio_access_key
 Environment=MINIO_SECRET_KEY_FILE=%d/minio_secret_key
 Environment=JWT_SECRET_FILE=%d/jwt_secret
+Environment=PASSWORD_PEPPER_FILE=%d/password_pepper
 Environment=AUDIT_INTEGRITY_KEY_FILE=%d/audit_integrity_key
 Environment=AUDIT_CHECKPOINT_PATH=/var/lib/alparts-audit/checkpoint.json
 Environment=AUDIT_CHECKPOINT_REQUIRED=true
 Environment=ALLOW_INSECURE_LOOPBACK_DEPENDENCIES=true
-ExecStart=/usr/bin/node /opt/alparts/packages/server/dist/index.js
+ExecStart=/usr/bin/node --permission --allow-fs-read=/opt/alparts --allow-fs-read=%d --allow-fs-read=/var/lib/alparts-audit --allow-fs-write=/var/lib/alparts-audit --allow-worker --disallow-code-generation-from-strings /opt/alparts/packages/server/dist/index.js
 Restart=on-failure
 RestartSec=5s
 TimeoutStopSec=30s
@@ -56,6 +58,10 @@ LockPersonality=yes
 CapabilityBoundingSet=
 AmbientCapabilities=
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# This unit uses a local reverse proxy, PostgreSQL and object storage. Remote
+# dependencies require explicit addresses in an operator-managed drop-in.
+IPAddressDeny=any
+IPAddressAllow=localhost
 UMask=0077
 StateDirectory=alparts-audit
 StateDirectoryMode=0700

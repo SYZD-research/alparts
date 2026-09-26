@@ -1,3 +1,4 @@
+import { normalizeEmail } from '../security/email.js';
 import { createHash } from 'node:crypto';
 import type { Request, RequestHandler } from 'express';
 
@@ -5,6 +6,7 @@ interface RateLimitOptions {
   windowMs: number;
   max: number;
   key?: (req: Request) => string;
+  onLimit?: RequestHandler;
 }
 
 interface Counter { count: number; resetAt: number }
@@ -37,6 +39,7 @@ export function rateLimit(options: RateLimitOptions): RequestHandler {
     res.setHeader('RateLimit-Remaining', String(Math.max(0, options.max - counter.count)));
     res.setHeader('RateLimit-Reset', String(Math.ceil(counter.resetAt / 1000)));
     if (counter.count > options.max) {
+      if (options.onLimit) { options.onLimit(req, res, next); return; }
       res.setHeader('Retry-After', String(Math.ceil((counter.resetAt - now) / 1000)));
       res.status(429).json({ error: 'RATE_LIMITED', message: 'Too many requests', statusCode: 429 });
       return;
@@ -56,6 +59,6 @@ export function credentialRateLimitKey(req: Request): string {
  * rotating IPs, while hashing avoids retaining account identifiers in memory.
  */
 export function credentialAccountRateLimitKey(req: Request): string {
-  const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+  const email = typeof req.body?.email === 'string' ? normalizeEmail(req.body.email) : '';
   return createHash('sha256').update(email).digest('hex').slice(0, 24);
 }

@@ -104,8 +104,9 @@ export async function previewPermissionOverride(
   return db.transaction(async (transaction) => {
     await lockWorkspaceForAuthorization(transaction, workspaceId, 'share');
     await assertManagementAuthorization(transaction, target, workspaceId, targetId, actorId);
-    await assertWorkspaceRole(transaction, workspaceId, input.roleId);
     const current = await findOverride(transaction, target, workspaceId, targetId, input.roleId);
+    await assertOverrideAuthority(transaction, target, workspaceId, targetId, actorId, input.roleId,
+      normalized.allowMask | normalized.denyMask | (current?.allowMask ?? 0) | (current?.denyMask ?? 0));
     if (input.operation === 'delete' && !current) throw new Error('OVERRIDE_NOT_FOUND');
     const affectedChannelIds = await getAffectedChannelIds(transaction, target, workspaceId, targetId);
     const before = await captureChannelViewersFromStore(transaction, workspaceId, affectedChannelIds);
@@ -157,8 +158,9 @@ export async function upsertPermissionOverride(
     const affectedChannelIds = await getAffectedChannelIds(transaction, target, workspaceId, targetId);
     for (const channelId of [...affectedChannelIds].sort()) await lockChannelAuthorization(transaction, channelId);
     await assertManagementAuthorization(transaction, target, workspaceId, targetId, actorId);
-    await assertWorkspaceRole(transaction, workspaceId, roleId);
     const current = await findOverride(transaction, target, workspaceId, targetId, roleId);
+    await assertOverrideAuthority(transaction, target, workspaceId, targetId, actorId, roleId,
+      input.allowMask | input.denyMask | (current?.allowMask ?? 0) | (current?.denyMask ?? 0));
     if ((current?.revision ?? 0) !== input.expectedRevision) throw new Error('STALE_OVERRIDE');
     const before = await captureChannelViewersFromStore(transaction, workspaceId, affectedChannelIds);
     const nextRevision = input.expectedRevision + 1;
@@ -255,9 +257,9 @@ export async function deletePermissionOverride(
     const affectedChannelIds = await getAffectedChannelIds(transaction, target, workspaceId, targetId);
     for (const channelId of [...affectedChannelIds].sort()) await lockChannelAuthorization(transaction, channelId);
     await assertManagementAuthorization(transaction, target, workspaceId, targetId, actorId);
-    await assertWorkspaceRole(transaction, workspaceId, roleId);
     const current = await findOverride(transaction, target, workspaceId, targetId, roleId);
     if (!current) throw new Error('OVERRIDE_NOT_FOUND');
+    await assertOverrideAuthority(transaction, target, workspaceId, targetId, actorId, roleId, current.allowMask | current.denyMask);
     if (current.revision !== expectedRevision) throw new Error('STALE_OVERRIDE');
     const before = await captureChannelViewersFromStore(transaction, workspaceId, affectedChannelIds);
     if (target === 'category') {
@@ -339,12 +341,44 @@ async function assertManagementAuthorization(
   }
 }
 
-async function assertWorkspaceRole(store: any, workspaceId: string, roleId: string) {
+export function assertOverrideRoleAuthority(
+  actor: { isOwner: boolean; permissionMask: number; highestPosition: number },
+  role: { name: string; position: number },
+  affectedMask: number,
+) {
+  if (role.name === 'Owner') throw new Error('NOT_AUTHORIZED');
+  if (actor.isOwner) return;
+  if (role.position >= actor.highestPosition || (affectedMask & ~actor.permissionMask) !== 0) {
+    throw new Error('NOT_AUTHORIZED');
+  }
+}
+
+async function assertOverrideAuthority(
+  store: any,
+  target: OverrideTarget,
+  workspaceId: string,
+  targetId: string,
+  actorId: string,
+  roleId: string,
+  affectedMask: number,
+) {
   const role = await store.query.roles.findFirst({
-    columns: { id: true },
     where: and(eq(roles.id, roleId), eq(roles.workspaceId, workspaceId)),
   });
   if (!role) throw new Error('ROLE_NOT_FOUND');
+  const actor = await getWorkspaceAuthorizationFromStore(store, workspaceId, actorId);
+  if (!actor) throw new Error('NOT_AUTHORIZED');
+  const scoped =
+    target === 'channel' ? await getChannelAuthorizationFromStore(store, actorId, targetId) : null;
+  assertOverrideRoleAuthority(
+    {
+      isOwner: actor.isOwner,
+      permissionMask: actor.permissionMask & (scoped?.permissions ?? actor.permissionMask),
+      highestPosition: Math.max(-1, ...actor.roles.map((r: { position: number }) => r.position)),
+    },
+    role,
+    affectedMask,
+  );
 }
 
 async function getAffectedChannelIds(store: any, target: OverrideTarget, workspaceId: string, targetId: string) {

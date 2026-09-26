@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { api } from '../services/api';
 import type { Channel } from '@alparts/shared';
 import { restoreChannelKeyScope } from '../services/crypto.service';
+import { useDraftStore } from './draft.store';
 
 interface ChannelState {
   activeChannelId: string | null;
@@ -9,7 +10,7 @@ interface ChannelState {
   setActiveChannel: (id: string | null) => void;
   channels: Channel[];
   error: string | null;
-  loadChannels: (workspaceId: string) => Promise<Channel[]>;
+  loadChannels: (workspaceId: string) => Promise<Channel[] | null>;
   createChannel: (workspaceId: string, name: string, options?: {
     categoryId?: string;
     isPrivate?: boolean;
@@ -43,7 +44,9 @@ export const useChannelStore = create<ChannelState>((set) => ({
       const channels = await api.getChannels(workspaceId);
       if (generation === channelRequestGeneration) {
         await Promise.all(channels.map((channel) => restoreChannelKeyScope(channel.id)));
-        if (generation !== channelRequestGeneration) return [];
+        if (generation !== channelRequestGeneration) return null;
+        await Promise.all(channels.map((channel) => useDraftStore.getState().restoreChannel(channel.id)));
+        if (generation !== channelRequestGeneration) return null;
         set((state) => {
           const activeStillVisible = state.workspaceId === workspaceId
             && Boolean(state.activeChannelId)
@@ -61,13 +64,13 @@ export const useChannelStore = create<ChannelState>((set) => ({
       }
       // Never expose an authorization list that was invalidated by a direct
       // revoke/removal while the request was in flight.
-      return [];
-    } catch (error) {
+      return null;
+    } catch {
       if (generation === channelRequestGeneration) {
         channelRequestWorkspaceId = null;
-        set({ channels: [], activeChannelId: null, workspaceId, error: error instanceof Error ? error.message : 'チャンネルを読み込めませんでした' });
+        set({ error: 'チャンネルを読み込めませんでした。接続を確認して再度お試しください。' });
       }
-      return [];
+      return null;
     }
   },
 

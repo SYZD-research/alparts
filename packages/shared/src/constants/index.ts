@@ -16,6 +16,7 @@ export const Permissions = {
   ATTACH_FILES: 1 << 14,
   MANAGE_WEBHOOKS: 1 << 15,
   MANAGE_BOTS: 1 << 16,
+  CONNECT_VOICE: 1 << 17,
 } as const;
 
 export type Permission = keyof typeof Permissions;
@@ -28,6 +29,7 @@ export const DefaultRoles = {
     Permissions.VIEW_AUDIT_LOG |
     Permissions.MANAGE_MEMBERS,
   Member:
+    Permissions.CONNECT_VOICE |
     Permissions.SEND_MESSAGES |
     Permissions.EDIT_MESSAGES |
     Permissions.DELETE_MESSAGES |
@@ -67,6 +69,7 @@ export const UserStatus = {
 } as const;
 
 export const MAX_MESSAGE_LENGTH = 4000;
+export const MAX_PADDED_MESSAGE_BYTES = 16_384;
 export const MAX_DIRECT_MENTION_RECIPIENTS_PER_MESSAGE = 50;
 export const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB
 export const MESSAGES_PER_PAGE = 50;

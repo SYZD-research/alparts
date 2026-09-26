@@ -23,6 +23,7 @@ function productionEnvironment(overrides: NodeJS.ProcessEnv = {}): NodeJS.Proces
     MINIO_SECRET_KEY: strong,
     JWT_SECRET: strong,
     AUDIT_INTEGRITY_KEY: strong,
+    PASSWORD_PEPPER: strong,
     AUDIT_CHECKPOINT_PATH: '/tmp/alparts-synthetic-checkpoint.json',
     AUDIT_CHECKPOINT_REQUIRED: 'true',
     CORS_ORIGINS: 'https://chat.example.test',
@@ -34,8 +35,9 @@ function loadConfiguration(environment: NodeJS.ProcessEnv) {
   return spawnSync(process.execPath, [
     '--import',
     'tsx',
+    '--input-type=module',
     '--eval',
-    "import('./src/config/index.ts').then(() => process.stdout.write('loaded'))",
+    "await import('./src/config/index.ts'); (await import('node:fs')).writeSync(1, 'loaded')",
   ], {
     cwd: process.cwd(),
     env: environment,

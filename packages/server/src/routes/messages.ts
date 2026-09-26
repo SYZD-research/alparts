@@ -3,7 +3,7 @@ import type { Server as SocketServer } from 'socket.io';
 import { z } from 'zod';
 import {
   MAX_DIRECT_MENTION_RECIPIENTS_PER_MESSAGE,
-  MAX_MESSAGE_LENGTH,
+  MAX_PADDED_MESSAGE_BYTES,
   MESSAGES_PER_PAGE,
   Permissions,
 } from '@alparts/shared';
@@ -19,7 +19,7 @@ import {
 } from '../websocket/message.handler.js';
 
 const router = Router();
-const ciphertextMax = Math.ceil((MAX_MESSAGE_LENGTH * 4 + 16) / 3) * 4;
+const ciphertextMax = Math.ceil((MAX_PADDED_MESSAGE_BYTES + 16) / 3) * 4;
 const encryptedContent = z.string().min(24).max(ciphertextMax).regex(/^[A-Za-z0-9+/]+={0,2}$/);
 const nonce = z.string().length(16).regex(/^[A-Za-z0-9+/]+$/);
 const signature = z.string().length(88).regex(/^[A-Za-z0-9+/]{86}==$/);
@@ -57,8 +57,9 @@ const paginationSchema = z.object({
 router.get('/channels/:id/messages', authMiddleware, requireChannelAccess('id'), async (req: AuthRequest, res) => {
   try {
     const query = paginationSchema.parse(req.query);
-    res.json(await messageService.getChannelMessages(req.params.id, query));
+    res.json(await messageService.getChannelMessages(req.params.id, req.userId!, query));
   } catch (error: any) {
+    if (error.message === 'CHANNEL_NOT_FOUND') { res.sendStatus(404); return; }
     if (error.name === 'ZodError' || error.message === 'INVALID_CURSOR') {
       res.status(400).json({ error: 'VALIDATION', message: 'Invalid pagination cursor', statusCode: 400 });
       return;

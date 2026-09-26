@@ -1,3 +1,5 @@
+import { consumeSocketRate, type AuthenticatedSocket } from './websocket/security.js';
+import { requireRuntimeLease } from './security/runtime-lease.js';
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -7,6 +9,11 @@ import { fileURLToPath } from 'node:url';
 import { config } from './config/index.js';
 import { setupWebSocket } from './websocket/index.js';
 import authRoutes from './routes/auth.js';
+import recoveryRoutes from './routes/recovery.js';
+import mlsRoutes from './routes/mls.js';
+import directoryRoutes from './routes/directory.js';
+import passkeyRoutes from './routes/passkeys.js';
+import { sensitiveActionBoundary } from './middleware/step-up.js';
 import workspaceRoutes from './routes/workspaces.js';
 import channelRoutes from './routes/channels.js';
 import messageRoutes from './routes/messages.js';
@@ -29,8 +36,11 @@ import { checkAuditCheckpoint } from './middleware/audit.js';
 import { reserveJsonBody } from './middleware/body-admission.js';
 import { renderPrometheusMetrics } from './observability/metrics.js';
 import { matchesSecret } from './security/cookies.js';
+import { createReadinessCheck } from './security/readiness-cache.js';
 
 export function createApp() {
+  if (!config.audit.checkpointPath || !config.audit.checkpointRequired) throw new Error('AUDIT_CHECKPOINT_REQUIRED');
+  const runtime = requireRuntimeLease();
   const app = express();
   const httpServer = createServer(app);
   httpServer.headersTimeout = 15_000;
@@ -50,8 +60,34 @@ export function createApp() {
     },
   });
 
+  runtime.onLost(() => {
+    shuttingDown = true;
+    io.disconnectSockets(true);
+    httpServer.closeAllConnections();
+    httpServer.close();
+  });
+  runtime.onAccountDisabled((userId) => io.in(`user:${userId}`).disconnectSockets(true));
+  io.engine.use((
+    _req: import('node:http').IncomingMessage,
+    _res: import('node:http').ServerResponse,
+    next: (error?: Error) => void,
+  ) => next(runtime.isAlive() ? undefined : new Error('SERVICE_UNAVAILABLE')));
+  io.on('connection', (socket: AuthenticatedSocket) => {
+    socket.use((_packet, next) => {
+      if (!consumeSocketRate(socket, 'runtime-admission', 1200, 60_000)) {
+        next(new Error('RATE_LIMITED'));
+        return;
+      }
+      void runtime.check().then(() => next(), () => {
+        socket.disconnect(true);
+        next(new Error('SERVICE_UNAVAILABLE'));
+      });
+    });
+  });
+
   // Middleware
   app.disable('x-powered-by');
+  app.set('query parser', 'simple');
   app.set('trust proxy', config.network.trustedProxies.length > 0 ? [...config.network.trustedProxies] : false);
   app.set('io', io);
   app.use(requestContext);
@@ -101,10 +137,20 @@ export function createApp() {
   app.use(enforceBrowserOrigin);
   // Apply the cheap shared request budget before any body parser allocates.
   app.use(rateLimit({ windowMs: 60_000, max: 300 }));
-  // A full 400-device RSA channel-key fanout is roughly 240 KiB. Route-level
-  // schemas still apply much tighter limits to every other field.
-  app.use(reserveJsonBody(512 * 1024));
-  app.use(express.json({ limit: '512kb', strict: true, type: 'application/json' }));
+  app.use((_req, res, next) => {
+    void runtime.check().then(() => next(), () => {
+      res.status(503).json({ error: 'SERVICE_UNAVAILABLE' });
+    });
+  });
+
+  // Signed group proposals include up to 400 public packages and the Welcome.
+  // Keep their bounded allowance separate from ordinary JSON requests.
+  const groupBody = reserveJsonBody(2 * 1024 * 1024);
+  const normalBody = reserveJsonBody(512 * 1024);
+  const groupParser = express.json({ limit: '2mb', strict: true, type: 'application/json' });
+  const normalParser = express.json({ limit: '512kb', strict: true, type: 'application/json' });
+  app.use((req, res, next) => (/^\/api\/channels\/[^/]+\/mls\/epochs(?:\/fresh-start)?$/.test(req.path) ? groupBody : normalBody)(req, res, next));
+  app.use((req, res, next) => (/^\/api\/channels\/[^/]+\/mls\/epochs(?:\/fresh-start)?$/.test(req.path) ? groupParser : normalParser)(req, res, next));
   app.use('/api', (_req, res, next) => {
     res.setHeader('Cache-Control', 'no-store');
     next();
@@ -130,15 +176,18 @@ export function createApp() {
   app.get('/health/startup', (_req, res) => {
     res.status(shuttingDown ? 503 : 200).json({ status: shuttingDown ? 'draining' : 'ok' });
   });
+  const ready = createReadinessCheck(async () => {
+    await Promise.all([checkDb(), checkDatabaseSchema(), checkObjectStorage(), checkAuditCheckpoint()]);
+  });
   app.get('/health/ready', async (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
     if (shuttingDown) {
       res.status(503).json({ status: 'draining' });
       return;
     }
-    try {
-      await Promise.all([checkDb(), checkDatabaseSchema(), checkObjectStorage(), checkAuditCheckpoint()]);
+    if (await ready()) {
       res.json({ status: 'ready' });
-    } catch {
+    } else {
       res.status(503).json({ status: 'unavailable' });
     }
   });
@@ -157,6 +206,11 @@ export function createApp() {
   }
 
   // API Routes
+  app.use('/api', sensitiveActionBoundary);
+  app.use('/api/auth', passkeyRoutes);
+  app.use('/api', directoryRoutes);
+  app.use('/api', mlsRoutes);
+  app.use('/api/recovery', recoveryRoutes);
   app.use('/api/auth', authRoutes);
   app.use('/api/workspaces', workspaceRoutes);
   app.use('/api', channelRoutes);
@@ -173,6 +227,9 @@ export function createApp() {
 
   // WebSocket
   setupWebSocket(io);
+  io.use((_socket, next) => {
+    void runtime.check().then(() => next(), () => next(new Error('SERVICE_UNAVAILABLE')));
+  });
 
   if (config.isProduction) {
     const clientDist = fileURLToPath(new URL('../../client/dist/', import.meta.url));

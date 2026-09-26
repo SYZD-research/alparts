@@ -10,6 +10,7 @@ const permissionLabels: Record<Permission, string> = {
   MENTION_EVERYONE: '@everyone を使用',
   PIN_MESSAGES: 'メッセージをピン留め',
   VIEW_CHANNELS: 'チャンネルを閲覧',
+  CONNECT_VOICE: '通話に参加',
   MANAGE_CHANNELS: 'チャンネルを管理',
   MANAGE_MEMBERS: 'メンバーと招待を管理',
   KICK_MEMBERS: 'メンバーを退出',

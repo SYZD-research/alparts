@@ -10,6 +10,7 @@ interface DraftState {
   setDraft: (channelId: string, content: string) => void;
   clearDraft: (channelId: string) => Promise<void>;
   clearChannel: (channelId: string) => Promise<void>;
+  restoreChannel: (channelId: string) => Promise<void>;
   clearError: (channelId: string) => void;
   reset: () => void;
 }
@@ -26,6 +27,7 @@ interface PendingPersistence {
 }
 const pendingPersistence = new Map<string, PendingPersistence>();
 const draftVersions = new Map<string, number>();
+const revokedChannels = new Set<string>();
 let draftGeneration = 0;
 
 function errorMessage(error: unknown): string {
@@ -91,6 +93,7 @@ export const useDraftStore = create<DraftState>((set, get) => ({
   errorsByChannel: {},
 
   loadDraft: async (channelId) => {
+    if (revokedChannels.has(channelId)) return;
     if (get().loadedByChannel[channelId] || get().loadingByChannel[channelId]) return;
     const generation = draftGeneration;
     const version = draftVersions.get(channelId) || 0;
@@ -107,7 +110,7 @@ export const useDraftStore = create<DraftState>((set, get) => ({
         loadingByChannel: { ...state.loadingByChannel, [channelId]: false },
       }));
     } catch (error) {
-      if (generation !== draftGeneration) return;
+      if (generation !== draftGeneration || (draftVersions.get(channelId) || 0) !== version || revokedChannels.has(channelId)) return;
       set((state) => ({
         loadedByChannel: { ...state.loadedByChannel, [channelId]: true },
         loadingByChannel: { ...state.loadingByChannel, [channelId]: false },
@@ -117,6 +120,7 @@ export const useDraftStore = create<DraftState>((set, get) => ({
   },
 
   setDraft: (channelId, content) => {
+    if (revokedChannels.has(channelId)) return;
     const generation = draftGeneration;
     nextDraftVersion(channelId);
     const existingTimer = saveTimers.get(channelId);
@@ -132,9 +136,14 @@ export const useDraftStore = create<DraftState>((set, get) => ({
       void queuePersistence(
         channelId,
         generation,
-        () => content ? saveLocalDraft(channelId, content) : deleteLocalDraft(channelId),
+        async () => {
+          if (!revokedChannels.has(channelId)) {
+            if (content) await saveLocalDraft(channelId, content);
+            else await deleteLocalDraft(channelId);
+          }
+        },
         (error) => {
-          if (generation === draftGeneration) {
+          if (generation === draftGeneration && !revokedChannels.has(channelId)) {
             set((state) => ({ errorsByChannel: { ...state.errorsByChannel, [channelId]: errorMessage(error) } }));
           }
         },
@@ -171,6 +180,7 @@ export const useDraftStore = create<DraftState>((set, get) => ({
   },
 
   clearChannel: async (channelId) => {
+    revokedChannels.add(channelId);
     const generation = draftGeneration;
     nextDraftVersion(channelId);
     const timer = saveTimers.get(channelId);
@@ -187,6 +197,13 @@ export const useDraftStore = create<DraftState>((set, get) => ({
     await queuePersistence(channelId, generation, () => deleteLocalDraft(channelId), () => undefined);
   },
 
+  restoreChannel: async (channelId) => {
+    const generation = draftGeneration;
+    const version = draftVersions.get(channelId);
+    await persistQueues.get(channelId);
+    if (generation === draftGeneration && version === draftVersions.get(channelId)) revokedChannels.delete(channelId);
+  },
+
   clearError: (channelId) => set((state) => ({
     errorsByChannel: { ...state.errorsByChannel, [channelId]: null },
   })),
@@ -196,6 +213,7 @@ export const useDraftStore = create<DraftState>((set, get) => ({
     for (const timer of saveTimers.values()) clearTimeout(timer);
     saveTimers.clear();
     draftVersions.clear();
+    revokedChannels.clear();
     set({ drafts: {}, loadedByChannel: {}, loadingByChannel: {}, errorsByChannel: {} });
   },
 }));

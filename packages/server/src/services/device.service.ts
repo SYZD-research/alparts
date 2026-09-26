@@ -1,8 +1,11 @@
+import { type DirectoryHead, type DirectoryEvent } from '@alparts/shared';
+import { appendDirectoryEvent, assertDeviceDecision } from './directory.service.js';
 import { and, asc, eq, gt, inArray, isNull, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import {
   channelKeyEpochs,
   channelKeyEpochRecipients,
+  channelKeys,
   channels,
   devices,
   sessions,
@@ -106,10 +109,8 @@ export async function registerDevice(
     if (matches.some((device) => device.revokedAt !== null)) throw new Error('IDENTITY_REVOKED');
     const active = matches[0];
     if (active) {
-      if (active.identityKey !== identityKey) {
-        await tx.update(devices).set({ identityKey }).where(eq(devices.id, active.id));
-        active.identityKey = identityKey;
-      }
+      // Identity bytes are part of the append-only directory. A semantically
+      // identical registration retry must preserve the original statement.
       const bound = await tx.update(sessions)
         .set({ deviceId: active.id })
         .where(and(eq(sessions.id, sessionId), eq(sessions.userId, userId)))
@@ -118,21 +119,24 @@ export async function registerDevice(
       return { device: active, created: false, dirtyWorkspaceIds: [] };
     }
 
-    if (!passwordHashSnapshot) throw new Error('DEVICE_STEP_UP_REQUIRED');
-    await assertCurrentPasswordSnapshot(tx, userId, passwordHashSnapshot);
+    const [enrollmentSession] = await tx.select().from(sessions).where(and(eq(sessions.id, sessionId), eq(sessions.userId, userId), gt(sessions.expiresAt, new Date()))).for('share');
+    if (!enrollmentSession) throw new Error('SESSION_NOT_FOUND');
+    if (passwordHashSnapshot) await assertCurrentPasswordSnapshot(tx, userId, passwordHashSnapshot);
+    else if (enrollmentSession.authenticationMethod !== 'passkey') throw new Error('DEVICE_STEP_UP_REQUIRED');
     const activeDevices = await tx.select({ id: devices.id })
       .from(devices)
       .where(and(eq(devices.userId, userId), isNull(devices.revokedAt)))
       .limit(MAX_ACTIVE_DEVICES_PER_USER + 1) as Array<{ id: string }>;
     if (activeDevices.length >= MAX_ACTIVE_DEVICES_PER_USER) throw new Error('DEVICE_LIMIT_REACHED');
 
-    const inserted = await tx.insert(devices).values({ userId, name, identityKey }).returning() as Array<typeof devices.$inferSelect>;
+    const inserted = await tx.insert(devices).values({ userId, name, identityKey, approvedAt: candidates.length === 0 ? new Date() : null }).returning() as Array<typeof devices.$inferSelect>;
     const bound = await tx.update(sessions)
       .set({ deviceId: inserted[0].id })
       .where(and(eq(sessions.id, sessionId), eq(sessions.userId, userId)))
       .returning({ id: sessions.id }) as Array<{ id: string }>;
     if (bound.length !== 1) throw new Error('SESSION_NOT_FOUND');
-    const dirtyWorkspaceIds = await abortPendingEpochsForNewDevice(tx, userId);
+    await appendDirectoryEvent(tx, userId, { kind: candidates.length === 0 ? 'bootstrap' : 'register', deviceId: inserted[0].id, identityKey, actorDeviceId: inserted[0].id, challenge, signature: proof });
+    const dirtyWorkspaceIds = inserted[0].approvedAt ? await abortPendingEpochsForNewDevice(tx, userId) : [];
     return { device: inserted[0], created: true, dirtyWorkspaceIds };
   }, ({ device, created }) => ({
     actorId: userId,
@@ -185,7 +189,7 @@ export async function getUserDevices(userId: string) {
   return rows.map(formatDevice);
 }
 
-async function abortPendingEpochsForNewDevice(store: any, userId: string): Promise<string[]> {
+export async function abortPendingEpochsForNewDevice(store: any, userId: string): Promise<string[]> {
   const membershipRows = await store.query.workspaceMembers.findMany({
     columns: { workspaceId: true },
     where: eq(workspaceMembers.userId, userId),
@@ -200,7 +204,6 @@ async function abortPendingEpochsForNewDevice(store: any, userId: string): Promi
   }
   if (workspaceIds.length === 0) return [];
 
-  const dirtyWorkspaceIds: string[] = [];
   for (const workspaceId of workspaceIds) {
     // A workspace has a durable total-channel bound. Partitioning cleanup by
     // workspace prevents one tenant from consuming an account-global cap and
@@ -210,11 +213,6 @@ async function abortPendingEpochsForNewDevice(store: any, userId: string): Promi
       channelId: channelKeyEpochs.channelId,
     }).from(channelKeyEpochs)
       .innerJoin(channels, eq(channels.id, channelKeyEpochs.channelId))
-      .innerJoin(channelKeyEpochRecipients, and(
-        eq(channelKeyEpochRecipients.channelId, channelKeyEpochs.channelId),
-        eq(channelKeyEpochRecipients.version, channelKeyEpochs.version),
-        eq(channelKeyEpochRecipients.userId, userId),
-      ))
       .where(and(
         eq(channels.workspaceId, workspaceId),
         eq(channelKeyEpochs.status, 'pending'),
@@ -233,17 +231,20 @@ async function abortPendingEpochsForNewDevice(store: any, userId: string): Promi
         getChannelAuthorizationFromSnapshot(snapshot, userId, channel, {}, false),
       ))
       .map((channel) => channel.id);
-    // Device gain changes the provisional recipient set, but standard Secure
-    // semantics permit backfilling this device into the current active epoch.
-    const aborted = await abortPendingChannelKeyEpochs(store, visiblePendingChannelIds);
-    if (aborted.length > 0) dirtyWorkspaceIds.push(workspaceId);
+    // Include visible epochs even when this account previously had no eligible
+    // device. Otherwise its first approved replacement would be absent from a
+    // frozen roster that nobody can activate.
+    await abortPendingChannelKeyEpochs(store, visiblePendingChannelIds);
   }
-  return dirtyWorkspaceIds;
+  // Approved device gain also requires a fresh active roster, even when no
+  // pending epoch exists. Notify each bounded workspace to reconcile it.
+  return workspaceIds;
 }
 
 export async function revokeDevice(
   deviceId: string,
   userId: string,
+  decision?: { actorDeviceId: string; head: DirectoryHead; signature: string },
 ): Promise<{ sessionIds: string[]; affectedWorkspaceIds: string[] }> {
   const result = await auditedTransaction<{
     boundSessionIds: string[];
@@ -272,10 +273,21 @@ export async function revokeDevice(
     const affectedWorkspaceIds = changed
       ? await findAffectedWorkspaceIds(tx, deviceId, userId)
       : [];
-    if (changed) await tx.update(devices).set({ revokedAt: new Date() }).where(eq(devices.id, deviceId));
+    if (changed) {
+      if (!decision) throw new Error('DEVICE_APPROVAL_REQUIRED');
+      const event: DirectoryEvent = { kind: 'revoke', deviceId, identityKey: device.identityKey, actorDeviceId: decision.actorDeviceId, signature: decision.signature };
+      await assertDeviceDecision(tx, userId, decision.actorDeviceId, decision.head, event);
+      await tx.update(devices).set({ revokedAt: new Date() }).where(eq(devices.id, deviceId));
+      await appendDirectoryEvent(tx, userId, event);
+    }
     // Replay also removes legacy/stale bound sessions and repairs any key
     // state left by a previously interrupted older release.
     await tx.delete(sessions).where(eq(sessions.deviceId, deviceId));
+    // Keep recipient tombstones for rotation checks, erase unusable wraps.
+    await tx.update(channelKeyEpochRecipients).set({
+      acceptedDeliveryId: null, acknowledgementSignature: null, acknowledgedAt: null,
+    }).where(eq(channelKeyEpochRecipients.deviceId, deviceId));
+    await tx.delete(channelKeys).where(eq(channelKeys.deviceId, deviceId));
     return {
       boundSessionIds: boundSessions.map((session: { id: string }) => session.id),
       changed,
@@ -362,8 +374,22 @@ function formatDevice(device: typeof devices.$inferSelect) {
     userId: device.userId,
     name: device.name,
     identityKey: device.identityKey,
+    approvedAt: device.approvedAt?.toISOString() ?? null,
     createdAt: device.createdAt.toISOString(),
     lastActiveAt: device.lastActiveAt?.toISOString() || null,
     revokedAt: device.revokedAt?.toISOString() || null,
   };
+}
+
+export async function approveDevice(userId: string, actorDeviceId: string, deviceId: string, head: DirectoryHead, signature: string) {
+  return auditedTransaction(async (tx) => {
+    await lockKeyProtocol(tx);
+    const [device] = await tx.select().from(devices).where(and(eq(devices.id, deviceId), eq(devices.userId, userId), isNull(devices.revokedAt))).for('update');
+    if (!device || device.approvedAt || device.id === actorDeviceId) throw new Error('DEVICE_APPROVAL_REQUIRED');
+    const event: DirectoryEvent = { kind: 'approve', deviceId, identityKey: device.identityKey, actorDeviceId, signature };
+    await assertDeviceDecision(tx, userId, actorDeviceId, head, event);
+    await tx.update(devices).set({ approvedAt: new Date() }).where(eq(devices.id, deviceId));
+    await appendDirectoryEvent(tx, userId, event);
+    return { dirtyWorkspaceIds: await abortPendingEpochsForNewDevice(tx, userId) };
+  }, () => ({ actorId: userId, action: 'device.approve', targetType: 'device', targetId: deviceId }));
 }

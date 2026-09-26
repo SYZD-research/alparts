@@ -1,3 +1,4 @@
+import { loginWithPasskey } from '../services/passkey.service';
 import { create } from 'zustand';
 import type { User } from '@alparts/shared';
 import { api } from '../services/api';
@@ -11,6 +12,7 @@ interface AuthState {
   isLoading: boolean;
   isInitialized: boolean;
   error: string | null;
+  loginPasskey: () => Promise<void>;
   login: (email: string, password: string) => Promise<void>;
   register: (email: string, password: string, displayName: string, inviteToken: string) => Promise<void>;
   logout: () => Promise<void>;
@@ -18,10 +20,17 @@ interface AuthState {
 }
 
 let authenticationGeneration = 0;
+let authenticationTransport = Promise.resolve();
+function serializeAuthentication<T>(operation: () => Promise<T>): Promise<T> {
+  const next = authenticationTransport.then(operation, operation);
+  authenticationTransport = next.then(() => undefined, () => undefined);
+  return next;
+}
 
-async function initializeAuthenticatedClient(user: User, stepUpPassword?: string): Promise<void> {
-  await ensureDeviceSession(user, stepUpPassword);
-  connectSocket();
+async function initializeAuthenticatedClient(user: User, generation: number, stepUpPassword?: string): Promise<void> {
+  const device = await ensureDeviceSession(user, stepUpPassword);
+  if (generation !== authenticationGeneration) throw new Error('AUTHENTICATION_CHANGED');
+  if (device.approved) connectSocket();
 }
 
 export const useAuthStore = create<AuthState>((set, get) => ({
@@ -31,17 +40,22 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   error: null,
 
   login: async (email, password) => {
+    const generation = ++authenticationGeneration;
     set({ isLoading: true, error: null });
     try {
-      const result = await api.login(email, password);
+      const result = await serializeAuthentication(() => api.login(email, password));
+      if (generation !== authenticationGeneration) return;
       if (get().user?.id && get().user?.id !== result.user.id) {
         clearActiveDevice();
         resetAuthenticatedState();
       }
-      await initializeAuthenticatedClient(result.user, password);
+      await initializeAuthenticatedClient(result.user, generation, password);
       set({ user: result.user, isLoading: false, isInitialized: true });
     } catch (error) {
-      await api.logout().catch(() => undefined);
+      if (generation !== authenticationGeneration) return;
+      await serializeAuthentication(() => api.logout()).catch(() => undefined);
+      if (generation !== authenticationGeneration) return;
+      disconnectSocket();
       resetAuthenticatedState();
       clearActiveDevice();
       set({ user: null, error: authErrorMessage(error, 'login'), isLoading: false, isInitialized: true });
@@ -49,12 +63,36 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     }
   },
 
+  loginPasskey: async () => {
+    const generation = ++authenticationGeneration;
+    set({ isLoading: true, error: null });
+    try {
+      const result = await serializeAuthentication(loginWithPasskey);
+      if (generation !== authenticationGeneration) return;
+      clearActiveDevice(); resetAuthenticatedState();
+      await initializeAuthenticatedClient(result.user, generation);
+      set({ user: result.user, isLoading: false, isInitialized: true });
+    } catch (error) {
+      if (generation !== authenticationGeneration) return;
+      await serializeAuthentication(() => api.logout()).catch(() => undefined);
+      if (generation !== authenticationGeneration) return;
+      disconnectSocket();
+      resetAuthenticatedState();
+      clearActiveDevice();
+      set({ user: null, error: 'パスキーでログインできませんでした。もう一度お試しください。', isLoading: false, isInitialized: true });
+      throw error;
+    }
+  },
+
   register: async (email, password, displayName, inviteToken) => {
+    const generation = authenticationGeneration;
     set({ isLoading: true, error: null });
     try {
       await api.register(email, password, displayName, inviteToken);
+      if (generation !== authenticationGeneration) return;
       await get().login(email, password);
     } catch (error) {
+      if (generation !== authenticationGeneration) throw error;
       set({ error: authErrorMessage(error, 'register'), isLoading: false, isInitialized: true });
       throw error;
     }
@@ -62,11 +100,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   logout: async () => {
     authenticationGeneration += 1;
-    await api.logout().catch(() => undefined);
     disconnectSocket();
     clearActiveDevice();
     resetAuthenticatedState();
-    set({ user: null, error: null, isInitialized: true });
+    set({ user: null, error: null, isLoading: false, isInitialized: true });
+    await serializeAuthentication(() => api.logout()).catch(() => undefined);
   },
 
   loadUser: async () => {
@@ -79,15 +117,13 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         clearActiveDevice();
         resetAuthenticatedState();
       }
-      await initializeAuthenticatedClient(user);
+      await initializeAuthenticatedClient(user, generation);
       if (generation !== authenticationGeneration) {
-        disconnectSocket();
-        clearActiveDevice();
-        resetAuthenticatedState();
         return;
       }
       set({ user, isLoading: false, isInitialized: true });
     } catch {
+      if (generation !== authenticationGeneration) return;
       disconnectSocket();
       clearActiveDevice();
       resetAuthenticatedState();
@@ -115,11 +151,8 @@ export async function unlockAuthenticatedClient(expectedUser: User | null, passw
     generation !== authenticationGeneration
     || (expectedUser !== null && user.id !== expectedUser.id)
   ) throw new Error('UNLOCK_SESSION_CHANGED');
-  await initializeAuthenticatedClient(user, password);
+  await initializeAuthenticatedClient(user, generation, password);
   if (generation !== authenticationGeneration) {
-    disconnectSocket();
-    clearActiveDevice();
-    resetAuthenticatedState();
     throw new Error('UNLOCK_SESSION_CHANGED');
   }
   useAuthStore.setState({ user, isLoading: false, isInitialized: true, error: null });

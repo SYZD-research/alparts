@@ -13,7 +13,6 @@ import {
   workspaces,
 } from '../db/schema.js';
 import {
-  abortPendingChannelKeyEpochs,
   requireChannelKeyRotation,
 } from './key-epoch-state.js';
 import {
@@ -32,7 +31,8 @@ export const CHANNEL_SCOPED_PERMISSION_MASK =
   | Permissions.ADD_REACTIONS
   | Permissions.MENTION_EVERYONE
   | Permissions.PIN_MESSAGES
-  | Permissions.ATTACH_FILES;
+  | Permissions.ATTACH_FILES
+  | Permissions.CONNECT_VOICE;
 
 export interface RolePermissionOverrideValue {
   roleId: string;
@@ -109,14 +109,14 @@ export function assertValidChannelOverrideMask(value: number): void {
   }
 }
 
-/** Apply one override level. Denies are evaluated first and allows win conflicts. */
+/** Apply one override level. Denies win conflicts within the same level. */
 export function applyPermissionOverrideLevel(
   permissionMask: number,
   values: RolePermissionOverrideValue[],
 ): { permissionMask: number; allowMask: number; denyMask: number } {
   const allowMask = values.reduce((mask, value) => mask | value.allowMask, 0);
   const denyMask = values.reduce((mask, value) => mask | value.denyMask, 0);
-  return { permissionMask: (permissionMask & ~denyMask) | allowMask, allowMask, denyMask };
+  return { permissionMask: (permissionMask | allowMask) & ~denyMask, allowMask, denyMask };
 }
 
 export async function getWorkspaceAuthorizationFromStore(store: any, workspaceId: string, userId: string) {
@@ -518,9 +518,7 @@ export async function getChannelViewerIdsFromStore(
 ): Promise<string[]> {
   const snapshot = await loadWorkspaceAuthorizationSnapshot(store, channel.workspaceId, [channel.id]);
   if (!snapshot) return [];
-  return [...snapshot.membersByUserId.keys()].sort().filter((userId) => isVisibleChannelAuthorization(
-    getChannelAuthorizationFromSnapshot(snapshot, userId, channel, options, false),
-  ));
+  return captureChannelViewersFromSnapshot(snapshot, options).get(channel.id) ?? [];
 }
 
 export async function captureChannelViewersFromStore(
@@ -542,9 +540,11 @@ export function captureChannelViewersFromSnapshot(
   const result = new Map<string, string[]>();
   const userIds = [...snapshot.membersByUserId.keys()].sort();
   for (const channel of snapshot.channels) {
-    const viewers = userIds.filter((userId) => isVisibleChannelAuthorization(
-      getChannelAuthorizationFromSnapshot(snapshot, userId, channel, options, false),
-    ));
+    const viewers = userIds.filter((userId) => {
+      const authorization = getChannelAuthorizationFromSnapshot(snapshot, userId, channel, options, false);
+      return isVisibleChannelAuthorization(authorization)
+        && (channel.type !== 'voice' || (authorization.permissions & Permissions.CONNECT_VOICE) !== 0);
+    });
     result.set(channel.id, viewers);
   }
   return result;
@@ -563,14 +563,9 @@ export async function applyViewerEffectsAndRotation(
     const lostUserIds = [...previous].filter((userId) => !next.has(userId)).sort();
     const gainedUserIds = [...next].filter((userId) => !previous.has(userId)).sort();
     let rotationRequired = false;
-    if (lostUserIds.length > 0) {
+    if (lostUserIds.length > 0 || gainedUserIds.length > 0) {
       const result = await requireChannelKeyRotation(store, [channelId]);
       rotationRequired = result.keyedChannelIds.includes(channelId);
-    } else if (gainedUserIds.length > 0) {
-      // A provisional epoch's all-recipient acknowledgement is meaningful
-      // only for its frozen viewer/device snapshot. Viewer gain aborts that
-      // proposal but does not force an already-active epoch to rotate.
-      await abortPendingChannelKeyEpochs(store, [channelId]);
     }
     if (lostUserIds.length > 0 || gainedUserIds.length > 0 || rotationRequired) {
       effects.push({ channelId, lostUserIds, gainedUserIds, rotationRequired });
@@ -675,6 +670,7 @@ export async function computeAuthorizationRevisionFromStore(store: any, workspac
     throw new Error('PRIVATE_MEMBERSHIP_INVARIANT_EXCEEDED');
   }
   const canonical = JSON.stringify({
+    policyVersion: 2,
     ownerId: workspace.ownerId,
     roles: roleRows.map((role: any) => [role.id, role.name, role.permissions, role.position]),
     assignments: membershipRows.map((assignment: any) => [assignment.memberId, assignment.userId, assignment.roleId]),

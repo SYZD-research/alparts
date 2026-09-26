@@ -154,7 +154,7 @@ export const useOutboxStore = create<OutboxState>((set, get) => ({
         },
         errorsByChannel: { ...state.errorsByChannel, [channelId]: null },
       }));
-      if (isOnline()) void get().flushItem(command.idempotencyKey);
+      if (isOnline()) void get().flushAll();
       return command.idempotencyKey;
     } catch (error) {
       if (isOutboxLifecycleCurrent(lifecycle)) {
@@ -255,13 +255,18 @@ export const useOutboxStore = create<OutboxState>((set, get) => ({
     const generation = outboxGeneration;
     set({ isFlushing: true });
     try {
-      const ids = Object.values(get().items)
-        .sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id))
-        .map((item) => item.id);
-      for (const id of ids) {
+      const attempted = new Set<string>();
+      const blockedChannels = new Set<string>();
+      for (;;) {
         if (generation !== outboxGeneration || !isOutboxLifecycleCurrent(lifecycle) || !isOnline()) break;
-        await get().flushItem(id);
+        const item = Object.values(get().items)
+          .filter((candidate) => !attempted.has(candidate.id) && !blockedChannels.has(candidate.channelId))
+          .sort((left, right) => left.createdAt.localeCompare(right.createdAt))[0];
+        if (!item) break;
+        attempted.add(item.id);
+        await get().flushItem(item.id);
         if (!isOutboxLifecycleCurrent(lifecycle)) break;
+        if (get().items[item.id]) blockedChannels.add(item.channelId);
       }
     } finally {
       if (generation === outboxGeneration && isOutboxStorageContextCurrent(lifecycle.context)) {
@@ -285,7 +290,7 @@ export const useOutboxStore = create<OutboxState>((set, get) => ({
       }));
       return;
     }
-    void get().flushItem(idempotencyKey);
+    void get().flushAll();
   },
 
   clearError: (channelId) => set((state) => ({

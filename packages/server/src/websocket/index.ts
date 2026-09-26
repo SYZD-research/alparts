@@ -18,7 +18,7 @@ import {
   consumeSocketRate,
   type AuthenticatedSocket,
 } from './security.js';
-import { updateLastActive } from '../services/device.service.js';
+import { updateLastActive, getDeviceById } from '../services/device.service.js';
 import {
   getChannelAuthorizationFromStore,
   getWorkspaceAuthorizationFromStore,
@@ -125,6 +125,8 @@ export function setupWebSocket(io: SocketServer) {
         next(new Error('Authentication required'));
         return;
       }
+      const device = session.deviceId ? await getDeviceById(session.deviceId) : null;
+      if (!device || device.userId !== session.userId || !device.approvedAt || device.revokedAt) { next(new Error('Device approval required')); return; }
       socket.userId = session.userId;
       socket.sessionId = session.sessionId;
       socket.deviceId = session.deviceId;

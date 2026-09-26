@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { API_REQUEST_DEADLINE_MS, createApiRequestDeadline } from './api';
+import { api, API_REQUEST_DEADLINE_MS, createApiRequestDeadline } from './api';
 
 describe('API request deadline', () => {
   it('propagates caller cancellation and detaches cleanly', () => {
@@ -28,4 +28,17 @@ describe('API request deadline', () => {
       vi.useRealTimers();
     }
   });
+});
+
+it('keeps an untrusted message cursor in one query parameter', async () => {
+  const fetchMock = vi.fn(async (_input: RequestInfo | URL) => new Response(JSON.stringify({ data: [], hasMore: false, cursor: null }), { status: 200 }));
+  vi.stubGlobal('fetch', fetchMock);
+  try {
+    const cursor = 'x&limit=100#fragment';
+    await api.getMessages('test-channel', cursor);
+    const url = new URL(String(fetchMock.mock.calls[0][0]), 'https://example.test');
+    expect(url.searchParams.get('cursor')).toBe(cursor);
+    expect([...url.searchParams.keys()]).toEqual(['cursor']);
+    expect(url.hash).toBe('');
+  } finally { vi.unstubAllGlobals(); }
 });

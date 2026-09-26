@@ -5,12 +5,15 @@ import { verifySessionToken } from '../security/session.js';
 import { updateLastActive } from '../services/device.service.js';
 import { setLogActor } from '../security/log-context.js';
 
+import type { StepUpProof } from '../services/passkey.service.js';
+
 export interface AuthRequest extends Request {
   params: Record<string, string>;
   userId?: string;
   sessionId?: string;
   deviceId?: string | null;
   sessionTokenHash?: string;
+  stepUpProof?: StepUpProof;
   authTransport?: 'cookie' | 'bearer';
 }
 

@@ -27,6 +27,34 @@ afterEach(() => {
 });
 
 describe('new-device channel preparation', () => {
+  it('ignores a late history page after an initial refresh and preserves loading for other channels', async () => {
+    vi.mocked(ensureChannelKey).mockResolvedValue({ key: {} as CryptoKey, version: 1 });
+    const deferred = () => {
+      let resolve!: (value: { data: []; hasMore: boolean; cursor: string | null }) => void;
+      const promise = new Promise<{ data: []; hasMore: boolean; cursor: string | null }>((done) => { resolve = done; });
+      return { promise, resolve };
+    };
+    const page = deferred();
+    const other = deferred();
+    vi.spyOn(api, 'getMessages').mockImplementation((id, cursor) => {
+      if (cursor) return page.promise;
+      if (id !== channelId) return other.promise;
+      return Promise.resolve({ data: [], hasMore: true, cursor: 'fresh-cursor' });
+    });
+    useMessageStore.setState({ hasMore: { [channelId]: true }, cursors: { [channelId]: 'old-cursor' } });
+    const paging = useMessageStore.getState().loadMoreMessages(channelId);
+    const otherLoad = useMessageStore.getState().loadMessages('other-channel');
+    await useMessageStore.getState().loadMessages(channelId);
+    expect(useMessageStore.getState().isLoading).toBe(true);
+    page.resolve({ data: [], hasMore: false, cursor: null });
+    await paging;
+    expect(useMessageStore.getState().cursors[channelId]).toBe('fresh-cursor');
+    expect(useMessageStore.getState().hasMore[channelId]).toBe(true);
+    other.resolve({ data: [], hasMore: false, cursor: null });
+    await otherLoad;
+    expect(useMessageStore.getState().isLoading).toBe(false);
+  });
+
   it('waits without reporting a security failure, then reloads automatically after delivery', async () => {
     vi.mocked(ensureChannelKey)
       .mockRejectedValueOnce(new ChannelKeyDeliveryPendingError())
@@ -52,6 +80,15 @@ describe('new-device channel preparation', () => {
     expect(useMessageStore.getState().channelKeyPending[channelId]).toBeNull();
   });
 
+  it('clears a transient preparation failure after a verified reconciliation', async () => {
+    vi.mocked(ensureChannelKey).mockRejectedValueOnce(new Error('temporary failure'))
+      .mockResolvedValue({ key: {} as CryptoKey, version: 2 });
+    expect(await useMessageStore.getState().reconcileChannelKey(channelId)).toBe(false);
+    expect(useMessageStore.getState().securityErrors[channelId]).toBe('temporary failure');
+    expect(await useMessageStore.getState().reconcileChannelKey(channelId)).toBe(true);
+    expect(useMessageStore.getState().securityErrors[channelId]).toBeNull();
+  });
+
   it('clears the waiting state and reloads after starting without history', async () => {
     useMessageStore.setState({
       channelKeyPending: { [channelId]: 'waiting' },
@@ -66,9 +103,9 @@ describe('new-device channel preparation', () => {
       cursor: null,
     });
 
-    await useMessageStore.getState().startChannelWithoutHistory(channelId, 'Synthetic-Current-Password-1!');
+    await useMessageStore.getState().startChannelWithoutHistory(channelId);
 
-    expect(startChannelWithoutHistory).toHaveBeenCalledWith(channelId, 'Synthetic-Current-Password-1!');
+    expect(startChannelWithoutHistory).toHaveBeenCalledWith(channelId);
     expect(getMessages).toHaveBeenCalledOnce();
     expect(useMessageStore.getState().channelRecoveryPending[channelId]).toBe(false);
     expect(useMessageStore.getState().channelKeyPending[channelId]).toBeNull();

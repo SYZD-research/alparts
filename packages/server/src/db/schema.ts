@@ -26,6 +26,7 @@ export const users = pgTable('users', {
   displayName: text('display_name').notNull(),
   avatarUrl: text('avatar_url'),
   status: text('status').default('offline').notNull(),
+  disabledAt: timestamp('disabled_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });
@@ -42,6 +43,7 @@ export const devices = pgTable('devices', {
   userId: uuid('user_id').notNull().references(() => users.id),
   name: text('name').notNull(),
   identityKey: text('identity_key').notNull(),
+  approvedAt: timestamp('approved_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   lastActiveAt: timestamp('last_active_at', { withTimezone: true }),
   revokedAt: timestamp('revoked_at', { withTimezone: true }),
@@ -56,6 +58,7 @@ export const sessions = pgTable('sessions', {
   deviceId: uuid('device_id').references(() => devices.id),
   tokenHash: text('token_hash').unique().notNull(),
   deviceInfo: jsonb('device_info'),
+  authenticationMethod: text('authentication_method').notNull().default('password'),
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => [
@@ -68,6 +71,61 @@ export const sessions = pgTable('sessions', {
 export const devicesRelations = relations(devices, ({ one }) => ({
   user: one(users, { fields: [devices.userId], references: [users.id] }),
 }));
+
+export const passkeys = pgTable('passkeys', {
+  id: text('id').primaryKey(),
+  userId: uuid('user_id').notNull().references(() => users.id),
+  name: text('name').notNull(),
+  publicKey: text('public_key').notNull(),
+  counter: bigint('counter', { mode: 'number' }).notNull(),
+  transports: jsonb('transports').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [index('passkeys_user_idx').on(t.userId)]);
+
+// Challenges and step-up capabilities are one-use, expire, and bind to the
+// durable session and exact operation. Never persist a bearer grant itself.
+export const authenticationChallenges = pgTable('authentication_challenges', {
+  id: uuid('id').primaryKey(),
+  userId: uuid('user_id').references(() => users.id),
+  sessionId: uuid('session_id').references(() => sessions.id, { onDelete: 'cascade' }),
+  purpose: text('purpose').notNull(),
+  challenge: text('challenge').notNull(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+}, (t) => [index('authentication_challenges_expiry_idx').on(t.expiresAt)]);
+
+export const stepUpGrants = pgTable('step_up_grants', {
+  tokenHash: text('token_hash').primaryKey(),
+  sessionId: uuid('session_id').notNull().references(() => sessions.id, { onDelete: 'cascade' }),
+  purpose: text('purpose').notNull(),
+  authentication: jsonb('authentication').notNull(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+}, (t) => [index('step_up_grants_session_idx').on(t.sessionId)]);
+
+export const deviceDirectoryEvents = pgTable('device_directory_events', {
+  userId: uuid('user_id').notNull().references(() => users.id),
+  sequence: integer('sequence').notNull(),
+  previousHash: text('previous_hash').notNull(),
+  hash: text('hash').notNull(),
+  event: jsonb('event').notNull(),
+}, (t) => [primaryKey({ columns: [t.userId, t.sequence] })]);
+
+export const historyRecovery = pgTable('history_recovery', {
+  userId: uuid('user_id').primaryKey().references(() => users.id),
+  generation: uuid('generation').notNull(),
+  signingKey: text('signing_key').notNull(),
+  encryptedSecret: text('encrypted_secret').notNull(),
+  accessTokenHash: text('access_token_hash'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const historyRecoveryKeys = pgTable('history_recovery_keys', {
+  userId: uuid('user_id').notNull().references(() => users.id),
+  generation: uuid('generation').notNull(),
+  channelId: uuid('channel_id').notNull().references(() => channels.id),
+  version: integer('version').notNull(),
+  keyCommitment: text('key_commitment').notNull(),
+  ciphertext: text('ciphertext').notNull(),
+}, (t) => [primaryKey({ columns: [t.userId, t.generation, t.channelId, t.version] })]);
 
 // === Workspaces ===
 
@@ -227,8 +285,8 @@ export const categoryRolePermissionOverrides = pgTable('category_role_permission
   }),
   roleIdx: index('category_role_permission_overrides_role_idx').on(t.workspaceId, t.roleId),
   targetIdx: index('category_role_permission_overrides_category_idx').on(t.categoryId),
-  allowMaskCheck: check('category_role_permission_overrides_allow_mask_check', sql`${t.allowMask} >= 0 and (${t.allowMask} & ${sql.raw('-16512')}) = 0`),
-  denyMaskCheck: check('category_role_permission_overrides_deny_mask_check', sql`${t.denyMask} >= 0 and (${t.denyMask} & ${sql.raw('-16512')}) = 0`),
+  allowMaskCheck: check('category_role_permission_overrides_allow_mask_check', sql`${t.allowMask} >= 0 and (${t.allowMask} & ${sql.raw('-147584')}) = 0`),
+  denyMaskCheck: check('category_role_permission_overrides_deny_mask_check', sql`${t.denyMask} >= 0 and (${t.denyMask} & ${sql.raw('-147584')}) = 0`),
   revisionCheck: check('category_role_permission_overrides_revision_check', sql`${t.revision} >= 1`),
 }));
 
@@ -254,8 +312,8 @@ export const channelRolePermissionOverrides = pgTable('channel_role_permission_o
   }),
   roleIdx: index('channel_role_permission_overrides_role_idx').on(t.workspaceId, t.roleId),
   targetIdx: index('channel_role_permission_overrides_channel_idx').on(t.channelId),
-  allowMaskCheck: check('channel_role_permission_overrides_allow_mask_check', sql`${t.allowMask} >= 0 and (${t.allowMask} & ${sql.raw('-16512')}) = 0`),
-  denyMaskCheck: check('channel_role_permission_overrides_deny_mask_check', sql`${t.denyMask} >= 0 and (${t.denyMask} & ${sql.raw('-16512')}) = 0`),
+  allowMaskCheck: check('channel_role_permission_overrides_allow_mask_check', sql`${t.allowMask} >= 0 and (${t.allowMask} & ${sql.raw('-147584')}) = 0`),
+  denyMaskCheck: check('channel_role_permission_overrides_deny_mask_check', sql`${t.denyMask} >= 0 and (${t.denyMask} & ${sql.raw('-147584')}) = 0`),
   revisionCheck: check('channel_role_permission_overrides_revision_check', sql`${t.revision} >= 1`),
 }));
 
@@ -550,3 +608,25 @@ export const auditLogs = pgTable('audit_logs', {
     t.id.desc(),
   ),
 ]);
+
+export const mlsKeyPackages = pgTable('mls_key_packages', {
+  channelId: uuid('channel_id').notNull().references(() => channels.id),
+  version: integer('version').notNull(),
+  deviceId: uuid('device_id').notNull().references(() => devices.id),
+  packageId: uuid('package_id').notNull(),
+  keyPackage: text('key_package').notNull(),
+  signature: text('signature').notNull(),
+}, (t) => [primaryKey({ columns: [t.channelId, t.version, t.deviceId] }), unique('mls_package_id_unique').on(t.packageId)]);
+export const mlsEpochs = pgTable('mls_epochs', {
+  channelId: uuid('channel_id').notNull().references(() => channels.id),
+  version: integer('version').notNull(),
+  transcript: text('transcript').notNull(),
+  envelope: jsonb('envelope').notNull(),
+}, (t) => [primaryKey({ columns: [t.channelId, t.version] })]);
+
+export const channelDirectoryHeads = pgTable('channel_directory_heads', {
+  channelId: uuid('channel_id').notNull().references(() => channels.id),
+  userId: uuid('user_id').notNull().references(() => users.id),
+  sequence: integer('sequence').notNull(),
+}, (t) => [primaryKey({ columns: [t.channelId, t.userId] }),
+  check('channel_directory_heads_sequence_check', sql`${t.sequence} between 0 and 8192`)]);

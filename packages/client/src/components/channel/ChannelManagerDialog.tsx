@@ -247,7 +247,7 @@ export function ChannelManagerDialog() {
       if (confirmation.kind === 'delete-channel') {
         await api.deleteChannel(confirmation.id);
         const nextChannels = await refreshWorkspace();
-        const next = nextChannels.find((channel) => channel.type !== 'dm' && channel.type !== 'voice') || null;
+        const next = nextChannels?.find((channel) => channel.type !== 'dm' && channel.type !== 'voice') || null;
         if (activeChannelId === confirmation.id) setActiveChannel(next?.id || null);
         setSelectedChannelId(next?.id || '');
         setNotice('チャンネルを削除しました。');
@@ -262,7 +262,7 @@ export function ChannelManagerDialog() {
         await api.removeChannelMember(confirmation.channelId, confirmation.userId);
         if (confirmation.self) {
           const nextChannels = await refreshWorkspace();
-          setActiveChannel(nextChannels.find((channel) => (
+          setActiveChannel(nextChannels?.find((channel) => (
             channel.id !== confirmation.channelId && channel.type !== 'voice'
           ))?.id || null);
           setSelectedChannelId('');

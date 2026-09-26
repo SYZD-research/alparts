@@ -35,6 +35,7 @@ export interface AuthResponse {
 // === Device ===
 
 export interface Device {
+  approvedAt?: string | null;
   id: string;
   userId: string;
   name: string;

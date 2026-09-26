@@ -137,3 +137,9 @@ export function resolveBundledPath(root: string, pathname: string): string | nul
 export function deploymentNamespace(serverUrl: string): string {
   return createHash('sha256').update(normalizeServerUrl(serverUrl), 'utf8').digest('base64url');
 }
+
+/** A missing media kind never grants capture permission. */
+export function isAllowedMediaPermission(permission: string, mediaTypes?: readonly string[]): boolean {
+  return permission === 'speaker-selection' || (permission === 'media'
+    && !!mediaTypes?.length && mediaTypes.every((type) => type === 'audio'));
+}

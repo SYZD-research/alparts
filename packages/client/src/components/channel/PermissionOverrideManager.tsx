@@ -307,7 +307,7 @@ export function PermissionOverrideManager({ workspaceId, channels, categories, m
       <section aria-labelledby="override-editor-title" className="space-y-4">
         <div>
           <h3 id="override-editor-title" className="font-semibold text-white">ロール別チャンネル権限</h3>
-          <p className="mt-1 text-sm text-discord-muted">許可・拒否はワークスペースロールの上にカテゴリー、チャンネルの順で適用され、同じ階層では許可が優先されます。</p>
+          <p className="mt-1 text-sm text-discord-muted">許可・拒否はワークスペースロールの上にカテゴリー、チャンネルの順で適用され、同じ階層では拒否が優先されます。</p>
         </div>
 
         {error && <p role="alert" className="rounded bg-discord-red/15 p-3 text-sm text-discord-red">{error}</p>}

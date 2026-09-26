@@ -18,7 +18,7 @@ PostgreSQL access uses a mode-`0600` [libpq service file](https://www.postgresql
 
 ## Create a backup
 
-Create an age identity offline and distribute only its recipient public key to the backup host. Keep the identity outside the application node.
+Create a hybrid identity offline with `age-keygen -pq -o identity.txt`, then export the public recipient with `age-keygen -y identity.txt > recipient.txt`. Keep the identity outside the application node. New backups require an `age1pq1...` recipient and age 1.3.0 or newer; classical recipients are refused. Older backups remain restorable. Re-encryption does not protect copies an observer already collected. See the [upstream age documentation](https://github.com/FiloSottile/age#post-quantum-keys).
 
 With application writes already stopped:
 
@@ -38,7 +38,7 @@ export MINIO_URL=https://minio.internal.example
 export MINIO_ACCESS_KEY_FILE=/run/credentials/alparts-backup-minio-access-key
 export MINIO_SECRET_KEY_FILE=/run/credentials/alparts-backup-minio-secret-key
 export MINIO_BUCKET=alparts
-export BACKUP_AGE_RECIPIENT=age1example_replace_with_the_real_recipient
+export BACKUP_AGE_RECIPIENT_FILE=/run/credentials/alparts-backup-recipient.txt
 export BACKUP_OUTPUT_DIR=/mnt/encrypted-backups
 export ALPARTS_BACKUP_QUIESCED=YES_WRITES_ARE_STOPPED
 

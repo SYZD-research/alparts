@@ -5,6 +5,7 @@ process.env.DATABASE_URL ||= 'postgres://test:test@127.0.0.1:5432/alparts_test';
 process.env.MINIO_ACCESS_KEY ||= 'test-access-key';
 process.env.MINIO_SECRET_KEY ||= 'test-secret-key';
 process.env.AUDIT_INTEGRITY_KEY ||= 'test-audit-integrity-key-at-least-32-bytes';
+process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
 process.env.JWT_SECRET ||= 'test-jwt-secret-key-at-least-32-bytes';
 
 describe('management security invariants', () => {
@@ -35,13 +36,13 @@ describe('management security invariants', () => {
       passwordWorkerSnapshot,
       verifyPassword,
     } = await import('../security/password-work.js');
-    const hash = await hashPassword('worker-isolated-password', 4);
-    assert.match(hash, /^\$2[aby]\$04\$/);
+    const hash = await hashPassword('worker-isolated-password', 12);
+    assert.match(hash, /^p1:/);
     assert.equal(await verifyPassword('worker-isolated-password', hash), true);
     assert.equal(await verifyPassword('incorrect-password', hash), false);
     await assert.rejects(
       verifyPassword('worker-isolated-password', `$2b$16$${'A'.repeat(53)}`),
-      /PASSWORD_WORK_FAILED/,
+      /UNSUPPORTED_PASSWORD_HASH/,
     );
     const snapshot = passwordWorkerSnapshot();
     assert.equal(snapshot.workers >= 1 && snapshot.workers <= 2, true);
@@ -105,7 +106,7 @@ describe('management security invariants', () => {
     assert.throws(() => assertValidInvitationLifetime(1.5), /INVALID_INVITATION_EXPIRY/);
   });
 
-  it('applies role union, category, then channel overrides with allow winning at each level', async () => {
+  it('applies role union, category, then channel overrides with deny winning within each level', async () => {
     const { Permissions } = await import('@alparts/shared');
     const {
       CHANNEL_SCOPED_PERMISSION_MASK,
@@ -116,16 +117,16 @@ describe('management security invariants', () => {
     const base = Permissions.VIEW_CHANNELS | Permissions.SEND_MESSAGES | Permissions.MANAGE_CHANNELS;
     const category = applyPermissionOverrideLevel(base, [
       { roleId: 'role-a', allowMask: Permissions.ATTACH_FILES, denyMask: Permissions.SEND_MESSAGES },
-      // Same-level allow takes precedence over the deny from another role.
+      // Same-level deny survives an allow from another role.
       { roleId: 'role-b', allowMask: Permissions.SEND_MESSAGES, denyMask: 0 },
     ]);
-    assert.equal((category.permissionMask & Permissions.SEND_MESSAGES) !== 0, true);
+    assert.equal((category.permissionMask & Permissions.SEND_MESSAGES) !== 0, false);
     assert.equal((category.permissionMask & Permissions.ATTACH_FILES) !== 0, true);
     const channel = applyPermissionOverrideLevel(category.permissionMask, [
       { roleId: 'role-a', allowMask: 0, denyMask: Permissions.VIEW_CHANNELS | Permissions.ATTACH_FILES },
       { roleId: 'role-b', allowMask: Permissions.VIEW_CHANNELS, denyMask: 0 },
     ]);
-    assert.equal((channel.permissionMask & Permissions.VIEW_CHANNELS) !== 0, true);
+    assert.equal((channel.permissionMask & Permissions.VIEW_CHANNELS) !== 0, false);
     assert.equal((channel.permissionMask & Permissions.ATTACH_FILES) !== 0, false);
     assert.equal((channel.permissionMask & Permissions.MANAGE_CHANNELS) !== 0, true);
 

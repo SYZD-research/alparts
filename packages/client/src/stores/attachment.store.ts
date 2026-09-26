@@ -516,7 +516,8 @@ export const useAttachmentStore = create<AttachmentState>((set, get) => ({
     runtime.cancelled = true;
     cancelKnownReservation(runtime);
     if (runtime.controller) runtime.controller.abort();
-    else updateTask(taskId, { status: 'cancelled', error: 'アップロードをキャンセルしました' });
+    runtimes.delete(taskId);
+    updateTask(taskId, { status: 'cancelled', error: 'アップロードをキャンセルしました' });
   },
 
   dismissUpload: (taskId) => {

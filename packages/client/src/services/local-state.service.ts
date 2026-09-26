@@ -267,7 +267,7 @@ function isUsableLocalKey(record: StoredLocalKey | null, context: DeviceContext)
   );
 }
 
-async function getLocalKey(context: DeviceContext): Promise<CryptoKey> {
+export async function getLocalKey(context: DeviceContext): Promise<CryptoKey> {
   const id = contextId(context);
   const cached = localKeyCache.get(id);
   if (cached) return cached;

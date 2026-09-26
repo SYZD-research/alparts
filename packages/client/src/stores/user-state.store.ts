@@ -8,6 +8,7 @@ import type {
 } from '@alparts/shared';
 import { api } from '../services/api';
 import { useMessageStore } from './message.store';
+import { useAuthStore } from './auth.store';
 import {
   defaultChannelReadState,
   mergeChannelPreference,
@@ -53,7 +54,7 @@ interface UserStateStore {
 
 let storeGeneration = 0;
 const workspaceRequestVersions = new Map<string, number>();
-const bookmarkRequests = new Map<string, number>();
+const bookmarkRequests = new Map<string, symbol>();
 const readRequests = new Map<string, string>();
 const channelScopeVersions = new Map<string, number>();
 let bookmarkListVersion = 0;
@@ -198,7 +199,8 @@ export const useUserStateStore = create<UserStateStore>((set, get) => ({
             [message.channelId]: {
               ...current,
               latestMessageId: message.id,
-              unreadCount: current.lastReadMessageId === message.id ? current.unreadCount : current.unreadCount + 1,
+              unreadCount: current.lastReadMessageId === message.id || message.authorId === useAuthStore.getState().user?.id
+                ? current.unreadCount : current.unreadCount + 1,
             },
           },
         },
@@ -334,7 +336,7 @@ export const useUserStateStore = create<UserStateStore>((set, get) => ({
         .find(([, events]) => events.some((event) => event.id === messageId))?.[0]
       || null;
     const requestedScopeVersion = requestedChannelId ? channelScopeVersion(requestedChannelId) : null;
-    const request = (bookmarkRequests.get(messageId) || 0) + 1;
+    const request = Symbol();
     bookmarkRequests.set(messageId, request);
     set((state) => ({
       bookmarkSavingByMessage: { ...state.bookmarkSavingByMessage, [messageId]: true },
@@ -375,6 +377,11 @@ export const useUserStateStore = create<UserStateStore>((set, get) => ({
         }));
       }
       throw error;
+    } finally {
+      if (bookmarkRequests.get(messageId) === request) {
+        bookmarkRequests.delete(messageId);
+        set((state) => ({ bookmarkSavingByMessage: withoutKey(state.bookmarkSavingByMessage, messageId) }));
+      }
     }
   },
 

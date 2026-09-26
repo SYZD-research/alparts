@@ -7,6 +7,7 @@ process.env.DATABASE_URL ||= 'postgres://test:test@127.0.0.1:5432/alparts_test';
 process.env.MINIO_ACCESS_KEY ||= 'test-access-key';
 process.env.MINIO_SECRET_KEY ||= 'test-secret-key';
 process.env.AUDIT_INTEGRITY_KEY ||= 'test-audit-integrity-key-at-least-32-bytes';
+process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
 process.env.JWT_SECRET ||= 'test-jwt-secret-key-at-least-32-bytes';
 
 const noncePrefix = Buffer.alloc(8, 7).toString('base64');

@@ -24,6 +24,7 @@ export default defineConfig({
         // asset below the warning threshold as the prototype UI grows.
         manualChunks(id) {
           if (!id.includes('/node_modules/')) return undefined;
+          if (/\/(ts-mls|@hpke|@noble|@simplewebauthn)\//.test(id)) return 'cryptography';
           if (/\/(react|react-dom|react-router|react-router-dom|zustand)\//.test(id)) return 'react';
           if (/\/(react-markdown|remark-|rehype-|unified|micromark|mdast-|hast-|unist-)\//.test(id)) return 'markdown';
           if (/\/(socket\.io-client|engine\.io-client|@socket\.io)\//.test(id)) return 'realtime';

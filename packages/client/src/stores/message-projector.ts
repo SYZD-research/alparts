@@ -172,13 +172,20 @@ function mergeAttachments(current: Attachment[] | undefined, incoming: Attachmen
 }
 
 /** Merge at-least-once event batches by immutable event id. */
+const canonicalBatches = new WeakSet<Message[]>();
 export function mergeMessageEvents(...batches: Message[][]): Message[] {
+  if (batches.length === 1 && canonicalBatches.has(batches[0])) return batches[0];
   const events = new Map<string, Message>();
-  for (const event of batches.flat()) {
-    const existing = events.get(event.id);
-    events.set(event.id, existing ? mergeDuplicateEvent(existing, event) : withoutLegacyVerificationProperty(event));
+  for (const batch of batches) {
+    const canonical = canonicalBatches.has(batch);
+    for (const event of batch) {
+      const existing = events.get(event.id);
+      events.set(event.id, existing ? mergeDuplicateEvent(existing, event) : canonical ? event : withoutLegacyVerificationProperty(event));
+    }
   }
-  return [...events.values()].sort(compareMessageEvents);
+  const ordered = [...events.values()].sort(compareMessageEvents);
+  canonicalBatches.add(ordered);
+  return ordered;
 }
 
 function addReaction(reactions: Reaction[], emoji: string, userId: string): Reaction[] {
@@ -192,7 +199,11 @@ function addReaction(reactions: Reaction[], emoji: string, userId: string): Reac
 
 /** Fold immutable wire events into the logical messages rendered by the UI. */
 export function projectMessageEvents(rawEvents: Message[]): ProjectedMessage[] {
-  const orderedEvents = mergeMessageEvents(rawEvents);
+  return projectOrderedMessageEvents(mergeMessageEvents(rawEvents));
+}
+
+/** Internal projection of an already deduplicated, ordered event window. */
+export function projectOrderedMessageEvents(orderedEvents: Message[]): ProjectedMessage[] {
   const projected = new Map<string, ProjectedMessage>();
 
   for (const event of orderedEvents) {
@@ -256,5 +267,6 @@ export function projectMessageEvents(rawEvents: Message[]): ProjectedMessage[] {
     }
   }
 
-  return [...projected.values()].sort(compareMessageEvents);
+  // Replacing an edit/delete preserves the insertion position of its base.
+  return [...projected.values()];
 }

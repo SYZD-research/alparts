@@ -1,3 +1,8 @@
+import { actionPurpose } from '../security/action-purpose.js';
+import { assertFreshStartStepUp, type StepUpProof } from './passkey.service.js';
+import { createHash } from 'node:crypto';
+import { serializeMlsEpoch, type MlsEpoch } from '@alparts/shared';
+import { validateAndStoreMlsEpoch } from './mls.service.js';
 import { and, asc, desc, eq, inArray, isNotNull, isNull, ne, or, sql } from 'drizzle-orm';
 import { Permissions } from '@alparts/shared';
 import { db } from '../db/index.js';
@@ -61,37 +66,47 @@ interface WrappedKeyInput {
 }
 
 interface FreshStartAuthorization {
-  expectedPasswordHash: string;
+  expectedPasswordHash?: string;
+  stepUpProof?: StepUpProof;
   signature: string;
 }
 
 export async function getKeyRecipients(channelId: string, userId: string, senderDeviceId?: string) {
-  const authorization = await getChannelAuthorization(userId, channelId);
-  if (!authorization) throw new Error('CHANNEL_NOT_FOUND');
-  const channel = await db.query.channels.findFirst({ where: eq(channels.id, channelId) });
+  return db.transaction(async (tx) => {
+    const channel = await tx.query.channels.findFirst({ where: eq(channels.id, channelId) });
+    if (!channel) throw new Error('CHANNEL_NOT_FOUND');
+    await lockWorkspaceForAuthorization(tx, channel.workspaceId, 'share');
+    return getKeyRecipientsFromStore(tx as unknown as typeof db, channelId, userId, senderDeviceId);
+  });
+}
+
+export async function getKeyRecipientsFromStore(store: typeof db, channelId: string, userId: string, senderDeviceId?: string) {
+  const authorization = await getChannelAuthorizationFromStore(store, userId, channelId);
+  if (!isVisibleChannelAuthorization(authorization)) throw new Error('CHANNEL_NOT_FOUND');
+  const channel = await store.query.channels.findFirst({ where: eq(channels.id, channelId) });
   if (!channel) throw new Error('CHANNEL_NOT_FOUND');
 
-  const recipientUserIds = await getRecipientUserIds(channelId);
-  const recipientDevices: EligibleDevice[] = recipientUserIds.length === 0 ? [] : await db
+  const recipientUserIds = await getChannelViewerIdsFromStore(store, channel);
+  const recipientDevices: EligibleDevice[] = recipientUserIds.length === 0 ? [] : await store
     .select({ id: devices.id, userId: devices.userId, identityKey: devices.identityKey })
     .from(devices)
-    .where(and(inArray(devices.userId, recipientUserIds), isNull(devices.revokedAt)))
+    .where(and(inArray(devices.userId, recipientUserIds), isNull(devices.revokedAt), isNotNull(devices.approvedAt)))
     .orderBy(asc(devices.id));
   if (recipientDevices.length > MAX_KEY_RECIPIENTS) throw new Error('KEY_RECIPIENT_LIMIT');
 
-  const activeEpoch = await db.query.channelKeyEpochs.findFirst({
+  const activeEpoch = await store.query.channelKeyEpochs.findFirst({
     where: and(eq(channelKeyEpochs.channelId, channelId), eq(channelKeyEpochs.status, 'active')),
   });
-  const pendingEpoch = await db.query.channelKeyEpochs.findFirst({
+  const pendingEpoch = await store.query.channelKeyEpochs.findFirst({
     where: and(eq(channelKeyEpochs.channelId, channelId), eq(channelKeyEpochs.status, 'pending')),
   });
-  const latestEpoch = await db.query.channelKeyEpochs.findFirst({
+  const latestEpoch = await store.query.channelKeyEpochs.findFirst({
     columns: { version: true },
     where: eq(channelKeyEpochs.channelId, channelId),
     orderBy: [desc(channelKeyEpochs.version)],
   });
 
-  const activeAcknowledgements = activeEpoch ? await db.query.channelKeyEpochRecipients.findMany({
+  const activeAcknowledgements = activeEpoch ? await store.query.channelKeyEpochRecipients.findMany({
     columns: { deviceId: true },
     where: and(
       eq(channelKeyEpochRecipients.channelId, channelId),
@@ -101,7 +116,7 @@ export async function getKeyRecipients(channelId: string, userId: string, sender
     limit: MAX_KEY_RECIPIENTS + 1,
   }) : [];
   if (activeAcknowledgements.length > MAX_KEY_RECIPIENTS) throw new Error('KEY_RECIPIENT_INVARIANT_EXCEEDED');
-  const pendingRecipients = pendingEpoch ? await db.query.channelKeyEpochRecipients.findMany({
+  const pendingRecipients = pendingEpoch ? await store.query.channelKeyEpochRecipients.findMany({
     columns: {
       deviceId: true,
       userId: true,
@@ -123,12 +138,16 @@ export async function getKeyRecipients(channelId: string, userId: string, sender
 
   const activeAcknowledgedDeviceIds = new Set(activeAcknowledgements.map((row) => row.deviceId));
   const activeHasRevokedRecipient = activeEpoch
-    ? await hasRevokedEpochRecipient(db, channelId, activeEpoch.version)
+    ? await hasRevokedEpochRecipient(store, channelId, activeEpoch.version)
     : false;
   const pendingHasRevokedRecipient = pendingEpoch
-    ? await hasRevokedEpochRecipient(db, channelId, pendingEpoch.version)
+    ? await hasRevokedEpochRecipient(store, channelId, pendingEpoch.version)
     : false;
-  const effectiveRotationRequired = channel.keyRotationRequired || activeHasRevokedRecipient;
+  const activeRecipientRows = activeEpoch ? await store.select({ deviceId: channelKeyEpochRecipients.deviceId }).from(channelKeyEpochRecipients).where(and(eq(channelKeyEpochRecipients.channelId, channelId), eq(channelKeyEpochRecipients.version, activeEpoch.version))).limit(MAX_KEY_RECIPIENTS + 1) : [];
+  const effectiveRotationRequired = channel.keyRotationRequired || activeHasRevokedRecipient || !!(activeEpoch && (
+    activeEpoch.protocolVersion < 3 || Date.now() - activeEpoch.createdAt.getTime() >= 24 * 60 * 60_000
+    || activeRecipientRows.length !== recipientDevices.length || activeRecipientRows.some((r) => !recipientDevices.some((d) => d.id === r.deviceId))
+  ));
   const activeHasEligibleHolder = recipientDevices.some((device) => (
     activeAcknowledgedDeviceIds.has(device.id)
   ));
@@ -147,14 +166,13 @@ export async function getKeyRecipients(channelId: string, userId: string, sender
   const canRotate = Boolean(
     !pendingEpoch
     && nextVersion <= MAX_KEY_VERSION
-    && hasRotationPermission
     && senderIsEligible
     && (
       !activeEpoch
       || (
         effectiveRotationRequired
         && senderDeviceId
-        && (activeAcknowledgedDeviceIds.has(senderDeviceId) || historyRecoveryRequired)
+        && (activeAcknowledgedDeviceIds.has(senderDeviceId) || (historyRecoveryRequired && hasRotationPermission))
       )
     )
   );
@@ -162,9 +180,10 @@ export async function getKeyRecipients(channelId: string, userId: string, sender
     pendingEpoch
     && hasRotationPermission
     && senderIsEligible
-    && (senderPendingRecipient || pendingHasRevokedRecipient)
+    && (senderPendingRecipient || pendingHasRevokedRecipient || Date.now() - pendingEpoch.createdAt.getTime() >= 15 * 60_000)
     && (
       !activeEpoch
+      || Date.now() - pendingEpoch.createdAt.getTime() >= 15 * 60_000
       || (senderDeviceId && activeAcknowledgedDeviceIds.has(senderDeviceId))
       || historyRecoveryRequired
       || pendingEpoch.distributorDeviceId === senderDeviceId
@@ -172,6 +191,8 @@ export async function getKeyRecipients(channelId: string, userId: string, sender
   );
 
   return {
+    protocolVersion: activeEpoch?.protocolVersion ?? 3,
+    pendingProtocolVersion: pendingEpoch?.protocolVersion ?? null,
     currentVersion: activeEpoch?.version ?? 0,
     keyCommitment: activeEpoch?.keyCommitment ?? null,
     pendingVersion: pendingEpoch?.version ?? null,
@@ -207,7 +228,7 @@ export async function getDeviceChannelKeys(
   const authorization = await getChannelAuthorization(userId, channelId);
   if (!authorization) throw new Error('CHANNEL_NOT_FOUND');
   const device = await db.query.devices.findFirst({
-    where: and(eq(devices.id, deviceId), eq(devices.userId, userId), isNull(devices.revokedAt)),
+    where: and(eq(devices.id, deviceId), eq(devices.userId, userId), isNull(devices.revokedAt), isNotNull(devices.approvedAt)),
   });
   if (!device) throw new Error('DEVICE_REQUIRED');
 
@@ -263,6 +284,9 @@ export async function getDeviceChannelKeys(
   const mutableVersions = epochRows
     .filter((epoch) => epoch.status === 'active' || epoch.status === 'pending')
     .map((epoch) => epoch.version);
+  const retiredRecipientVersions = recipientStates
+    .filter((recipient) => epochsByVersion.get(recipient.version)?.status === 'retired')
+    .map((recipient) => recipient.version);
   const acceptedDeliveryIds = recipientStates.flatMap((recipient) => (
     recipient.acceptedDeliveryId ? [recipient.acceptedDeliveryId] : []
   ));
@@ -278,6 +302,7 @@ export async function getDeviceChannelKeys(
       eq(channelKeys.deviceId, deviceId),
       or(
         mutableVersions.length > 0 ? inArray(channelKeys.version, mutableVersions) : sql`false`,
+        retiredRecipientVersions.length > 0 ? inArray(channelKeys.version, retiredRecipientVersions) : sql`false`,
         acceptedDeliveryIds.length > 0 ? inArray(channelKeys.id, acceptedDeliveryIds) : sql`false`,
         legacyProtocolVersions.length > 0
           ? and(inArray(channelKeys.version, legacyProtocolVersions), isNotNull(channelKeys.confirmedAt))
@@ -353,7 +378,7 @@ export async function getChannelDeviceDirectory(
   if (!requestedIds) {
     const currentDevices = recipientUserIds.length === 0 ? [] : await db.query.devices.findMany({
       columns: { id: true },
-      where: and(inArray(devices.userId, recipientUserIds), isNull(devices.revokedAt)),
+      where: and(inArray(devices.userId, recipientUserIds), isNull(devices.revokedAt), isNotNull(devices.approvedAt)),
       limit: MAX_DEVICE_DIRECTORY_ENTRIES + 1,
     });
     if (currentDevices.length > MAX_DEVICE_DIRECTORY_ENTRIES) {
@@ -371,7 +396,11 @@ export async function getChannelDeviceDirectory(
       historicalRows.length > MAX_DEVICE_DIRECTORY_ENTRIES
       || historicalAttachmentRows.length > MAX_DEVICE_DIRECTORY_ENTRIES
     ) throw new Error('DEVICE_DIRECTORY_INVARIANT_EXCEEDED');
+    const historicalDistributorRows = await db.selectDistinct({ deviceId: channelKeyEpochs.distributorDeviceId })
+      .from(channelKeyEpochs).where(and(eq(channelKeyEpochs.channelId, channelId), isNotNull(channelKeyEpochs.distributorDeviceId))).limit(MAX_DEVICE_DIRECTORY_ENTRIES + 1);
+    if (historicalDistributorRows.length > MAX_DEVICE_DIRECTORY_ENTRIES) throw new Error('DEVICE_DIRECTORY_INVARIANT_EXCEEDED');
     const legacyDeviceIds = [...new Set([
+      ...historicalDistributorRows.flatMap((row) => row.deviceId ? [row.deviceId] : []),
       ...currentDevices.map((candidate) => candidate.id),
       ...historicalRows.flatMap((row) => row.deviceId ? [row.deviceId] : []),
       ...historicalAttachmentRows.flatMap((row) => row.deviceId ? [row.deviceId] : []),
@@ -399,7 +428,7 @@ export async function getChannelDeviceDirectory(
     where: and(
       inArray(devices.id, requestedIds),
       inArray(devices.userId, recipientUserIds),
-      isNull(devices.revokedAt),
+      isNull(devices.revokedAt), isNotNull(devices.approvedAt),
     ),
     limit: requestedIds.length + 1,
   });
@@ -424,7 +453,11 @@ export async function getChannelDeviceDirectory(
   if (historicalAttachmentRows.length > requestedIds.length) {
     throw new Error('DEVICE_DIRECTORY_INVARIANT_EXCEEDED');
   }
+  const historicalDistributorRows = await db.selectDistinct({ deviceId: channelKeyEpochs.distributorDeviceId })
+    .from(channelKeyEpochs).where(and(eq(channelKeyEpochs.channelId, channelId), inArray(channelKeyEpochs.distributorDeviceId, requestedIds))).limit(requestedIds.length + 1);
+  if (historicalDistributorRows.length > requestedIds.length) throw new Error('DEVICE_DIRECTORY_INVARIANT_EXCEEDED');
   const deviceIds = [...new Set([
+    ...historicalDistributorRows.flatMap((row) => row.deviceId ? [row.deviceId] : []),
     ...currentDevices.map((candidate) => candidate.id),
     ...historicalRows.flatMap((row) => row.deviceId ? [row.deviceId] : []),
     ...historicalAttachmentRows.flatMap((row) => row.deviceId ? [row.deviceId] : []),
@@ -499,6 +532,7 @@ async function commitChannelKeyDistribution(
   keyCommitment: string,
   wrappedKeys: WrappedKeyInput[],
   freshStart: FreshStartAuthorization | null,
+  mls?: MlsEpoch,
 ) {
   const result = await auditedTransaction<{
     version: number;
@@ -528,7 +562,13 @@ async function commitChannelKeyDistribution(
     const senderDevice = eligibleById.get(senderDeviceId);
     if (!senderDevice || senderDevice.userId !== userId) throw new Error('DEVICE_REQUIRED');
     if (freshStart) {
-      await assertCurrentPasswordSnapshot(tx, userId, freshStart.expectedPasswordHash);
+      if (mls) {
+        await assertFreshStartStepUp(tx, freshStart.stepUpProof, userId, senderDeviceId,
+          actionPurpose('POST', `/api/channels/${channelId}/mls/epochs/fresh-start`, {
+            epoch: mls, keys: wrappedKeys, freshStartSignature: freshStart.signature,
+          }));
+      }
+      if (freshStart.expectedPasswordHash) await assertCurrentPasswordSnapshot(tx, userId, freshStart.expectedPasswordHash);
       if (!verifyChannelKeyFreshStartSignature(senderDevice.identityKey, {
         channelId,
         keyVersion: version,
@@ -566,7 +606,7 @@ async function commitChannelKeyDistribution(
     const activeHasRevokedRecipient = activeEpoch
       ? await hasRevokedEpochRecipient(tx, channelId, activeEpoch.version)
       : false;
-    const effectiveRotationRequired = channel.keyRotationRequired || activeHasRevokedRecipient;
+    const effectiveRotationRequired = channel.keyRotationRequired || activeHasRevokedRecipient || !!(activeEpoch && (activeEpoch.protocolVersion < 3 || Date.now() - activeEpoch.createdAt.getTime() >= 24 * 60 * 60_000 || !await isEpochRosterCurrent(tx, channel, activeEpoch.version)));
     const activeHasEligibleHolder = activeEpoch
       ? await hasAnyAcceptedEpochRecipient(tx, channelId, activeEpoch.version, [...eligibleById.keys()])
       : false;
@@ -575,6 +615,7 @@ async function commitChannelKeyDistribution(
     );
     if (freshStart) {
       if (version !== nextVersion) throw new Error('KEY_FRESH_START_CONFLICT');
+      if (activeEpoch && !effectiveRotationRequired && !historyRecoveryRequired) throw new Error('KEY_FRESH_START_NOT_REQUIRED');
       const hasRotationPermission = channel.type === 'dm'
         || (authorization.permissions & Permissions.MANAGE_CHANNELS) === Permissions.MANAGE_CHANNELS;
       if (!hasRotationPermission) throw new Error('KEY_FRESH_START_FORBIDDEN');
@@ -593,16 +634,14 @@ async function commitChannelKeyDistribution(
     }
 
     if (version === nextVersion) {
+      if (!mls) throw new Error('GROUP_PROTOCOL_REQUIRED');
       if (pendingEpoch && !freshStart) throw new Error('KEY_EPOCH_PENDING');
       if (
         version > MAX_KEY_VERSION
         || suppliedIds.size !== eligibleById.size
         || [...eligibleById.keys()].some((id) => !suppliedIds.has(id))
       ) throw new Error('INCOMPLETE_KEY_DISTRIBUTION');
-      if (
-        channel.type !== 'dm'
-        && (authorization.permissions & Permissions.MANAGE_CHANNELS) !== Permissions.MANAGE_CHANNELS
-      ) throw new Error('KEY_ROTATION_FORBIDDEN');
+      if (!mls && channel.type !== 'dm' && (authorization.permissions & Permissions.MANAGE_CHANNELS) !== Permissions.MANAGE_CHANNELS) throw new Error('KEY_ROTATION_FORBIDDEN');
       if (activeEpoch && !freshStart) {
         if (!effectiveRotationRequired) throw new Error('KEY_ROTATION_NOT_REQUIRED');
         if (
@@ -613,10 +652,17 @@ async function commitChannelKeyDistribution(
         }
       }
 
+      if (mls) {
+        if (mls.channelId !== channelId || mls.version !== version || mls.keyCommitment !== keyCommitment || mls.distributorDeviceId !== senderDeviceId) throw new Error('INVALID_MLS');
+        await validateAndStoreMlsEpoch(tx, mls, eligible, activeEpoch?.version ?? 0);
+        const transcript = createHash('sha256').update(serializeMlsEpoch(mls)).digest('hex');
+        const locator = Buffer.from(JSON.stringify({ mls: 1, version, transcript })).toString('base64');
+        if (wrappedKeys.some((key) => key.encryptedKey !== locator)) throw new Error('INVALID_MLS');
+      }
       await tx.insert(channelKeyEpochs).values({
         channelId,
         version,
-        protocolVersion: KEY_PROTOCOL_VERSION,
+        protocolVersion: mls ? 3 : KEY_PROTOCOL_VERSION,
         status: 'pending',
         keyCommitment,
         distributorDeviceId: senderDeviceId,
@@ -626,11 +672,8 @@ async function commitChannelKeyDistribution(
         version,
         deviceId: recipient.id,
         userId: recipient.userId,
-        // A deliberately fresh conversation can become writable after the
-        // initiating device verifies its exact committed delivery. Every
-        // other currently authorized device still receives a signed wrap and
-        // verifies it when next online, but no offline endpoint blocks writes.
-        requiredForActivation: freshStart ? recipient.id === senderDeviceId : true,
+        // Every fresh epoch requires the complete committed roster to verify.
+        requiredForActivation: true,
       })));
       const inserted = await tx.insert(channelKeys).values(wrappedKeys.map((key) => ({
         channelId,
@@ -657,7 +700,8 @@ async function commitChannelKeyDistribution(
       : activeEpoch?.version === version
         ? activeEpoch
         : null;
-    if (!epoch || epoch.protocolVersion !== KEY_PROTOCOL_VERSION) throw new Error('INVALID_KEY_VERSION');
+    if (!epoch || ![KEY_PROTOCOL_VERSION, 3].includes(epoch.protocolVersion)) throw new Error('INVALID_KEY_VERSION');
+    if (epoch.protocolVersion === 3) throw new Error('GROUP_PROTOCOL_REQUIRED');
     if (epoch.keyCommitment !== keyCommitment) throw new Error('KEY_COMMITMENT_MISMATCH');
 
     const existingCandidates: Array<{
@@ -701,9 +745,18 @@ async function commitChannelKeyDistribution(
       throw new Error('KEY_DISTRIBUTION_FORBIDDEN');
     }
 
-    // A pending epoch has a frozen required-recipient snapshot. Active epochs
-    // may add a non-required recipient row for a newly registered device.
+    // Legacy backfill cannot grant an epoch to someone outside its original
+    // account roster. New members receive the next epoch only.
     if (epoch.status === 'active' && newWrappedKeys.length > 0) {
+      if (channel.keyRotationRequired || activeHasRevokedRecipient) throw new Error('KEY_ROTATION_REQUIRED');
+      const originalRecipients: Array<{ userId: string }> = await tx.query.channelKeyEpochRecipients.findMany({
+        columns: { userId: true },
+        where: and(eq(channelKeyEpochRecipients.channelId, channelId), eq(channelKeyEpochRecipients.version, version)),
+        limit: MAX_KEY_RECIPIENTS + 1,
+      });
+      const originalUsers = new Set(originalRecipients.map((recipient) => recipient.userId));
+      if (originalRecipients.length > MAX_KEY_RECIPIENTS
+        || newWrappedKeys.some((key) => !originalUsers.has(eligibleById.get(key.deviceId)!.userId))) throw new Error('INVALID_KEY_RECIPIENTS');
       await tx.insert(channelKeyEpochRecipients).values(newWrappedKeys.map((key) => {
         const recipient = eligibleById.get(key.deviceId)!;
         return {
@@ -815,7 +868,7 @@ export async function acknowledgeChannelKey(
       where: eq(channels.id, channelId),
     });
     if (!location) throw new Error('CHANNEL_NOT_FOUND');
-    await lockWorkspaceForAuthorization(tx, location.workspaceId, 'share');
+    await lockWorkspaceForAuthorization(tx, location.workspaceId, 'update');
     await lockChannelAuthorization(tx, channelId);
     const channel = await tx.query.channels.findFirst({ where: eq(channels.id, channelId) });
     if (!channel || channel.workspaceId !== location.workspaceId) throw new Error('CHANNEL_NOT_FOUND');
@@ -824,7 +877,7 @@ export async function acknowledgeChannelKey(
 
     const [device] = await tx.select()
       .from(devices)
-      .where(and(eq(devices.id, deviceId), eq(devices.userId, userId), isNull(devices.revokedAt)))
+      .where(and(eq(devices.id, deviceId), eq(devices.userId, userId), isNull(devices.revokedAt), isNotNull(devices.approvedAt)))
       .for('share');
     if (!device) throw new Error('DEVICE_REQUIRED');
     const delivery = await tx.query.channelKeys.findFirst({
@@ -843,8 +896,8 @@ export async function acknowledgeChannelKey(
     });
     if (
       !epoch
-      || epoch.protocolVersion !== KEY_PROTOCOL_VERSION
-      || (epoch.status !== 'pending' && epoch.status !== 'active')
+      || ![KEY_PROTOCOL_VERSION, 3].includes(epoch.protocolVersion)
+      || (epoch.status !== 'pending' && epoch.status !== 'active' && epoch.status !== 'retired')
     ) throw new Error('INVALID_KEY_VERSION');
     const recipient = await tx.query.channelKeyEpochRecipients.findFirst({
       where: and(
@@ -981,7 +1034,7 @@ export async function abortPendingChannelKey(
       where: eq(channels.id, channelId),
     });
     if (!location) throw new Error('CHANNEL_NOT_FOUND');
-    await lockWorkspaceForAuthorization(tx, location.workspaceId, 'share');
+    await lockWorkspaceForAuthorization(tx, location.workspaceId, 'update');
     await lockChannelAuthorization(tx, channelId);
     const channel = await tx.query.channels.findFirst({ where: eq(channels.id, channelId) });
     if (!channel || channel.workspaceId !== location.workspaceId) throw new Error('CHANNEL_NOT_FOUND');
@@ -993,7 +1046,7 @@ export async function abortPendingChannelKey(
     ) throw new Error('KEY_ABORT_FORBIDDEN');
     const [device] = await tx.select()
       .from(devices)
-      .where(and(eq(devices.id, deviceId), eq(devices.userId, userId), isNull(devices.revokedAt)))
+      .where(and(eq(devices.id, deviceId), eq(devices.userId, userId), isNull(devices.revokedAt), isNotNull(devices.approvedAt)))
       .for('share');
     if (!device) throw new Error('DEVICE_REQUIRED');
 
@@ -1004,7 +1057,7 @@ export async function abortPendingChannelKey(
         eq(channelKeyEpochs.keyCommitment, keyCommitment),
       ),
     });
-    if (!epoch || epoch.protocolVersion !== KEY_PROTOCOL_VERSION) throw new Error('INVALID_KEY_VERSION');
+    if (!epoch || ![KEY_PROTOCOL_VERSION, 3].includes(epoch.protocolVersion)) throw new Error('INVALID_KEY_VERSION');
     if (!verifyChannelKeyEpochAbortSignature(device.identityKey, {
       channelId,
       keyVersion: version,
@@ -1024,13 +1077,15 @@ export async function abortPendingChannelKey(
       ),
     });
     const pendingInvalid = await hasRevokedEpochRecipient(tx, channelId, version);
-    if (!pendingRecipient && !pendingInvalid) throw new Error('KEY_ABORT_FORBIDDEN');
+    const stalled = Date.now() - epoch.createdAt.getTime() >= 15 * 60_000;
+    if (!pendingRecipient && !pendingInvalid && !stalled) throw new Error('KEY_ABORT_FORBIDDEN');
 
     const activeEpoch = await tx.query.channelKeyEpochs.findFirst({
       where: and(eq(channelKeyEpochs.channelId, channelId), eq(channelKeyEpochs.status, 'active')),
     });
     if (
       activeEpoch
+      && !stalled
       && epoch.distributorDeviceId !== deviceId
       && !await hasAcceptedEpoch(tx, channelId, activeEpoch.version, deviceId)
     ) {
@@ -1069,7 +1124,7 @@ async function getEligibleDevicesFromStore(
   if (recipientUserIds.length === 0) return [];
   const result = await store.select({ id: devices.id, userId: devices.userId, identityKey: devices.identityKey })
     .from(devices)
-    .where(and(inArray(devices.userId, recipientUserIds), isNull(devices.revokedAt)))
+    .where(and(inArray(devices.userId, recipientUserIds), isNull(devices.revokedAt), isNotNull(devices.approvedAt)))
     .orderBy(asc(devices.id))
     .limit(MAX_KEY_RECIPIENTS + 1)
     .for('share') as EligibleDevice[];
@@ -1136,3 +1191,15 @@ async function lockKeyProtocol(store: any): Promise<void> {
 }
 
 export { lockKeyProtocol };
+
+export async function proposeMlsChannelEpoch(userId: string, deviceId: string, epoch: MlsEpoch, keys: WrappedKeyInput[], freshStartSignature?: string, stepUpProof?: StepUpProof) {
+  return commitChannelKeyDistribution(epoch.channelId, userId, deviceId, epoch.version, epoch.keyCommitment, keys, freshStartSignature ? { signature: freshStartSignature, stepUpProof } : null, epoch);
+}
+
+export async function isEpochRosterCurrent(store: any, channel: typeof channels.$inferSelect, version: number): Promise<boolean> {
+  const recipients = await store.query.channelKeyEpochRecipients.findMany({
+    where: and(eq(channelKeyEpochRecipients.channelId, channel.id), eq(channelKeyEpochRecipients.version, version)),
+    limit: MAX_KEY_RECIPIENTS + 1,
+  });
+  return recipients.length <= MAX_KEY_RECIPIENTS && isRecipientSnapshotStillAuthorized(store, channel, recipients);
+}

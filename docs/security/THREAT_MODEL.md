@@ -1,10 +1,12 @@
 # Threat model
 
-Last reviewed: 2026-09-04
+Last reviewed: 2026-09-16
 
 ## Scope
 
 This model covers the current Web and Windows/macOS/Linux Electron clients, the single-process Alparts server, its PostgreSQL and S3-compatible storage dependencies, endpoint-held cryptographic state, operator backup/restore tooling, container/systemd/desktop packaging, and CI supply chain. It is not approval for regulated, embargoed, credential-vault, or other high-impact secret use. `SPECIFICATION.md` contains future requirements and is not assumed implemented.
+
+See [account/group security](ACCOUNT_AND_GROUP_SECURITY.md) for the updated device, directory, epoch, authentication and recovery threat boundaries.
 
 ## Security objectives
 
@@ -97,8 +99,8 @@ Important account/session/device, workspace/member/role/invite, channel/key, mes
 ## Residual risks / release blockers
 
 - Phase 1 per-channel key epochs are not MLS and lack forward secrecy/post-compromise security/key transparency/existing-device approval.
-- Revoking or losing every accepted holder can permanently lose access to old ciphertext. The implementation exposes this and restores future writes only; it has no server escrow or threshold recovery.
-- Password-only primary authentication has no Passkey/OIDC/MFA or threshold recovery; device enrollment step-up is narrower than general admin step-up.
+- Losing every accepted holder and the user recovery code permanently loses history. Only keys already uploaded to the encrypted archive can be recovered. No organization escrow or threshold recovery exists.
+- Web passkeys and exact-action step-up are implemented. Native WebAuthn, OIDC, organization authenticator policies and threshold recovery remain open.
 - Same-origin Web, extension, modified desktop package, OS-account, or endpoint compromise defeats confidentiality for data available to that endpoint. OS-wrapped desktop keys primarily protect at-rest material.
 - One process/region remains an availability and coordination boundary; process-local gates/rooms/locks/audit admission prevent safe replicas.
 - Audit lacks an external append-only/WORM witness, multi-process CAS, retention pipeline and SIEM alerting.

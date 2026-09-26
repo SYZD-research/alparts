@@ -7,7 +7,7 @@ interface DmState {
   conversationsByWorkspace: Record<string, DirectMessageConversation[]>;
   loadingByWorkspace: Record<string, boolean>;
   errorsByWorkspace: Record<string, string | null>;
-  loadDms: (workspaceId: string) => Promise<DirectMessageConversation[]>;
+  loadDms: (workspaceId: string) => Promise<DirectMessageConversation[] | null>;
   createOrReuseDm: (
     workspaceId: string,
     currentUserId: string,
@@ -67,7 +67,7 @@ export const useDmStore = create<DmState>((set, get) => ({
         }));
         return conversations;
       }
-      return [];
+      return null;
     } catch (error) {
       if (generation === dmGeneration
         && epoch === workspaceEpoch(workspaceId)
@@ -77,7 +77,7 @@ export const useDmStore = create<DmState>((set, get) => ({
           errorsByWorkspace: { ...state.errorsByWorkspace, [workspaceId]: errorMessage(error) },
         }));
       }
-      return [];
+      return null;
     }
   },
 
@@ -88,7 +88,7 @@ export const useDmStore = create<DmState>((set, get) => ({
     // is reused whenever it is already visible to the server.
     const conversations = await get().loadDms(workspaceId);
     const loadError = get().errorsByWorkspace[workspaceId];
-    if (loadError) throw new Error(`既存DMを確認できないため作成を停止しました: ${loadError}`);
+    if (!conversations || loadError) throw new Error('DMを確認できませんでした。もう一度お試しください。');
     if (memberIds.length === 1) {
       const existing = findReusableOneToOneDm(
         conversations,

@@ -1,4 +1,6 @@
-import { randomUUID } from 'node:crypto';
+import { normalizeEmail } from '../security/email.js';
+import { passwordPepper, protectPasswordHash } from '../security/password-pepper.js';
+import { createHmac, randomUUID } from 'node:crypto';
 import jwt from 'jsonwebtoken';
 import { and, eq, gt, lte, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
@@ -7,7 +9,7 @@ import { config } from '../config/index.js';
 import { audit, auditedTransaction, type AuditEntry } from '../middleware/audit.js';
 import { hashSessionToken } from '../security/session.js';
 import { matchesSecret } from '../security/cookies.js';
-import { hashPassword, verifyPassword } from '../security/password-work.js';
+import { hashPassword, verifyPassword, runPublicAuthentication } from '../security/password-work.js';
 import { MAX_ACTIVE_SESSIONS_PER_USER } from '../security/limits.js';
 import {
   consumeLockedInvitation,
@@ -16,86 +18,121 @@ import {
 } from './invitation.service.js';
 
 const SALT_ROUNDS = 12;
-const DUMMY_PASSWORD_HASH = '$2b$12$DuhNW97PNP4tI0drdrcUqexxVq.nFCoTXyiFW3mvHNmBgkM7guOJq';
-
-function normalizeEmail(email: string): string {
-  return email.trim().toLowerCase();
-}
+const DUMMY_PASSWORD_HASH = protectPasswordHash('$2b$12$DuhNW97PNP4tI0drdrcUqexxVq.nFCoTXyiFW3mvHNmBgkM7guOJq');
 
 function assertPasswordSupported(password: string): void {
   const bytes = Buffer.byteLength(password, 'utf8');
   if (bytes < 12 || bytes > 72) throw new Error('INVALID_PASSWORD_LENGTH');
 }
 
-export async function register(email: string, password: string, displayName: string, inviteToken: string) {
-  assertPasswordSupported(password);
-  const normalizedEmail = normalizeEmail(email);
-  const bootstrap = matchesSecret(inviteToken, config.auth.registrationInviteSecret);
-  await preflightRegistrationInvitation(normalizedEmail, inviteToken, bootstrap);
-  const passwordHash = await hashPassword(password, SALT_ROUNDS);
-  let result;
-  try {
-    result = await auditedTransaction(async (transaction) => {
-      if (bootstrap) {
-        // The deployment secret exists only to create the first account. Normal
-        // registration must use a one-time workspace invitation.
-        await transaction.execute(sql`select pg_advisory_xact_lock(1095520322)`);
-        const anyUser = await transaction.query.users.findFirst({ columns: { id: true } });
-        if (anyUser) throw new Error('INVALID_INVITATION');
-      }
-      const invitationClaim = bootstrap
-        ? null
-        : await lockInvitationForConsumption(transaction, inviteToken, normalizedEmail);
-      const existing = await transaction.query.users.findFirst({
-        columns: { id: true },
-        where: eq(users.email, normalizedEmail),
-      });
-      if (existing) throw new Error('EMAIL_EXISTS');
+export async function register(
+  email: string,
+  password: string,
+  displayName: string,
+  inviteToken: string,
+) {
+  return runPublicAuthentication(async () => {
+    assertPasswordSupported(password);
+    const normalizedEmail = normalizeEmail(email);
+    const bootstrap = matchesSecret(inviteToken, config.auth.registrationInviteSecret);
+    await preflightRegistrationInvitation(normalizedEmail, inviteToken, bootstrap);
+    const passwordHash = await hashPassword(password, SALT_ROUNDS);
+    let result;
+    try {
+      result = await auditedTransaction(
+        async (transaction) => {
+          if (bootstrap) {
+            // The deployment secret exists only to create the first account. Normal
+            // registration must use a one-time workspace invitation.
+            await transaction.execute(sql`select pg_advisory_xact_lock(1095520322)`);
+            const anyUser = await transaction.query.users.findFirst({ columns: { id: true } });
+            if (anyUser) throw new Error('INVALID_INVITATION');
+          }
+          const invitationClaim = bootstrap
+            ? null
+            : await lockInvitationForConsumption(transaction, inviteToken, normalizedEmail);
+          const existing = await transaction.query.users.findFirst({
+            columns: { id: true },
+            where: eq(users.email, normalizedEmail),
+          });
+          if (existing) throw new Error('EMAIL_EXISTS');
 
-      const [user] = await transaction.insert(users).values({
-        email: normalizedEmail,
-        passwordHash,
-        displayName: displayName.trim(),
-      }).returning();
-      const invitation = invitationClaim
-        ? await consumeLockedInvitation(transaction, invitationClaim, user.id)
-        : null;
-      return { user, invitation };
-    }, (committed) => {
-      const entries: AuditEntry[] = [{
-        actorId: committed.user.id,
-        action: 'user.register',
-        targetType: 'user',
-        targetId: committed.user.id,
-        details: { bootstrap, workspaceInvitation: Boolean(committed.invitation) },
-      }];
-      if (committed.invitation) {
-        entries.push({
-          actorId: committed.user.id,
-          action: 'workspace.invitation.use',
-          targetType: 'workspace_invitation',
-          targetId: committed.invitation.invitationId,
-          details: { workspaceId: committed.invitation.workspaceId, roleId: committed.invitation.roleId },
-        });
-      }
-      return entries;
-    });
-  } catch (error: any) {
-    if (error?.code === '23505') throw new Error('EMAIL_EXISTS');
-    throw error;
-  }
-  return publicUser(result.user);
+          const [user] = await transaction
+            .insert(users)
+            .values({
+              email: normalizedEmail,
+              passwordHash,
+              displayName: displayName.trim(),
+            })
+            .returning();
+          const invitation = invitationClaim
+            ? await consumeLockedInvitation(transaction, invitationClaim, user.id)
+            : null;
+          return { user, invitation };
+        },
+        (committed) => {
+          const entries: AuditEntry[] = [
+            {
+              actorId: committed.user.id,
+              action: 'user.register',
+              targetType: 'user',
+              targetId: committed.user.id,
+              details: { bootstrap, workspaceInvitation: Boolean(committed.invitation) },
+            },
+          ];
+          if (committed.invitation) {
+            entries.push({
+              actorId: committed.user.id,
+              action: 'workspace.invitation.use',
+              targetType: 'workspace_invitation',
+              targetId: committed.invitation.invitationId,
+              details: {
+                workspaceId: committed.invitation.workspaceId,
+                roleId: committed.invitation.roleId,
+              },
+            });
+          }
+          return entries;
+        },
+      );
+    } catch (error: any) {
+      if (error?.code === '23505') throw new Error('EMAIL_EXISTS');
+      throw error;
+    }
+    return publicUser(result.user);
+  });
 }
 
 export async function login(email: string, password: string, deviceInfo?: Record<string, unknown>) {
-  const normalizedEmail = normalizeEmail(email);
-  const user = await db.query.users.findFirst({ where: eq(users.email, normalizedEmail) });
-  const valid = await verifyPassword(password, user?.passwordHash || DUMMY_PASSWORD_HASH);
-  if (!user || !valid) {
-    await audit({ action: 'user.login.failed', targetType: 'user' });
-    throw new Error('INVALID_CREDENTIALS');
-  }
+  return runPublicAuthentication(async () => {
+    const normalizedEmail = normalizeEmail(email);
+    const user = await db.query.users.findFirst({ where: eq(users.email, normalizedEmail) });
+    const valid = await verifyPassword(password, user?.passwordHash || DUMMY_PASSWORD_HASH);
+    if (!user || user.disabledAt || !valid) {
+      await audit({
+        action: 'user.login.failed',
+        targetType: 'user',
+        targetId: user?.id,
+        details: {
+          accountTag: createHmac('sha256', passwordPepper())
+            .update('alparts.login.target.v1\0')
+            .update(normalizedEmail)
+            .digest('hex'),
+        },
+      });
+      throw new Error('INVALID_CREDENTIALS');
+    }
 
+    return establishSession(user, deviceInfo);
+  });
+}
+
+export async function establishSession(
+  user: typeof users.$inferSelect,
+  deviceInfo?: Record<string, unknown>,
+  method = 'password',
+  beforeCreate?: (transaction: any) => Promise<void>,
+) {
   const sessionId = randomUUID();
   const expiresAt = new Date(Date.now() + config.jwt.expiresInSeconds * 1000);
   const token = jwt.sign(
@@ -112,7 +149,10 @@ export async function login(email: string, password: string, deviceInfo?: Record
   );
 
   await auditedTransaction(async (transaction) => {
+    if (beforeCreate) await beforeCreate(transaction);
     await transaction.execute(sql`select pg_advisory_xact_lock(hashtext(${`sessions:${user.id}`})::bigint)`);
+    const [currentUser] = await transaction.select().from(users).where(eq(users.id, user.id)).for('share');
+    if (!currentUser || currentUser.disabledAt || (method === 'password' && currentUser.passwordHash !== user.passwordHash)) throw new Error('INVALID_CREDENTIALS');
     await transaction.delete(sessions).where(and(
       eq(sessions.userId, user.id),
       lte(sessions.expiresAt, new Date()),
@@ -128,6 +168,7 @@ export async function login(email: string, password: string, deviceInfo?: Record
       userId: user.id,
       tokenHash: hashSessionToken(token),
       deviceInfo: deviceInfo || null,
+      authenticationMethod: method,
       expiresAt,
     });
     await transaction.update(users).set({ updatedAt: new Date() }).where(eq(users.id, user.id));

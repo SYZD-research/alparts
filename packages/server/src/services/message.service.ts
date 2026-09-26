@@ -1,3 +1,4 @@
+import { isEpochRosterCurrent } from './key.service.js';
 import { and, desc, eq, inArray, isNotNull, isNull, lt, or, sql } from 'drizzle-orm';
 import {
   MAX_DIRECT_MENTION_RECIPIENTS_PER_MESSAGE,
@@ -52,85 +53,106 @@ interface ReactionRow {
 }
 
 type CryptoEventType = 'message' | 'edit' | 'delete';
-export async function getChannelMessages(channelId: string, options?: { cursor?: string; limit?: number }) {
-  const limit = Math.min(Math.max(options?.limit ?? MESSAGES_PER_PAGE, 1), 100);
-  let cursorCondition;
-  if (options?.cursor) {
-    const cursor = await db.query.messages.findFirst({
-      columns: { id: true, channelId: true, createdAt: true },
-      where: and(eq(messages.id, options.cursor), eq(messages.channelId, channelId)),
-    });
-    if (!cursor) throw new Error('INVALID_CURSOR');
-    cursorCondition = or(
-      lt(messages.createdAt, cursor.createdAt),
-      and(eq(messages.createdAt, cursor.createdAt), lt(messages.id, cursor.id)),
-    );
-  }
+export async function getChannelMessages(
+  channelId: string,
+  userId: string,
+  options?: { cursor?: string; limit?: number },
+) {
+  return db.transaction(async (tx) => {
+    const channel = await tx.query.channels.findFirst({ where: eq(channels.id, channelId) });
+    if (!channel) throw new Error('CHANNEL_NOT_FOUND');
+    await lockWorkspaceForAuthorization(tx, channel.workspaceId, 'share');
+    if (
+      !isVisibleChannelAuthorization(await getChannelAuthorizationFromStore(tx, userId, channelId))
+    ) {
+      throw new Error('CHANNEL_NOT_FOUND');
+    }
+    const limit = Math.min(Math.max(options?.limit ?? MESSAGES_PER_PAGE, 1), 100);
+    let cursorCondition;
+    if (options?.cursor) {
+      const cursor = await tx.query.messages.findFirst({
+        columns: { id: true, channelId: true, createdAt: true },
+        where: and(eq(messages.id, options.cursor), eq(messages.channelId, channelId)),
+      });
+      if (!cursor) throw new Error('INVALID_CURSOR');
+      cursorCondition = or(
+        lt(messages.createdAt, cursor.createdAt),
+        and(eq(messages.createdAt, cursor.createdAt), lt(messages.id, cursor.id)),
+      );
+    }
 
-  const results = await db.query.messages.findMany({
-    where: cursorCondition
-      ? and(eq(messages.channelId, channelId), cursorCondition)
-      : eq(messages.channelId, channelId),
-    orderBy: [desc(messages.createdAt), desc(messages.id)],
-    limit: limit + 1,
-    with: {
-      author: {
-        columns: {
-          id: true,
-          displayName: true,
-          avatarUrl: true,
-          status: true,
-          createdAt: true,
+    const results = await tx.query.messages.findMany({
+      where: cursorCondition
+        ? and(eq(messages.channelId, channelId), cursorCondition)
+        : eq(messages.channelId, channelId),
+      orderBy: [desc(messages.createdAt), desc(messages.id)],
+      limit: limit + 1,
+      with: {
+        author: {
+          columns: {
+            id: true,
+            displayName: true,
+            avatarUrl: true,
+            status: true,
+            createdAt: true,
+          },
         },
       },
-    },
+    });
+    const hasMore = results.length > limit;
+    const data = results.slice(0, limit);
+    const baseMessageIds = data
+      .filter((message) => message.type === 'message')
+      .map((message) => message.id);
+    const [pins, reactionRows] =
+      baseMessageIds.length > 0
+        ? await Promise.all([
+            tx.query.messagePins.findMany({
+              columns: { messageId: true },
+              where: inArray(messagePins.messageId, baseMessageIds),
+            }),
+            tx.query.messageReactions.findMany({
+              columns: {
+                messageId: true,
+                emoji: true,
+                userId: true,
+              },
+              where: inArray(messageReactions.messageId, baseMessageIds),
+              limit: baseMessageIds.length * MAX_REACTIONS_PER_MESSAGE + 1,
+            }),
+          ])
+        : [[], []];
+    if (reactionRows.length > baseMessageIds.length * MAX_REACTIONS_PER_MESSAGE) {
+      throw new Error('REACTION_INVARIANT_EXCEEDED');
+    }
+    const pinnedMessageIds = new Set(pins.map((pin) => pin.messageId));
+    const attachmentsByMessage = await getAttachmentsForMessages(
+      baseMessageIds,
+      tx as unknown as typeof db,
+    );
+    const reactionsByMessage = new Map<string, ReactionRow[]>();
+    for (const reaction of reactionRows) {
+      const grouped = reactionsByMessage.get(reaction.messageId) || [];
+      grouped.push(reaction);
+      reactionsByMessage.set(reaction.messageId, grouped);
+    }
+    return {
+      data: data.map((message) => ({
+        ...formatMessage(
+          message,
+          message.type === 'message'
+            ? {
+                isPinned: pinnedMessageIds.has(message.id),
+                reactions: summarizeReactions(reactionsByMessage.get(message.id) || []),
+              }
+            : undefined,
+        ),
+        attachments: message.type === 'message' ? attachmentsByMessage.get(message.id) || [] : [],
+      })),
+      hasMore,
+      cursor: hasMore ? data[data.length - 1]?.id : null,
+    };
   });
-  const hasMore = results.length > limit;
-  const data = results.slice(0, limit);
-  const baseMessageIds = data
-    .filter((message) => message.type === 'message')
-    .map((message) => message.id);
-  const [pins, reactionRows] = baseMessageIds.length > 0
-    ? await Promise.all([
-        db.query.messagePins.findMany({
-          columns: { messageId: true },
-          where: inArray(messagePins.messageId, baseMessageIds),
-        }),
-        db.query.messageReactions.findMany({
-          columns: {
-            messageId: true,
-            emoji: true,
-            userId: true,
-          },
-          where: inArray(messageReactions.messageId, baseMessageIds),
-          limit: baseMessageIds.length * MAX_REACTIONS_PER_MESSAGE + 1,
-        }),
-      ])
-    : [[], []];
-  if (reactionRows.length > baseMessageIds.length * MAX_REACTIONS_PER_MESSAGE) {
-    throw new Error('REACTION_INVARIANT_EXCEEDED');
-  }
-  const pinnedMessageIds = new Set(pins.map((pin) => pin.messageId));
-  const attachmentsByMessage = await getAttachmentsForMessages(baseMessageIds);
-  const reactionsByMessage = new Map<string, ReactionRow[]>();
-  for (const reaction of reactionRows) {
-    const grouped = reactionsByMessage.get(reaction.messageId) || [];
-    grouped.push(reaction);
-    reactionsByMessage.set(reaction.messageId, grouped);
-  }
-  return {
-    data: data.map((message) => ({
-      ...formatMessage(message, message.type === 'message'
-        ? {
-            isPinned: pinnedMessageIds.has(message.id),
-            reactions: summarizeReactions(reactionsByMessage.get(message.id) || []),
-          }
-        : undefined),
-      attachments: message.type === 'message' ? attachmentsByMessage.get(message.id) || [] : [],
-    })),
-    hasMore,
-    cursor: hasMore ? data[data.length - 1]?.id : null,
-  };
 }
 
 export async function createMessage(
@@ -533,7 +555,7 @@ async function lockAndAuthorizeCryptoWrite(
   // a conflicting lock wait, so a revoked sender cannot pass a stale check.
   const [device] = await store.select()
     .from(devices)
-    .where(and(eq(devices.id, input.deviceId), eq(devices.userId, userId), isNull(devices.revokedAt)))
+    .where(and(eq(devices.id, input.deviceId), eq(devices.userId, userId), isNull(devices.revokedAt), isNotNull(devices.approvedAt)))
     .for('share');
   if (!device) throw new Error('INVALID_DEVICE');
 
@@ -552,14 +574,16 @@ async function lockAndAuthorizeCryptoWrite(
   if (channel.keyRotationRequired) throw new Error('KEY_ROTATION_REQUIRED');
 
   const epoch = await store.query.channelKeyEpochs.findFirst({
-    columns: { version: true },
+    columns: { version: true, createdAt: true },
     where: and(
       eq(channelKeyEpochs.channelId, channelId),
       eq(channelKeyEpochs.version, input.keyVersion),
       eq(channelKeyEpochs.status, 'active'),
+      eq(channelKeyEpochs.protocolVersion, 3),
     ),
   });
   if (!epoch) throw new Error('INVALID_KEY_VERSION');
+  if (Date.now() - epoch.createdAt.getTime() >= 24 * 60 * 60_000 || !await isEpochRosterCurrent(store, channel, input.keyVersion)) throw new Error('KEY_ROTATION_REQUIRED');
   // Device revocation is O(1) regardless of account history. Lock and inspect
   // this epoch's bounded recipient devices so a concurrent revocation either
   // linearizes after this event or makes the event fail closed.

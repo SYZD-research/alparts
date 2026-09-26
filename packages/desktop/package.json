@@ -14,7 +14,7 @@
   "main": "dist/main.js",
   "description": "alparts desktop client for Windows, macOS, and Linux",
   "scripts": {
-    "build": "tsc -p tsconfig.json && esbuild src/preload.ts --bundle --platform=node --format=cjs --external:electron --outfile=dist/preload.cjs",
+    "build": "tsc -p tsconfig.json && node scripts/prepare-transport-pins.mjs && esbuild src/preload.ts --bundle --platform=node --format=cjs --external:electron --outfile=dist/preload.cjs",
     "build:renderer": "pnpm --filter @alparts/shared run build && pnpm --filter @alparts/client run build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "tsx --test src/**/*.test.ts",
@@ -55,6 +55,8 @@
       "dist/main.js",
       "dist/file-save.js",
       "dist/security-policy.js",
+      "dist/transport-pins.js",
+      "dist/transport-pins.json",
       "dist/settings.js",
       "dist/vault.js",
       "dist/preload.cjs",

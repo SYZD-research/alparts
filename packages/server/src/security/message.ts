@@ -159,3 +159,5 @@ function verifyDeviceSignature(identityKey: string, payload: string, signature: 
     Buffer.from(signature, 'base64'),
   );
 }
+
+export const verifyDevicePayloadSignature = verifyDeviceSignature;

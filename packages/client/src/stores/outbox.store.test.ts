@@ -73,6 +73,41 @@ afterEach(() => {
 });
 
 describe('outbox principal and persistence lifecycle', () => {
+  it('queues messages arriving during a send behind that send', async () => {
+    const persisted = new Map<string, OutboxCommand>();
+    localState.saveCommand.mockImplementation(async (_context, command: OutboxCommand) => {
+      persisted.set(command.idempotencyKey, command);
+    });
+    localState.loadCommand.mockImplementation(async (_context, id: string) => persisted.get(id));
+    const first = promiseWithResolvers<void>();
+    messageState.sendMessage.mockImplementationOnce(() => first.promise);
+    await useOutboxStore.getState().enqueue(channelId, 'first');
+    await vi.waitFor(() => expect(messageState.sendMessage).toHaveBeenCalledTimes(1));
+    await useOutboxStore.getState().enqueue(channelId, 'second');
+    expect(messageState.sendMessage).toHaveBeenCalledTimes(1);
+    first.resolve();
+    await vi.waitFor(() => expect(localState.deleteCommand).toHaveBeenCalledTimes(2));
+    expect(messageState.sendMessage.mock.calls.map((args) => args[1])).toEqual(['first', 'second']);
+  });
+
+  it('keeps a failed head ahead of later messages while other channels progress', async () => {
+    const persisted = new Map<string, OutboxCommand>();
+    localState.saveCommand.mockImplementation(async (_context, command: OutboxCommand) => {
+      persisted.set(command.idempotencyKey, command);
+    });
+    localState.loadCommand.mockImplementation(async (_context, id: string) => persisted.get(id));
+    vi.stubGlobal('navigator', { onLine: false });
+    await useOutboxStore.getState().enqueue(channelId, 'first');
+    await useOutboxStore.getState().enqueue(channelId, 'second');
+    await useOutboxStore.getState().enqueue('55555555-5555-4555-8555-555555555555', 'other');
+    messageState.sendMessage.mockRejectedValueOnce(new Error('temporary network failure'));
+    vi.stubGlobal('navigator', { onLine: true });
+    await useOutboxStore.getState().flushAll();
+    expect(messageState.sendMessage.mock.calls.map((args) => args[1])).toEqual(['first', 'other']);
+    await useOutboxStore.getState().flushAll();
+    expect(messageState.sendMessage.mock.calls.map((args) => args[1])).toEqual(['first', 'other', 'first', 'second']);
+  });
+
   it('rejects a new command before persistence when the bounded outbox is full', async () => {
     const { MAX_OUTBOX_COMMANDS_PER_DEVICE } = await import('./outbox-model');
     const items = Object.fromEntries(Array.from({ length: MAX_OUTBOX_COMMANDS_PER_DEVICE }, (_, index) => {

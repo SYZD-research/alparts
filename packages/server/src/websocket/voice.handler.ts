@@ -424,7 +424,7 @@ export class VoiceSignalingHub {
   }
 
   private async joinUnderAuthorizationLock(socket: AuthenticatedSocket, channelId: string): Promise<boolean> {
-    if (!await authorizeSocketChannel(socket, channelId, Permissions.VIEW_CHANNELS)) return false;
+    if (!await authorizeSocketChannel(socket, channelId, (Permissions.VIEW_CHANNELS | Permissions.CONNECT_VOICE))) return false;
     const location = await db.query.channels.findFirst({
       columns: { workspaceId: true, type: true },
       where: eq(channels.id, channelId),
@@ -437,7 +437,7 @@ export class VoiceSignalingHub {
         !socket.connected
         || authorization?.workspaceId !== location.workspaceId
         || !isVisibleChannelAuthorization(authorization)
-        || (authorization.permissions & Permissions.VIEW_CHANNELS) !== Permissions.VIEW_CHANNELS
+        || (authorization.permissions & (Permissions.VIEW_CHANNELS | Permissions.CONNECT_VOICE)) !== (Permissions.VIEW_CHANNELS | Permissions.CONNECT_VOICE)
       ) return false;
       const channelRoom = `channel:${channelId}`;
       const presenceRoom = voicePresenceRoom(channelId);
@@ -449,7 +449,7 @@ export class VoiceSignalingHub {
   }
 
   private async joinPresenceUnderAuthorizationLock(socket: AuthenticatedSocket, channelId: string): Promise<boolean> {
-    if (!await authorizeSocketChannel(socket, channelId, Permissions.VIEW_CHANNELS)) return false;
+    if (!await authorizeSocketChannel(socket, channelId, (Permissions.VIEW_CHANNELS | Permissions.CONNECT_VOICE))) return false;
     const location = await db.query.channels.findFirst({
       columns: { workspaceId: true, type: true },
       where: eq(channels.id, channelId),
@@ -462,7 +462,7 @@ export class VoiceSignalingHub {
         !socket.connected
         || authorization?.workspaceId !== location.workspaceId
         || !isVisibleChannelAuthorization(authorization)
-        || (authorization.permissions & Permissions.VIEW_CHANNELS) !== Permissions.VIEW_CHANNELS
+        || (authorization.permissions & (Permissions.VIEW_CHANNELS | Permissions.CONNECT_VOICE)) !== (Permissions.VIEW_CHANNELS | Permissions.CONNECT_VOICE)
       ) return false;
       const room = voicePresenceRoom(channelId);
       if (!socket.rooms.has(room)) await socket.join(room);

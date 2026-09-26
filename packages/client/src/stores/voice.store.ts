@@ -103,6 +103,7 @@ const outboundSequences = new Map<string, number>();
 const outboundQueues = new Map<string, Promise<void>>();
 const outboundQueueDepths = new Map<string, number>();
 const peers = new Map<string, RTCPeerConnection>();
+const ignoredOffers = new Set<string>();
 const peerQueues = new Map<string, Promise<void>>();
 const peerQueueDepths = new Map<string, number>();
 const pendingIce = new Map<string, RTCIceCandidateInit[]>();
@@ -211,16 +212,20 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       startLocalLevelMonitoring(generation);
       startConnectionStats(generation);
 
-      // Only the newly joined participant creates offers. Existing peers wait
-      // for them, avoiding offer glare without a second negotiation protocol.
-      await Promise.allSettled(joined.participants.map(async (participant) => {
-        const peer = createPeer(participant.participantId, generation);
-        const offer = await peer.createOffer();
-        await peer.setLocalDescription(offer);
-        if (peer.localDescription) {
-          await sendDescription(peer.localDescription, participant.participantId, generation);
-        }
-      }));
+      // Serialize local offers with incoming signaling. Colliding offers use
+      // the participant-id tie-break below, so exactly one side rolls back.
+      await Promise.allSettled(joined.participants.map((participant) =>
+        enqueuePeerOperation(participant.participantId, async () => {
+          if (generation !== callGeneration) return;
+          const peer = createPeer(participant.participantId, generation);
+          if (peer.remoteDescription || peer.signalingState !== 'stable') return;
+          const offer = await peer.createOffer();
+          await peer.setLocalDescription(offer);
+          if (peer.localDescription) {
+            await sendDescription(peer.localDescription, participant.participantId, generation);
+          }
+        }),
+      ));
     } catch (error) {
       if (generation !== callGeneration) return;
       teardownVoiceRuntime(true);
@@ -519,6 +524,10 @@ async function processIncomingSignal(
   let directory: Map<string, DeviceDirectoryEntry>;
   try {
     directory = await loadDeviceDirectory(envelope.channelId);
+    if (!directory.has(envelope.senderDeviceId) && generation === callGeneration) {
+      directoryPromise = null;
+      directory = await loadDeviceDirectory(envelope.channelId);
+    }
   } catch {
     noteVoiceError('通話相手の接続情報を確認できませんでした');
     return;
@@ -529,13 +538,23 @@ async function processIncomingSignal(
     !identity
     || identity.userId !== participant.userId
     || !await verifyVoiceSignalSignature(envelope, signature, identity.identityKey)
-    || !incomingSequences.accept(envelope.senderParticipantId, envelope.sequence)
   ) return;
+  if (generation !== callGeneration || !useVoiceStore.getState().participants.some((entry) => (
+    entry.participantId === participant.participantId && entry.deviceId === participant.deviceId
+  ))) return;
+  if (!incomingSequences.accept(envelope.senderParticipantId, envelope.sequence)) return;
 
   try {
     if (envelope.kind === 'offer') {
       const peer = createPeer(envelope.senderParticipantId, generation);
-      if (peer.signalingState !== 'stable') return;
+      if (peer.signalingState !== 'stable') {
+        if (state.self!.participantId < envelope.senderParticipantId) {
+          ignoredOffers.add(envelope.senderParticipantId);
+          return;
+        }
+        await peer.setLocalDescription({ type: 'rollback' });
+      }
+      ignoredOffers.delete(envelope.senderParticipantId);
       await peer.setRemoteDescription({ type: 'offer', sdp: envelope.sdp! });
       await flushPendingIce(envelope.senderParticipantId, peer);
       const answer = await peer.createAnswer();
@@ -546,6 +565,7 @@ async function processIncomingSignal(
       return;
     }
     if (envelope.kind === 'answer') {
+      ignoredOffers.delete(envelope.senderParticipantId);
       const peer = peers.get(envelope.senderParticipantId);
       if (!peer || peer.signalingState !== 'have-local-offer') return;
       await peer.setRemoteDescription({ type: 'answer', sdp: envelope.sdp! });
@@ -553,6 +573,7 @@ async function processIncomingSignal(
       return;
     }
 
+    if (ignoredOffers.has(envelope.senderParticipantId)) return;
     const candidate: RTCIceCandidateInit = {
       candidate: envelope.candidate!,
       sdpMid: envelope.sdpMid,
@@ -697,11 +718,11 @@ async function flushPendingIce(participantId: string, peer: RTCPeerConnection): 
   for (const candidate of candidates) await peer.addIceCandidate(candidate);
 }
 
-function enqueuePeerOperation(participantId: string, operation: () => Promise<void>): void {
+function enqueuePeerOperation(participantId: string, operation: () => Promise<void>): Promise<void> {
   const depth = peerQueueDepths.get(participantId) ?? 0;
   if (depth >= MAX_PENDING_VOICE_OPERATIONS_PER_PEER) {
     useVoiceStore.setState({ quality: 'fair' });
-    return;
+    return Promise.resolve();
   }
   peerQueueDepths.set(participantId, depth + 1);
   const previous = peerQueues.get(participantId) ?? Promise.resolve();
@@ -711,6 +732,7 @@ function enqueuePeerOperation(participantId: string, operation: () => Promise<vo
     decrementQueueDepth(peerQueueDepths, participantId);
     if (peerQueues.get(participantId) === next) peerQueues.delete(participantId);
   }).catch(() => undefined);
+  return next;
 }
 
 function decrementQueueDepth(depths: Map<string, number>, participantId: string): void {
@@ -725,7 +747,7 @@ async function loadDeviceDirectory(channelId: string): Promise<Map<string, Devic
     if (requestedDeviceIds.length < 1 || requestedDeviceIds.length > MAX_VOICE_PARTICIPANTS) {
       throw new Error('Invalid voice device directory request');
     }
-    directoryPromise = api.getChannelDeviceDirectory(channelId, requestedDeviceIds).then((entries) => {
+    const request = api.getChannelDeviceDirectory(channelId, requestedDeviceIds).then((entries) => {
       if (entries.length > MAX_VOICE_PARTICIPANTS) throw new Error('Invalid device directory');
       const result = new Map<string, DeviceDirectoryEntry>();
       for (const entry of entries) {
@@ -741,9 +763,10 @@ async function loadDeviceDirectory(channelId: string): Promise<Map<string, Devic
       }
       return result;
     }).catch((error) => {
-      directoryPromise = null;
+      if (directoryPromise === request) directoryPromise = null;
       throw error;
     });
+    directoryPromise = request;
   }
   return directoryPromise;
 }
@@ -899,6 +922,7 @@ function numberStat(value: unknown): number {
 }
 
 function removePeer(participantId: string): void {
+  ignoredOffers.delete(participantId);
   const peer = peers.get(participantId);
   if (peer) {
     peer.onicecandidate = null;
@@ -932,6 +956,7 @@ function teardownVoiceRuntime(notifyServer: boolean): void {
   if (notifyServer && channelId && socket?.connected) socket.emit('voice:leave', { channelId });
   serverJoinedChannelId = null;
   directoryPromise = null;
+  ignoredOffers.clear();
   runtimeIceServers = [];
   incomingSequences.clear();
   outboundSequences.clear();

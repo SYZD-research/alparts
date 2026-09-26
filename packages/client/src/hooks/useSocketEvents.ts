@@ -23,7 +23,7 @@ import { parseAttentionNotification } from '../services/attention-model';
 import { useAttentionStore } from '../stores/attention.store';
 
 export function useSocketEvents() {
-  const addMessage = useMessageStore((state) => state.addMessage);
+  const addMessages = useMessageStore((state) => state.addMessages);
   const removeMessage = useMessageStore((state) => state.removeMessage);
   const applyReactionUpdate = useMessageStore((state) => state.applyReactionUpdate);
   const applyPinUpdate = useMessageStore((state) => state.applyPinUpdate);
@@ -53,6 +53,8 @@ export function useSocketEvents() {
     let authorizationQueueDepth = 0;
     const pendingKeySyncIds = new Set<string>();
     let keySyncRunning = false;
+    const pendingMessages = new Map<string, Message[]>();
+    let messageFlushScheduled = false;
     const maxPendingAuthorizationTasks = 64;
 
     const isAuthorizedLoadedChannel = (channelId: string) => (
@@ -131,19 +133,11 @@ export function useSocketEvents() {
       const previousChannelIds = before.workspaceId === workspaceId
         ? before.channels.map((channel) => channel.id)
         : [];
-      await loadChannels(workspaceId);
+      const refreshed = await loadChannels(workspaceId);
       const after = useChannelStore.getState();
-      if (after.workspaceId !== workspaceId || after.error) {
-        await Promise.allSettled(previousChannelIds.map((channelId) => (
-          clearChannelSecurityScope(workspaceId, channelId)
-        )));
-        useUserStateStore.getState().clearWorkspace(workspaceId);
-        return;
-      }
+      if (!refreshed || disposed || after.workspaceId !== workspaceId || after.error) return;
 
-      // `loadChannels` deliberately returns its raw response even when a newer
-      // generation invalidates it. Authorization decisions must use only the
-      // generation-checked store projection.
+      // Only a successfully applied authorization list can prove revocation.
       const visibleIds = new Set(after.channels.map((channel) => channel.id));
       await Promise.allSettled(previousChannelIds
         .filter((channelId) => !visibleIds.has(channelId))
@@ -184,17 +178,35 @@ export function useSocketEvents() {
       return !disposed;
     };
 
+    const flushMessages = () => {
+      messageFlushScheduled = false;
+      for (const [channelId, messages] of pendingMessages) {
+        if (disposed || !isAuthorizedLoadedChannel(channelId)) continue;
+        addMessages(channelId, messages);
+        for (const message of messages) noteBaseMessage(message);
+      }
+      pendingMessages.clear();
+    };
+    const enqueueMessage = (message: Message) => {
+      if (!isAuthorizedLoadedChannel(message.channelId)) return;
+      const pending = pendingMessages.get(message.channelId) ?? [];
+      pending.push(message);
+      pendingMessages.set(message.channelId, pending);
+      if (pending.length >= 64) flushMessages();
+      else if (!messageFlushScheduled) {
+        messageFlushScheduled = true;
+        queueMicrotask(flushMessages);
+      }
+    };
     const onMessageNew = (data: { message: Message }) => {
-      if (!isAuthorizedLoadedChannel(data.message.channelId)) return;
-      addMessage(data.message.channelId, data.message);
-      noteBaseMessage(data.message);
+      enqueueMessage(data.message);
     };
     const onMessageEdited = (data: { message: Message }) => {
-      if (isAuthorizedLoadedChannel(data.message.channelId)) addMessage(data.message.channelId, data.message);
+      enqueueMessage(data.message);
     };
     const onMessageDeleted = (data: { messageId: string; channelId: string; event?: Message }) => {
       if (!isAuthorizedLoadedChannel(data.channelId)) return;
-      if (data.event) addMessage(data.channelId, data.event);
+      if (data.event) enqueueMessage(data.event);
       else removeMessage(data.messageId, data.channelId);
       const workspaceId = useWorkspaceStore.getState().activeWorkspaceId;
       if (workspaceId) void loadWorkspaceState(workspaceId);
@@ -225,6 +237,7 @@ export function useSocketEvents() {
       } catch {
         return;
       }
+      useUiStore.getState().openAccountSecurity();
       const workspaceId = useWorkspaceStore.getState().activeWorkspaceId;
       if (workspaceId) syncLoadedWorkspaceKeys(workspaceId);
     };
@@ -302,11 +315,12 @@ export function useSocketEvents() {
       const channelId = channelState.activeChannelId;
       if (disposed || !workspaceId || channelState.workspaceId !== workspaceId || !channelId || !socket.connected) return;
       socket.timeout(3000).emit('channel:join', channelId, (error: Error | null, result?: { ok: boolean }) => {
-        if (disposed) return;
+        if (disposed || useChannelStore.getState().activeChannelId !== channelId) return;
         if (!error && result?.ok) {
           void loadMessages(channelId);
-        } else if (attempt < 2 && socket.connected) {
-          rejoinTimer = setTimeout(() => rejoinActiveChannel(attempt + 1), 500 * (attempt + 1));
+        } else if (socket.connected) {
+          void loadMessages(channelId);
+          rejoinTimer = setTimeout(() => rejoinActiveChannel(attempt + 1), Math.min(30_000, 500 * 2 ** Math.min(attempt, 6)));
         }
       });
     };
@@ -334,6 +348,9 @@ export function useSocketEvents() {
     socket.on('typing:update', onTypingUpdate);
     socket.on('read:updated', onReadUpdated);
     socket.on('attention:new', onAttention);
+    const onAccountSecurityChanged = () => useUiStore.getState().openAccountSecurity();
+    socket.on('account:security-changed', onAccountSecurityChanged);
+    socket.on('device:revoked', onAccountSecurityChanged);
     socket.on('device:registered', onDeviceRegistered);
     socket.on('workspace:member-added', onWorkspaceMembershipChanged);
     socket.on('workspace:roles-changed', onWorkspaceMembershipChanged);
@@ -358,6 +375,7 @@ export function useSocketEvents() {
 
     return () => {
       disposed = true;
+      pendingMessages.clear();
       pendingKeySyncIds.clear();
       if (rejoinTimer) clearTimeout(rejoinTimer);
       socket.off('connect', onConnect);
@@ -372,6 +390,8 @@ export function useSocketEvents() {
       socket.off('typing:update', onTypingUpdate);
       socket.off('read:updated', onReadUpdated);
       socket.off('attention:new', onAttention);
+      socket.off('account:security-changed', onAccountSecurityChanged);
+      socket.off('device:revoked', onAccountSecurityChanged);
       socket.off('device:registered', onDeviceRegistered);
       socket.off('workspace:member-added', onWorkspaceMembershipChanged);
       socket.off('workspace:roles-changed', onWorkspaceMembershipChanged);
@@ -385,7 +405,7 @@ export function useSocketEvents() {
       socket.off('channel:key-rotation-required', onChannelRecipientsChanged);
       unsubscribeChannelList();
     };
-  }, [addAttention, addMessage, applyAttachment, applyPinUpdate, applyReactionUpdate, applySocketReadPosition,
+  }, [addAttention, addMessages, applyAttachment, applyPinUpdate, applyReactionUpdate, applySocketReadPosition,
     flushOutbox, loadChannels, loadMembers, loadMessages, loadWorkspaces, loadWorkspaceState,
     noteBaseMessage, removeMessage, resumeFailedUploads, setActiveWorkspace, setStatus, setTyping,
     upsertDm, userId]);

@@ -82,15 +82,25 @@ export const config = {
   },
 
   auth: {
+    passwordPepper: mandatorySecret('PASSWORD_PEPPER'),
     registrationInviteSecret: optionalSecret('REGISTRATION_INVITE_SECRET'),
     cookieName: isProduction ? '__Host-alparts_session' : 'alparts_session',
     secureCookie: isProduction || env.COOKIE_SECURE === 'true',
+  },
+
+  webauthn: {
+    rpId: env.WEBAUTHN_RP_ID || new URL(corsOrigins[0]).hostname,
+    origins: env.WEBAUTHN_ORIGINS ? parseCorsOrigins(env.WEBAUTHN_ORIGINS, isProduction) : corsOrigins,
   },
 
   audit: {
     integrityKey: mandatorySecret('AUDIT_INTEGRITY_KEY'),
     checkpointPath: env.AUDIT_CHECKPOINT_PATH?.trim() || null,
     checkpointRequired: env.AUDIT_CHECKPOINT_REQUIRED === 'true',
+    witnessPublicKeyPath: env.AUDIT_WITNESS_PUBLIC_KEY_FILE?.trim() || null,
+    witnessPath: env.AUDIT_WITNESS_PATH?.trim() || null,
+    witnessDeploymentId: env.AUDIT_WITNESS_DEPLOYMENT_ID?.trim() || null,
+    witnessRequired: env.AUDIT_WITNESS_REQUIRED === 'true',
   },
 
   minio: {
@@ -139,6 +149,11 @@ if (config.observability.metricsEnabled && !config.observability.metricsToken) {
 if (config.isProduction && (!config.audit.checkpointPath || !config.audit.checkpointRequired)) {
   throw new Error('Production requires AUDIT_CHECKPOINT_PATH and AUDIT_CHECKPOINT_REQUIRED=true');
 }
+if ((config.audit.witnessRequired || config.audit.witnessPath || config.audit.witnessPublicKeyPath || config.audit.witnessDeploymentId)
+  && (!config.audit.witnessPath || !config.audit.witnessPublicKeyPath
+    || !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(config.audit.witnessDeploymentId ?? ''))) {
+  throw new Error('Audit witness requires its public key, signed witness file and deployment UUID');
+}
 if (config.isProduction && !config.minio.useSSL && (
   env.ALLOW_INSECURE_LOOPBACK_DEPENDENCIES !== 'true'
   || !isLoopbackHost(config.minio.endPoint)
@@ -153,4 +168,13 @@ function isLoopbackHost(host: string): boolean {
     || normalized === '[::1]'
     || normalized === '::1'
     || normalized === 'unix-socket';
+}
+
+for (const origin of config.webauthn.origins) {
+  const host = new URL(origin).hostname;
+  if (host !== config.webauthn.rpId && !host.endsWith(`.${config.webauthn.rpId}`)) {
+    // Default development origins may include both localhost and loopback.
+    if (!env.WEBAUTHN_ORIGINS && !env.WEBAUTHN_RP_ID && !isProduction) continue;
+    throw new Error('WEBAUTHN_RP_ID must match the configured WebAuthn origins');
+  }
 }

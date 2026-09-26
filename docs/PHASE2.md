@@ -1,8 +1,8 @@
 # Phase 2 implementation status
 
-Phase 2 is **not complete or suitable for formal release**. The starting tree also
-lacks Phase 1 security prerequisites (MLS-equivalent group security, approved device
-enrollment/key transparency, Passkey/OIDC and complete encrypted history recovery).
+Phase 2 is **not complete or suitable for formal release**. Device approval, transparency, MLS-based epochs, web passkeys and user-controlled
+history recovery are now implemented as described in [the security update](security/ACCOUNT_AND_GROUP_SECURITY.md).
+OIDC, native WebAuthn integration and independent protocol assurance remain open.
 The existing confidentiality warning and release gates still apply.
 
 | Specification scope | Implemented in this change | Remaining acceptance work |

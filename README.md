@@ -29,7 +29,7 @@ Phase 2 全体の完了や正式運用への適合を示すものではありま
 - age recipientで暗号化するbackup gate、systemd daily schedule、安全なlocal retention、空の隔離DB/bucketだけを対象にするrestore verification
 - tenant/resource/database/object listing/password/audit/upload work、およびbrowser outbox/realtime/voice/attachment workのtransactional・bounded admissionとbulk authorization snapshot
 
-Category/channel permission override、client attachment flow、音声signalingは、fresh PostgreSQL/MinIOを使う認可matrix・複数chunk再開/download SHA・2端末の通話参加/relay/失権退出まで確認しています。MLS、device approval/key transparency、WebAuthn/OIDC、mobile、Restricted profile、HA、PITR/WORM/off-site/automatic DR、retention/export、signed updates、映像・画面共有・SFU/SFrame、Bot/Webhook、独立外部reviewは正式版blockerとして未実装です。
+Category/channel permission override、client attachment flow、音声signalingは、fresh PostgreSQL/MinIOを使う認可matrix・複数chunk再開/download SHA・2端末の通話参加/relay/失権退出まで確認しています。OIDC、Restricted profile、HA、PITR/WORM/off-site/automatic DR、retention/export、signed updates、映像・画面共有・SFU/SFrame、Bot/Webhook、独立外部reviewは正式版blockerとして未実装です。
 
 ## ローカル起動
 
@@ -66,6 +66,7 @@ pnpm install --frozen-lockfile
 pnpm typecheck
 pnpm test
 pnpm --filter @alparts/server test:integration
+pnpm --filter @alparts/server test:account-security
 pnpm build
 pnpm test:backup-security
 pnpm security:secrets
@@ -77,7 +78,9 @@ DB integrationは、既存dataを含まない一意な使い捨てPostgreSQL/Min
 
 ## Cryptoとlocal stateの境界
 
-Message本文はbrowserでAES-256-GCM暗号化し、device P-256 keyでcontext付きprotocol-v3 envelopeへ署名します。Channel-key epochは共通SHA-256 commitmentとfrozen recipient snapshotを持つ`pending`として提案され、全required端末が復号・commitment・server発行のexact deliveryを検証して署名ackした場合だけ`active`になります。Pending epochはmessage/attachment writeに使えず、abort後もversionを再利用しません。全accepted holderを失った場合は旧ciphertextを復旧できたと装わず、`historyRecoveryRequired`を示して新端末から将来用epochだけを確立します。履歴を待たず明示的に再開する場合はpasswordと端末署名を確認し、全eligible端末へ新keyをwrapしたうえで開始端末のack後に将来用epochを有効化します。Serverはciphertext、signature、配送に必要なmetadataを保持します。現在のgroup keyはbasic per-channel epoch方式で、MLS相当のforward secrecy/post-compromise securityを提供しません。
+Message本文はAES-256-GCMで暗号化し、端末署名で送信元と文脈を検証します。新しい鍵は固定suiteのMLSライブラリを使って端末ごとに更新し、承認済みの全参加端末が確認した場合だけ送信に使えます。端末の承認・失効は検証可能な追記型履歴に残り、他端末の確認コードと照合できます。Web版のPasskeyと重要操作の再認証、利用者が保管する復旧コードによる暗号化履歴バックアップも実装しています。
+
+MLSはアプリの鍵epochごとに新しいgroupを作る構成です。保存済み履歴の鍵は保持するため、message単位の完全なforward secrecyや独立review済みという保証はありません。初回の端末一覧はTOFUで、独立witnessとnativeアプリのWebAuthn連携は残作業です。[方式・保証範囲・移行手順](./docs/security/ACCOUNT_AND_GROUP_SECURITY.md)を確認してください。
 
 Web版では、device private keyとdraft/outbox用AES-GCM keyをnon-extractable WebCrypto `CryptoKey`としてsame-origin IndexedDBへ保存します。Desktop版ではprivate materialをOS保護領域でwrapし、IndexedDBには参照情報だけを置きます。どちらも実行中の正規clientは鍵を利用できるため、client code侵害への完全な防御ではありません。Searchはmemory上の読み込み済み復号messageだけを対象とし、永続暗号化indexや端末間同期はありません。
 
@@ -100,3 +103,5 @@ External公開時はTLS 1.3を優先するreverse proxyを使用し、PostgreSQL
 脆弱性の報告方法は [SECURITY.md](./docs/policies/SECURITY.md) を参照してください。過去の監査、完了済みstandard scan、2026-08-27に停止したDeep Scan、および2026-08-30にartifact packagingまで完了したcoverage-partial Deep Scanのfindingと修正結果は [SECURITY_AUDIT.md](./docs/policies/SECURITY_AUDIT.md) で分離しています。
 
 このrepositoryは現在 `UNLICENSED` であり、公開閲覧できること自体は利用・改変・再配布の許諾を意味しません。Project licenseの選定は権利者判断が必要な正式版TODOです。Production依存の機械的inventoryでは MIT / ISC / BSD-3-Clause / Apache-2.0 / BlueOak-1.0.0 を確認していますが、これはproject licenseの付与または法的助言ではありません。
+
+2026-09-17 の追加修正・移行条件は [SECURITY_AUDIT_2.md](./SECURITY_AUDIT_2.md) を参照してください。更新時はサーバーを停止し、独立した `PASSWORD_PEPPER` を設定してruntime migrationを実行します。開発環境を含め、外部監査checkpointが必須です。

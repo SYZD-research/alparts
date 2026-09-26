@@ -78,6 +78,7 @@ public final class MainActivity extends Activity {
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
+        if (android.os.Build.VERSION.SDK_INT >= 31) getWindow().setHideOverlayWindows(true);
         try { vault = new SecretVault(this); }
         catch (Exception ignored) { showStatus("この端末でデータを安全に保存できません。"); return; }
         origin = getPreferences(MODE_PRIVATE).getString("server", null);
@@ -101,6 +102,7 @@ public final class MainActivity extends Activity {
     private View nativeScreen() {
         ViewGroup content = findViewById(android.R.id.content);
         View layout = getLayoutInflater().inflate(R.layout.native_screen, content, false);
+        layout.setFilterTouchesWhenObscured(true);
         View card = layout.findViewById(R.id.setup_card);
         int gutter = Math.round(48 * getResources().getDisplayMetrics().density);
         int maxWidth = Math.round(448 * getResources().getDisplayMetrics().density);
@@ -155,6 +157,12 @@ public final class MainActivity extends Activity {
             error.setText(R.string.connection_invalid);
             error.setVisibility(View.VISIBLE);
             address.requestFocus();
+            return;
+        }
+        if (!BuildConfig.DEBUG && !java.util.Arrays.asList(getResources().getStringArray(R.array.pinned_hosts))
+                .contains(Uri.parse(candidate).getHost())) {
+            error.setText(R.string.connection_invalid);
+            error.setVisibility(View.VISIBLE);
             return;
         }
         error.setVisibility(View.GONE);
@@ -297,6 +305,8 @@ public final class MainActivity extends Activity {
             }
         });
         FrameLayout container = new FrameLayout(this);
+        container.setFilterTouchesWhenObscured(true);
+        web.setFilterTouchesWhenObscured(true);
         container.setFitsSystemWindows(true);
         container.setBackgroundColor(getColor(R.color.alparts_background));
         web.setBackgroundColor(getColor(R.color.alparts_background));
@@ -339,6 +349,7 @@ public final class MainActivity extends Activity {
                 })
                 .setNegativeButton("キャンセル", (dialog, which) -> clearMicrophoneRequest(true))
                 .setOnCancelListener(dialog -> clearMicrophoneRequest(true)).show();
+            protectDialog(microphoneDialog);
         } else launchMicrophonePermission();
     }
 
@@ -393,6 +404,7 @@ public final class MainActivity extends Activity {
                     })
                     .setNegativeButton("今はしない", (dialog, which) -> microphoneDialog = null)
                     .setOnCancelListener(dialog -> microphoneDialog = null).show();
+                protectDialog(microphoneDialog);
             } else {
                 Toast.makeText(this, "マイクの使用が許可されなかったため、通話に参加できません。", Toast.LENGTH_LONG).show();
             }
@@ -446,11 +458,11 @@ public final class MainActivity extends Activity {
                     if (name.isEmpty() || name.length() > 240) throw new IllegalArgumentException();
                     saveReply = reply; saveRequest = id;
                     if (args.optBoolean("dangerous") || name.toLowerCase(java.util.Locale.ROOT).matches(".*\\.(apk|exe|msi|bat|cmd|ps1|sh|html?|svg|js|jar)$")) {
-                        new android.app.AlertDialog.Builder(this)
+                        protectDialog(new android.app.AlertDialog.Builder(this)
                             .setMessage("このファイルを開くと、端末やデータに影響する可能性があります。送信者と内容を確認してから開いてください。")
                             .setPositiveButton("保存する", (dialog, which) -> launchSave(name))
                             .setNegativeButton("キャンセル", (dialog, which) -> cancelSaveDialog())
-                            .setOnCancelListener(dialog -> cancelSaveDialog()).show();
+                            .setOnCancelListener(dialog -> cancelSaveDialog()).show());
                     } else launchSave(name);
                     return;
                 case "writeSave":
@@ -520,7 +532,20 @@ public final class MainActivity extends Activity {
         }
     }
     private void resetIdle() { handler.removeCallbacks(idleLock); if (unlocked) handler.postDelayed(idleLock, idleMinutes * 60_000L); }
-    @Override public boolean dispatchTouchEvent(MotionEvent event) { resetIdle(); return super.dispatchTouchEvent(event); }
+    private void protectDialog(AlertDialog dialog) {
+        if (dialog.getWindow() == null) return;
+        dialog.getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
+        dialog.getWindow().getDecorView().setFilterTouchesWhenObscured(true);
+        if (android.os.Build.VERSION.SDK_INT >= 31) dialog.getWindow().setHideOverlayWindows(true);
+    }
+
+    @Override public boolean dispatchTouchEvent(MotionEvent event) {
+        int obscured = MotionEvent.FLAG_WINDOW_IS_OBSCURED;
+        if (android.os.Build.VERSION.SDK_INT >= 29) obscured |= MotionEvent.FLAG_WINDOW_IS_PARTIALLY_OBSCURED;
+        if ((event.getFlags() & obscured) != 0) return false;
+        resetIdle();
+        return super.dispatchTouchEvent(event);
+    }
     private void lock() {
         unlocked = false;
         clearMicrophoneRequest(true);

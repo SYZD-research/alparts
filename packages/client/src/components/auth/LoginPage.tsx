@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { canUsePasskeys } from '../../services/passkey.service';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../../stores/auth.store';
 import { safeMessageReturnPath } from '../../stores/permalink-model';
@@ -9,7 +10,7 @@ export function LoginPage() {
   const [password, setPassword] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [inviteToken, setInviteToken] = useState('');
-  const { login, register, isLoading, error } = useAuthStore();
+  const { login, loginPasskey, register, isLoading, error } = useAuthStore();
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -38,34 +39,52 @@ export function LoginPage() {
           {isRegister ? 'alpartsへようこそ' : 'alpartsにログイン'}
         </p>
 
+        {!isRegister && canUsePasskeys() && (
+          <button
+            type="button"
+            disabled={isLoading}
+            onClick={() => {
+              void loginPasskey()
+                .then(() =>
+                  navigate(readSafeReturnPath(location.state), {
+                    replace: true,
+                  }),
+                )
+                .catch(() => undefined);
+            }}
+            className="mb-4 w-full rounded bg-discord-accent px-4 py-3 font-bold text-white disabled:opacity-50"
+          >
+            パスキーでログイン
+          </button>
+        )}
         <form onSubmit={handleSubmit} className="space-y-4">
           {isRegister && (
             <>
-            <div>
-              <label className="block text-xs font-bold text-discord-muted uppercase mb-2">
-                表示名
-              </label>
-              <input
-                type="text"
-                value={displayName}
-                onChange={(e) => setDisplayName(e.target.value)}
-                className="w-full px-3 py-2.5 bg-discord-bg rounded text-discord-text outline-none focus:ring-2 focus:ring-discord-accent"
-                required
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-bold text-discord-muted uppercase mb-2">
-                招待コード
-              </label>
-              <input
-                type="password"
-                value={inviteToken}
-                onChange={(e) => setInviteToken(e.target.value)}
-                className="w-full px-3 py-2.5 bg-discord-bg rounded text-discord-text outline-none focus:ring-2 focus:ring-discord-accent"
-                required
-                autoComplete="one-time-code"
-              />
-            </div>
+              <div>
+                <label className="block text-xs font-bold text-discord-muted uppercase mb-2">
+                  表示名
+                </label>
+                <input
+                  type="text"
+                  value={displayName}
+                  onChange={(e) => setDisplayName(e.target.value)}
+                  className="w-full px-3 py-2.5 bg-discord-bg rounded text-discord-text outline-none focus:ring-2 focus:ring-discord-accent"
+                  required
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-discord-muted uppercase mb-2">
+                  招待コード
+                </label>
+                <input
+                  type="password"
+                  value={inviteToken}
+                  onChange={(e) => setInviteToken(e.target.value)}
+                  className="w-full px-3 py-2.5 bg-discord-bg rounded text-discord-text outline-none focus:ring-2 focus:ring-discord-accent"
+                  required
+                  autoComplete="one-time-code"
+                />
+              </div>
             </>
           )}
 
@@ -97,9 +116,7 @@ export function LoginPage() {
             />
           </div>
 
-          {error && (
-            <p className="text-discord-red text-sm">{error}</p>
-          )}
+          {error && <p className="text-discord-red text-sm">{error}</p>}
 
           <button
             type="submit"
@@ -113,7 +130,9 @@ export function LoginPage() {
         <p className="text-sm text-discord-muted mt-4 text-center">
           {isRegister ? 'すでにアカウントをお持ちですか？' : 'アカウントをお持ちでないですか？'}
           <button
-            onClick={() => { setIsRegister(!isRegister); }}
+            onClick={() => {
+              setIsRegister(!isRegister);
+            }}
             className="text-discord-accent hover:underline ml-1"
           >
             {isRegister ? 'ログイン' : 'アカウント作成'}

@@ -18,10 +18,12 @@
     "db:studio": "drizzle-kit studio",
     "db:fingerprint": "tsx src/scripts/database-fingerprint.ts",
     "audit:checkpoint:init": "tsx src/scripts/initialize-audit-checkpoint.ts",
-    "audit:checkpoint:init:runtime": "node dist/scripts/initialize-audit-checkpoint.js"
+    "audit:checkpoint:init:runtime": "node dist/scripts/initialize-audit-checkpoint.js",
+    "test:account-security": "RUN_ACCOUNT_SECURITY_INTEGRATION=1 tsx --test src/security/account-security.integration.test.ts src/security/password-migration.integration.test.ts"
   },
   "dependencies": {
     "@alparts/shared": "workspace:*",
+    "@simplewebauthn/server": "14.0.2",
     "bcryptjs": "^3.0.3",
     "cors": "^2.8.5",
     "drizzle-orm": "^0.45.2",
@@ -31,7 +33,10 @@
     "minio": "^8.0.0",
     "pg": "^8.13.0",
     "socket.io": "^4.8.0",
-    "zod": "^3.23.8"
+    "zod": "^3.23.8",
+    "ts-mls": "1.6.4",
+    "@noble/curves": "2.0.1",
+    "@noble/hashes": "2.3.0"
   },
   "devDependencies": {
     "@types/cors": "^2.8.17",
@@ -40,8 +45,8 @@
     "@types/node": "^26.2.0",
     "@types/pg": "^8.11.10",
     "drizzle-kit": "^0.31.10",
-    "tsx": "^4.19.0",
     "socket.io-client": "^4.8.3",
+    "tsx": "^4.19.0",
     "typescript": "^5.6.0"
   }
 }

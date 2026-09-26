@@ -1,3 +1,4 @@
+import { solveLoginChallenge } from './login-challenge';
 import type {
   Attachment,
   Category,
@@ -42,6 +43,8 @@ export function createApiRequestDeadline(
 }
 
 interface ApiErrorPayload {
+  challenge?: unknown;
+  purpose?: string;
   error?: string;
   message?: string;
   statusCode?: number;
@@ -51,7 +54,7 @@ export class ApiError extends Error {
   readonly status: number;
   readonly code: string | null;
 
-  constructor(message: string, status: number, code?: string) {
+  constructor(message: string, status: number, code?: string, readonly retryAfterSeconds?: number) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
@@ -167,6 +170,8 @@ export interface ChannelKeyDelivery {
 }
 
 export interface ChannelKeyRecipientState {
+  protocolVersion?: number;
+  pendingProtocolVersion?: number | null;
   /** Currently active, writable epoch. Zero means no active epoch exists. */
   currentVersion: number;
   keyCommitment: string | null;
@@ -458,6 +463,12 @@ function browserSessionInfo(): Record<string, string> {
 }
 
 class ApiService {
+  private stepUpHandler: ((purpose: string, signal?: AbortSignal | null) => Promise<string>) | null = null;
+  setStepUpHandler(handler: (purpose: string, signal?: AbortSignal | null) => Promise<string>) { this.stepUpHandler = handler; }
+  securityRequest<T>(path: string, body?: unknown, method = body === undefined ? 'GET' : 'POST'): Promise<T> {
+    return this.request<T>(path, { method, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+  }
+
   private unauthorizedHandler: (() => void) | null = null;
 
   setUnauthorizedHandler(handler: () => void): void {
@@ -489,10 +500,20 @@ class ApiService {
       }
       const raw = await response.json().catch(() => null) as unknown;
       const error: ApiErrorPayload = raw && typeof raw === 'object' ? raw as ApiErrorPayload : {};
+      if (response.status === 428 && error.error === 'STEP_UP_REQUIRED' && error.purpose && this.stepUpHandler && !headers.has('X-Alparts-Step-Up')) {
+        const token = await this.stepUpHandler(error.purpose, options.signal);
+        headers.set('X-Alparts-Step-Up', token);
+        return this.fetchResponse(path, { ...options, headers });
+      }
+      if (path === '/auth/login' && response.status === 428 && error.error === 'LOGIN_CHALLENGE_REQUIRED' && !headers.has('X-Alparts-Login-Proof')) {
+        headers.set('X-Alparts-Login-Proof', await solveLoginChallenge(error.challenge, options.signal));
+        return this.fetchResponse(path, { ...options, headers });
+      }
       throw new ApiError(
         typeof error.message === 'string' ? error.message : `HTTP ${response.status}`,
         response.status,
         typeof error.error === 'string' ? error.error : undefined,
+        Number(response.headers.get('Retry-After')) || undefined,
       );
     }
 
@@ -823,7 +844,7 @@ class ApiService {
 
   // Messages
   async getMessages(channelId: string, cursor?: string) {
-    const params = cursor ? `?cursor=${cursor}` : '';
+    const params = cursor ? `?cursor=${encodeURIComponent(cursor)}` : '';
     return this.request<{ data: Message[]; hasMore: boolean; cursor: string | null }>(`/channels/${channelId}/messages${params}`);
   }
 
@@ -980,7 +1001,10 @@ class ApiService {
   }
 
   async revokeDevice(id: string) {
-    return this.request<SuccessResponse>(`/devices/${id}`, { method: 'DELETE' });
+    const device = (await this.getDevices()).find((d) => d.id === id);
+    if (!device) throw new Error('DEVICE_NOT_FOUND');
+    const decision = await (await import('./directory.service')).deviceDecision(device, 'revoke');
+    return this.request<SuccessResponse>(`/devices/${id}`, { method: 'DELETE', body: JSON.stringify(decision) });
   }
 
   async bindDevice(id: string, challenge: string, proof: string) {
@@ -1008,10 +1032,12 @@ class ApiService {
     if (uniqueIds.length < 1 || uniqueIds.length > 64 || uniqueIds.length !== deviceIds.length) {
       throw new Error('Invalid bounded device-directory request');
     }
-    return this.request<Array<{ deviceId: string; userId: string; identityKey: string }>>(
+    const result = await this.request<Array<{ deviceId: string; userId: string; identityKey: string }>>(
       `/channels/${channelId}/device-directory?ids=${encodeURIComponent(uniqueIds.join(','))}`,
       { signal },
     );
+    await (await import('./directory.service')).verifyDirectoryDevices(channelId, result, false);
+    return result;
   }
 
   async distributeChannelKeys(

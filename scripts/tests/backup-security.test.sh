@@ -42,6 +42,10 @@ cleanup() {
 }
 trap cleanup EXIT HUP INT TERM
 
+validate_backup_recipient age1pq1qqqqqqqq
+expect_failure 'Backups require a hybrid' "$TEST_TMP/classical-recipient.err" validate_backup_recipient age1qqqqqqqq
+expect_failure 'Backups require a hybrid' "$TEST_TMP/mixed-recipient.err" validate_backup_recipient $'age1pq1qqqq\nage1qqqq'
+
 REAL_JQ="$(command -v jq)"
 [[ -n "$REAL_JQ" ]] || fail 'jq is required'
 FAKE_BIN="$TEST_TMP/fake-bin"

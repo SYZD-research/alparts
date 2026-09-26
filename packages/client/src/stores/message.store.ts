@@ -30,10 +30,11 @@ import {
   markMessageCryptoVerification,
   markMessageKeyUnavailable,
   mergeMessageEvents,
-  projectMessageEvents,
+  projectOrderedMessageEvents,
   retryMessageKeyVerification,
   type ProjectedMessage,
 } from './message-projector';
+import { useChannelStore } from './channel.store';
 
 export const MAX_RESIDENT_MESSAGE_EVENTS_PER_CHANNEL = 1_000;
 export const MAX_RESIDENT_MESSAGE_EVENTS_TOTAL = 5_000;
@@ -59,7 +60,7 @@ interface MessageState {
   loadMessageThroughHistory: (channelId: string, messageId: string, maxPages?: number) => Promise<boolean>;
   reconcileChannelKey: (channelId: string) => Promise<boolean>;
   retryChannelPreparation: (channelId: string) => Promise<boolean>;
-  startChannelWithoutHistory: (channelId: string, currentPassword: string) => Promise<void>;
+  startChannelWithoutHistory: (channelId: string) => Promise<void>;
   sendMessage: (
     channelId: string,
     content: string,
@@ -69,6 +70,7 @@ interface MessageState {
     mentionedUserIds?: string[],
   ) => Promise<Message>;
   addMessage: (channelId: string, message: Message) => void;
+  addMessages: (channelId: string, messages: Message[]) => void;
   applyAttachment: (channelId: string, attachment: Attachment) => void;
   replaceMessage: (channelId: string, message: Message) => void;
   editMessage: (messageId: string, channelId: string, content: string) => Promise<void>;
@@ -118,19 +120,22 @@ function isMessageContextCurrent(channelId: string, generation: number, channelE
 }
 
 function channelUpdate(state: MessageState, channelId: string, events: Message[]) {
-  const merged = mergeMessageEvents(events).slice(-MAX_RESIDENT_MESSAGE_EVENTS_PER_CHANNEL);
+  const ordered = mergeMessageEvents(events);
+  const merged = ordered.length > MAX_RESIDENT_MESSAGE_EVENTS_PER_CHANNEL
+    ? mergeMessageEvents(ordered.slice(-MAX_RESIDENT_MESSAGE_EVENTS_PER_CHANNEL)) : ordered;
   const envelopeConflict = merged.some(hasAuthenticatedEnvelopeConflict);
   residentChannelOrder.delete(channelId);
   residentChannelOrder.set(channelId, true);
   const eventsByChannel = { ...state.eventsByChannel, [channelId]: merged };
-  const messagesByChannel = { ...state.messagesByChannel, [channelId]: projectMessageEvents(merged) };
+  const messagesByChannel = { ...state.messagesByChannel, [channelId]: projectOrderedMessageEvents(merged) };
   const evicted: string[] = [];
   let residentEvents = Object.values(eventsByChannel).reduce((total, entries) => total + entries.length, 0);
   while (
     Object.keys(eventsByChannel).length > MAX_RESIDENT_MESSAGE_CHANNELS
     || residentEvents > MAX_RESIDENT_MESSAGE_EVENTS_TOTAL
   ) {
-    const victim = [...residentChannelOrder.keys()].find((candidate) => candidate !== channelId);
+    const activeChannelId = useChannelStore.getState().activeChannelId;
+    const victim = [...residentChannelOrder.keys()].find((candidate) => candidate !== channelId && candidate !== activeChannelId);
     if (!victim) break;
     residentChannelOrder.delete(victim);
     evicted.push(victim);
@@ -290,14 +295,14 @@ export const useMessageStore = create<MessageState>((set, get) => ({
           channelKeyPending: { ...state.channelKeyPending, [channelId]: keyPending },
           channelRecoveryPending: { ...state.channelRecoveryPending, [channelId]: false },
           loadingByChannel: { ...state.loadingByChannel, [channelId]: false },
-          isLoading: false,
+          isLoading: Object.entries(state.loadingByChannel).some(([id, loading]) => id !== channelId && loading),
         }));
         await get().decryptMessages(channelId);
       } catch (error) {
         if (!isMessageContextCurrent(channelId, generation, channelEpoch) || loadVersions.get(channelId) !== loadVersion) return;
         const recoveryPending = isChannelKeyDeliveryPendingError(error);
         set((state) => ({
-          isLoading: false,
+          isLoading: Object.entries(state.loadingByChannel).some(([id, loading]) => id !== channelId && loading),
           loadingByChannel: { ...state.loadingByChannel, [channelId]: false },
           securityErrors: {
             ...state.securityErrors,
@@ -322,24 +327,25 @@ export const useMessageStore = create<MessageState>((set, get) => ({
   loadMoreMessages: async (channelId) => {
     const state = get();
     const cursor = state.cursors[channelId];
-    if (!cursor || !state.hasMore[channelId] || state.loadingMoreByChannel[channelId]) return;
+    if (!cursor || !state.hasMore[channelId] || state.loadingMoreByChannel[channelId] || state.loadingByChannel[channelId]) return;
     if ((state.eventsByChannel[channelId]?.length ?? 0) >= MAX_RESIDENT_MESSAGE_EVENTS_PER_CHANNEL) {
       set((current) => ({
         hasMore: { ...current.hasMore, [channelId]: false },
         cursors: { ...current.cursors, [channelId]: null },
         operationErrors: {
           ...current.operationErrors,
-          [channelId]: '安全な常駐履歴上限に達しました。さらに古い履歴は再読込または監査エクスポートで確認してください',
+          [channelId]: 'これ以上の履歴を表示できません。再読み込みしてお試しください。',
         },
       }));
       return;
     }
     const generation = messageStoreGeneration;
     const channelEpoch = currentChannelEpoch(channelId);
+    const loadVersion = loadVersions.get(channelId);
     set((current) => ({ loadingMoreByChannel: { ...current.loadingMoreByChannel, [channelId]: true } }));
     try {
       const result = await api.getMessages(channelId, cursor);
-      if (!isMessageContextCurrent(channelId, generation, channelEpoch)) return;
+      if (!isMessageContextCurrent(channelId, generation, channelEpoch) || loadVersions.get(channelId) !== loadVersion) return;
       set((current) => ({
         ...channelUpdate(current, channelId, mergeMessageEvents(current.eventsByChannel[channelId] || [], result.data)),
         hasMore: { ...current.hasMore, [channelId]: result.hasMore },
@@ -347,7 +353,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       }));
       await get().decryptMessages(channelId);
     } catch (error) {
-      if (isMessageContextCurrent(channelId, generation, channelEpoch)) {
+      if (isMessageContextCurrent(channelId, generation, channelEpoch) && loadVersions.get(channelId) === loadVersion) {
         set((current) => ({ operationErrors: { ...current.operationErrors, [channelId]: errorMessage(error, '過去のメッセージを読み込めませんでした') } }));
       }
     } finally {
@@ -383,6 +389,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         set((state) => ({
           channelKeyPending: { ...state.channelKeyPending, [channelId]: null },
           channelRecoveryPending: { ...state.channelRecoveryPending, [channelId]: false },
+          securityErrors: { ...state.securityErrors, [channelId]: null },
         }));
         get().retryUnavailableMessages(channelId);
         return true;
@@ -430,10 +437,10 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     return true;
   },
 
-  startChannelWithoutHistory: async (channelId, currentPassword) => {
+  startChannelWithoutHistory: async (channelId) => {
     const generation = messageStoreGeneration;
     const channelEpoch = currentChannelEpoch(channelId);
-    await establishFreshChannel(channelId, currentPassword);
+    await establishFreshChannel(channelId);
     if (!isMessageContextCurrent(channelId, generation, channelEpoch)) return;
     set((state) => ({
       securityErrors: { ...state.securityErrors, [channelId]: null },
@@ -509,10 +516,15 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     }
   },
 
-  addMessage: (channelId, message) => {
-    set((state) => channelUpdate(state, channelId, mergeMessageEvents(state.eventsByChannel[channelId] || [], [message])));
-    if (message.type === 'message' || message.type === 'edit' || message.type === 'delete') {
+  addMessage: (channelId, message) => get().addMessages(channelId, [message]),
+
+  addMessages: (channelId, messages) => {
+    const generation = messageStoreGeneration;
+    const epoch = currentChannelEpoch(channelId);
+    set((state) => channelUpdate(state, channelId, mergeMessageEvents(state.eventsByChannel[channelId] || [], messages)));
+    if (messages.some((message) => message.type === 'message' || message.type === 'edit' || message.type === 'delete')) {
       void get().decryptMessages(channelId).catch((error) => {
+        if (!isMessageContextCurrent(channelId, generation, epoch)) return;
         set((state) => ({
           securityErrors: {
             ...state.securityErrors,
@@ -647,7 +659,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     set((state) => ({
       securityErrors: {
         ...state.securityErrors,
-        [channelId]: `署名済み削除イベントを確認できませんでした (${messageId})`,
+        [channelId]: 'メッセージの削除を確認できませんでした。再読み込みしてお試しください。',
       },
     }));
   },
@@ -728,7 +740,6 @@ export const useMessageStore = create<MessageState>((set, get) => ({
           for (const version of versions) keysByVersion.set(version, null);
         }
       }
-      const decrypted: Array<Message | null> = [];
       for (let offset = 0; offset < unverified.length; offset += MAX_PARALLEL_MESSAGE_CRYPTO) {
         if (signal.aborted) throw signal.reason;
         const batch = unverified.slice(offset, offset + MAX_PARALLEL_MESSAGE_CRYPTO);
@@ -742,72 +753,72 @@ export const useMessageStore = create<MessageState>((set, get) => ({
           device.deviceId,
           { userId: device.userId, identityKey: device.identityKey },
         ]));
-        decrypted.push(...await Promise.all(batch.map(async (message): Promise<Message | null> => {
-        if (message.type !== 'message' && message.type !== 'edit' && message.type !== 'delete') return message;
-        if (!message.deviceId || !message.signature || (message.type !== 'delete' && !message.contentNonce)) {
-          if (message.type !== 'message') return null;
-          return markMessageCryptoVerification({ ...message, content: '[表示できないメッセージ]' }, false);
-        }
-        const identity = identities.get(message.deviceId);
-        const envelope: SignedMessageEnvelope = {
-          type: message.type,
-          channelId: message.channelId,
-          authorId: message.authorId,
-          deviceId: message.deviceId,
-          keyVersion: message.keyVersion,
-          idempotencyKey: message.idempotencyKey,
-          refMessageId: message.refMessageId,
-          broadcastMention: message.broadcastMention ?? null,
-          encryptedContent: message.encryptedContent,
-          contentNonce: message.contentNonce,
-        };
-        const invalidSignature = (
-          !identity
-          || identity.userId !== message.authorId
-          || message.author.id !== message.authorId
-          || !await verifyMessageSignature(envelope, message.signature, identity.identityKey)
-        );
-        if (invalidSignature) {
-          if (message.type !== 'message') return null;
-          return markMessageCryptoVerification({ ...message, content: '[メッセージを検証できませんでした]' }, false);
-        }
-        if (message.type === 'delete') return markMessageCryptoVerification(message, true);
-        const key = keysByVersion.get(message.keyVersion) ?? null;
-        if (!key) return markMessageKeyUnavailable(message);
-        try {
-          return markMessageCryptoVerification({ ...message, content: await decryptMessage(envelope, key) }, true);
-        } catch {
-          return markMessageCryptoVerification({ ...message, content: '[改ざんを検出しました]' }, false);
-        }
-        })));
+        const decrypted = await Promise.all(batch.map(async (message): Promise<Message | null> => {
+          if (message.type !== 'message' && message.type !== 'edit' && message.type !== 'delete') return message;
+          if (!message.deviceId || !message.signature || (message.type !== 'delete' && !message.contentNonce)) {
+            if (message.type !== 'message') return null;
+            return markMessageCryptoVerification({ ...message, content: '[表示できないメッセージ]' }, false);
+          }
+          const identity = identities.get(message.deviceId);
+          const envelope: SignedMessageEnvelope = {
+            type: message.type,
+            channelId: message.channelId,
+            authorId: message.authorId,
+            deviceId: message.deviceId,
+            keyVersion: message.keyVersion,
+            idempotencyKey: message.idempotencyKey,
+            refMessageId: message.refMessageId,
+            broadcastMention: message.broadcastMention ?? null,
+            encryptedContent: message.encryptedContent,
+            contentNonce: message.contentNonce,
+          };
+          const invalidSignature = (
+            !identity
+            || identity.userId !== message.authorId
+            || message.author.id !== message.authorId
+            || !await verifyMessageSignature(envelope, message.signature, identity.identityKey)
+          );
+          if (invalidSignature) {
+            if (message.type !== 'message') return null;
+            return markMessageCryptoVerification({ ...message, content: '[メッセージを検証できませんでした]' }, false);
+          }
+          if (message.type === 'delete') return markMessageCryptoVerification(message, true);
+          const key = keysByVersion.get(message.keyVersion) ?? null;
+          if (!key) return markMessageKeyUnavailable(message);
+          try {
+            return markMessageCryptoVerification({ ...message, content: await decryptMessage(envelope, key) }, true);
+          } catch {
+            return markMessageCryptoVerification({ ...message, content: '[改ざんを検出しました]' }, false);
+          }
+        }));
         if (signal.aborted) throw signal.reason;
+        if (!isMessageContextCurrent(channelId, generation, channelEpoch)) return;
+        const quarantinedIds = new Set(batch
+          .filter((_event, index) => decrypted[index] === null)
+          .map((event) => event.id));
+        const decryptedById = new Map(decrypted.flatMap((event) => event ? [[event.id, event] as const] : []));
+        set((state) => {
+          const current = state.eventsByChannel[channelId] || [];
+          const merged = current
+            .filter((event) => !quarantinedIds.has(event.id))
+            .map((event) => {
+              const decryptedEvent = decryptedById.get(event.id);
+              if (!decryptedEvent) return event;
+              // A conflicting duplicate may arrive while signature/AEAD work is
+              // in flight. Merge the newer resident event last so an envelope
+              // conflict remains sticky and newer server-owned aggregates win.
+              return mergeMessageEvents([decryptedEvent], [event])[0];
+            });
+          const next = channelUpdate(state, channelId, merged);
+          return quarantinedIds.size === 0 ? next : {
+            ...next,
+            securityErrors: {
+              ...state.securityErrors,
+              [channelId]: '安全を確認できない変更があるため、一部の更新を表示していません。',
+            },
+          };
+        });
       }
-      if (!isMessageContextCurrent(channelId, generation, channelEpoch)) return;
-      const quarantinedIds = new Set(unverified
-        .filter((_event, index) => decrypted[index] === null)
-        .map((event) => event.id));
-      const decryptedById = new Map(decrypted.flatMap((event) => event ? [[event.id, event] as const] : []));
-      set((state) => {
-        const current = state.eventsByChannel[channelId] || [];
-        const merged = current
-          .filter((event) => !quarantinedIds.has(event.id))
-          .map((event) => {
-            const decryptedEvent = decryptedById.get(event.id);
-            if (!decryptedEvent) return event;
-            // A conflicting duplicate may arrive while signature/AEAD work is
-            // in flight. Merge the newer resident event last so an envelope
-            // conflict remains sticky and newer server-owned aggregates win.
-            return mergeMessageEvents([decryptedEvent], [event])[0];
-          });
-        const next = channelUpdate(state, channelId, merged);
-        return quarantinedIds.size === 0 ? next : {
-          ...next,
-          securityErrors: {
-            ...state.securityErrors,
-            [channelId]: `${quarantinedIds.size}件の未検証変更イベントを隔離しました`,
-          },
-        };
-      });
     } catch (error) {
       if (isMessageContextCurrent(channelId, generation, channelEpoch)) {
         const unavailableIds = new Set(unverified.map((event) => event.id));

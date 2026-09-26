@@ -92,3 +92,5 @@ export class ChannelKeyScopeGuard {
       : !this.blocked.has(channelId);
   }
 }
+
+export const channelKeyScopes = new ChannelKeyScopeGuard();

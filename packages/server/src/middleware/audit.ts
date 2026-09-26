@@ -1,3 +1,4 @@
+import { withRuntimeFence } from '../security/runtime-lease.js';
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { open, readFile, rename, stat, unlink } from 'node:fs/promises';
 import { dirname } from 'node:path';
@@ -9,6 +10,7 @@ import { BoundedAsyncGate } from '../security/bounded-async-gate.js';
 import { AUDIT_COMMIT_WAIT_MS, MAX_PENDING_AUDIT_COMMITS } from '../security/limits.js';
 import { currentLogContext } from '../security/log-context.js';
 import { logError } from '../security/logger.js';
+import { readWitnessFile, verifyAuditWitness, type AuditWitnessPayload } from '../security/audit-witness.js';
 
 export interface AuditEntry {
   actorId?: string;
@@ -52,6 +54,33 @@ let checkpointFailure: Error | null = null;
 let checkpointIntegrityFailure: Error | null = null;
 let lastFullVerification: { valid: boolean; checkpoint: 'disabled' | 'initialized' | 'verified' } | null = null;
 let lastAcceptedCheckpoint: AuditCheckpointV2 | null = null;
+let externalWitness: { payload: AuditWitnessPayload; checkedAt: number } | null = null;
+
+async function loadExternalWitness(): Promise<AuditWitnessPayload | null> {
+  if (!config.audit.witnessPath) return null;
+  if (externalWitness && Date.now() - externalWitness.checkedAt < 2_000
+    && Date.parse(externalWitness.payload.expiresAt) > Date.now()) return externalWitness.payload;
+  const payload = verifyAuditWitness(JSON.parse(await readWitnessFile(config.audit.witnessPath)),
+    await readWitnessFile(config.audit.witnessPublicKeyPath!, 4096), config.audit.witnessDeploymentId!);
+  if (externalWitness && Date.parse(payload.logCreatedAt) < Date.parse(externalWitness.payload.logCreatedAt)) {
+    throw new Error('AUDIT_WITNESS_ROLLBACK');
+  }
+  if (externalWitness && payload.logCreatedAt === externalWitness.payload.logCreatedAt
+    && (payload.logId !== externalWitness.payload.logId || payload.logHash !== externalWitness.payload.logHash)) {
+    throw new Error('AUDIT_WITNESS_EQUIVOCATION');
+  }
+  externalWitness = { payload, checkedAt: Date.now() };
+  return payload;
+}
+
+async function assertExternalWitness(): Promise<void> {
+  const witness = await loadExternalWitness();
+  if (!witness) return;
+  const row = await db.query.auditLogs.findFirst({ where: eq(auditLogs.id, witness.logId) });
+  if (!row || row.hash !== witness.logHash || row.createdAt.toISOString() !== witness.logCreatedAt) {
+    throw new Error('AUDIT_WITNESS_MISSING_FROM_CHAIN');
+  }
+}
 
 class AuditCheckpointIntegrityError extends Error {
   constructor(message: string) {
@@ -173,7 +202,7 @@ export async function assertAuditWriteAvailable(): Promise<void> {
 }
 
 async function withSerializedAuditCommit<T>(operation: () => Promise<T>): Promise<T> {
-  return auditCommitGate.run(operation, Date.now() + AUDIT_COMMIT_WAIT_MS);
+  return auditCommitGate.run(() => withRuntimeFence(operation), Date.now() + AUDIT_COMMIT_WAIT_MS);
 }
 
 export function auditCommitSnapshot() {
@@ -188,6 +217,7 @@ async function assertAuditCommitAdmission(): Promise<void> {
   }
   if (checkpointFailure) throw new AuditUnavailableError({ cause: checkpointFailure });
   if (checkpointIntegrityFailure) throw new AuditUnavailableError({ cause: checkpointIntegrityFailure });
+  await assertExternalWitness();
 }
 
 async function appendAuditRow(
@@ -269,6 +299,7 @@ function enqueueCheckpoint(entry: CommittedAuditEntry): Promise<void> {
 }
 
 export async function checkAuditCheckpoint(): Promise<void> {
+  await assertExternalWitness();
   for (;;) {
     const observed = checkpointQueue;
     try {
@@ -399,7 +430,9 @@ async function scanAuditRows(checkpoint: AuditCheckpoint | null): Promise<{
   latest: (typeof auditLogs.$inferSelect) | null;
   checkpointMatched: boolean;
 }> {
+  const witness = await loadExternalWitness();
   return db.transaction(async (transaction) => {
+    let witnessMatched = !witness;
     let previous: string | null = null;
     let checked = 0;
     let cursor: { id: string; createdAt: Date } | null = null;
@@ -426,6 +459,8 @@ async function scanAuditRows(checkpoint: AuditCheckpoint | null): Promise<{
       if (rows.length === 0) break;
 
       for (const row of rows) {
+        if (witness && row.id === witness.logId && row.hash === witness.logHash
+          && row.createdAt.toISOString() === witness.logCreatedAt) witnessMatched = true;
         if (row.prevHash !== previous) return { valid: false, checked, latest, checkpointMatched };
         const expected = computeHash(auditData({
           actorId: row.actorId,
@@ -457,7 +492,7 @@ async function scanAuditRows(checkpoint: AuditCheckpoint | null): Promise<{
       cursor = { id: tail.id, createdAt: tail.createdAt };
       if (rows.length < 1_000) break;
     }
-    return { valid: true, checked, latest, checkpointMatched };
+    return { valid: witnessMatched, checked, latest, checkpointMatched };
   }, { isolationLevel: 'repeatable read', accessMode: 'read only' });
 }
 
@@ -515,7 +550,7 @@ async function assertCheckpointDescendant(
   allowCheckpointInitialization = false,
   suppliedCheckpoint?: AuditCheckpoint | null,
 ): Promise<void> {
-  if (!config.audit.checkpointPath) return;
+  if (!config.audit.checkpointPath) throw new AuditCheckpointIntegrityError('Audit checkpoint is not configured');
   if (checkpointIntegrityFailure && !allowCheckpointInitialization) throw checkpointIntegrityFailure;
   try {
     const checkpoint = suppliedCheckpoint === undefined

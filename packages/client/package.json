@@ -13,6 +13,9 @@
   },
   "dependencies": {
     "@alparts/shared": "workspace:*",
+    "@noble/curves": "2.0.1",
+    "@noble/hashes": "2.3.0",
+    "@simplewebauthn/browser": "14.0.0",
     "idb": "^8.0.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
@@ -20,6 +23,7 @@
     "react-router-dom": "^7.18.2",
     "remark-gfm": "^4.0.0",
     "socket.io-client": "^4.8.0",
+    "ts-mls": "1.6.4",
     "zustand": "^5.0.0"
   },
   "devDependencies": {

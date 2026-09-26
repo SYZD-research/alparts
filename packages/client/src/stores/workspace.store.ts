@@ -25,6 +25,8 @@ interface WorkspaceState {
 
 let workspaceListGeneration = 0;
 let workspaceSelectionGeneration = 0;
+let listLoading = false;
+let selectionLoading = false;
 
 export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   workspaces: [],
@@ -36,18 +38,21 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
   loadWorkspaces: async () => {
     const generation = ++workspaceListGeneration;
+    listLoading = true;
     set({ isLoading: true, error: null });
     try {
       const workspaces = await api.getWorkspaces();
       if (generation !== workspaceListGeneration) return null;
-      set({ workspaces, isLoading: false });
+      listLoading = false;
+      set({ workspaces, isLoading: selectionLoading });
       return workspaces;
     } catch (error) {
       if (generation === workspaceListGeneration) {
         // Preserve the last validated list on transient refresh failures. The
         // caller can fail closed using `error` without converting a network
         // outage into a false membership revocation.
-        set({ isLoading: false, error: error instanceof Error ? error.message : 'ワークスペースを読み込めませんでした' });
+        listLoading = false;
+        set({ isLoading: selectionLoading, error: error instanceof Error ? error.message : 'ワークスペースを読み込めませんでした' });
       }
       return null;
     }
@@ -61,6 +66,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       && currentChannels.channels.length > 0
     ) return;
     const generation = ++workspaceSelectionGeneration;
+    selectionLoading = true;
     useMessageStore.getState().reset();
     useChannelStore.getState().reset();
     set({ activeWorkspaceId: id, categories: [], members: [], isLoading: true, error: null });
@@ -73,13 +79,15 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       ]);
       if (generation !== workspaceSelectionGeneration || get().activeWorkspaceId !== id) return;
 
-      set({ categories, members, isLoading: false });
-      const firstChannel = channels.find((channel) => channel.type !== 'voice') ?? null;
+      selectionLoading = false;
+      set({ categories, members, isLoading: listLoading });
+      const firstChannel = channels?.find((channel) => channel.type !== 'voice') ?? null;
       useChannelStore.getState().setActiveChannel(firstChannel?.id ?? null);
     } catch (error) {
       if (generation !== workspaceSelectionGeneration || get().activeWorkspaceId !== id) return;
       useChannelStore.getState().reset();
-      set({ categories: [], members: [], isLoading: false, error: error instanceof Error ? error.message : 'ワークスペースを読み込めませんでした' });
+      selectionLoading = false;
+      set({ categories: [], members: [], isLoading: listLoading, error: error instanceof Error ? error.message : 'ワークスペースを読み込めませんでした' });
     }
   },
 
@@ -121,10 +129,15 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     // A list request started before direct revocation must not re-add this
     // workspace when its stale response arrives.
     workspaceListGeneration += 1;
+    listLoading = false;
     const wasActive = get().activeWorkspaceId === workspaceId;
-    if (wasActive) workspaceSelectionGeneration += 1;
+    if (wasActive) {
+      workspaceSelectionGeneration += 1;
+      selectionLoading = false;
+    }
     set((state) => ({
       workspaces: state.workspaces.filter((workspace) => workspace.id !== workspaceId),
+      isLoading: selectionLoading,
       ...(wasActive ? {
         activeWorkspaceId: null,
         categories: [],
@@ -142,6 +155,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   reset: () => {
     workspaceListGeneration += 1;
     workspaceSelectionGeneration += 1;
+    listLoading = false;
+    selectionLoading = false;
     set({ workspaces: [], activeWorkspaceId: null, categories: [], members: [], isLoading: false, error: null });
   },
 }));

@@ -1,4 +1,6 @@
+import { displayText } from '../security/display-text.js';
 import { Router } from 'express';
+import { isAccountSecurityError } from '../security/account-errors.js';
 import type { Server as SocketServer } from 'socket.io';
 import { z } from 'zod';
 import * as deviceService from '../services/device.service.js';
@@ -8,7 +10,7 @@ import { rateLimit } from '../middleware/rate-limit.js';
 
 const router = Router();
 const registerSchema = z.object({
-  name: z.string().trim().min(1).max(100),
+  name: displayText(),
   identityKey: z.string().min(1).max(16 * 1024),
   challenge: z.string().length(43).regex(/^[A-Za-z0-9_-]+$/),
   proof: z.string().length(88).regex(/^[A-Za-z0-9+/]{86}==$/),
@@ -20,6 +22,7 @@ const proofSchema = z.object({
   challenge: z.string().length(43).regex(/^[A-Za-z0-9_-]+$/),
   proof: z.string().length(88).regex(/^[A-Za-z0-9+/]{86}==$/),
 }).strict();
+const decisionSchema = z.object({ head: z.object({ userId: z.string().uuid(), sequence: z.number().int().min(0).max(8192), hash: z.string().regex(/^[a-f0-9]{64}$/) }).strict(), signature: z.string().length(88) }).strict();
 const idSchema = z.string().uuid();
 const challengeLimit = rateLimit({
   windowMs: 60_000,
@@ -135,7 +138,7 @@ router.delete('/:id', authMiddleware, revocationLimit, async (req: AuthRequest, 
     return;
   }
   try {
-    const { sessionIds, affectedWorkspaceIds } = await deviceService.revokeDevice(req.params.id, req.userId!);
+    const { sessionIds, affectedWorkspaceIds } = await deviceService.revokeDevice(req.params.id, req.userId!, { ...decisionSchema.parse(req.body), actorDeviceId: req.deviceId! });
     const io = req.app.get('io') as SocketServer | undefined;
     for (const sessionId of sessionIds) io?.in(`session:${sessionId}`).disconnectSockets(true);
     io?.to(`user:${req.userId}`).emit('device:revoked', { deviceId: req.params.id });
@@ -145,6 +148,10 @@ router.delete('/:id', authMiddleware, revocationLimit, async (req: AuthRequest, 
     if (req.deviceId === req.params.id) res.setHeader('Set-Cookie', expiredSessionCookie());
     res.json({ success: true });
   } catch (error: any) {
+    if (error.name === 'ZodError') {
+      res.status(400).json({ error: 'VALIDATION', message: '入力内容を確認してください。', statusCode: 400 });
+      return;
+    }
     if (error.message === 'DEVICE_NOT_FOUND') {
       res.status(404).json({ error: 'NOT_FOUND', message: 'Device not found', statusCode: 404 });
       return;
@@ -154,6 +161,24 @@ router.delete('/:id', authMiddleware, revocationLimit, async (req: AuthRequest, 
       return;
     }
     throw error;
+  }
+});
+
+router.post('/:id/approve', authMiddleware, enrollmentLimit, async (req: AuthRequest, res, next) => {
+  if (!idSchema.safeParse(req.params.id).success) {
+    res.status(404).json({ error: 'NOT_FOUND', message: 'Device not found', statusCode: 404 });
+    return;
+  }
+  try {
+    const body = decisionSchema.parse(req.body);
+    const result = await deviceService.approveDevice(req.userId!, req.deviceId!, idSchema.parse(req.params.id), body.head, body.signature);
+    const io = req.app.get('io') as SocketServer | undefined;
+    io?.to(`user:${req.userId}`).emit('device:approved', { deviceId: req.params.id });
+    for (const workspaceId of result.dirtyWorkspaceIds) io?.to(`workspace:${workspaceId}`).emit('workspace:key-state-dirty', { workspaceId });
+    res.json({ success: true });
+  } catch (error: any) {
+    if (!isAccountSecurityError(error)) { next(error); return; }
+    res.status(error.message === 'DIRECTORY_CONFLICT' ? 409 : 403).json({ error: error.message === 'DIRECTORY_CONFLICT' ? 'DIRECTORY_CONFLICT' : 'DEVICE_APPROVAL_REQUIRED', message: '端末を確認できませんでした。表示を更新してお試しください。' });
   }
 });
 

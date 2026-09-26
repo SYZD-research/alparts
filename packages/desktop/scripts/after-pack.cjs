@@ -1,9 +1,14 @@
 'use strict';
 
 const path = require('node:path');
+const { readFile } = require('node:fs/promises');
+const { pathToFileURL } = require('node:url');
 const { flipFuses, FuseVersion, FuseV1Options } = require('@electron/fuses');
 
 module.exports = async function hardenPackagedElectron(context) {
+  const root = context.packager.projectDir;
+  const { parseTransportPins } = await import(pathToFileURL(path.join(root, 'dist/transport-pins.js')).href);
+  parseTransportPins(JSON.parse(await readFile(path.join(root, 'dist/transport-pins.json'), 'utf8')));
   const productName = context.packager.appInfo.productFilename;
   const executableName = context.packager.executableName || productName;
   const binaryPath = context.electronPlatformName === 'darwin'

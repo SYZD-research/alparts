@@ -99,6 +99,34 @@
       "when": 1788075958581,
       "tag": "0013_bounded_tenant_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1789430400000,
+      "tag": "0014_account_security",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1789516800000,
+      "tag": "0015_audit_hardening",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1789603200000,
+      "tag": "0016_audit2_authorization",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1790377200000,
+      "tag": "0017_audit_remediation",
+      "breakpoints": true
     }
   ]
 }

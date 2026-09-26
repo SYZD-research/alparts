@@ -17,6 +17,13 @@ backup_die() {
   exit 1
 }
 
+# Only hybrid recipients are permitted for new archives. age performs full
+# bech32/key validation; this admission check forbids classical/plugin fallback.
+validate_backup_recipient() {
+  [[ "$1" =~ ^age1pq1[023456789acdefghjklmnpqrstuvwxyz]+$ && ${#1} -le 4096 ]] \
+    || backup_die 'Backups require a hybrid age1pq1 recipient generated offline with age-keygen -pq'
+}
+
 require_command() {
   local command_name="$1"
   command -v "$command_name" >/dev/null 2>&1 \
