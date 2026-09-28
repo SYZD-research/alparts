@@ -1,0 +1,42 @@
+/** Only expected untrusted-input failures may become a public 4xx response.
+ * Infrastructure/audit failures propagate to the central error handler. */
+const expected = new Set([
+  'LAST_PASSKEY',
+  'DEVICE_APPROVAL_REQUIRED',
+  'AUTHENTICATION_FAILED',
+  'AUTHENTICATION_LIMIT',
+  'PASSKEY_REQUIRED',
+  'INVALID_CREDENTIALS',
+  'INVALID_RECOVERY',
+  'RECOVERY_ALREADY_CONFIGURED',
+  'RECOVERY_LIMIT',
+  'DIRECTORY_CONFLICT',
+  'DIRECTORY_LIMIT',
+  'INVALID_DEVICE_DECISION',
+  'INVALID_MLS',
+  'MLS_CONFLICT',
+  'MLS_NOT_FOUND',
+  'KEY_EPOCH_PENDING',
+  'CHANNEL_NOT_FOUND',
+  'DEVICE_REQUIRED',
+  'KEY_RECIPIENT_LIMIT',
+  'INVALID_KEY_RECIPIENTS',
+  'INVALID_KEY_SIGNATURE',
+  'INVALID_KEY_VERSION',
+  'INVALID_KEY_FRESH_START',
+  'KEY_FRESH_START_CONFLICT',
+  'KEY_FRESH_START_FORBIDDEN',
+  'KEY_FRESH_START_NOT_REQUIRED',
+  'KEY_ABORT_FAILED',
+  'KEY_DISTRIBUTION_FORBIDDEN',
+  'KEY_ROTATION_FORBIDDEN',
+  'KEY_ROTATION_NOT_REQUIRED',
+  'KEY_ROTATION_REQUIRED',
+  'INCOMPLETE_KEY_DISTRIBUTION',
+  'GROUP_PROTOCOL_REQUIRED',
+  'DEVICE_NOT_FOUND',
+  'NOT_AUTHORIZED',
+]);
+export function isAccountSecurityError(error: unknown): boolean {
+  return error instanceof Error && (error.name === 'ZodError' || expected.has(error.message));
+}
