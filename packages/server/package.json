@@ -19,6 +19,7 @@
     "db:fingerprint": "tsx src/scripts/database-fingerprint.ts",
     "audit:checkpoint:init": "tsx src/scripts/initialize-audit-checkpoint.ts",
     "audit:checkpoint:init:runtime": "node dist/scripts/initialize-audit-checkpoint.js",
+    "audit:witness": "node dist/scripts/audit-witness.js",
     "test:account-security": "RUN_ACCOUNT_SECURITY_INTEGRATION=1 tsx --test src/security/account-security.integration.test.ts src/security/password-migration.integration.test.ts"
   },
   "dependencies": {

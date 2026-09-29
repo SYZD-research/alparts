@@ -45,10 +45,7 @@ import {
   hasRevokedEpochRecipient,
   nextChannelKeyVersion,
 } from './key-epoch-state.js';
-import {
-  assertCurrentPasswordSnapshot,
-  verifyCurrentPasswordSnapshot,
-} from './auth.service.js';
+import { assertCurrentPasswordSnapshot } from './auth.service.js';
 
 const KEY_PROTOCOL_VERSION = 2;
 const MAX_KEY_VERSION = 1_000_000;
@@ -498,29 +495,6 @@ export async function distributeChannelKeys(
     keyCommitment,
     wrappedKeys,
     null,
-  );
-}
-
-export async function startFreshChannelKey(
-  channelId: string,
-  userId: string,
-  senderDeviceId: string,
-  version: number,
-  keyCommitment: string,
-  wrappedKeys: WrappedKeyInput[],
-  signature: string,
-  currentPassword: string,
-) {
-  // Password work must finish before the audit/key/workspace locks below.
-  const expectedPasswordHash = await verifyCurrentPasswordSnapshot(userId, currentPassword);
-  return commitChannelKeyDistribution(
-    channelId,
-    userId,
-    senderDeviceId,
-    version,
-    keyCommitment,
-    wrappedKeys,
-    { expectedPasswordHash, signature },
   );
 }
 

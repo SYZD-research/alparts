@@ -32,12 +32,23 @@ services:
       MINIO_SECRET_KEY_FILE: /run/secrets/minio_secret_key
       JWT_SECRET_FILE: /run/secrets/jwt_secret
       PASSWORD_PEPPER_FILE: /run/secrets/password_pepper
+      # Only while rotating the pepper; the default empty file means "none".
+      PASSWORD_PEPPER_PREVIOUS_FILE: /run/secrets/password_pepper_previous
       AUDIT_INTEGRITY_KEY_FILE: /run/secrets/audit_integrity_key
       AUDIT_CHECKPOINT_PATH: /var/lib/alparts-audit/checkpoint.json
       AUDIT_CHECKPOINT_REQUIRED: "true"
+      # Independent audit witness. Files live in AUDIT_WITNESS_DIR (mounted as a
+      # directory so an atomically replaced witness file is picked up), e.g.
+      # AUDIT_WITNESS_PATH=/run/alparts-witness/witness.json
+      AUDIT_WITNESS_REQUIRED: ${AUDIT_WITNESS_REQUIRED:-false}
+      AUDIT_WITNESS_PATH: ${AUDIT_WITNESS_PATH:-}
+      AUDIT_WITNESS_PUBLIC_KEY_FILE: ${AUDIT_WITNESS_PUBLIC_KEY_FILE:-}
+      AUDIT_WITNESS_DEPLOYMENT_ID: ${AUDIT_WITNESS_DEPLOYMENT_ID:-}
       CORS_ORIGINS: ${CORS_ORIGINS:?set the exact public HTTPS origin}
       TRUSTED_PROXIES: ${TRUSTED_PROXIES:-}
+      ALLOW_INSECURE_LOOPBACK_DEPENDENCIES: ${ALLOW_INSECURE_LOOPBACK_DEPENDENCIES:-false}
       METRICS_ENABLED: ${METRICS_ENABLED:-false}
+      # Required by the application only when METRICS_ENABLED=true.
       METRICS_TOKEN_FILE: /run/secrets/metrics_token
     secrets:
       - database_url
@@ -45,10 +56,12 @@ services:
       - minio_secret_key
       - jwt_secret
       - password_pepper
+      - password_pepper_previous
       - audit_integrity_key
       - metrics_token
     volumes:
       - audit_checkpoint:/var/lib/alparts-audit
+      - ${AUDIT_WITNESS_DIR:-./deploy/compose-empty}:/run/alparts-witness:ro
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777
@@ -75,6 +88,7 @@ services:
       NODE_ENV: production
       DATABASE_URL_FILE: /run/secrets/migration_database_url
       PASSWORD_PEPPER_FILE: /run/secrets/password_pepper
+      PASSWORD_PEPPER_PREVIOUS_FILE: /run/secrets/password_pepper_previous
       DB_SSL: ${DB_SSL:-true}
       DB_CONNECT_TIMEOUT_MS: ${DB_CONNECT_TIMEOUT_MS:-5000}
       DB_STATEMENT_TIMEOUT_MS: ${DB_STATEMENT_TIMEOUT_MS:-15000}
@@ -82,6 +96,7 @@ services:
     secrets:
       - migration_database_url
       - password_pepper
+      - password_pepper_previous
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777
@@ -104,10 +119,12 @@ secrets:
     file: ${JWT_SECRET_SECRET_FILE:?set JWT_SECRET_SECRET_FILE}
   password_pepper:
     file: ${PASSWORD_PEPPER_SECRET_FILE:?set PASSWORD_PEPPER_SECRET_FILE}
+  password_pepper_previous:
+    file: ${PASSWORD_PEPPER_PREVIOUS_SECRET_FILE:-./deploy/compose-empty/empty}
   audit_integrity_key:
     file: ${AUDIT_INTEGRITY_KEY_SECRET_FILE:?set AUDIT_INTEGRITY_KEY_SECRET_FILE}
   metrics_token:
-    file: ${METRICS_TOKEN_SECRET_FILE:?set METRICS_TOKEN_SECRET_FILE}
+    file: ${METRICS_TOKEN_SECRET_FILE:-./deploy/compose-empty/empty}
   migration_database_url:
     file: ${MIGRATION_DATABASE_URL_SECRET_FILE:?set MIGRATION_DATABASE_URL_SECRET_FILE}
 

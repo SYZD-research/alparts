@@ -19,8 +19,8 @@ const permissionLabels: Record<Permission, string> = {
   MANAGE_ROLES: 'ロールを管理',
   VIEW_AUDIT_LOG: '監査ログを閲覧',
   ATTACH_FILES: 'ファイルを添付',
-  MANAGE_WEBHOOKS: '連携（Webhook）を管理',
-  MANAGE_BOTS: '連携（Bot）を管理',
+  MANAGE_WEBHOOKS: '外部サービスからの投稿を管理',
+  MANAGE_BOTS: '自動応答アカウントを管理',
 };
 
 export interface PermissionOption {
@@ -33,7 +33,8 @@ export const permissionOptions: PermissionOption[] = (Object.entries(Permissions
   .map(([name, value]) => ({ name, value, label: permissionLabels[name] }));
 
 export function permissionLabel(name: string): string {
-  return permissionLabels[name as Permission] || name;
+  // Unknown values come from the server; never show a raw internal name.
+  return Object.prototype.hasOwnProperty.call(permissionLabels, name) ? permissionLabels[name as Permission] : 'その他の権限';
 }
 
 export function permissionMaskFromNames(names: Iterable<string>): number {

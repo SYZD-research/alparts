@@ -314,7 +314,8 @@ async function serveBundledUi(request: Request): Promise<Response> {
       "img-src 'self' data: blob:",
       "media-src 'self' blob:",
       "connect-src 'self'",
-      "worker-src 'none'",
+      // The login work proof runs in a same-origin worker from the bundle.
+      "worker-src 'self'",
     ].join('; '));
   } else {
     headers.set('Cache-Control', 'public, max-age=31536000, immutable');
@@ -372,6 +373,13 @@ function registerIpcHandlers(): void {
   }));
   ipcMain.handle('desktop:lock-now', checked(async () => {
     setImmediate(triggerLock);
+    return true;
+  }));
+  ipcMain.handle('desktop:clear-http-cache', checked(async () => {
+    // Device keys live in IndexedDB and must survive a sign-out; only the
+    // HTTP-level caches are dropped here.
+    await desktopSession.clearCache();
+    await desktopSession.clearStorageData({ storages: ['cachestorage', 'serviceworkers', 'shadercache'] });
     return true;
   }));
   ipcMain.handle('desktop:unlock-complete', checked(async () => {

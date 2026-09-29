@@ -127,6 +127,13 @@
       "when": 1790377200000,
       "tag": "0017_audit_remediation",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1790982000000,
+      "tag": "0018_append_only_guards",
+      "breakpoints": true
     }
   ]
 }

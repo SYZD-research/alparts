@@ -53,6 +53,25 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @alparts/desktop typecheck
       - run: pnpm --filter @alparts/desktop test
+      - name: Provide transport pins
+        shell: bash
+        env:
+          CONFIGURED_PINS: ${{ vars.ALPARTS_TRANSPORT_PINS_JSON }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          pins_file="$RUNNER_TEMP/transport-pins.json"
+          if [[ -n "$CONFIGURED_PINS" ]]; then
+            printf '%s\n' "$CONFIGURED_PINS" > "$pins_file"
+          elif [[ "$EVENT_NAME" == "pull_request" ]]; then
+            # Build check only: random pins for a reserved name that never resolves,
+            # so the package cannot connect anywhere and is never distributable.
+            node -e 'const p=()=>require("node:crypto").randomBytes(32).toString("base64");console.log(JSON.stringify({version:1,hosts:{"ci-build-check.alparts.invalid":[p(),p()]}}))' > "$pins_file"
+          else
+            echo "Set the ALPARTS_TRANSPORT_PINS_JSON repository variable before building distributable packages." >&2
+            exit 1
+          fi
+          echo "ALPARTS_TRANSPORT_PINS_FILE=$pins_file" >> "$GITHUB_ENV"
       - run: pnpm --filter @alparts/desktop run dist:${{ matrix.target }}
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:

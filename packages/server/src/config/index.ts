@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { parseBindHost, parseBoundedInteger, parseCorsOrigins, parseVoiceIceServers } from './validation.js';
+import { parseBindHost, parseBoundedInteger, parseCorsOrigins, parseTrustedProxies, parseVoiceIceServers } from './validation.js';
 import { loadDatabaseRuntimeConfig } from './database.js';
 import { readConfiguredValue } from './source.js';
 
@@ -83,6 +83,8 @@ export const config = {
 
   auth: {
     passwordPepper: mandatorySecret('PASSWORD_PEPPER'),
+    // Only set while rotating away from a leaked/retired pepper.
+    previousPasswordPepper: optionalSecret('PASSWORD_PEPPER_PREVIOUS'),
     registrationInviteSecret: optionalSecret('REGISTRATION_INVITE_SECRET'),
     cookieName: isProduction ? '__Host-alparts_session' : 'alparts_session',
     secureCookie: isProduction || env.COOKIE_SECURE === 'true',
@@ -130,7 +132,7 @@ export const config = {
   },
 
   network: {
-    trustedProxies: (env.TRUSTED_PROXIES || '').split(',').map((entry) => entry.trim()).filter(Boolean),
+    trustedProxies: parseTrustedProxies(env.TRUSTED_PROXIES, isProduction),
   },
 
   observability: {

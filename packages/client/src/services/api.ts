@@ -50,6 +50,36 @@ interface ApiErrorPayload {
   statusCode?: number;
 }
 
+const API_ERROR_MESSAGES_BY_CODE: Record<string, string> = {
+  DEVICE_LIMIT_REACHED: '登録済みの端末が上限に達しています。不要な端末の登録を解除してください。',
+  SESSION_LIMIT_REACHED: 'ログイン中の端末が上限に達しています。別の端末からログアウトしてお試しください。',
+  DEVICE_STEP_UP_REQUIRED: 'この端末を追加するには、もう一度ログインしてください。',
+  DEVICE_APPROVAL_REQUIRED: 'この端末はまだ承認されていません。承認済みの端末から承認してください。',
+  STEP_UP_REQUIRED: '続けるには本人確認が必要です。',
+  UPDATE_REQUIRED: 'アプリを更新してから、もう一度お試しください。',
+  STALE_PREVIEW: '他の変更と重なりました。表示を更新してもう一度お試しください。',
+  STALE_OVERRIDE: '他の変更と重なりました。表示を更新してもう一度お試しください。',
+  DIRECTORY_CONFLICT: '端末の一覧が更新されました。表示を更新してもう一度お試しください。',
+  IDEMPOTENCY_CONFLICT: '同じ操作がすでに行われています。表示を更新してください。',
+};
+
+/** Fixed, local wording for an HTTP failure. */
+export function apiErrorMessage(status: number, code?: string): string {
+  if (code && API_ERROR_MESSAGES_BY_CODE[code]) return API_ERROR_MESSAGES_BY_CODE[code];
+  if (status === 400) return '入力内容を確認してください。';
+  if (status === 401) return 'ログインし直してください。';
+  if (status === 403) return 'この操作を行う権限がありません。';
+  if (status === 404) return '対象が見つかりません。表示を更新してください。';
+  if (status === 409) return '他の変更と重なりました。表示を更新してもう一度お試しください。';
+  if (status === 410) return 'アプリを更新してから、もう一度お試しください。';
+  if (status === 413) return 'サイズが大きすぎます。';
+  if (status === 428) return '続けるには本人確認が必要です。';
+  if (status === 429) return '操作が多すぎます。しばらく待ってからお試しください。';
+  if (status === 503) return '現在混み合っています。しばらく待ってからお試しください。';
+  if (status >= 500) return 'サーバーで問題が発生しました。しばらく待ってからお試しください。';
+  return '操作を完了できませんでした。もう一度お試しください。';
+}
+
 export class ApiError extends Error {
   readonly status: number;
   readonly code: string | null;
@@ -462,6 +492,34 @@ function browserSessionInfo(): Record<string, string> {
   };
 }
 
+
+/**
+ * Path parameters are server-issued identifiers. Every path segment must be a
+ * plain unreserved token so an unexpected value cannot traverse or re-route.
+ */
+export function assertSafeApiPath(path: string): void {
+  const [pathname] = path.split('?', 1);
+  // Percent-encoded segments (e.g. reaction emoji) are allowed; raw separators are not.
+  let decoded: string[];
+  try {
+    decoded = pathname.split('/').map((segment) => decodeURIComponent(segment));
+  } catch {
+    throw new Error('INVALID_API_PATH');
+  }
+  const segments = pathname.split('/');
+  if (
+    segments[0] !== ''
+    || segments.length < 2
+    || segments.slice(1).some((segment, index) => (
+      !/^(?:[A-Za-z0-9._~-]|%[0-9A-Fa-f]{2})+$/.test(segment)
+      || ['.', '..'].includes(decoded[index + 1])
+      || /[/?#\\]/.test(decoded[index + 1])
+    ))
+  ) {
+    throw new Error('INVALID_API_PATH');
+  }
+}
+
 class ApiService {
   private stepUpHandler: ((purpose: string, signal?: AbortSignal | null) => Promise<string>) | null = null;
   setStepUpHandler(handler: (purpose: string, signal?: AbortSignal | null) => Promise<string>) { this.stepUpHandler = handler; }
@@ -476,6 +534,7 @@ class ApiService {
   }
 
   private async fetchResponse(path: string, options: RequestInit = {}): Promise<Response> {
+    assertSafeApiPath(path);
     const headers = new Headers(options.headers);
     if (options.body !== undefined && !headers.has('Content-Type')) {
       headers.set('Content-Type', 'application/json');
@@ -509,10 +568,13 @@ class ApiService {
         headers.set('X-Alparts-Login-Proof', await solveLoginChallenge(error.challenge, options.signal));
         return this.fetchResponse(path, { ...options, headers });
       }
+      const code = typeof error.error === 'string' ? error.error : undefined;
+      // The server's own message text is never shown: a compromised or
+      // misconfigured server must not be able to place arbitrary text in the UI.
       throw new ApiError(
-        typeof error.message === 'string' ? error.message : `HTTP ${response.status}`,
+        apiErrorMessage(response.status, code),
         response.status,
-        typeof error.error === 'string' ? error.error : undefined,
+        code,
         Number(response.headers.get('Retry-After')) || undefined,
       );
     }
@@ -1049,31 +1111,6 @@ class ApiService {
     return this.request(`/channels/${channelId}/keys`, {
       method: 'POST',
       body: JSON.stringify({ version, keyCommitment, keys }),
-    });
-  }
-
-  async startFreshChannelKey(
-    channelId: string,
-    version: number,
-    keyCommitment: string,
-    keys: Array<{ deviceId: string; encryptedKey: string; signature: string }>,
-    signature: string,
-    currentPassword: string,
-  ) {
-    return this.request<{
-      version: number;
-      recipientCount: number;
-      insertedCount: number;
-      freshStart: true;
-    }>(`/channels/${channelId}/keys/start-fresh`, {
-      method: 'POST',
-      body: JSON.stringify({
-        version,
-        keyCommitment,
-        keys,
-        signature,
-        currentPassword,
-      }),
     });
   }
 

@@ -37,7 +37,7 @@ describe('management security invariants', () => {
       verifyPassword,
     } = await import('../security/password-work.js');
     const hash = await hashPassword('worker-isolated-password', 12);
-    assert.match(hash, /^p1:/);
+    assert.match(hash, /^p2:/);
     assert.equal(await verifyPassword('worker-isolated-password', hash), true);
     assert.equal(await verifyPassword('incorrect-password', hash), false);
     await assert.rejects(

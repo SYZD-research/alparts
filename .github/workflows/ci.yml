@@ -42,6 +42,30 @@ jobs:
           git diff --check
           bash -n dev.sh scripts/*.sh scripts/lib/*.sh scripts/tests/*.sh
 
+  secret-history:
+    # check-secrets.sh only sees text files at HEAD. Both past leaks were a
+    # binary blob and a file deleted from HEAD, so scan the full history too.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Reject forbidden files anywhere in history
+        run: bash scripts/check-history-files.sh
+      - name: Scan full history for secrets
+        env:
+          GITLEAKS_VERSION: 8.30.1
+          GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+        run: |
+          set -euo pipefail
+          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -fsSLo "$RUNNER_TEMP/$archive" "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/$archive"
+          echo "$GITLEAKS_SHA256  $RUNNER_TEMP/$archive" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" gitleaks
+          "$RUNNER_TEMP/gitleaks" git --config .gitleaks.toml --redact --no-banner .
+
   integration:
     runs-on: ubuntu-24.04
     timeout-minutes: 35
