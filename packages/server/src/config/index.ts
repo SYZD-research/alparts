@@ -99,6 +99,10 @@ export const config = {
     integrityKey: mandatorySecret('AUDIT_INTEGRITY_KEY'),
     checkpointPath: env.AUDIT_CHECKPOINT_PATH?.trim() || null,
     checkpointRequired: env.AUDIT_CHECKPOINT_REQUIRED === 'true',
+    // A separate object-store bucket is outside the checkpoint-file writer's
+    // authority. Keep its identity stable across restarts and restores.
+    headBucket: env.AUDIT_HEAD_BUCKET?.trim() || `${env.MINIO_BUCKET || 'alparts'}-audit`,
+    headObjectKey: env.AUDIT_HEAD_OBJECT_KEY?.trim() || null,
     witnessPublicKeyPath: env.AUDIT_WITNESS_PUBLIC_KEY_FILE?.trim() || null,
     witnessPath: env.AUDIT_WITNESS_PATH?.trim() || null,
     witnessDeploymentId: env.AUDIT_WITNESS_DEPLOYMENT_ID?.trim() || null,
@@ -151,6 +155,11 @@ if (config.observability.metricsEnabled && !config.observability.metricsToken) {
 if (config.isProduction && (!config.audit.checkpointPath || !config.audit.checkpointRequired)) {
   throw new Error('Production requires AUDIT_CHECKPOINT_PATH and AUDIT_CHECKPOINT_REQUIRED=true');
 }
+if (config.audit.headObjectKey && !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(config.audit.headObjectKey)) {
+  throw new Error('AUDIT_HEAD_OBJECT_KEY must be a stable identifier of at most 128 characters');
+}
+if (config.audit.headBucket === config.minio.bucket) throw new Error('AUDIT_HEAD_BUCKET must be separate from MINIO_BUCKET');
+if (config.isProduction && !config.audit.headObjectKey) throw new Error('Production requires AUDIT_HEAD_OBJECT_KEY');
 if ((config.audit.witnessRequired || config.audit.witnessPath || config.audit.witnessPublicKeyPath || config.audit.witnessDeploymentId)
   && (!config.audit.witnessPath || !config.audit.witnessPublicKeyPath
     || !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(config.audit.witnessDeploymentId ?? ''))) {

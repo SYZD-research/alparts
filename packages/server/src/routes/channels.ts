@@ -119,6 +119,10 @@ router.put('/channels/:id', authMiddleware, requireChannelPermission(Permissions
     io?.to(`channel:${req.params.id}`).emit('channel:updated', result.channel);
     res.json(result.channel);
   } catch (error: any) {
+    if (error.message === 'MEMBER_HIERARCHY') {
+      res.status(403).json({ error: 'MEMBER_HIERARCHY', message: '上位メンバーが利用できなくなる変更はできません。', statusCode: 403 });
+      return;
+    }
     if (error.name === 'ZodError' || error.message === 'INVALID_CATEGORY') {
       res.status(400).json({ error: 'VALIDATION', message: 'Invalid channel data', statusCode: 400 });
       return;
@@ -151,6 +155,10 @@ router.delete('/channels/:id', authMiddleware, requireChannelPermission(Permissi
     if (io) clearDeletedChannelRooms(io, req.params.id);
     res.json({ success: true });
   } catch (error: any) {
+    if (error.message === 'MEMBER_HIERARCHY') {
+      res.status(403).json({ error: 'MEMBER_HIERARCHY', message: '上位メンバーが利用できなくなる変更はできません。', statusCode: 403 });
+      return;
+    }
     if (error.message === 'CHANNEL_NOT_FOUND') {
       res.status(404).json({ error: 'NOT_FOUND', message: 'Channel not found', statusCode: 404 });
       return;
@@ -317,6 +325,10 @@ router.delete('/workspaces/:wid/categories/:categoryId', authMiddleware, require
     }
     res.json(result);
   } catch (error: any) {
+    if (error.message === 'MEMBER_HIERARCHY') {
+      res.status(403).json({ error: 'MEMBER_HIERARCHY', message: '上位メンバーが利用できなくなる変更はできません。', statusCode: 403 });
+      return;
+    }
     if (['CATEGORY_NOT_FOUND', 'WORKSPACE_NOT_FOUND'].includes(error.message)) {
       res.status(404).json({ error: 'NOT_FOUND', message: 'Category not found', statusCode: 404 });
       return;

@@ -56,6 +56,7 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
     auditCheckpointPath = join(auditCheckpointDirectory, 'checkpoint.json');
     process.env.AUDIT_CHECKPOINT_PATH = auditCheckpointPath;
     process.env.AUDIT_CHECKPOINT_REQUIRED = 'true';
+    process.env.AUDIT_HEAD_OBJECT_KEY = `test-${randomUUID()}`;
     // The suite represents several independent clients but they all originate
     // from the loopback test runner. Trust only that loopback reverse proxy and
     // assign a stable documentation-range address per authenticated session so

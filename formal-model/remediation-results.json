@@ -1,0 +1,649 @@
+{
+  "date": "2026-09-30",
+  "base_revision": "791bfe06e7fc93bd2d483748bb8fe77b9835425a",
+  "scope": "Uncommitted worktree fixes; baseline findings retained in implementation-audit-results.json",
+  "environment": {
+    "python": "3.14.7",
+    "node": "24.21.0",
+    "z3": "5.1.0",
+    "postgres": "16.10",
+    "minio": "RELEASE.2025-09-07T16-13-09Z"
+  },
+  "model_summary": {
+    "PASS": 74,
+    "LIMIT": 14,
+    "FINDING": 0,
+    "MODEL-GAP": 0,
+    "VACUOUS": 0
+  },
+  "model_runs": [
+    {
+      "command": "python3 formal-model/run.py M3",
+      "exit_code": 0,
+      "checks": [
+        {
+          "check": "KC a message key is only ever held by devices of viewers at send time (removal, joining, restore)",
+          "verdict": "PASS"
+        },
+        {
+          "check": "KA a recipient that is still an approved viewer can always obtain a key it was given",
+          "verdict": "PASS"
+        },
+        {
+          "check": "KI at most one pending and one active epoch",
+          "verdict": "PASS"
+        },
+        {
+          "check": "KL while an eligible key holder or manager remains, protocol steps alone reach a sendable state",
+          "verdict": "PASS"
+        },
+        {
+          "check": "KL-orphan a channel left only with non-manager members who never held the active key can resume by itself",
+          "verdict": "PASS"
+        },
+        {
+          "check": "KL-orphan-ctl without the orphaned-channel fresh start, such a channel stays unwritable",
+          "verdict": "PASS"
+        },
+        {
+          "check": "KL-lost a permanently offline approved device blocks new epochs until it is revoked (F-KEY-007)",
+          "verdict": "LIMIT"
+        },
+        {
+          "check": "KC-server a server that misreports membership can give a non-viewer the key (F-E2E-001)",
+          "verdict": "LIMIT"
+        },
+        {
+          "check": "KC-ctl1 without the activation re-check and send-time check, a removed member keeps reading",
+          "verdict": "PASS"
+        },
+        {
+          "check": "KC-ctl2 without the send-time roster check, a removed member keeps reading",
+          "verdict": "PASS"
+        },
+        {
+          "check": "KA-ctl without retired-delivery fetch, a backfilled recipient loses its key (the F-KEY-001 bug)",
+          "verdict": "PASS"
+        }
+      ]
+    },
+    {
+      "command": "python3 formal-model/run.py M1c M1 M2 M2c M4 M5 M6",
+      "exit_code": 0,
+      "checks": [
+        {
+          "check": "C0 an allow-wins evaluator is detected as non-conforming",
+          "verdict": "PASS"
+        },
+        {
+          "check": "C1 Python evaluator equals TypeScript implementation (400 random workspaces, 1976 masks)",
+          "verdict": "PASS"
+        },
+        {
+          "check": "A1 a held channel-level deny always removes the bit (non-owner)",
+          "verdict": "PASS"
+        },
+        {
+          "check": "A2 a held channel-level allow always grants unless also denied there",
+          "verdict": "PASS"
+        },
+        {
+          "check": "A3 overrides never change workspace-scope bits (MANAGE_*, AUDIT, KICK, ...)",
+          "verdict": "PASS"
+        },
+        {
+          "check": "A4 a private channel is invisible to non-members, including the owner",
+          "verdict": "PASS"
+        },
+        {
+          "check": "A5 a voice channel is never visible without CONNECT_VOICE",
+          "verdict": "PASS"
+        },
+        {
+          "check": "A6 the owner can never be denied a channel-scoped bit",
+          "verdict": "PASS"
+        },
+        {
+          "check": "A7 a deny on a low role overrides an allow from a higher role held by the same member",
+          "verdict": "LIMIT"
+        },
+        {
+          "check": "A8 adding a role can remove channel visibility (evaluation is not monotone in roles)",
+          "verdict": "LIMIT"
+        },
+        {
+          "check": "A4-ctl without the private-membership gate a non-member sees a private channel",
+          "verdict": "PASS"
+        },
+        {
+          "check": "A3-ctl without override mask validation an override grants a workspace-scope bit",
+          "verdict": "PASS"
+        },
+        {
+          "check": "A6-ctl without the owner grant the owner can be locked out",
+          "verdict": "PASS"
+        },
+        {
+          "check": "H1 no management operation grants a permission the actor lacks",
+          "verdict": "PASS"
+        },
+        {
+          "check": "H3 the owner never loses permissions, visibility or membership",
+          "verdict": "PASS"
+        },
+        {
+          "check": "H2a unassign, kick and private-member removal never affect an equal-or-higher member",
+          "verdict": "PASS"
+        },
+        {
+          "check": "H2b no other operation affects an equal-or-higher member",
+          "verdict": "PASS"
+        },
+        {
+          "check": "H2c assigning a role never reduces an equal-or-higher member",
+          "verdict": "PASS"
+        },
+        {
+          "check": "H2b-ctl without assertNoSuperiorAccessLoss, overrides and role edits reduce a superior",
+          "verdict": "PASS"
+        },
+        {
+          "check": "H2d-ctl without the guard, a lower channel manager removes a superior from a private channel",
+          "verdict": "PASS"
+        },
+        {
+          "check": "H2-privacy-ctl without the guard, privacy can reduce superior access",
+          "verdict": "PASS"
+        },
+        {
+          "check": "H2-moveChannel-ctl without the guard, moveChannel can reduce superior access",
+          "verdict": "PASS"
+        },
+        {
+          "check": "H2-deleteChannel-ctl without the guard, deleteChannel can reduce superior access",
+          "verdict": "PASS"
+        },
+        {
+          "check": "H2-category-grant moving/deleting a category preserves category-only superior grants",
+          "verdict": "PASS"
+        },
+        {
+          "check": "H2-deleteCategory-ctl without the guard, deleting a category removes a superior grant",
+          "verdict": "PASS"
+        },
+        {
+          "check": "H2a-ctl without the F-P2F-040 rank check, unassign affects a superior",
+          "verdict": "PASS"
+        },
+        {
+          "check": "HC0 the corpus exercises allowed and refused changes",
+          "verdict": "PASS"
+        },
+        {
+          "check": "HC1 real superior guard equals M2 predicate",
+          "verdict": "PASS"
+        },
+        {
+          "check": "D1 the attacker gets an approved device exactly when the specification allows it (32 capability/account combinations)",
+          "verdict": "PASS"
+        },
+        {
+          "check": "D2 no session survives revocation of its device or account disabling",
+          "verdict": "PASS"
+        },
+        {
+          "check": "D3 a stolen fresh passkey cookie on an account that never had a device yields an approved device (TOFU)",
+          "verdict": "LIMIT"
+        },
+        {
+          "check": "D4 a user who approves an unrecognised device (skipping the confirmation code) hands over access",
+          "verdict": "LIMIT"
+        },
+        {
+          "check": "D1-ctl without the 10-minute passkey window a stale cookie plus a recovery code is enough",
+          "verdict": "PASS"
+        },
+        {
+          "check": "AU1 a database owner without the key cannot change or remove any checkpointed row",
+          "verdict": "PASS"
+        },
+        {
+          "check": "AU2 with the integrity key, rows up to the checkpoint still cannot be changed",
+          "verdict": "PASS"
+        },
+        {
+          "check": "AU3 with key and checkpoint file, rows up to the witness still cannot be changed",
+          "verdict": "PASS"
+        },
+        {
+          "check": "AU4a replaying an older checkpoint copy is rejected while the process runs",
+          "verdict": "PASS"
+        },
+        {
+          "check": "AU4b replaying an older checkpoint copy is rejected after a restart",
+          "verdict": "PASS"
+        },
+        {
+          "check": "AU-L1 a row committed but not yet checkpointed (crash window) can be removed without the key",
+          "verdict": "LIMIT"
+        },
+        {
+          "check": "AU-L2 with key, database, checkpoint file AND object-store head, unwitnessed history can be rewritten",
+          "verdict": "LIMIT"
+        },
+        {
+          "check": "AU-L3 even with a witness, rows after the witnessed row can be rewritten by a full compromise",
+          "verdict": "LIMIT"
+        },
+        {
+          "check": "AU-L4 rollback of ALL durable anchors and database cannot be detected locally after restart",
+          "verdict": "LIMIT"
+        },
+        {
+          "check": "AU1-ctl without per-row hash verification a database owner can modify rows",
+          "verdict": "PASS"
+        },
+        {
+          "check": "AU4a-ctl without lastAcceptedCheckpoint an older checkpoint copy is accepted at runtime",
+          "verdict": "PASS"
+        },
+        {
+          "check": "AU4b-ctl without the durable head, old checkpoints pass again after restart",
+          "verdict": "PASS"
+        },
+        {
+          "check": "A3-concurrent stale preflight reads cannot count an identical save after a warning",
+          "verdict": "PASS"
+        },
+        {
+          "check": "A3-concurrent-ctl without the locked recheck, two identical saves bypass the change requirement",
+          "verdict": "PASS"
+        },
+        {
+          "check": "A1 one clearing request per account, across all workspaces",
+          "verdict": "PASS"
+        },
+        {
+          "check": "A4 only MANAGE_MEMBERS/owner can warn, clear or deny, and only strictly lower members",
+          "verdict": "PASS"
+        },
+        {
+          "check": "A5 every warning on a current member can be cleared by someone in that workspace",
+          "verdict": "PASS"
+        },
+        {
+          "check": "A6 leaving, rejoining or editing never removes a warning",
+          "verdict": "PASS"
+        },
+        {
+          "check": "A3 a request is possible only after the profile actually changed since the warning",
+          "verdict": "PASS"
+        },
+        {
+          "check": "A7 a warned member with audit-log access can see who warned them",
+          "verdict": "LIMIT"
+        },
+        {
+          "check": "A3r alternative: a profile revision is also immune to clock differences",
+          "verdict": "PASS"
+        },
+        {
+          "check": "A4-ctl without the rank rule a lower manager can warn a higher one",
+          "verdict": "PASS"
+        },
+        {
+          "check": "A1-ctl with a per-workspace allowance two requests succeed",
+          "verdict": "PASS"
+        },
+        {
+          "check": "A6-ctl if leaving deleted warnings, leave+rejoin would clear one",
+          "verdict": "PASS"
+        },
+        {
+          "check": "A5-ctl if ownership could move to a warned member, nobody could clear it",
+          "verdict": "PASS"
+        },
+        {
+          "check": "A3-ctl1 before the fix: an unchanged save counted as a change",
+          "verdict": "PASS"
+        },
+        {
+          "check": "A3-ctl2 before the fix: an app clock ahead of the DB clock counted an earlier edit",
+          "verdict": "PASS"
+        },
+        {
+          "check": "B1 concurrent requests in two workspaces: still one (users row FOR UPDATE)",
+          "verdict": "PASS"
+        },
+        {
+          "check": "B1-ctl without the row lock both concurrent requests succeed",
+          "verdict": "PASS"
+        },
+        {
+          "check": "V1 with an up-to-date client, a warned member's avatar is never shown in that workspace",
+          "verdict": "PASS"
+        },
+        {
+          "check": "V2 until the change reaches a client, its old member list still shows the avatar",
+          "verdict": "LIMIT"
+        },
+        {
+          "check": "V3 the avatar route serves only the owner and users sharing a workspace",
+          "verdict": "PASS"
+        },
+        {
+          "check": "V4 a viewer keeps an already-fetched avatar after no longer sharing a workspace",
+          "verdict": "LIMIT"
+        },
+        {
+          "check": "V1-ctl before the fix: a former member's messages showed the avatar again",
+          "verdict": "PASS"
+        },
+        {
+          "check": "V3-ctl without the shared-workspace check anyone can fetch it",
+          "verdict": "PASS"
+        },
+        {
+          "check": "S1 with clean commits/rollbacks the row never points at a missing object",
+          "verdict": "PASS"
+        },
+        {
+          "check": "S2 with clean commits/rollbacks no object is left unreferenced",
+          "verdict": "PASS"
+        },
+        {
+          "check": "S1a with ambiguous commits, lost deletes and crashes the row never points at a missing object",
+          "verdict": "PASS"
+        },
+        {
+          "check": "S1a-ctl before the fix: an ambiguous commit deleted the referenced object",
+          "verdict": "PASS"
+        },
+        {
+          "check": "S3 crashes or lost deletes leave unreferenced objects behind",
+          "verdict": "LIMIT"
+        },
+        {
+          "check": "S2-ctl without FOR UPDATE two concurrent uploads orphan an object",
+          "verdict": "PASS"
+        },
+        {
+          "check": "E1 accepts exactly the well-formed 256x256 RGB/RGBA PNGs of the corpus",
+          "verdict": "PASS"
+        },
+        {
+          "check": "E2 an accepted avatar carries nothing but the image (no bytes beyond the pixel stream)",
+          "verdict": "PASS"
+        },
+        {
+          "check": "E3 the corpus decompression bomb is rejected within 500 ms",
+          "verdict": "PASS"
+        }
+      ]
+    }
+  ],
+  "service_conformance": [
+    {
+      "id": "M2c-guard",
+      "title": "The real hierarchy guard rejects loss for a superior and accepts loss for a lower member",
+      "verdict": "PASS"
+    },
+    {
+      "id": "M2c-private-remove",
+      "title": "Removing a superior from an existing private channel is refused",
+      "verdict": "PASS"
+    },
+    {
+      "id": "M2c-privacy",
+      "title": "Changing privacy preserves the owner and superior access claimed by H2/H3",
+      "verdict": "PASS"
+    },
+    {
+      "id": "M2c-category-move",
+      "title": "Moving categories preserves superior access claimed by H2",
+      "verdict": "PASS"
+    },
+    {
+      "id": "M2c-deletions",
+      "title": "Channel/category deletion cannot remove superior permissions; owner operations still succeed",
+      "verdict": "PASS"
+    },
+    {
+      "id": "M1c-validation-width",
+      "title": "Service mask validators reject integers with bits above the 32-bit model domain",
+      "verdict": "PASS"
+    },
+    {
+      "id": "M3c-orphan-proposal",
+      "title": "A non-manager without the active key must use the fresh-start path, as M3 and canRotate require",
+      "verdict": "PASS"
+    },
+    {
+      "id": "M2c-http-hierarchy",
+      "title": "Channel and category HTTP routes return 403 for superior-access loss and accept harmless edits",
+      "verdict": "PASS"
+    },
+    {
+      "id": "M6c-noop",
+      "title": "A sequential unchanged save does not permit a clearing request",
+      "verdict": "PASS"
+    },
+    {
+      "id": "M6c-concurrent-noop",
+      "title": "An in-flight unchanged save cannot bypass the change-after-warning requirement A3",
+      "verdict": "PASS"
+    },
+    {
+      "id": "M6c-concurrent-avatar-save",
+      "title": "Concurrent avatar save must recheck the locked current picture",
+      "verdict": "PASS"
+    },
+    {
+      "id": "M6c-concurrent-avatar-remove",
+      "title": "Concurrent avatar remove must recheck the locked current picture",
+      "verdict": "PASS"
+    },
+    {
+      "id": "M6c-global-once",
+      "title": "Concurrent requests in two workspaces still consume only one account allowance",
+      "verdict": "PASS"
+    },
+    {
+      "id": "M6c-png-canonical",
+      "title": "Equal decoded pixels give equal sanitized bytes, as the sanitizer contract claims",
+      "verdict": "PASS"
+    },
+    {
+      "id": "M6c-same-pixels",
+      "title": "Re-encoding the unchanged picture cannot enable a clearing request",
+      "verdict": "PASS"
+    },
+    {
+      "id": "M6c-legacy-avatar",
+      "title": "Existing noncanonical PNGs compare by pixels; actual picture edits remain possible",
+      "verdict": "PASS"
+    },
+    {
+      "id": "M6c-ambiguous-commit",
+      "title": "A committed upload remains readable after the caller receives a transaction error",
+      "verdict": "PASS"
+    },
+    {
+      "id": "M5c-concurrent-checks",
+      "title": "Concurrent readiness/full verification and appends never report a false rollback",
+      "verdict": "PASS"
+    },
+    {
+      "id": "M5c-head-write-failure",
+      "title": "A head write failure preserves the committed result, blocks subsequent writes, and recovers on restart",
+      "verdict": "PASS"
+    },
+    {
+      "id": "M5c-restart-control",
+      "title": "An unchanged durable audit chain verifies after a real process restart",
+      "verdict": "PASS"
+    },
+    {
+      "id": "M5c-head-missing",
+      "title": "Startup refuses a missing durable head without silently provisioning it",
+      "verdict": "PASS"
+    },
+    {
+      "id": "M5c-head-legacy-upgrade",
+      "title": "The explicit head initializer upgrades an authenticated v1 checkpoint without losing its anchor",
+      "verdict": "PASS"
+    },
+    {
+      "id": "M5c-head-signature",
+      "title": "An invalid persistent head signature is rejected after restart",
+      "verdict": "PASS"
+    },
+    {
+      "id": "M5c-head-crash-window",
+      "title": "Startup repairs a lagging head only forward on a verified database chain",
+      "verdict": "PASS"
+    },
+    {
+      "id": "M5c-AU4a",
+      "title": "Replaying an old checkpoint is rejected by the running implementation",
+      "verdict": "PASS"
+    },
+    {
+      "id": "M5c-AU4b",
+      "title": "Replaying an old checkpoint and truncated chain is rejected after restart",
+      "verdict": "PASS"
+    }
+  ],
+  "suites": {
+    "server-unit": {
+      "tests": 104,
+      "pass": 103,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 1
+    },
+    "integration": {
+      "tests": 3,
+      "pass": 3,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0
+    },
+    "checkpoint": {
+      "tests": 1,
+      "pass": 1,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0
+    },
+    "account": {
+      "tests": 15,
+      "pass": 15,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0
+    }
+  },
+  "harness_regressions": {
+    "pass": 14,
+    "fail": 0
+  },
+  "static_checks": {
+    "server_typecheck": "PASS",
+    "conformance_typecheck": "PASS",
+    "oxlint_packages_and_conformance": "PASS",
+    "bash_syntax": "PASS",
+    "compose_development_and_production": "PASS"
+  },
+  "model_counts": {
+    "M1c": {
+      "workspaces": 400,
+      "masks": 1976
+    },
+    "M2": {
+      "states": 162470,
+      "transitions": 510787,
+      "depth": 2
+    },
+    "M2_focused": {
+      "states": 56760,
+      "transitions": 154284,
+      "depth": 3
+    },
+    "M2c": {
+      "transitions": 3007
+    },
+    "M3": {
+      "states": 1133793,
+      "new_messages": 356402,
+      "retired": 605899,
+      "backfilled": 303602
+    },
+    "M6a": {
+      "states": 88428,
+      "depth": 5
+    }
+  },
+  "source_sha256": {
+    ".github/workflows/ci.yml": "bf6a5620839369bf4290f625959faec1965df9ed02c38bbacb905d3ab7701c29",
+    "compose.production.yml": "a85a36eef2b7c42495ab2c413d83b96b8ea14df041bf72f3bb6b33990f769bea",
+    "dev.sh": "d449be6b5fad5e2a660c695a214446cf993d17a249a4e7f0dcde7b3d578afc76",
+    "docker-compose.yml": "ce3ee83e3acb6814800858d01fb8efc68bc4358ea1663c77f12069b652208f8e",
+    "formal-model/authz.py": "d228af89762587bc5248f199334676640d9ffebaeaadbd793fd93e6a717f9729",
+    "formal-model/common.py": "6f247718297b5d42e51234fa6a00b2e0586379ddec01e14de6187fdc9740ffc1",
+    "formal-model/conformance.py": "53642d7719c34f00caec31c9eae862d50833c1624262213f97e2d5503b0f6dfe",
+    "formal-model/conformance/authz-harness.mts": "77b9ca3de61258c3f1bca465028e5be3a77c433e776fca076badd59686ca040e",
+    "formal-model/conformance/avatar-harness.mts": "0c29707e5aba8ee443fbf9c0ccd32e800daa89fe99983bb3eb06ea56a7940036",
+    "formal-model/conformance/service-audit.mts": "32d41520fcd5ffc587efc72c38d7511a8b237c02a516be08704172d4ea323ded",
+    "formal-model/harness.py": "2d0c743d2767573453fe7de4bed1dba24202bc2e683d53d1d9b72ea5e4da6901",
+    "formal-model/hierarchy_conformance.py": "8093e605ac32c3be748827e42c656ec0f93da05140de9f20c850263ddaa20367",
+    "formal-model/m1_authorization.py": "b5cbe3a1c5a752edcf1e4053eb9397bd1347814c63875ab720a386e878e0156b",
+    "formal-model/m2_hierarchy.py": "5235c3fbefb48e9ab75f945149b41317c8e675bb4f5ecbbbc72910a4f556441f",
+    "formal-model/m3_key_epochs.py": "57f81ae654832d206b0e6d1abe4a9b60a5f8de075637914c219743662161326d",
+    "formal-model/m4_devices.py": "601e7e0bd0c8cb7a132db6dad9d1def5d1f38e9d66d4e98d60368b4142e8e41e",
+    "formal-model/m5_audit.py": "00a90c573255d6c49d01e75bcc04108c5acc12e636187a88915bce7e842d4678",
+    "formal-model/m6_profiles.py": "9b5a48fd6672f44186ffdaf9aae0c110111131d1b35a67f3c970ce0de97b85a6",
+    "formal-model/model.py": "903364595064d67cf09bf0319d132c97da1205434095bac17b793000c38c0932",
+    "formal-model/run.py": "302189a1d9ad073610aee2e0bb11d0fbcb851549deee22a2f2354247aee407df",
+    "formal-model/test_harness.py": "d4f9150f91d3b9cfee7b25ed9d88ae1c82d8f0afb273f0bf8b38b74628456cb7",
+    "packages/server/package.json": "627f6302ae76097a3d9a3149c35bf42aae9b45805bef7521a61ea3b34915d081",
+    "packages/server/src/app.ts": "6d01791662d0d36756e2723d5786fb01cf3da733525c525fb7dc0d20615f00a5",
+    "packages/server/src/config/index.ts": "7b83343964d77011620e8a9b87b56e47b2cc83268f4c14e1a1b283d84356d884",
+    "packages/server/src/config/startup.test.ts": "08004cfdec688bf49495b57ef200250a5f291d297c55272dd83f861888af441d",
+    "packages/server/src/middleware/audit.ts": "9c3c25f4e04612c195d21fa6c215a0e8bc4d6e88f14dfacee13e6c90b97c6a7d",
+    "packages/server/src/routes/channels.ts": "fbab45ee01e5f3e4cea777fbe99651b4b5635acdaa00d8ef79afeccbb69c2e91",
+    "packages/server/src/scripts/initialize-audit-head.ts": "1d45a61f20584304c0298e43bd45e40d05e73cc3c462f62596491f70cae9c5d5",
+    "packages/server/src/security/account-security.integration.test.ts": "cc9b989269702ec0583f90788218c02fe7e20a75bd15963042b5ca021bb04dd2",
+    "packages/server/src/security/audit-checkpoint-write-failure.integration.test.ts": "7589ce0d3b0bf62c895a20293d045da14039ecfb50ae52baa13274adbf2f5971",
+    "packages/server/src/security/integration.test.ts": "7a6b9310e33597744c54400ac87d3308484672237abe5b181134cd81488689a2",
+    "packages/server/src/security/profile-input.test.ts": "ed455f9960df86e06a8569e3b79895e96cb55c28dae826bccb2d8d6af15089ed",
+    "packages/server/src/security/profile-input.ts": "78b6793668c04a439772b586f05668d3b9ec3bb65839da410b43c057d2f49e5e",
+    "packages/server/src/services/authorization.service.ts": "0ec5c1653b8b358a6b93c75b0efd0f22ce2ff97afec6404814b30f417b50fa0c",
+    "packages/server/src/services/channel.service.ts": "fe873f6abe284cd5ab42311cff841da5a1644d4959f30a388213228b615632de",
+    "packages/server/src/services/key.service.ts": "3e8c2ff34388ea1d15cdbe854ae9fec90d2a2bf31fa7e275cdd56e98d6601a6c",
+    "packages/server/src/services/management.test.ts": "cc9f6c4f198ddda7d6c95d9f45589d27b6470a1a1000f8a4772de05d44466952",
+    "packages/server/src/services/object-storage.ts": "2dd316c3373ac15b8a86215c38b494dac1d5af18b10311e82d3c1afe18968307",
+    "packages/server/src/services/profile.service.ts": "93c1e9bf17fce96911be33c57463f74916eaa19e7c031f5886113cda28bf2aea",
+    "packages/server/src/services/role.service.ts": "501aad8858f6d6ada6001cb4f94d7f32b256a31ec1b67600e08fc924c46c43fe"
+  },
+  "log_sha256": {
+    "models-M1c-M1-M2-M2c-M4-M5-M6.log": "a0bcef16d7c27fee4060d1a0c8fb30aa5ad95f71059a896fb578d11faf96b49a",
+    "models-M3.log": "4643117e9ae07260752dd21986f6c0ed2b501a3e7f35a925e3524be412ed4310",
+    "account.log": "27536f90ce65835134df235124453114389c9a8a366fa00fdc271dce35572dd7",
+    "checkpoint.log": "28ed1eccde33e2ac5e553eb036d800ac5012dd1f1c696b5393fbe9428e0c4bdf",
+    "integration.log": "630d2c6199a748b95aea3d0fbb7248aabf7ce21a4c2ecc35b026263c1979f2e2",
+    "server-unit.log": "4354a3e31fc6b4bc4f1cb47ba93f733085fd18d4b8d0c80858e57d141d7412be",
+    "service-audit.log": "8436d5e1e845e2c05e91c8471e2b03dcd9fce2619a9e5314af4caa175174cbf2"
+  },
+  "cleanup": {
+    "disposable_containers_removed": 2,
+    "their_anonymous_volumes_removed": true,
+    "temporary_secret_file_removed": true,
+    "existing_development_resources_modified": false
+  },
+  "limitations": [
+    "Bounded models and explicit attacker capabilities; not a proof for arbitrary implementations or histories.",
+    "The durable audit head bucket must have independent write/restore authority. Simultaneous rollback of all stores remains undetectable without an independent witness.",
+    "Commits preceding durable checkpoint completion remain a crash-window limit."
+  ]
+}

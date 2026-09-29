@@ -55,6 +55,7 @@ const DOMAIN_ERROR_STATUS: Record<string, { status: number; message: string; ret
 
 export function createApp() {
   if (!config.audit.checkpointPath || !config.audit.checkpointRequired) throw new Error('AUDIT_CHECKPOINT_REQUIRED');
+  if (!config.audit.headObjectKey) throw new Error('AUDIT_HEAD_REQUIRED');
   const runtime = requireRuntimeLease();
   const app = express();
   const httpServer = createServer(app);

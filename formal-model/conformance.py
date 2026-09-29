@@ -7,19 +7,11 @@ Any mismatch means the model does not describe the implementation.
 """
 from __future__ import annotations
 
-import json
-import os
 import random
-import shutil
-import subprocess
-from pathlib import Path
 
 from authz import Channel, Role, Workspace, channel_mask, viewers
-from common import ALL_PERMS, CHANNEL_SCOPED, record
-
-ROOT = Path(__file__).resolve().parent
-REPO = ROOT.parent
-TSX = REPO / 'packages/server/node_modules/.bin/tsx'
+from common import ALL_PERMS, CHANNEL_SCOPED, PERM, record
+from harness import HarnessError, require_rows, run_harness
 
 
 def random_mask(rng: random.Random, universe: int, density: float) -> int:
@@ -78,25 +70,33 @@ def _allow_wins_mask(ws: Workspace, user: str, channel: str) -> int:
 
 def run(cases: int = 400, seed: int = 20260929) -> None:
     print('== M1c: model/implementation conformance (authorization) ==')
-    node = shutil.which('node')
-    if not TSX.exists() or node is None:
-        record('M1c', 'C1', 'Python evaluator equals TypeScript implementation', 'HOLDS', False,
-               'SKIPPED: tsx/node not available; conformance not established')
-        return
+    if cases < 1:
+        raise ValueError('At least one conformance case is required')
     rng = random.Random(seed)
     workspaces = [random_workspace(rng) for _ in range(cases)]
-    completed = subprocess.run(
-        [str(TSX), str(ROOT / 'conformance/authz-harness.mts')],
-        input=json.dumps([to_json(ws) for ws in workspaces]),
-        capture_output=True, text=True, cwd=REPO / 'packages/server', env={**os.environ}, timeout=300,
-    )
-    if completed.returncode != 0:
-        record('M1c', 'C1', 'Python evaluator equals TypeScript implementation', 'HOLDS', True,
-               'harness failed: ' + completed.stderr.strip()[-400:])
+    try:
+        result = run_harness('authz-harness.mts', [to_json(ws) for ws in workspaces])
+        if not isinstance(result, dict):
+            raise HarnessError('Expected authorization harness metadata and results')
+        if result.get('permissions') != PERM or result.get('channelScopedMask') != CHANNEL_SCOPED:
+            raise HarnessError('Python permission constants differ from the TypeScript implementation')
+        outputs = require_rows(result.get('results'), len(workspaces))
+        for ws, out in zip(workspaces, outputs, strict=True):
+            if not isinstance(out.get('masks'), dict) or set(out['masks']) != set(ws.members) | {'__nonmember__'}:
+                raise HarnessError('Missing or unexpected user results')
+            for user, masks in out['masks'].items():
+                if not isinstance(masks, dict) or set(masks) != set(ws.channels) | {'__missing_channel__'} or any(type(mask) is not int for mask in masks.values()):
+                    raise HarnessError('Missing or malformed channel masks')
+                if masks['__missing_channel__'] != -1 or (user == '__nonmember__' and any(mask != -1 for mask in masks.values())):
+                    raise HarnessError('Unknown channel or non-member unexpectedly authorized')
+            if not isinstance(out.get('viewers'), dict) or set(out['viewers']) != set(ws.channels) or not all(isinstance(v, list) and all(isinstance(u, str) for u in v) for v in out['viewers'].values()):
+                raise HarnessError('Missing or malformed viewer results')
+    except HarnessError as error:
+        record('M1c', 'C1', 'Python evaluator equals TypeScript implementation', 'HOLDS', False,
+               str(error), incomplete=True)
         return
-    outputs = json.loads(completed.stdout)
     mismatches = []
-    for index, (ws, out) in enumerate(zip(workspaces, outputs)):
+    for index, (ws, out) in enumerate(zip(workspaces, outputs, strict=True)):
         for user in ws.members:
             for channel in ws.channels:
                 expected = channel_mask(ws, user, channel)
@@ -109,7 +109,7 @@ def run(cases: int = 400, seed: int = 20260929) -> None:
     comparisons = sum(len(ws.members) * len(ws.channels) for ws in workspaces)
     # CONTROL: an evaluator with allow-wins instead of deny-wins must disagree.
     mutated = 0
-    for ws, out in zip(workspaces, outputs):
+    for ws, out in zip(workspaces, outputs, strict=True):
         for user in ws.members:
             for channel in ws.channels:
                 if _allow_wins_mask(ws, user, channel) != out['masks'][user][channel]:
@@ -121,4 +121,11 @@ def run(cases: int = 400, seed: int = 20260929) -> None:
 
 
 if __name__ == '__main__':
-    run()
+    import argparse
+    import common
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--cases', type=int, default=400)
+    parser.add_argument('--seed', type=int, default=20260929)
+    args = parser.parse_args()
+    run(args.cases, args.seed)
+    raise SystemExit(0 if all(result.ok for result in common.RESULTS) else 1)

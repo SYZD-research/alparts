@@ -22,7 +22,13 @@ getChannelKeyRecipientState), key-epoch-state.ts and message.service.ts:
               no revoked recipient, sender accepted.
   viewer +/-, device approve/revoke: abort pending, rotation required.
   restore     a device learns every key its user's devices hold (backup).
-  stall       a stalled pending epoch is aborted (15-minute escape).
+  stall       an eligible manager aborts a pending epoch after 15 minutes.
+              An orphan's non-manager may fresh-start after the same delay.
+  expire      after 24 hours, an active MLS epoch requires rotation.
+
+Waiting 15 minutes is folded into the guarded abort/fresh-start transition;
+the 24-hour threshold is represented by the effective rotation flag. These
+are reachability abstractions, not a wall-clock response-time guarantee.
 
 eligible = approved, non-revoked devices of current viewers.
 Knowledge is permanent: a device keeps every key it ever learned.
@@ -157,12 +163,13 @@ def transitions(state: State, v: Variant):
                 for roster in rosters:
                     yield _new_epoch(state, state.epochs, proposer, roster, f'{proposer}: propose')
             # fresh start (step-up): managers, or any viewer once no eligible
-            # device holds the active key and no proposal is in flight
-            orphaned = active is not None and not holders and pending is None and v.orphan_fresh_start
+            # device holds the active key. A pending proposal must first stall.
+            orphaned = active is not None and not holders and v.orphan_fresh_start
             if (manager or orphaned) and ((active and state.effective_rotation()) or pending) and not (
                     active and pending is None and proposer in active.accepted):
                 for roster in rosters:
-                    yield _new_epoch(state, _abort_pending(state.epochs), proposer, roster, f'{proposer}: fresh-start')
+                    wait = ' (after 15 minutes)' if not manager and pending else ''
+                    yield _new_epoch(state, _abort_pending(state.epochs), proposer, roster, f'{proposer}: fresh-start{wait}')
 
     # ack; the last required ack activates or aborts
     if pending is not None:
@@ -239,9 +246,18 @@ def transitions(state: State, v: Variant):
                 yield f'{device}: restore history', replace(
                     state, known=tuple((d, k | pooled if d == device else k) for d, k in state.known))
 
-    # stalled pending epoch
+    # Clock threshold: effective_rotation and the send-time age guard both see
+    # this state as requiring rotation even though the DB flag may remain false.
+    if active is not None and active.protocol == 3 and not state.rotation:
+        yield 'clock: active epoch reaches 24 hours', replace(state, rotation=True)
+
+    # The abort endpoint requires an eligible manager and its device signature.
+    # It is never an unconditional recovery action when all managers are gone.
     if pending is not None:
-        yield f'manager: abort stalled v{pending.version}', replace(state, epochs=_abort_pending(state.epochs))
+        for device in sorted(eligible):
+            if device in acting and DEVICES[device] in MANAGERS:
+                yield f'{device}: abort stalled v{pending.version} (after 15 minutes)', replace(
+                    state, epochs=_abort_pending(state.epochs), rotation=True)
 
 
 def violations(state: State, v: Variant):

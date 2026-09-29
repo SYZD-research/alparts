@@ -15,18 +15,11 @@ harness `conformance/avatar-harness.mts` (M6e).
 """
 from __future__ import annotations
 
-import json
-import shutil
-import subprocess
 from collections import deque
 from dataclasses import dataclass, replace
-from pathlib import Path
 
 from common import record
-
-ROOT = Path(__file__).resolve().parent
-REPO = ROOT.parent
-TSX = REPO / 'packages/server/node_modules/.bin/tsx'
+from harness import HarnessError, require_rows, run_harness
 
 INF = float('inf')
 
@@ -472,16 +465,29 @@ def d_explore(row_lock: bool, recheck_on_error: bool, failures: frozenset):
 # ---------------------------------------------------------------------------
 
 def e_run():
-    node = shutil.which('node')
-    if not TSX.exists() or node is None:
-        record('M6', 'E1', 'avatar sanitizer: harness available', 'HOLDS', True, 'SKIPPED: tsx/node not available')
+    try:
+        cases = require_rows(run_harness('avatar-harness.mts'), 22)
+        expected = {
+            'valid-rgba', 'valid-rgb', 'valid-split-idat', 'ancillary-text-dropped',
+            'trailing-after-zlib', 'second-zlib-stream', 'chunk-after-iend', 'bytes-after-iend',
+            'ancillary-between-idat', 'wrong-size', '16-bit', 'palette', 'plte-in-truecolor',
+            'interlaced', 'bad-crc', 'filter-5', 'short-pixels', 'extra-pixels',
+            'truncated-zlib', 'no-idat', 'no-signature', 'bomb-200MB',
+        }
+        if {c.get('name') for c in cases} != expected:
+            raise HarnessError('Avatar corpus cases missing or duplicated')
+        for case in cases:
+            expectation = ('accept' if case['name'] in {'valid-rgba', 'valid-rgb', 'valid-split-idat', 'ancillary-text-dropped'}
+                           else 'observe' if case['name'] in {'trailing-after-zlib', 'second-zlib-stream'} else 'reject')
+            if (case.get('expect') != expectation
+                    or case.get('verdict') not in ('accept', 'reject')
+                    or type(case.get('trailing')) is not int or case['trailing'] < 0
+                    or type(case.get('extraChunks')) is not bool
+                    or type(case.get('ms')) not in (int, float) or not 0 <= case['ms'] < float('inf')):
+                raise HarnessError('Malformed avatar result')
+    except HarnessError as error:
+        record('M6', 'E1', 'avatar sanitizer harness', 'HOLDS', False, str(error), incomplete=True)
         return
-    completed = subprocess.run([str(TSX), str(ROOT / 'conformance/avatar-harness.mts')], capture_output=True,
-                               text=True, cwd=REPO / 'packages/server', timeout=300)
-    if completed.returncode != 0:
-        record('M6', 'E1', 'avatar sanitizer harness', 'HOLDS', True, completed.stderr.strip()[-400:])
-        return
-    cases = json.loads(completed.stdout)
     wrong_verdict = [f"{c['name']}: expected {c['expect']}, got {c['verdict']}" for c in cases
                      if c['expect'] in ('accept', 'reject') and c['verdict'] != c['expect']]
     record('M6', 'E1', 'accepts exactly the well-formed 256x256 RGB/RGBA PNGs of the corpus', 'HOLDS',
@@ -492,14 +498,55 @@ def e_run():
            'HOLDS', bool(smuggled), '; '.join(smuggled))
     bomb = [c for c in cases if c['name'].startswith('bomb')]
     slow = [f"{c['name']}: {c['ms']:.0f} ms" for c in bomb if c['verdict'] != 'reject' or c['ms'] > 500]
-    record('M6', 'E3', 'decompression bombs are refused without inflating them', 'HOLDS', bool(slow), '; '.join(slow))
+    record('M6', 'E3', 'the corpus decompression bomb is rejected within 500 ms', 'HOLDS', bool(slow), '; '.join(slow))
 
 
 # ---------------------------------------------------------------------------
 
+def concurrent_noop(recheck: bool):
+    """Two requests saving B over A, and one warning; enumerate all preflight /
+    locked-write / warning interleavings. A real content change is a ghost
+    timestamp separate from the persisted timestamp used to admit appeals.
+    The same schedule applies to replacing or removing an avatar.
+    """
+    initial = (0, 0, 0, None, (0, 0), 0)  # content, actual change, stamp, warning, PCs, clock
+    queue = deque([(initial, [])])
+    seen = {initial}
+    while queue:
+        (content, changed, stamp, warning, pcs, clock), trace = queue.popleft()
+        if warning is not None and stamp > warning and changed <= warning:
+            return trace
+        moves = []
+        if warning is None:
+            moves.append(('warn current content', (content, changed, stamp, clock + 1, pcs, clock + 1)))
+        for i, pc in enumerate(pcs):
+            next_pcs = list(pcs)
+            if pc == 0:
+                next_pcs[i] = 2 if content == 1 else 1
+                moves.append((f'save{i}: preflight reads {content}',
+                              (content, changed, stamp, warning, tuple(next_pcs), clock + 1)))
+            elif pc == 1:
+                next_pcs[i] = 2
+                new_stamp = clock + 1 if content != 1 or not recheck else stamp
+                new_change = clock + 1 if content != 1 else changed
+                moves.append((f'save{i}: locked save B (current={content})',
+                              (1, new_change, new_stamp, warning, tuple(next_pcs), clock + 1)))
+        for label, state in moves:
+            if state not in seen:
+                seen.add(state)
+                queue.append((state, trace + [label]))
+    return []
+
+
 def run(depth: int = 5) -> None:
     print('== M6: profiles, avatars and profile warnings ==')
     impl = Rules()
+    race = concurrent_noop(recheck=True)
+    record('M6', 'A3-concurrent', 'stale preflight reads cannot count an identical save after a warning', 'HOLDS',
+           bool(race), witness=race)
+    race = concurrent_noop(recheck=False)
+    record('M6', 'A3-concurrent-ctl', 'without the locked recheck, two identical saves bypass the change requirement',
+           'CONTROL', bool(race), witness=race)
 
     found, states = a_explore(impl, depth)
     print(f'  M6a implementation: {states} states (depth {depth})')

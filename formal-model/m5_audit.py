@@ -7,7 +7,9 @@ Mirrors middleware/audit.ts:
                 behind); the row must exist with that hash (not "ahead").
   rollback      a checkpoint older than lastAcceptedCheckpoint, or equal time
                 with another row/hash, is rejected. lastAcceptedCheckpoint is
-                process memory and starts empty after a restart.
+                process memory, also persisted in a separate object-store
+                bucket after the local checkpoint write. Startup validates
+                both anchors and never creates a missing durable head.
   witness       optional offline SLH-DSA signature on {logId, logHash,
                 logCreatedAt}; the witnessed row must be present unchanged.
 
@@ -50,12 +52,14 @@ class Caps:
     key: bool = False           # AUDIT_INTEGRITY_KEY
     file: bool = False          # write the checkpoint file (and read old copies)
     restart: bool = False       # can cause a process restart
+    head: bool = False          # additionally write/rollback the separate object-store head
 
 
 @dataclass(frozen=True)
 class Checks:
     chain: bool = True
     rollback_memory: bool = True
+    durable_head: bool = True
 
 
 def recompute(rows, start):
@@ -85,7 +89,7 @@ def tampered_chains(chain, caps):
         yield f'truncate last {j}', [dict(r) for r in chain[:-j]], N - j + 1
 
 
-def verify(rows, checkpoint, last_accepted, witness, checks: Checks):
+def verify(rows, checkpoint, last_accepted, witness, checks: Checks, head=None):
     prev = None
     for r in rows:
         if r['prev'] != prev:
@@ -99,6 +103,10 @@ def verify(rows, checkpoint, last_accepted, witness, checks: Checks):
     anchor = next((r for r in rows if r['id'] == checkpoint['id']), None)
     if anchor is None or anchor['hash'] != checkpoint['hash']:
         return False                    # missing or "ahead of the database chain"
+    if checks.durable_head and head is not None:
+        anchor = next((r for r in rows if r['id'] == head['id']), None)
+        if checkpoint['id'] < head['id'] or anchor is None or anchor['hash'] != head['hash']:
+            return False
     if witness is not None:
         row = next((r for r in rows if r['id'] == witness['id']), None)
         if row is None or row['hash'] != witness['hash']:
@@ -122,7 +130,8 @@ def undetected_attacks(caps: Caps, witness_on: bool, checkpoint_lag: int, checks
             if restarted and not caps.restart:
                 continue
             last = None if restarted else current
-            if verify(rows, checkpoint, last, witness, checks):
+            durable = checkpoint if caps.head else current
+            if verify(rows, checkpoint, last, witness, checks, durable):
                 results.append((changed, f'{description}; {cp_desc}{"; restart" if restarted else ""}'))
     return results
 
@@ -139,7 +148,7 @@ def run() -> None:
     check('AU2', 'with the integrity key, rows up to the checkpoint still cannot be changed', 'HOLDS',
           Caps(db=True, key=True, restart=True), keep=lambda changed: changed <= N)
     check('AU3', 'with key and checkpoint file, rows up to the witness still cannot be changed', 'HOLDS',
-          Caps(db=True, key=True, file=True, restart=True), witness_on=True, keep=lambda changed: changed <= WITNESSED)
+          Caps(db=True, key=True, file=True, restart=True, head=True), witness_on=True, keep=lambda changed: changed <= WITNESSED)
     check('AU4a', 'replaying an older checkpoint copy is rejected while the process runs', 'HOLDS',
           Caps(db=True, file=True, restart=False))
     check('AU4b', 'replaying an older checkpoint copy is rejected after a restart', 'HOLDS',
@@ -147,14 +156,18 @@ def run() -> None:
 
     check('AU-L1', 'a row committed but not yet checkpointed (crash window) can be removed without the key', 'LIMIT',
           db, lag=1)
-    check('AU-L2', 'with key, database and checkpoint file (full server compromise) the unwitnessed history can be rewritten',
-          'LIMIT', Caps(db=True, key=True, file=True, restart=True))
+    check('AU-L2', 'with key, database, checkpoint file AND object-store head, unwitnessed history can be rewritten',
+          'LIMIT', Caps(db=True, key=True, file=True, restart=True, head=True))
     check('AU-L3', 'even with a witness, rows after the witnessed row can be rewritten by a full compromise', 'LIMIT',
-          Caps(db=True, key=True, file=True, restart=True), witness_on=True, keep=lambda changed: changed > WITNESSED)
+          Caps(db=True, key=True, file=True, restart=True, head=True), witness_on=True, keep=lambda changed: changed > WITNESSED)
+    check('AU-L4', 'rollback of ALL durable anchors and database cannot be detected locally after restart', 'LIMIT',
+          Caps(db=True, file=True, restart=True, head=True))
 
     check('AU1-ctl', 'without per-row hash verification a database owner can modify rows', 'CONTROL', db, checks=Checks(chain=False))
     check('AU4a-ctl', 'without lastAcceptedCheckpoint an older checkpoint copy is accepted at runtime', 'CONTROL',
-          Caps(db=True, file=True, restart=False), checks=Checks(rollback_memory=False))
+          Caps(db=True, file=True, restart=False), checks=Checks(rollback_memory=False, durable_head=False))
+    check('AU4b-ctl', 'without the durable head, old checkpoints pass again after restart', 'CONTROL',
+          Caps(db=True, file=True, restart=True), checks=Checks(durable_head=False))
 
 
 if __name__ == '__main__':

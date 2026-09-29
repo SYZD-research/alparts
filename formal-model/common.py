@@ -48,14 +48,19 @@ class Result:
     violated: bool       # a counterexample / violating state was found
     detail: str = ''
     witness: list[str] = field(default_factory=list)
+    incomplete: bool = False  # missing/invalid evidence is never a proof
 
     @property
     def ok(self) -> bool:
+        if self.incomplete:
+            return False
         # HOLDS must not be violated; LIMIT and CONTROL must be.
         return (not self.violated) if self.expect == 'HOLDS' else self.violated
 
     @property
     def verdict(self) -> str:
+        if self.incomplete:
+            return 'MODEL-GAP'
         if self.expect == 'HOLDS':
             return 'PASS' if self.ok else 'FINDING'
         if self.expect == 'LIMIT':
@@ -67,8 +72,8 @@ RESULTS: list[Result] = []
 
 
 def record(model: str, check_id: str, title: str, expect: str, violated: bool,
-           detail: str = '', witness: list[str] | None = None) -> Result:
-    result = Result(model, check_id, title, expect, violated, detail, witness or [])
+           detail: str = '', witness: list[str] | None = None, *, incomplete: bool = False) -> Result:
+    result = Result(model, check_id, title, expect, violated, detail, witness or [], incomplete)
     RESULTS.append(result)
     mark = {'PASS': 'ok ', 'LIMIT': 'lim', 'FINDING': '!! ', 'MODEL-GAP': '?? ', 'VACUOUS': '?? '}[result.verdict]
     print(f'  [{mark}] {check_id} {title} -> {result.verdict}')

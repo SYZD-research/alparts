@@ -42,7 +42,7 @@ interface RolePreviewInput {
 }
 
 export function assertValidPermissionMask(value: number): void {
-  if (!Number.isSafeInteger(value) || value < 0 || (value & ~ALL_PERMISSION_MASK) !== 0) {
+  if (!Number.isSafeInteger(value) || value < 0 || value > ALL_PERMISSION_MASK || (value & ~ALL_PERMISSION_MASK) !== 0) {
     throw new Error('INVALID_PERMISSIONS');
   }
 }

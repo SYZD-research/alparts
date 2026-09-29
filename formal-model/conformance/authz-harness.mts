@@ -1,5 +1,5 @@
 // Evaluates authorization cases with the real server implementation.
-// Input: JSON array of cases on stdin. Output: JSON array of results.
+// Input: JSON array of cases. Output: permission metadata and one result per case.
 // Never touches a database: only snapshot-based pure functions are called.
 import { readFileSync } from 'node:fs';
 
@@ -12,6 +12,7 @@ process.env.PASSWORD_PEPPER ||= 'formal-model-conformance-pepper-32-bytes';
 process.env.AUDIT_INTEGRITY_KEY ||= 'formal-model-conformance-audit-key-32-bytes';
 
 const service = await import('../../packages/server/src/services/authorization.service.ts');
+const { Permissions } = await import('../../packages/shared/src/constants/index.ts');
 
 interface Case {
   owner: string;
@@ -21,10 +22,10 @@ interface Case {
   categoryOverrides: Array<[string, string, number, number]>;
   channelOverrides: Array<[string, string, number, number]>;
   privateMembers: Record<string, string[]>;
+  guard?: { actor: string; after: Case };
 }
 
-const cases = JSON.parse(readFileSync(0, 'utf8')) as Case[];
-const output = cases.map((input) => {
+function snapshotOf(input: Case) {
   const workspaceId = 'ws';
   const channels = Object.entries(input.channels).map(([id, ch]) => ({
     id, workspaceId, categoryId: ch.category, isPrivate: ch.private, type: ch.voice ? 'voice' : 'text',
@@ -36,7 +37,7 @@ const output = cases.map((input) => {
     }
     return result;
   };
-  const snapshot = {
+  return {
     workspaceId,
     ownerId: input.owner,
     channels,
@@ -48,15 +49,30 @@ const output = cases.map((input) => {
     channelOverridesById: group(input.channelOverrides),
     privateMemberIdsByChannelId: new Map(Object.entries(input.privateMembers).map(([ch, users]) => [ch, new Set(users)])),
   };
+}
+
+const cases = JSON.parse(readFileSync(0, 'utf8')) as Case[];
+const output = cases.map((input) => {
+  const snapshot = snapshotOf(input);
+  if (input.guard) {
+    try {
+      service.assertNoSuperiorAccessLoss(snapshot as any, snapshotOf(input.guard.after) as any, input.guard.actor);
+      return { allowed: true };
+    } catch (error) {
+      if (!(error instanceof Error) || error.message !== 'MEMBER_HIERARCHY') throw error;
+      return { allowed: false };
+    }
+  }
   const masks: Record<string, Record<string, number>> = {};
-  for (const userId of Object.keys(input.members)) {
+  for (const userId of [...Object.keys(input.members), '__nonmember__']) {
     masks[userId] = {};
-    for (const channel of channels) {
+    for (const channel of snapshot.channels) {
       const authorization = service.getChannelAuthorizationFromSnapshot(snapshot as any, userId, channel, {}, false);
       masks[userId][channel.id] = authorization ? authorization.permissions : -1;
     }
+    masks[userId].__missing_channel__ = service.getChannelAuthorizationFromSnapshot(snapshot as any, userId, '__missing_channel__', {}, false)?.permissions ?? -1;
   }
-  const viewers = Object.fromEntries([...service.captureChannelViewersFromSnapshot(snapshot as any).entries()]);
+  const viewers = Object.fromEntries(service.captureChannelViewersFromSnapshot(snapshot as any));
   return { masks, viewers };
 });
-process.stdout.write(JSON.stringify(output));
+process.stdout.write(JSON.stringify({ permissions: Permissions, channelScopedMask: service.CHANNEL_SCOPED_PERMISSION_MASK, results: output }));

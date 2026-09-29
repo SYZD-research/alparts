@@ -18,6 +18,7 @@ describe('audit checkpoint write failure admission', { skip: !enabled }, () => {
     checkpointPath = join(checkpointDirectory, 'checkpoint.json');
     process.env.AUDIT_CHECKPOINT_PATH = checkpointPath;
     process.env.AUDIT_CHECKPOINT_REQUIRED = 'true';
+    process.env.AUDIT_HEAD_OBJECT_KEY = `test-${randomUUID()}`;
     const audit = await import('../middleware/audit.js');
     closeDb = (await import('../db/index.js')).closeDb;
     await audit.provisionAuditCheckpoint();
