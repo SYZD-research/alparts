@@ -13,6 +13,8 @@ import { MessageSearch } from '../search/MessageSearch';
 import { DmComposerDialog } from '../dm/DmComposerDialog';
 import { useDmStore } from '../../stores/dm.store';
 import { AccountSecurityDialog } from '../security/AccountSecurityDialog';
+import { ProfileSettingsDialog } from '../profile/ProfileSettingsDialog';
+import { MemberProfileDialog } from '../profile/MemberProfileDialog';
 import { ChannelManagerDialog } from '../channel/ChannelManagerDialog';
 import { WorkspaceManagerDialog } from '../workspace/WorkspaceManagerDialog';
 import { SavedMessagesDialog } from '../bookmark/SavedMessagesDialog';
@@ -243,6 +245,8 @@ export function AppLayout() {
       <ChannelManagerDialog />
       <WorkspaceManagerDialog />
       <SavedMessagesDialog />
+      <ProfileSettingsDialog />
+      <MemberProfileDialog />
       <aside ref={drawerRef} className="channel-drawer flex shrink-0" aria-label="ワークスペースとチャンネル" aria-hidden={mobile && mobilePanel !== 'channels'} {...navigationSwipe.handlers}>
         <div className="workspace-navigation flex"><WorkspaceSidebar /></div>
         {activeWorkspaceId && (

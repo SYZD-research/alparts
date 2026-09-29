@@ -349,20 +349,6 @@ export async function toggleReaction(messageId: string, userId: string, emoji: s
   return committed.response;
 }
 
-export async function getReactions(messageId: string) {
-  const reactions = await db.query.messageReactions.findMany({
-    columns: {
-      messageId: true,
-      emoji: true,
-      userId: true,
-    },
-    where: eq(messageReactions.messageId, messageId),
-    limit: MAX_REACTIONS_PER_MESSAGE + 1,
-  });
-  if (reactions.length > MAX_REACTIONS_PER_MESSAGE) throw new Error('REACTION_INVARIANT_EXCEEDED');
-  return summarizeReactions(reactions);
-}
-
 export async function pinMessage(messageId: string, userId: string) {
   const committed = await auditedTransaction(async (transaction) => {
     const { original, workspaceId } = await lockAndAuthorizeMessageMutation(
@@ -457,12 +443,6 @@ export async function updateReadPosition(userId: string, channelId: string, mess
       })
       .returning();
     return formatReadPosition(position);
-  });
-}
-
-export async function getReadPositions(userId: string, channelId: string) {
-  return db.query.readPositions.findFirst({
-    where: and(eq(readPositions.userId, userId), eq(readPositions.channelId, channelId)),
   });
 }
 

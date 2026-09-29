@@ -15,4 +15,4 @@ while IFS= read -r -d '' file; do
 done < <(git ls-files -z)
 
 (( ${#files[@]} > 0 )) || exit 0
-pnpm exec secretlint --no-glob "${files[@]}"
+pnpm exec secretlint --no-glob -- "${files[@]}"

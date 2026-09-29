@@ -15,6 +15,7 @@ export interface AlpartsDesktopBridge {
   configureServer(serverUrl: string): Promise<AlpartsDesktopInfo>;
   setIdleLockMinutes(minutes: number): Promise<number>;
   lockNow(): Promise<boolean>;
+  clearHttpCache(): Promise<boolean>;
   unlockComplete(): Promise<boolean>;
   showConnectionSettings(): Promise<boolean>;
   secrets: {

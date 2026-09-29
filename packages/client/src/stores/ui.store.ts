@@ -8,6 +8,13 @@ interface UiState {
   dmComposerWorkspaceId: string | null;
   dmComposerInitialMemberIds: string[];
   authorizationRefreshVersion: number;
+  isProfileSettingsOpen: boolean;
+  /** A member profile being viewed; the warning confirmation is per opening. */
+  profileTarget: { workspaceId: string; userId: string } | null;
+  openProfileSettings: () => void;
+  closeProfileSettings: () => void;
+  openMemberProfile: (workspaceId: string, userId: string) => void;
+  closeMemberProfile: () => void;
   openAccountSecurity: () => void;
   closeAccountSecurity: () => void;
   openChannelManager: () => void;
@@ -30,6 +37,19 @@ export const useUiStore = create<UiState>((set) => ({
   dmComposerWorkspaceId: null,
   dmComposerInitialMemberIds: [],
   authorizationRefreshVersion: 0,
+  isProfileSettingsOpen: false,
+  profileTarget: null,
+  openProfileSettings: () => set({
+    isProfileSettingsOpen: true,
+    profileTarget: null,
+    isAccountSecurityOpen: false,
+    isChannelManagerOpen: false,
+    isWorkspaceManagerOpen: false,
+    isSavedMessagesOpen: false,
+  }),
+  closeProfileSettings: () => set({ isProfileSettingsOpen: false }),
+  openMemberProfile: (workspaceId, userId) => set({ profileTarget: { workspaceId, userId }, isProfileSettingsOpen: false }),
+  closeMemberProfile: () => set({ profileTarget: null }),
   openAccountSecurity: () => set({
     isAccountSecurityOpen: true,
     isChannelManagerOpen: false,
@@ -86,5 +106,7 @@ export const useUiStore = create<UiState>((set) => ({
     dmComposerWorkspaceId: null,
     dmComposerInitialMemberIds: [],
     authorizationRefreshVersion: 0,
+    isProfileSettingsOpen: false,
+    profileTarget: null,
   }),
 }));

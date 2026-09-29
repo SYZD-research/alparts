@@ -119,9 +119,14 @@ MC_CONFIG_DIR="$STAGING_DIR/mc"
 mkdir -p -- "$PAYLOAD_DIR"
 
 backup_log 'Decrypting backup into protected temporary storage'
-age --decrypt --identity "$RESTORE_AGE_IDENTITY_FILE" < "$BACKUP_FILE" > "$ARCHIVE_FILE"
+# Stop writing one byte past the limit instead of materializing an unbounded
+# plaintext first; the size check below then distinguishes the two failures.
+decrypt_status=0
+age --decrypt --identity "$RESTORE_AGE_IDENTITY_FILE" < "$BACKUP_FILE" \
+  | head -c "$((RESTORE_MAX_BYTES + 1))" > "$ARCHIVE_FILE" || decrypt_status=$?
 (( $(stat -c '%s' -- "$ARCHIVE_FILE") <= RESTORE_MAX_BYTES )) \
   || backup_die 'Decrypted backup exceeds RESTORE_MAX_BYTES'
+(( decrypt_status == 0 )) || backup_die 'Backup decryption failed'
 
 ARCHIVE_LIST="$STAGING_DIR/archive-list.txt"
 ARCHIVE_VERBOSE="$STAGING_DIR/archive-list-verbose.txt"

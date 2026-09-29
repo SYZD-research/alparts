@@ -57,6 +57,8 @@ JWT_SECRET=$(rand_hex 48)
 AUDIT_INTEGRITY_KEY=$(rand_hex 48)
 AUDIT_CHECKPOINT_PATH=$PWD/.local/audit-checkpoint.json
 AUDIT_CHECKPOINT_REQUIRED=true
+AUDIT_HEAD_BUCKET=alparts-audit
+AUDIT_HEAD_OBJECT_KEY=$(rand_hex 16)
 REGISTRATION_INVITE_SECRET=$(rand_hex 48)
 CORS_ORIGINS=http://localhost:5173,http://localhost:3000,http://127.0.0.1:3000
 VOICE_ICE_SERVERS_JSON=[]
@@ -64,6 +66,32 @@ EOF
   chmod 600 .env
   created_env=1
 fi
+
+# .env holds secrets; an existing file may predate the umask above.
+env_mode="$(stat -c '%a' .env 2>/dev/null || stat -f '%Lp' .env)"
+if [ "$((8#$env_mode & 8#077))" -ne 0 ]; then
+  info ".env が他のユーザーから読める設定だったため、所有者のみに制限します"
+  chmod 600 .env
+fi
+
+is_supported_env_key() {
+  case "$1" in
+    POSTGRES_USER|POSTGRES_PASSWORD|POSTGRES_DB|POSTGRES_PORT|DATABASE_URL|DB_SSL|DB_POOL_MAX|DB_CONNECT_TIMEOUT_MS|DB_STATEMENT_TIMEOUT_MS|\
+    MINIO_ROOT_USER|MINIO_ROOT_PASSWORD|MINIO_ACCESS_KEY|MINIO_SECRET_KEY|MINIO_ENDPOINT|MINIO_PORT|MINIO_CONSOLE_PORT|MINIO_USE_SSL|MINIO_BUCKET|MINIO_REQUEST_TIMEOUT_MS|\
+    STORAGE_QUOTA_BYTES_PER_USER|STORAGE_QUOTA_BYTES_PER_WORKSPACE|STORAGE_QUOTA_BYTES_PER_CHANNEL|\
+    JWT_SECRET|JWT_ISSUER|JWT_AUDIENCE|JWT_EXPIRES_IN_SECONDS|COOKIE_SECURE|\
+    PASSWORD_PEPPER|PASSWORD_PEPPER_PREVIOUS|WEBAUTHN_RP_ID|WEBAUTHN_ORIGINS|AUDIT_INTEGRITY_KEY|AUDIT_CHECKPOINT_PATH|AUDIT_CHECKPOINT_REQUIRED|\
+    AUDIT_HEAD_BUCKET|AUDIT_HEAD_OBJECT_KEY|AUDIT_WITNESS_REQUIRED|AUDIT_WITNESS_PUBLIC_KEY_FILE|AUDIT_WITNESS_PATH|AUDIT_WITNESS_DEPLOYMENT_ID|\
+    METRICS_ENABLED|METRICS_TOKEN|ALLOW_INSECURE_LOOPBACK_DEPENDENCIES|VITE_ALLOWED_HOSTS|\
+    REGISTRATION_INVITE_SECRET|CORS_ORIGIN|CORS_ORIGINS|TRUSTED_PROXIES|VOICE_ICE_SERVERS_JSON|BIND_HOST|PORT)
+      return 0 ;;
+  esac
+  # Every documented value may instead be read from a file: NAME_FILE.
+  case "$1" in
+    *_FILE) is_supported_env_key "${1%_FILE}" ;;
+    *) return 1 ;;
+  esac
+}
 
 # Treat .env as data, not shell source. This intentionally supports the simple
 # KEY=value form generated above and rejects syntax that could execute code.
@@ -80,16 +108,7 @@ while IFS= read -r line || [ -n "$line" ]; do
   if [[ ! "$env_key" =~ ^[A-Z][A-Z0-9_]*$ ]]; then
     die ".env に不正な変数名があります: ${env_key}"
   fi
-  case "$env_key" in
-    POSTGRES_USER|POSTGRES_PASSWORD|POSTGRES_DB|POSTGRES_PORT|DATABASE_URL|DB_SSL|DB_POOL_MAX|DB_CONNECT_TIMEOUT_MS|DB_STATEMENT_TIMEOUT_MS|\
-    MINIO_ROOT_USER|MINIO_ROOT_PASSWORD|MINIO_ACCESS_KEY|MINIO_SECRET_KEY|MINIO_ENDPOINT|MINIO_PORT|MINIO_CONSOLE_PORT|MINIO_USE_SSL|MINIO_BUCKET|MINIO_REQUEST_TIMEOUT_MS|\
-    STORAGE_QUOTA_BYTES_PER_USER|STORAGE_QUOTA_BYTES_PER_WORKSPACE|STORAGE_QUOTA_BYTES_PER_CHANNEL|\
-    JWT_SECRET|JWT_ISSUER|JWT_AUDIENCE|JWT_EXPIRES_IN_SECONDS|COOKIE_SECURE|\
-    PASSWORD_PEPPER|PASSWORD_PEPPER_FILE|WEBAUTHN_RP_ID|WEBAUTHN_ORIGINS|AUDIT_INTEGRITY_KEY|AUDIT_CHECKPOINT_PATH|AUDIT_CHECKPOINT_REQUIRED|\
-    REGISTRATION_INVITE_SECRET|CORS_ORIGIN|CORS_ORIGINS|TRUSTED_PROXIES|VOICE_ICE_SERVERS_JSON|VOICE_ICE_SERVERS_JSON_FILE|BIND_HOST|PORT)
-      ;;
-    *) die ".env に未対応の変数があります: ${env_key}" ;;
-  esac
+  is_supported_env_key "$env_key" || die ".env に未対応の変数があります: ${env_key}"
   export "$env_key=$env_value"
 done < .env
 
@@ -103,6 +122,7 @@ append_env() {
 }
 
 checkpoint_added=0
+head_added=0
 if [ -z "${PASSWORD_PEPPER:-}" ] && [ -z "${PASSWORD_PEPPER_FILE:-}" ]; then
   info ".env に PASSWORD_PEPPER がないため、新しい値を追加します"
   PASSWORD_PEPPER="$(rand_hex 48)"
@@ -117,6 +137,15 @@ if [ -z "${AUDIT_CHECKPOINT_PATH:-}" ]; then
   append_env AUDIT_CHECKPOINT_REQUIRED "$AUDIT_CHECKPOINT_REQUIRED"
   export AUDIT_CHECKPOINT_PATH AUDIT_CHECKPOINT_REQUIRED
   checkpoint_added=1
+fi
+
+: "${AUDIT_HEAD_BUCKET:=${MINIO_BUCKET:-alparts}-audit}"
+export AUDIT_HEAD_BUCKET
+if [ -z "${AUDIT_HEAD_OBJECT_KEY:-}" ]; then
+  AUDIT_HEAD_OBJECT_KEY="$(rand_hex 16)"
+  append_env AUDIT_HEAD_OBJECT_KEY "$AUDIT_HEAD_OBJECT_KEY"
+  export AUDIT_HEAD_OBJECT_KEY
+  head_added=1
 fi
 
 : "${POSTGRES_USER:?POSTGRES_USER が .env にありません}"
@@ -170,6 +199,8 @@ pnpm --filter @alparts/server exec tsx src/scripts/migrate-runtime.ts
 
 if [ "${created_env}" = 1 ] || [ "${checkpoint_added}" = 1 ]; then
   pnpm --filter @alparts/server audit:checkpoint:init
+elif [ "${head_added}" = 1 ]; then
+  die "監査記録の保存先を追加しました。サーバーを停止し、docs/OPERATIONS.md の監査 head 移行手順で確認・初期化してから再実行してください"
 fi
 
 info "開発サーバーを起動します (client: http://localhost:5173 / 停止: Ctrl+C, 全停止: ./dev.sh down)"

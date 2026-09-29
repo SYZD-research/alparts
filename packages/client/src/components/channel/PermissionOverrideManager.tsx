@@ -89,7 +89,7 @@ export function PermissionOverrideManager({ workspaceId, channels, categories, m
   );
   const selectedRole = roles.find((role) => role.id === selectedRoleId) || null;
   const selectedOverride = overrides.find((override) => override.roleId === selectedRoleId) || null;
-  const targetLabel = targetOptions.find((option) => option.id === targetId)?.name || targetId;
+  const targetLabel = targetOptions.find((option) => option.id === targetId)?.name || '対象';
 
   useEffect(() => {
     const request = ++roleRequest.current;
@@ -489,7 +489,7 @@ function OverrideConfirmation({ pending, members, channels, busy, notice, onConf
         <ul className="max-h-52 space-y-2 overflow-y-auto" aria-label="チャンネルごとの閲覧者への影響">
           {pending.preview.roomEffects.map((effect) => (
             <li key={effect.channelId} className="rounded bg-discord-sidebar p-3 text-xs text-discord-muted">
-              <p className="font-medium text-white">{channels.find((channel) => channel.id === effect.channelId)?.name || effect.channelId}</p>
+              <p className="font-medium text-white">{channels.find((channel) => channel.id === effect.channelId)?.name || '表示できないチャンネル'}</p>
               <p className="mt-1 text-discord-red">閲覧できなくなる人: {memberNames(effect.lostUserIds, members)}</p>
               <p className="mt-1 text-green-300">閲覧できるようになる人: {memberNames(effect.gainedUserIds, members)}</p>
               {effect.rotationRequired && <p className="mt-1 text-yellow-200">変更後、しばらくメッセージを送信できない場合があります。</p>}
@@ -579,7 +579,7 @@ function PreviewMetric({ label, value, danger = false }: { label: string; value:
 function memberNames(userIds: string[], members: WorkspaceMember[]): string {
   if (userIds.length === 0) return 'なし';
   return userIds.map((userId) => (
-    members.find((member) => member.userId === userId)?.user.displayName || userId
+    members.find((member) => member.userId === userId)?.user.displayName || '不明なメンバー'
   )).join('、');
 }
 

@@ -206,6 +206,10 @@ function sendRoleError(res: Response, error: any): boolean {
     res.status(404).json({ error: 'NOT_FOUND', message: 'Role or member not found', statusCode: 404 });
     return true;
   }
+  if (error?.message === 'MEMBER_HIERARCHY') {
+    res.status(403).json({ error: 'MEMBER_HIERARCHY', message: 'Change would reduce a higher-ranked member', statusCode: 403 });
+    return true;
+  }
   if (['NOT_AUTHORIZED', 'ROLE_HIERARCHY', 'PERMISSION_ESCALATION'].includes(error?.message)) {
     res.status(403).json({ error: 'FORBIDDEN', message: 'Role cannot be managed', statusCode: 403 });
     return true;

@@ -1,6 +1,6 @@
 # API and realtime inventory
 
-All `/api` responses are `Cache-Control: no-store`. Protected endpoints require a live DB-backed session; workspace/channel/message/file routes additionally enforce current resource authorization. Cookie-authenticated browser mutations require an exact allowed Origin. JSON is strict and bounded to 512 KiB globally, with tighter route schemas.
+All `/api` responses are `Cache-Control: no-store` except versioned avatar images (below). Protected endpoints require a live DB-backed session; workspace/channel/message/file routes additionally enforce current resource authorization. Cookie-authenticated browser mutations require an exact allowed Origin. JSON is strict and bounded to 512 KiB globally, with tighter route schemas.
 
 This is an inventory, not a stable public OpenAPI contract. No formal API version prefix exists; incompatible changes require a compatibility/versioning decision before release.
 
@@ -46,6 +46,21 @@ This is an inventory, not a stable public OpenAPI contract. No formal API versio
 | `GET/PUT/DELETE /api/workspaces/:wid/{categories|channels}/:targetId/permission-overrides/:roleId?` | override list/upsert/delete |
 | `POST .../permission-overrides/preview` | stale-safe revisioned impact preview |
 | `GET /api/workspaces/:wid/channels/:targetId/permissions/effective?userId=...` | effective channel permission explanation |
+
+## Profiles
+
+| Paths | Responsibility |
+| --- | --- |
+| `GET/PATCH /api/profile` | own display name, plain-text bio (≤200 code points, ≤5 lines; control/format/line-separator characters rejected) and warnings on the own profile per workspace; 30 updates/hour. A save that changes nothing is not recorded and does not count as a change |
+| `PUT/DELETE /api/profile/avatar` | replace/remove the avatar; body is raw `image/png`, exactly 256×256, ≤320 KiB; the decoded pixels are re-encoded into a fresh IHDR/IDAT/IEND PNG (nothing else from the upload is kept); re-uploading the picture in use is a no-op; the previous object is deleted immediately; 10 uploads/hour |
+| `GET /api/users/:userId/avatar/:version` | avatar bytes for oneself or a user sharing a workspace, else 404; `private, max-age=86400, immutable`, `nosniff`, `default-src 'none'; sandbox`, same-origin CORP |
+| `GET /api/workspaces/:wid/members/:userId/profile` | member profile; for a warned profile the bio and avatar are returned and the client withholds them until the viewer confirms |
+| `GET /api/workspaces/:wid/profile-flags` | warned profiles in this workspace (MANAGE_MEMBERS or owner) |
+| `GET /api/workspaces/:wid/warned-users` | any member: IDs of users warned in this workspace, including former members whose messages remain (newest 1,000; `complete: false` when cut, and clients then hide pictures of unlisted non-members) |
+| `PUT/DELETE /api/workspaces/:wid/members/:userId/profile-flag`, `POST .../profile-flag/deny` | warn/clear/deny an appeal; MANAGE_MEMBERS or owner, target strictly below the actor (owner never), step-up required |
+| `POST /api/workspaces/:wid/profile-flag/appeal` | the warned user asks this workspace's managers to clear the warning; only after actually changing the profile following the warning (both times come from the database clock), and once per account across all workspaces |
+
+Bio, display name and avatar are server-readable profile data, not end-to-end encrypted. Profile edits audit only actor/action/time (`user.profile.update`, `user.avatar.update|remove`, no content). Warning operations audit actor, target and workspace (`profile.flag|unflag`, `profile.appeal.request|deny`).
 
 ## Direct messages
 
@@ -101,7 +116,7 @@ Message create/edit/delete/replay, reaction/pin, channel preference and bookmark
 
 ## WebSocket events
 
-Client-to-server admission includes `channel:join`, `channel:leave`, `message:send/edit/delete`, `presence:update`, `typing:start/stop`, and `voice:join/leave/state/signal`. Server-to-client delivery includes durable message events, authorization/channel/key change events, presence/typing changes, voice participant/state/signal events and `operation:error`.
+Client-to-server admission includes `channel:join`, `channel:leave`, `message:send/edit/delete`, `presence:update`, `typing:start/stop`, and `voice:join/leave/state/signal`. Server-to-client delivery includes durable message events, authorization/channel/key change events, presence/typing changes, voice participant/state/signal events, `member:profile-updated`, `workspace:profile-flags-changed`, `attention:new` (including `profile-appeal` to workspace managers) and `operation:error`.
 
 Socket handshake is source/global bounded before token DB work, then binds a live session and active device. Joins and server-driven grants are reauthorized under workspace locks. Presence/typing/voice state is ephemeral; durable messages remain in PostgreSQL. Voice signaling is exact-schema/device-signed/sequence-checked by recipients, while audio is peer-to-peer DTLS-SRTP and never passes through the application server.
 
@@ -114,4 +129,4 @@ Socket handshake is source/global bounded before token DB work, then binds a liv
 - Clients must not retry an ambiguous mutation without its stable idempotency key.
 - There is no generic server retry, public admin endpoint, API key bypass, GraphQL interface, webhook/bot API, or persistent background queue.
 
-The OCI artifact also contains non-HTTP operator entry points at `dist/scripts/migrate-runtime.js` and `dist/scripts/initialize-audit-checkpoint.js`. The migrator deliberately loads only database configuration and should use a separate migration identity; the checkpoint initializer requires the normal audit/database configuration. Both run only while the app is stopped and must never be exposed as network endpoints.
+The OCI artifact also contains non-HTTP operator entry points at `dist/scripts/migrate-runtime.js` and `dist/scripts/initialize-audit-checkpoint.js`, and `dist/scripts/initialize-audit-head.js` (existing-checkpoint upgrade). The migrator deliberately loads only database configuration and should use a separate migration identity; the checkpoint initializer requires the normal audit/database configuration. Both run only while the app is stopped and must never be exposed as network endpoints.

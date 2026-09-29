@@ -1,0 +1,16 @@
+# History-wide secret scan configuration (CI: secret-history job).
+[extend]
+useDefault = true
+
+# Disposable values for the CI databases and object storage. They only match
+# when both the file and the obviously synthetic value pattern agree.
+[[allowlists]]
+description = "Synthetic CI service credentials"
+condition = "AND"
+paths = ['''^\.github/workflows/ci\.yml$''']
+regexes = ['''(integration|supply|ci-only)-[a-z0-9-]*-at-least-32-bytes''']
+
+# Test sentinels and prose examples.
+[[allowlists]]
+description = "Test sentinels and documentation"
+paths = ['''^scripts/tests/''', '''^docs/''', '''^audit-alparts/findings/''']

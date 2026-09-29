@@ -22,6 +22,7 @@ import {
   MAX_ACTIVE_SESSIONS_PER_USER,
   MAX_TOTAL_CHANNELS_PER_WORKSPACE,
   MAX_WORKSPACE_MEMBERSHIPS_PER_USER,
+  PASSKEY_DEVICE_ENROLLMENT_WINDOW_MS,
 } from '../security/limits.js';
 import {
   assertCurrentPasswordSnapshot,
@@ -122,7 +123,11 @@ export async function registerDevice(
     const [enrollmentSession] = await tx.select().from(sessions).where(and(eq(sessions.id, sessionId), eq(sessions.userId, userId), gt(sessions.expiresAt, new Date()))).for('share');
     if (!enrollmentSession) throw new Error('SESSION_NOT_FOUND');
     if (passwordHashSnapshot) await assertCurrentPasswordSnapshot(tx, userId, passwordHashSnapshot);
-    else if (enrollmentSession.authenticationMethod !== 'passkey') throw new Error('DEVICE_STEP_UP_REQUIRED');
+    else if (
+      enrollmentSession.authenticationMethod !== 'passkey'
+      // An old passkey session (e.g. a stolen cookie) is not a fresh assertion.
+      || Date.now() - enrollmentSession.createdAt.getTime() > PASSKEY_DEVICE_ENROLLMENT_WINDOW_MS
+    ) throw new Error('DEVICE_STEP_UP_REQUIRED');
     const activeDevices = await tx.select({ id: devices.id })
       .from(devices)
       .where(and(eq(devices.userId, userId), isNull(devices.revokedAt)))

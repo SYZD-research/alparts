@@ -298,7 +298,7 @@ public final class MainActivity extends Activity {
                         : asset.endsWith(".png") ? "image/png" : "application/octet-stream";
                     return new WebResourceResponse(mime, "UTF-8", 200, "OK", Map.of(
                         "Cache-Control", "no-store", "X-Content-Type-Options", "nosniff",
-                        "Content-Security-Policy", "default-src 'none'; script-src " + origin + "/assets/ " + origin + "/android-bridge.js; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; media-src 'self' blob:; connect-src 'self' " + origin.replace("https:", "wss:") + "; frame-src 'none'; worker-src 'none'; base-uri 'none'; form-action 'none'",
+                        "Content-Security-Policy", "default-src 'none'; script-src " + origin + "/assets/ " + origin + "/android-bridge.js; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; media-src 'self' blob:; connect-src 'self' " + origin.replace("https:", "wss:") + "; frame-src 'none'; worker-src " + origin + "/assets/; base-uri 'none'; form-action 'none'",
                         "Permissions-Policy", "camera=(), display-capture=(), geolocation=(), microphone=(self), speaker-selection=(self)",
                         "Referrer-Policy", "no-referrer"), input);
                 } catch (Exception ignored) { return blocked(); }
@@ -454,7 +454,11 @@ public final class MainActivity extends Activity {
                     if (saveReply != null || saveStream != null || microphone.hasPending()) throw new IllegalStateException();
                     expectedBytes = args.getLong("expectedBytes");
                     if (expectedBytes < 0 || expectedBytes > 100L * 1024 * 1024) throw new IllegalArgumentException();
-                    String name = args.getString("name").replaceAll("[\\\\/\\p{Cntrl}]", "_");
+                    // Match the desktop rules: NFKC, then replace separators, controls and
+                    // format/bidi characters so the save dialog shows the real name.
+                    String name = java.text.Normalizer.normalize(args.getString("name"), java.text.Normalizer.Form.NFKC)
+                        .replaceAll("[\\\\/:*?\"<>|\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}]", "_")
+                        .replaceAll("[. ]+$", "").trim();
                     if (name.isEmpty() || name.length() > 240) throw new IllegalArgumentException();
                     saveReply = reply; saveRequest = id;
                     if (args.optBoolean("dangerous") || name.toLowerCase(java.util.Locale.ROOT).matches(".*\\.(apk|exe|msi|bat|cmd|ps1|sh|html?|svg|js|jar)$")) {

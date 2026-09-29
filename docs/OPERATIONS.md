@@ -26,6 +26,19 @@ AttachmentのDB rowとMinIO objectは分散transactionではない。Upload stat
 
 ## Audit checkpoint
 
+2026-09-30以降はローカル checkpoint に加え、別のオブジェクトストレージ bucket に最新の署名済み head を保持する。`AUDIT_HEAD_BUCKET`（既定は `${MINIO_BUCKET}-audit`）と `AUDIT_HEAD_OBJECT_KEY`（配備ごとに固定した識別子）を設定する。通常の起動では欠落した head を作らない。DB・checkpoint file の両方を過去へ戻しても、この head が保持されていれば再起動後に拒否する。
+
+監査 head 移行手順（既存配備）:
+
+1. アプリを停止し、独立保管した記録と現在の監査チェーンが一致することを確認する。初期化コマンドの HMAC 検査だけでは、移行前に起きた正しい署名付きの末尾切断を判別できない。
+2. 通常の画像・添付ファイルとは別の `AUDIT_HEAD_BUCKET` を作成する。アプリにはこの bucket の `s3:GetBucketLocation` / `s3:ListBucket` と対象 head の `s3:GetObject` / `s3:PutObject` を許可する。削除権限は不要。DB・checkpoint file を修復する担当者とバックアップ復元用の identity には head の書換・削除権限を与えない。
+3. 固定した `AUDIT_HEAD_OBJECT_KEY` と bucket を環境設定に保存し、通常と同じ DB・監査鍵・checkpoint path で `pnpm --filter @alparts/server audit:head:init` を一度実行する。配布イメージでは `node packages/server/dist/scripts/initialize-audit-head.js`。既存 head は上書きしない。新規配備は `audit:checkpoint:init` が両方を作成する。
+4. 再起動して readiness を確認する。以降、識別子・bucket を起動ごとに変更せず、head を通常のデータバックアップと一緒に過去へ復元しない。欠落時に初期化を自動再実行しない。
+
+DB commit → ローカル checkpoint の fsync/rename → head の保存、の順に更新する。途中障害は次の書込みを停止する。ローカル checkpoint が head より進んだ状態は、再起動時にチェーン全体と両方の anchor を検証してから前進させる。checkpoint と head の読取りも監査書込みと直列化し、正常な同時更新を巻き戻しと誤判定しない。
+
+この追加 bucket は WORM ではない。DB・ローカルファイル・head のすべてを書き戻せる管理者やサーバー全体の侵害は別の能力であり、局所的な検証だけでは同時巻き戻しを判別できない。独立 witness は引き続き利用できる。head 保存前に停止した commit、witness 後の記録については既存の限界を保つ。通常の backup/restore は `MINIO_BUCKET` だけを扱うため、head は含めず独立して保全する。
+
 Newest database audit rowの削除を検出するには、`AUDIT_CHECKPOINT_PATH` をPostgreSQL operatorとはwrite/delete authorityを分離したmountまたはstorageへ置く。FileはHMAC認証され、audit commit後にatomic updateされる。初回deploymentではserverを停止したまま、productionと同じdatabase、`AUDIT_INTEGRITY_KEY`、checkpoint pathを設定して `pnpm --filter @alparts/server audit:checkpoint:init` を一度だけ実行する。その後 `AUDIT_CHECKPOINT_REQUIRED=true` でserverを起動する。既存checkpointがある場合、このcommandは上書きしない。
 
 Required modeでは空chainを含むcheckpoint欠落、参照row/hashの不一致、rollback、tail切断、checkpoint read/write失敗をstartup/readiness/権威的writeでfail closedにする。Message create/edit/delete/replay、reaction/pin、preference/bookmarkとsecurity/administration mutationはstateとaudit rowを同一transactionへ入れる。Read positionとprovisional upload chunk metadata/cleanupは専用audit eventを増やさないが、同じprocess-local admissionを通る。通常appendとcheckpoint更新は同じPostgreSQL advisory lock内で現在anchorのHMACとDB tailへのdescendant関係を検証し、外部fileは比較対象が変わっていない場合だけatomicに置換する。Integrity failureはprocess内でstickyになり、通常のserver起動やaudit appendは欠落checkpointまたは切断されたsuffixを再作成・再署名しない。欠落時に再provisionすると切断後のchainを新しい正史として承認してしまうため、incident responseで独立保管したcheckpoint/backupと照合するまで実行しない。
