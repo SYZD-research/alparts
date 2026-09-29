@@ -4,7 +4,7 @@ import { describe, it } from 'node:test';
 import jwt from 'jsonwebtoken';
 
 process.env.NODE_ENV = 'test';
-process.env.DATABASE_URL ||= 'postgresql://alparts:test@127.0.0.1:1/alparts';
+process.env.DATABASE_URL ||= 'postgres://test:test@127.0.0.1:5432/alparts_test';
 process.env.MINIO_ACCESS_KEY ||= 'test-access-key';
 process.env.MINIO_SECRET_KEY ||= 'test-secret-key';
 process.env.JWT_SECRET = 'session-test-only-jwt-secret-at-least-32-bytes';
