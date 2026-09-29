@@ -4,6 +4,8 @@ import { useDraftStore } from '../../stores/draft.store';
 import { useOutboxStore } from '../../stores/outbox.store';
 import { useAttachmentStore } from '../../stores/attachment.store';
 import { useWorkspaceStore } from '../../stores/workspace.store';
+import { usePresenceStore } from '../../stores/presence.store';
+import { memberStatus } from '../../stores/presence-model';
 import { getSocket } from '../../services/socket';
 import { MAX_FILE_SIZE, MAX_MESSAGE_LENGTH } from '@alparts/shared';
 import { ATTACHMENT_MAX_COUNT_PER_MESSAGE } from '../../services/attachment-crypto.service';
@@ -78,6 +80,7 @@ export function MessageInput({ channelId, sendDisabled = false }: Props) {
   const cancelUpload = useAttachmentStore((state) => state.cancelUpload);
   const dismissUpload = useAttachmentStore((state) => state.dismissUpload);
   const workspaceMembers = useWorkspaceStore((state) => state.members);
+  const presenceStatuses = usePresenceStore((state) => state.statuses);
   const typingTimeout = useRef<ReturnType<typeof setTimeout>>();
   const lastTypingSent = useRef<number>(0);
   const dragDepth = useRef(0);
@@ -637,11 +640,14 @@ export function MessageInput({ channelId, sendDisabled = false }: Props) {
                             {candidate.displayName.slice(0, 1).toUpperCase()}
                           </span>
                           <span className="min-w-0 flex-1 truncate font-medium">@{candidate.displayName}</span>
-                          {workspaceMember?.user.status && (
-                            <span className="shrink-0 text-[11px] opacity-70">
-                              {workspaceMember.user.status === 'online' ? 'オンライン' : workspaceMember.user.status === 'offline' ? 'オフライン' : '退席中'}
-                            </span>
-                          )}
+                          {workspaceMember && (() => {
+                            const status = memberStatus(workspaceMember, presenceStatuses);
+                            return (
+                              <span className="shrink-0 text-[11px] opacity-70">
+                                {status === 'online' ? 'オンライン' : status === 'offline' ? 'オフライン' : '退席中'}
+                              </span>
+                            );
+                          })()}
                         </button>
                       </li>
                     );

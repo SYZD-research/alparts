@@ -15,6 +15,7 @@ import {
   devices,
   dmConversations,
   dmMembers,
+  profileFlags,
 } from '../db/schema.js';
 import { eq, and, inArray } from 'drizzle-orm';
 import { sql } from 'drizzle-orm';
@@ -168,10 +169,17 @@ export async function getWorkspaceMembers(workspaceId: string) {
     assignmentsByMember.set(assignment.memberId, current);
   }
 
+  const memberUserIds = members.map((m: any) => m.userId as string);
+  const flaggedUserIds = new Set(memberUserIds.length === 0 ? [] : (await db.select({ userId: profileFlags.userId })
+    .from(profileFlags)
+    .where(and(eq(profileFlags.workspaceId, workspaceId), inArray(profileFlags.userId, memberUserIds)))
+    .limit(MAX_WORKSPACE_MEMBERS + 1) as Array<{ userId: string }>).map((row) => row.userId));
+
   return members.map((m: any) => ({
     id: m.id,
     workspaceId: m.workspaceId,
     userId: m.userId,
+    profileFlagged: flaggedUserIds.has(m.userId),
     user: {
       id: m.user.id,
       displayName: m.user.displayName,

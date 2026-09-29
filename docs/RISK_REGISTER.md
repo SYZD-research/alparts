@@ -1,6 +1,6 @@
 # Risk register
 
-Last reviewed: 2026-09-16. Priority follows the requested P0/P1/P2 scheme; severity is impact if realized, not the severity originally assigned by a scanner. “Mitigated” does not mean eliminated. No open item is implicitly risk-accepted.
+Last reviewed: 2026-09-29. Priority follows the requested P0/P1/P2 scheme; severity is impact if realized, not the severity originally assigned by a scanner. “Mitigated” does not mean eliminated. No open item is implicitly risk-accepted.
 
 | ID / priority | Risk | Severity | Likelihood | Impact / affected component | Remediation | Status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -50,6 +50,8 @@ Last reviewed: 2026-09-16. Priority follows the requested P0/P1/P2 scheme; sever
 | R-044 / P1 | All endpoints and recovery material lost, or history never backed up | High | Medium | unrecoverable old ciphertext | encrypted user-code archive, replacement approval and future-only fresh start implemented; verify backups before discarding a device; no organization escrow | **Mitigated when configured; intentional residual boundary** |
 | R-045 / P2 | Worst-case replacement-device reconciliation can scan 50 workspaces × 300 channels in one transaction | Medium | Low at intended small-team scale | enrollment latency/statement timeout and temporary key-lock contention; device/key service | durable per-workspace bounds, stable lock order, set-based abort and transaction rollback contain correctness; add worst-case load benchmark and consider restart-safe batched reconciliation before raising scale | **Bounded but open capacity evidence** |
 | R-046 / P1 | Message/user-state/upload metadata mutations could bypass the checkpoint-failure latch | High | Medium before fix | authoritative writes could continue after audit evidence became unavailable; message, user-state and file services | message/reaction/pin/preference/bookmark atomically audited; read cursor and provisional chunk/cleanup writes share the same bounded admission; external object effects preflight; failure injection proves the guarded operation body never runs | **Closed for one process; advisory presence/activity explicitly excluded** |
+| R-047 / P2 | Audit checkpoint replay across process restart (formal model M5 AU4b) | Medium | Low | A DB owner plus checkpoint-file writer could truncate the chain and replay an older signed file after restart without the key. | A required durable head in a separate object-store bucket now survives restart; local/remote anchors and the database are checked, with no automatic provisioning on loss. Keep bucket authority separate and exclude it from ordinary restores. Simultaneous rollback of ALL stores, or full server/object-store compromise, remains AU-L4 / R-006. | **Closed for DB + checkpoint-file capability; deployment must provision and protect the independent head** |
+| R-048 / P2 | A warned member who can read the audit log sees who warned them (formal model M6 A7) | Low | Low | `profile.flag` audit rows name the actor; the profile screens do not. Any role with VIEW_AUDIT_LOG sees them, including a warned lower-ranked member | Audit-log access is itself a position of trust; if that trust is misplaced, the owner or a senior manager removes the permission | **Accepted by the owner; documented** |
 
 ## Deep Security Scan mapping
 

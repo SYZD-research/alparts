@@ -215,6 +215,10 @@ function sendOverrideError(res: Response, error: any): boolean {
     res.status(404).json({ error: 'NOT_FOUND', message: 'Permission override target not found', statusCode: 404 });
     return true;
   }
+  if (error?.message === 'MEMBER_HIERARCHY') {
+    res.status(403).json({ error: 'MEMBER_HIERARCHY', message: 'Change would reduce a higher-ranked member', statusCode: 403 });
+    return true;
+  }
   if (error?.message === 'NOT_AUTHORIZED') {
     res.status(403).json({ error: 'FORBIDDEN', message: 'Insufficient permissions', statusCode: 403 });
     return true;

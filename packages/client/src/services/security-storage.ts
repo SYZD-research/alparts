@@ -57,7 +57,7 @@ export async function writeSecurityState(
   capturedScope?: ChannelKeyScopeToken,
 ): Promise<void> {
   const channelId =
-    /^(?:mls-package|mls-proposal|mls-key|mls-head|recovered|recovery-backup-pending|recovery-sent):([a-f0-9-]{36})(?::|$)/.exec(
+    /^(?:mls-package|mls-proposal|mls-key|mls-head|key-commitment|recovered|recovery-backup-pending|recovery-sent):([a-f0-9-]{36})(?::|$)/.exec(
       name,
     )?.[1];
   const scope = capturedScope ?? (channelId ? channelKeyScopes.capture(channelId) : undefined);
@@ -121,6 +121,19 @@ export async function deleteChannelSecurityState(
       if (name.split(':')[1] === channelId) await cursor.delete();
     }
     await tx.done;
+  } finally {
+    db.close();
+  }
+}
+
+/** Names (without owner prefix) of this device's records that start with `prefix`. */
+export async function listSecurityStateNames(owner: SecurityOwner, prefix: string, limit: number): Promise<string[]> {
+  const db = await database();
+  try {
+    const ownerPrefix = `${owner.userId}:${owner.deviceId}:`;
+    const start = `${ownerPrefix}${prefix}`;
+    const keys = await db.getAllKeys('records', IDBKeyRange.bound(start, `${start}￿`), limit);
+    return keys.map((key) => String(key).slice(ownerPrefix.length));
   } finally {
     db.close();
   }

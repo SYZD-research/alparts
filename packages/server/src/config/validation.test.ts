@@ -1,8 +1,18 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { parseBindHost, parseBoundedInteger, parseCorsOrigins, parseVoiceIceServers } from './validation.js';
+import { parseBindHost, parseBoundedInteger, parseCorsOrigins, parseTrustedProxies, parseVoiceIceServers } from './validation.js';
 
 describe('configuration validation', () => {
+  it('accepts only literal trusted proxies and bounded ranges', () => {
+    assert.deepEqual(parseTrustedProxies(undefined, true), []);
+    assert.deepEqual(parseTrustedProxies(' 10.0.0.5 , loopback,fd00::/64,172.16.0.0/12 ', true), ['10.0.0.5', 'loopback', 'fd00::/64', '172.16.0.0/12']);
+    for (const invalid of ['*', 'true', '0.0.0.0/0', '::/0', 'uniquelocal', 'linklocal', 'proxy.example.test', '10.0.0.0/33', '10.0.0.0/08x', '10.0.0.0/8/1', '1.0.0.0/4']) {
+      assert.throws(() => parseTrustedProxies(invalid, true), /TRUSTED_PROXIES/, invalid);
+    }
+    assert.deepEqual(parseTrustedProxies('1.0.0.0/4', false), ['1.0.0.0/4']);
+    assert.throws(() => parseTrustedProxies('0.0.0.0/0', false), /TRUSTED_PROXIES/);
+  });
+
   it('binds to loopback by default and accepts only IP literals', () => {
     assert.equal(parseBindHost(undefined), '127.0.0.1');
     for (const valid of ['127.0.0.1', '0.0.0.0', '::1', '::']) {

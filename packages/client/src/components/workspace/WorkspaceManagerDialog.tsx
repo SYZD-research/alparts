@@ -10,8 +10,9 @@ import { EffectivePermissionsPanel } from './EffectivePermissionsPanel';
 import { InvitationManager } from './InvitationManager';
 import { RoleManager } from './RoleManager';
 import { AuditLogPanel } from './AuditLogPanel';
+import { ProfileFlagsPanel } from './ProfileFlagsPanel';
 
-type ManagementTab = 'accept' | 'invitations' | 'roles' | 'permissions' | 'audit';
+type ManagementTab = 'accept' | 'invitations' | 'roles' | 'permissions' | 'profiles' | 'audit';
 
 interface TabDefinition {
   id: ManagementTab;
@@ -44,6 +45,7 @@ export function WorkspaceManagerDialog() {
     ...(canManageMembers ? [{ id: 'invitations' as const, label: '招待を管理' }] : []),
     { id: 'roles', label: 'ロール' },
     { id: 'permissions', label: '権限の理由' },
+    ...(canManageMembers ? [{ id: 'profiles' as const, label: 'プロフィールの警告' }] : []),
     ...(canViewAudit ? [{ id: 'audit' as const, label: '操作履歴' }] : []),
   ], [canManageMembers, canViewAudit]);
 
@@ -166,6 +168,9 @@ export function WorkspaceManagerDialog() {
                 members={members}
                 canInspectOthers={canManageRoles}
               />
+            )}
+            {activeTab === 'profiles' && canManageMembers && (
+              <ProfileFlagsPanel workspaceId={activeWorkspaceId} />
             )}
             {activeTab === 'audit' && canViewAudit && (
               <AuditLogPanel workspaceId={activeWorkspaceId} canView={canViewAudit} />

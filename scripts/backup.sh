@@ -119,7 +119,13 @@ pg_dump_version="${pg_dump_version%%$'\n'*}"
 
 backup_log 'Copying encrypted MinIO object bytes'
 write_mc_object_listing "$MC_CONFIG_DIR" "source/$MINIO_BUCKET" "$STAGING_DIR/source-object-listing.tsv"
-mc_with_config "$MC_CONFIG_DIR" mirror "source/$MINIO_BUCKET" "$OBJECT_DIR" >/dev/null
+# Copy only keys that already passed validation in the listing above. A key
+# added while copying can therefore never be written to the local disk.
+while IFS=$'\t' read -r object_key _; do
+  [[ -n "$object_key" ]] || continue
+  mkdir -p -- "$OBJECT_DIR/$(dirname -- "$object_key")"
+  mc_with_config "$MC_CONFIG_DIR" cp --quiet "source/$MINIO_BUCKET/$object_key" "$OBJECT_DIR/$object_key" >/dev/null
+done < "$STAGING_DIR/source-object-listing.tsv"
 write_mc_object_listing "$MC_CONFIG_DIR" "source/$MINIO_BUCKET" "$STAGING_DIR/source-object-listing-after.tsv"
 cmp --silent "$STAGING_DIR/source-object-listing.tsv" "$STAGING_DIR/source-object-listing-after.tsv" \
   || backup_die 'Source bucket changed during the quiesced backup window'

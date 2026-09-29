@@ -104,7 +104,7 @@ export interface WorkspaceAuthorizationSnapshot {
 }
 
 export function assertValidChannelOverrideMask(value: number): void {
-  if (!Number.isSafeInteger(value) || value < 0 || (value & ~CHANNEL_SCOPED_PERMISSION_MASK) !== 0) {
+  if (!Number.isSafeInteger(value) || value < 0 || value > CHANNEL_SCOPED_PERMISSION_MASK || (value & ~CHANNEL_SCOPED_PERMISSION_MASK) !== 0) {
     throw new Error('INVALID_OVERRIDE_PERMISSIONS');
   }
 }
@@ -311,16 +311,11 @@ export function getWorkspaceAuthorizationFromSnapshot(
   };
 }
 
-export function getChannelAuthorizationFromSnapshot(
+function assignedRolesFromSnapshot(
   snapshot: WorkspaceAuthorizationSnapshot,
   userId: string,
-  channelOrId: string | SnapshotChannel,
-  options: AuthorizationEvaluationOptions = {},
-  includePermissionDetails = true,
-): ChannelAuthorization | null {
-  const channel = typeof channelOrId === 'string' ? snapshot.channelsById.get(channelOrId) : channelOrId;
-  if (!channel || channel.workspaceId !== snapshot.workspaceId || !snapshot.membersByUserId.has(userId)) return null;
-
+  options: AuthorizationEvaluationOptions,
+): any[] {
   let assignedRoles = (snapshot.roleIdsByUserId.get(userId) ?? [])
     .flatMap((roleId) => {
       const role = snapshot.rolesById.get(roleId);
@@ -334,7 +329,65 @@ export function getChannelAuthorizationFromSnapshot(
       if (source) assignedRoles.push({ ...source, permissions: mutation.permissions ?? source.permissions });
     }
   }
-  assignedRoles.sort((left: any, right: any) => right.position - left.position || left.id.localeCompare(right.id));
+  return assignedRoles.sort((left: any, right: any) => right.position - left.position || left.id.localeCompare(right.id));
+}
+
+function memberRank(snapshot: WorkspaceAuthorizationSnapshot, userId: string): number {
+  if (snapshot.ownerId === userId) return Number.POSITIVE_INFINITY;
+  return Math.max(-1, ...assignedRolesFromSnapshot(snapshot, userId, {}).map((role: any) => role.position));
+}
+
+function isChannelViewer(authorization: ChannelAuthorization | null, channel: SnapshotChannel): boolean {
+  return isVisibleChannelAuthorization(authorization)
+    && (channel.type !== 'voice' || (authorization.permissions & Permissions.CONNECT_VOICE) !== 0);
+}
+
+/**
+ * Hierarchy protection for authorization and channel changes: a non-owner actor must
+ * not reduce the workspace permissions, channel permissions or channel
+ * visibility of any member ranked at or above the actor (the same boundary
+ * as member removal and role removal). `after` is the post-change snapshot,
+ * or the same snapshot with a simulated mutation in `afterOptions`.
+ */
+export function assertNoSuperiorAccessLoss(
+  before: WorkspaceAuthorizationSnapshot,
+  after: WorkspaceAuthorizationSnapshot,
+  actorId: string,
+  afterOptions: AuthorizationEvaluationOptions = {},
+): void {
+  if (before.ownerId === actorId) return;
+  const actorRank = memberRank(before, actorId);
+  for (const userId of before.membersByUserId.keys()) {
+    if (userId === actorId || memberRank(before, userId) < actorRank) continue;
+    if (!after.membersByUserId.has(userId)) throw new Error('MEMBER_HIERARCHY');
+    const workspaceBefore = assignedRolesFromSnapshot(before, userId, {}).reduce((mask, role) => mask | role.permissions, 0);
+    const workspaceAfter = assignedRolesFromSnapshot(after, userId, afterOptions).reduce((mask, role) => mask | role.permissions, 0);
+    if ((workspaceBefore & ~workspaceAfter) !== 0) throw new Error('MEMBER_HIERARCHY');
+    for (const channel of before.channels) {
+      const was = getChannelAuthorizationFromSnapshot(before, userId, channel, {}, false);
+      const nextChannel = after.channelsById.get(channel.id);
+      const now = nextChannel ? getChannelAuthorizationFromSnapshot(after, userId, nextChannel, afterOptions, false) : null;
+      if (!was) continue;
+      if (
+        !now
+        || (was.permissions & ~now.permissions) !== 0
+        || (isChannelViewer(was, channel) && !isChannelViewer(now, nextChannel!))
+      ) throw new Error('MEMBER_HIERARCHY');
+    }
+  }
+}
+
+export function getChannelAuthorizationFromSnapshot(
+  snapshot: WorkspaceAuthorizationSnapshot,
+  userId: string,
+  channelOrId: string | SnapshotChannel,
+  options: AuthorizationEvaluationOptions = {},
+  includePermissionDetails = true,
+): ChannelAuthorization | null {
+  const channel = typeof channelOrId === 'string' ? snapshot.channelsById.get(channelOrId) : channelOrId;
+  if (!channel || channel.workspaceId !== snapshot.workspaceId || !snapshot.membersByUserId.has(userId)) return null;
+
+  const assignedRoles = assignedRolesFromSnapshot(snapshot, userId, options);
   const roleIds = assignedRoles.map((role: any) => role.id);
   const roleIdSet = new Set(roleIds);
   const workspacePermissions = assignedRoles.reduce((mask: number, role: any) => mask | role.permissions, 0);
@@ -540,11 +593,9 @@ export function captureChannelViewersFromSnapshot(
   const result = new Map<string, string[]>();
   const userIds = [...snapshot.membersByUserId.keys()].sort();
   for (const channel of snapshot.channels) {
-    const viewers = userIds.filter((userId) => {
-      const authorization = getChannelAuthorizationFromSnapshot(snapshot, userId, channel, options, false);
-      return isVisibleChannelAuthorization(authorization)
-        && (channel.type !== 'voice' || (authorization.permissions & Permissions.CONNECT_VOICE) !== 0);
-    });
+    const viewers = userIds.filter((userId) => (
+      isChannelViewer(getChannelAuthorizationFromSnapshot(snapshot, userId, channel, options, false), channel)
+    ));
     result.set(channel.id, viewers);
   }
   return result;

@@ -19,6 +19,8 @@ import {
 } from '../security/limits.js';
 import {
   applyViewerEffectsAndRotation,
+  assertNoSuperiorAccessLoss,
+  captureChannelViewersFromSnapshot,
   captureChannelViewersFromStore,
   getChannelAuthorizationFromSnapshot,
   getChannelAuthorizationFromStore,
@@ -141,7 +143,9 @@ export async function updateChannel(channelId: string, updates: { name?: string;
     assertGenericChannel(existing);
     await assertChannelManager(transaction, existing, actorId);
     if (updates.categoryId) await assertCategoryWorkspace(transaction, updates.categoryId, existing.workspaceId);
-    const before = await captureChannelViewersFromStore(transaction, existing.workspaceId, [channelId]);
+    const snapshotBefore = await loadWorkspaceAuthorizationSnapshot(transaction, existing.workspaceId, [channelId]);
+    if (!snapshotBefore) throw new Error('CHANNEL_NOT_FOUND');
+    const before = captureChannelViewersFromSnapshot(snapshotBefore);
     const privacyChanged = updates.isPrivate !== undefined && updates.isPrivate !== existing.isPrivate;
     if (privacyChanged) {
       await transaction.delete(channelMembers).where(eq(channelMembers.channelId, channelId));
@@ -154,7 +158,10 @@ export async function updateChannel(channelId: string, updates: { name?: string;
       ...updates,
     }).where(and(eq(channels.id, channelId), eq(channels.workspaceId, existing.workspaceId))).returning();
     if (!updated) throw new Error('CHANNEL_NOT_FOUND');
-    const after = await captureChannelViewersFromStore(transaction, existing.workspaceId, [channelId]);
+    const snapshotAfter = await loadWorkspaceAuthorizationSnapshot(transaction, existing.workspaceId, [channelId]);
+    if (!snapshotAfter) throw new Error('CHANNEL_NOT_FOUND');
+    assertNoSuperiorAccessLoss(snapshotBefore, snapshotAfter, actorId);
+    const after = captureChannelViewersFromSnapshot(snapshotAfter);
     const roomEffects = await applyViewerEffectsAndRotation(transaction, before, after);
     const effect = roomEffects[0];
     return {
@@ -204,6 +211,13 @@ export async function deleteChannel(channelId: string, actorId: string) {
       if (!existing) throw new Error('CHANNEL_NOT_FOUND');
       assertGenericChannel(existing);
       await assertChannelManager(transaction, existing, actorId);
+      const snapshotBefore = await loadWorkspaceAuthorizationSnapshot(transaction, existing.workspaceId, [channelId]);
+      if (!snapshotBefore) throw new Error('CHANNEL_NOT_FOUND');
+      // Evaluate removal before touching dependants, so hierarchy rejection is
+      // independent of whether foreign keys would also prevent deletion.
+      assertNoSuperiorAccessLoss(snapshotBefore, {
+        ...snapshotBefore, channels: [], channelsById: new Map(),
+      }, actorId);
       const viewerUserIds = await getChannelViewerIdsFromStore(transaction, existing);
       // Explicit private-channel grants are part of the channel itself. Other
       // durable dependants (messages, keys, uploads, DM records) deliberately
@@ -324,13 +338,18 @@ export async function deleteCategory(workspaceId: string, categoryId: string, ac
       await transaction.execute(sql`select pg_advisory_xact_lock(hashtext(${channel.id})::bigint)`);
     }
     const affectedChannelIds = affectedChannels.map((channel: { id: string }) => channel.id);
-    const before = await captureChannelViewersFromStore(transaction, workspaceId, affectedChannelIds);
+    const snapshotBefore = await loadWorkspaceAuthorizationSnapshot(transaction, workspaceId, affectedChannelIds);
+    if (!snapshotBefore) throw new Error('CATEGORY_NOT_FOUND');
+    const before = captureChannelViewersFromSnapshot(snapshotBefore);
     await transaction.update(channels)
       .set({ categoryId: null })
       .where(and(eq(channels.workspaceId, workspaceId), eq(channels.categoryId, categoryId)));
     await transaction.delete(categories)
       .where(and(eq(categories.id, categoryId), eq(categories.workspaceId, workspaceId)));
-    const after = await captureChannelViewersFromStore(transaction, workspaceId, affectedChannelIds);
+    const snapshotAfter = await loadWorkspaceAuthorizationSnapshot(transaction, workspaceId, affectedChannelIds);
+    if (!snapshotAfter) throw new Error('CATEGORY_NOT_FOUND');
+    assertNoSuperiorAccessLoss(snapshotBefore, snapshotAfter, actorId);
+    const after = captureChannelViewersFromSnapshot(snapshotAfter);
     const roomEffects = await applyViewerEffectsAndRotation(transaction, before, after);
     return { existing, movedChannelIds: affectedChannelIds, roomEffects };
   }, (committed) => ({
@@ -432,12 +451,19 @@ export async function removeChannelMember(channelId: string, userId: string, act
     });
     if (explicitMembers.length > MAX_WORKSPACE_MEMBERS) throw new Error('PRIVATE_MEMBERSHIP_INVARIANT_EXCEEDED');
     if (explicitMembers.length <= 1) throw new Error('LAST_PRIVATE_MEMBER');
-    const before = await captureChannelViewersFromStore(transaction, channel.workspaceId, [channelId]);
+    const snapshotBefore = await loadWorkspaceAuthorizationSnapshot(transaction, channel.workspaceId, [channelId]);
+    if (!snapshotBefore) throw new Error('PRIVATE_CHANNEL_NOT_FOUND');
+    const before = captureChannelViewersFromSnapshot(snapshotBefore);
     await transaction.delete(channelMembers).where(and(
       eq(channelMembers.channelId, channelId),
       eq(channelMembers.userId, userId),
     ));
-    const after = await captureChannelViewersFromStore(transaction, channel.workspaceId, [channelId]);
+    const snapshotAfter = await loadWorkspaceAuthorizationSnapshot(transaction, channel.workspaceId, [channelId]);
+    if (!snapshotAfter) throw new Error('PRIVATE_CHANNEL_NOT_FOUND');
+    // Same boundary as role and override changes: only a higher-ranked member
+    // (or the owner, or the member themself) may remove someone.
+    assertNoSuperiorAccessLoss(snapshotBefore, snapshotAfter, actorId);
+    const after = captureChannelViewersFromSnapshot(snapshotAfter);
     const roomEffects = await applyViewerEffectsAndRotation(transaction, before, after);
     return {
       workspaceId: channel.workspaceId,

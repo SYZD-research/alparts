@@ -222,6 +222,9 @@ export async function restoreDevice(
           ),
         )
         .for('update');
+      // Approval is one-way. A replay against an approved device must not
+      // append further directory events.
+      if (device?.approvedAt) return { dirtyWorkspaceIds: [], alreadyApproved: true };
       const recovery = await tx.query.historyRecovery.findFirst({
         where: and(
           eq(historyRecovery.userId, userId),
@@ -263,13 +266,15 @@ export async function restoreDevice(
       await appendDirectoryEvent(tx, userId, event);
       return {
         dirtyWorkspaceIds: await abortPendingEpochsForNewDevice(tx, userId),
+        alreadyApproved: false,
       };
     },
-    () => ({
+    (result) => ({
       actorId: userId,
       action: 'recovery.device',
       targetType: 'user',
       targetId: userId,
+      ...(result.alreadyApproved ? { details: { alreadyApproved: true } } : {}),
     }),
   );
 }

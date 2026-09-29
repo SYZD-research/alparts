@@ -1,6 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { matchesPasswordHash, passwordSalt, protectPasswordHash } from './password-pepper.js';
-import { createRequire } from 'node:module';
+import { comparePasswordHash, passwordSalt, protectPasswordHash, type PasswordHashMatch } from './password-pepper.js';
 import { Worker } from 'node:worker_threads';
 import { BoundedAsyncGate } from './bounded-async-gate.js';
 import {
@@ -40,38 +39,11 @@ interface PasswordWorkerSlot {
   publicWork: boolean;
 }
 
-const bcryptModulePath = createRequire(import.meta.url).resolve('bcryptjs');
-const workerSource = String.raw`
-  'use strict';
-  const { parentPort, workerData } = require('node:worker_threads');
-  const bcrypt = require(workerData.bcryptModulePath);
-  parentPort.on('message', (task) => {
-    try {
-      if (!task || !Number.isSafeInteger(task.id) || typeof task.password !== 'string') {
-        throw new Error('INVALID_PASSWORD_TASK');
-      }
-      const passwordBytes = Buffer.byteLength(task.password, 'utf8');
-      if (passwordBytes < 1 || passwordBytes > 72) throw new Error('INVALID_PASSWORD_TASK');
-      let value;
-      if (task.kind === 'hash') {
-        if (!Number.isSafeInteger(task.rounds) || task.rounds < 12 || task.rounds > 15) {
-          throw new Error('INVALID_PASSWORD_TASK');
-        }
-        value = bcrypt.hashSync(task.password, task.rounds);
-      } else if (task.kind === 'derive') {
-        if (typeof task.salt !== 'string' || !/^\$2[aby]\$(12|13|14|15)\$[./A-Za-z0-9]{22}$/.test(task.salt)) {
-          throw new Error('INVALID_PASSWORD_TASK');
-        }
-        value = bcrypt.hashSync(task.password, task.salt);
-      } else {
-        throw new Error('INVALID_PASSWORD_TASK');
-      }
-      parentPort.postMessage({ id: task.id, ok: true, value });
-    } catch {
-      parentPort.postMessage({ id: task && task.id, ok: false });
-    }
-  });
-`;
+// Source runs under tsx; the compiled build ships the sibling .js file.
+const workerUrl = new URL(
+  import.meta.url.endsWith('.ts') ? './password-worker.ts' : './password-worker.js',
+  import.meta.url,
+);
 
 // Public work holds admission until its audit commit finishes. Consequently at
 // most two unauthenticated requests can occupy the global audit queue.
@@ -95,8 +67,13 @@ export function hashPassword(password: string, rounds: number): Promise<string> 
   return runPasswordWork(async () => protectPasswordHash(String(await submitPasswordTask({ kind: 'hash', password, rounds }))));
 }
 
-export function verifyPassword(password: string, hash: string): Promise<boolean> {
-  return runPasswordWork(async () => matchesPasswordHash(hash, String(await submitPasswordTask({ kind: 'derive', password, salt: passwordSalt(hash) }))));
+export async function verifyPassword(password: string, hash: string): Promise<boolean> {
+  return (await verifyPasswordForUpgrade(password, hash)).valid;
+}
+
+/** Like verifyPassword, but also returns the rewrapped hash after a pepper rotation. */
+export function verifyPasswordForUpgrade(password: string, hash: string): Promise<PasswordHashMatch> {
+  return runPasswordWork(async () => comparePasswordHash(hash, String(await submitPasswordTask({ kind: 'derive', password, salt: passwordSalt(hash) }))));
 }
 
 export function passwordWorkSnapshot() {
@@ -150,11 +127,7 @@ function submitPasswordTask(task: PasswordTask): Promise<string | boolean> {
 }
 
 function createPasswordWorker(publicWork: boolean): PasswordWorkerSlot {
-  const worker = new Worker(workerSource, {
-    eval: true,
-    name: 'alparts-password-worker',
-    workerData: { bcryptModulePath },
-  });
+  const worker = new Worker(workerUrl, { name: 'alparts-password-worker' });
   const slot: PasswordWorkerSlot = { worker, active: null, failed: false, publicWork };
   worker.on('message', (reply: WorkerReply) => {
     const active = slot.active;
