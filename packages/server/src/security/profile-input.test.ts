@@ -30,6 +30,42 @@ const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const png = (...chunks: Buffer[]) => Buffer.concat([signature, ...chunks]);
 
 describe('avatar PNG sanitizer', () => {
+  it('decodes all five filters and canonicalizes opaque RGB/RGBA, including edges and byte wrap', () => {
+    const expected = Buffer.alloc(AVATAR_SIZE * (1 + AVATAR_SIZE * 4));
+    for (let y = 0; y < AVATAR_SIZE; y++) {
+      for (let x = 0; x < AVATAR_SIZE; x++) {
+        expected.set([(x * 73 + y * 17) & 255, (x * 19 + y * 137) & 255,
+          (x * 251 + y * 83) & 255, 255], y * 1025 + 1 + x * 4);
+      }
+    }
+    const canonical = png(ihdr(), chunk('IDAT', deflateSync(expected, { level: 9 })), chunk('IEND'));
+    for (const channels of [3, 4]) {
+      for (const mode of [0, 1, 2, 3, 4, 'mixed'] as const) {
+        const stride = AVATAR_SIZE * channels;
+        const raw = Buffer.alloc(AVATAR_SIZE * (1 + stride));
+        const sample = (x: number, y: number) => x < 0 || y < 0 ? 0
+          : expected[y * 1025 + 1 + Math.floor(x / channels) * 4 + x % channels];
+        for (let y = 0; y < AVATAR_SIZE; y++) {
+          const filter = mode === 'mixed' ? y % 5 : mode;
+          raw[y * (stride + 1)] = filter;
+          for (let x = 0; x < stride; x++) {
+            const a = sample(x - channels, y), b = sample(x, y - 1), c = sample(x - channels, y - 1);
+            // Independent encoder: rank candidate distances with PNG's tie
+            // order. The expected decoded bytes come directly from coordinates.
+            const paeth = [a, b, c].map((v, order) => ({ v, order, distance: Math.abs(a + b - c - v) }))
+              .sort((l, r) => l.distance - r.distance || l.order - r.order)[0].v;
+            const prediction = [0, a, b, Math.floor((a + b) / 2), paeth][filter];
+            raw[y * (stride + 1) + 1 + x] = (sample(x, y) - prediction) & 255;
+          }
+        }
+        const input = png(ihdr(AVATAR_SIZE, AVATAR_SIZE, channels === 4 ? 6 : 2),
+          chunk('IDAT', deflateSync(raw)), chunk('IEND'));
+        assert.deepEqual(sanitizeAvatarPng(input), canonical, `${channels} channels, filter ${mode}`);
+      }
+    }
+    assert.deepEqual(sanitizeAvatarPng(canonical), canonical);
+  });
+
   it('keeps a valid 256x256 image and drops ancillary chunks', () => {
     const idat = pixels();
     const input = png(ihdr(), chunk('tEXt', Buffer.from('Comment\0secret location')), chunk('IDAT', idat.subarray(0, 100)),

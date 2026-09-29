@@ -27,7 +27,7 @@ USED = [VIEW, SEND, MR, MC, KICK]
 ALL_USED = sum(USED)
 SCOPED = [VIEW, SEND]
 STANDARD = {'Owner', 'Administrator', 'SecurityManager', 'Member', 'Guest', 'Integration'}
-TARGETS = [('category', 'k1'), ('channel', 'c1'), ('channel', 'c2')]
+TARGETS = [('category', 'k1'), ('category', 'k2'), ('channel', 'c1'), ('channel', 'c2')]
 
 
 def subsets(bits):
@@ -42,16 +42,19 @@ class State:
     cat: tuple              # ((category, role, allow, deny), ...)
     chan: tuple             # ((channel, role, allow, deny), ...)
     private: tuple = ('A', 'M', 'O')   # explicit members of private channel c2
+    private_c1: tuple = ()
+    layout: tuple = (('c1', 'k1', False), ('c2', 'k1', True))
+    categories: tuple = ('k1', 'k2')
 
     def workspace(self) -> Workspace:
         return Workspace(
             owner='O',
             roles={n: Role(n, p, pos) for n, p, pos in self.roles},
             members={u: frozenset(rs) for u, rs in self.members},
-            channels={'c1': Channel('c1', 'k1'), 'c2': Channel('c2', 'k1', private=True)},
+            channels={c: Channel(c, category, private=private) for c, category, private in self.layout},
             category_overrides={(t, r): (a, d) for t, r, a, d in self.cat},
             channel_overrides={(t, r): (a, d) for t, r, a, d in self.chan},
-            private_members={'c2': frozenset(self.private)},
+            private_members={'c1': frozenset(self.private_c1), 'c2': frozenset(self.private)},
         )
 
 
@@ -122,11 +125,15 @@ def _transitions(state: State, unassign_rank_check: bool = True):
         # channel needs channel-level MANAGE_CHANNELS on a visible channel)
         for kind, target in TARGETS:
             if kind == 'category':
+                if target not in state.categories:
+                    continue
                 if (perms & (VIEW | MC)) != (VIEW | MC):
                     continue
                 authority = perms
                 current_table = {(t, r): (a, d) for t, r, a, d in state.cat}
             else:
+                if target not in ws.channels:
+                    continue
                 cm = channel_mask(ws, actor, target)
                 if not visible(ws, actor, target) or not cm & MC:
                     continue
@@ -156,10 +163,30 @@ def _transitions(state: State, unassign_rank_check: bool = True):
         # remove a private channel member (channel.service removeChannelMember):
         # channel-level MANAGE_CHANNELS on the visible private channel, at least
         # one explicit member must remain
-        if visible(ws, actor, 'c2') and (channel_mask(ws, actor, 'c2') or 0) & MC and len(state.private) > 1:
-            for user in state.private:
-                yield actor, f'removePrivateMember({user})', replace(
-                    state, private=tuple(u for u in state.private if u != user))
+        for channel, category, private in state.layout:
+            if not visible(ws, actor, channel) or not (channel_mask(ws, actor, channel) or 0) & MC:
+                continue
+            field = 'private' if channel == 'c2' else 'private_c1'
+            members = getattr(state, field)
+            if private and len(members) > 1:
+                for user in members:
+                    yield actor, f'removePrivateMember({channel}, {user})', replace(
+                        state, **{field: tuple(u for u in members if u != user)})
+            layout = tuple((c, cat, not p if c == channel else p) for c, cat, p in state.layout)
+            yield actor, f'privacy({channel}, {not private})', replace(
+                state, layout=layout, **{field: (actor,) if not private else ()})
+            for destination in (None, *state.categories):
+                if destination != category:
+                    layout = tuple((c, destination if c == channel else cat, p) for c, cat, p in state.layout)
+                    yield actor, f'moveChannel({channel}, {destination})', replace(state, layout=layout)
+            yield actor, f'deleteChannel({channel})', replace(
+                state, layout=tuple(row for row in state.layout if row[0] != channel))
+        if (perms & (VIEW | MC)) == (VIEW | MC):
+            for category in state.categories:
+                yield actor, f'deleteCategory({category})', replace(
+                    state, categories=tuple(c for c in state.categories if c != category),
+                    layout=tuple((c, None if cat == category else cat, p) for c, cat, p in state.layout),
+                    cat=tuple(row for row in state.cat if row[0] != category))
 
         # kick: KICK_MEMBERS and strictly higher rank (assertMemberRemovalAuthorized)
         if perms & KICK:
@@ -197,11 +224,11 @@ def check_transition(before: Workspace, after: Workspace, actor: str):
         if top_a > top_b and top_a >= actor_top:
             violations.append(('H1', f'{user} rank rose to {top_a} >= {actor} ({actor_top})'))
         for channel, (mask_b, vis_b) in chans_b.items():
-            mask_a, vis_a = chans_a[channel]
+            mask_a, vis_a = chans_a.get(channel, (0, False))
             gained = mask_a & ~mask_b
             if gained & ~(actor_perms | ws_b):
                 violations.append(('H1', f'{user} gained {names(gained)} on {channel}'))
-            lost = (mask_b & ~mask_a) or (vis_b and not vis_a)
+            lost = channel not in chans_a or (mask_b & ~mask_a) or (vis_b and not vis_a)
             if lost and superior:
                 violations.append(('H2', f'{user} (rank {top_b}) lost {names(mask_b & ~mask_a)}{" and visibility" if vis_b and not vis_a else ""} on {channel}'))
             if lost and user == before.owner:
@@ -215,12 +242,12 @@ def check_transition(before: Workspace, after: Workspace, actor: str):
 
 # Operations checked by assertNoSuperiorAccessLoss (authorization.service.ts).
 GUARDED = {'updateRole', 'assign', 'unassign', 'categoryOverride', 'channelOverride', 'deleteOverride',
-           'removePrivateMember'}
+           'removePrivateMember', 'privacy', 'moveChannel', 'deleteChannel', 'deleteCategory'}
 
 
-def explore(depth: int, unassign_rank_check: bool = True, superior_guard: bool = True, **focus):
-    seen = {INITIAL: None}
-    queue = deque([(INITIAL, 0)])
+def explore(depth: int, unassign_rank_check: bool = True, superior_guard: bool = True, initial=INITIAL, **focus):
+    seen = {initial: None}
+    queue = deque([(initial, 0)])
     found = {}          # (property, operation kind) -> (trace, message)
     transitions_checked = 0
     while queue:
@@ -286,6 +313,19 @@ def run(depth: int = 2) -> None:
            any(k[0] == 'H2' and k[1] not in ('unassign', 'kick', 'removePrivateMember') for k in unguarded))
     record('M2', 'H2d-ctl', 'without the guard, a lower channel manager removes a superior from a private channel', 'CONTROL',
            any(k == ('H2', 'removePrivateMember') for k in unguarded))
+    for operation in ('privacy', 'moveChannel', 'deleteChannel'):
+        record('M2', f'H2-{operation}-ctl', f'without the guard, {operation} can reduce superior access', 'CONTROL',
+               ('H2', operation) in unguarded)
+    # Distinct initial family: the superior gets a bit only from the category.
+    # The ordinary initial roles already contain every SCOPED bit, so deleting
+    # a category there cannot exercise loss of a category-only grant.
+    category_grant = replace(INITIAL, cat=(('k1', 'Administrator', PERM['ATTACH_FILES'], 0),))
+    guarded, _, _ = explore(1, initial=category_grant, only_ops=('deleteCategory', 'moveChannel'))
+    record('M2', 'H2-category-grant', 'moving/deleting a category preserves category-only superior grants', 'HOLDS',
+           any(k[0] == 'H2' for k in guarded))
+    weak_category, _, _ = explore(1, initial=category_grant, superior_guard=False, only_ops=('deleteCategory',))
+    record('M2', 'H2-deleteCategory-ctl', 'without the guard, deleting a category removes a superior grant', 'CONTROL',
+           ('H2', 'deleteCategory') in weak_category)
 
     weak, _, _ = explore(depth, unassign_rank_check=False, superior_guard=False)
     record('M2', 'H2a-ctl', 'without the F-P2F-040 rank check, unassign affects a superior', 'CONTROL',

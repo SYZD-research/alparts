@@ -398,8 +398,8 @@ describe('account security end to end', { skip: !enabled }, () => {
     } finally {
       await migrationClient.end();
     }
-    process.env.MINIO_ACCESS_KEY = 'account-security-test-access';
-    process.env.MINIO_SECRET_KEY = 'account-security-test-secret';
+    assert.ok(process.env.MINIO_ACCESS_KEY && process.env.MINIO_SECRET_KEY,
+      'Account integration tests require a disposable object store for the durable audit head');
     process.env.AUDIT_INTEGRITY_KEY = 'account-security-test-audit-key-32-bytes';
 process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
     process.env.JWT_SECRET = 'account-security-test-session-key-32-bytes';
@@ -407,6 +407,7 @@ process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
     auditDirectory = await mkdtemp(join(tmpdir(), 'alparts-account-security-'));
     process.env.AUDIT_CHECKPOINT_PATH = join(auditDirectory, 'checkpoint');
     process.env.AUDIT_CHECKPOINT_REQUIRED = 'true';
+    process.env.AUDIT_HEAD_OBJECT_KEY = `test-${randomUUID()}`;
     const database = await import('../db/index.js');
     closeDb = database.closeDb;
     assert.equal(await database.checkDatabaseSchema(), 20);

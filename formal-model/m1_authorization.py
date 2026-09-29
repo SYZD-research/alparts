@@ -6,7 +6,7 @@ authz.py, which conformance.py ties to the TypeScript implementation.
 """
 from __future__ import annotations
 
-from z3 import And, BitVec, BitVecVal, Bool, If, Not, Or, Solver, sat
+from z3 import And, BitVec, BitVecVal, Bool, If, Not, Or, Solver, sat, unsat
 
 from common import ALL_PERMS, CHANNEL_SCOPED, CONNECT, PERM, VIEW, names, record
 
@@ -72,7 +72,12 @@ def prove(check_id, title, expect, *assertions, member=None, show=None):
     if member is not None:
         solver.add(*member.constraints)
     solver.add(*assertions)
-    violated = solver.check() == sat
+    answer = solver.check()
+    if answer not in (sat, unsat):
+        record('M1', check_id, title, expect, False,
+               'Z3 did not decide the query: ' + solver.reason_unknown(), incomplete=True)
+        return
+    violated = answer == sat
     witness = []
     if violated and show is not None:
         model = solver.model()

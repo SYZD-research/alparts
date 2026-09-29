@@ -77,7 +77,9 @@ export function sanitizeAvatarPng(input: Buffer): Buffer {
     throw new Error('INVALID_AVATAR');
   }
   // The decompressed image must be exactly rows of (filter byte + pixels).
-  const expected = height * (1 + width * (colorType === 6 ? 4 : 3));
+  const channels = colorType === 6 ? 4 : 3;
+  const stride = 1 + width * channels;
+  const expected = height * stride;
   let pixels: Buffer;
   try {
     pixels = inflateSync(Buffer.concat(idat), { maxOutputLength: expected + 1 });
@@ -85,15 +87,44 @@ export function sanitizeAvatarPng(input: Buffer): Buffer {
     throw new Error('INVALID_AVATAR');
   }
   if (pixels.length !== expected) throw new Error('INVALID_AVATAR');
+  // Undo every PNG predictor before re-encoding. Recompressing the filtered
+  // scanlines would keep encoding differences in an otherwise identical image.
+  const canonical = Buffer.alloc(height * (1 + width * 4));
   for (let row = 0; row < height; row += 1) {
-    if (pixels[row * (expected / height)] > 4) throw new Error('INVALID_AVATAR');
+    const start = row * stride + 1;
+    const filter = pixels[start - 1];
+    if (filter > 4) throw new Error('INVALID_AVATAR');
+    for (let x = 0; x < width * channels; x += 1) {
+      const left = x >= channels ? pixels[start + x - channels] : 0;
+      const up = row > 0 ? pixels[start + x - stride] : 0;
+      const upperLeft = row > 0 && x >= channels ? pixels[start + x - stride - channels] : 0;
+      const predictor = filter === 0 ? 0 : filter === 1 ? left : filter === 2 ? up
+        : filter === 3 ? Math.floor((left + up) / 2) : paeth(left, up, upperLeft);
+      pixels[start + x] = (pixels[start + x] + predictor) & 255;
+    }
+    for (let x = 0; x < width; x += 1) {
+      const source = start + x * channels;
+      const target = row * (1 + width * 4) + 1 + x * 4;
+      pixels.copy(canonical, target, source, source + 3);
+      canonical[target + 3] = channels === 4 ? pixels[source + 3] : 255;
+    }
   }
+  const canonicalHeader = Buffer.from(header);
+  canonicalHeader[9] = 6; // Normalize opaque RGB and RGBA to the same format.
   return Buffer.concat([
     PNG_SIGNATURE,
-    pngChunk('IHDR', header),
-    pngChunk('IDAT', deflateSync(pixels, { level: 9 })),
+    pngChunk('IHDR', canonicalHeader),
+    pngChunk('IDAT', deflateSync(canonical, { level: 9 })),
     pngChunk('IEND', Buffer.alloc(0)),
   ]);
+}
+
+function paeth(left: number, up: number, upperLeft: number): number {
+  const prediction = left + up - upperLeft;
+  const a = Math.abs(prediction - left);
+  const b = Math.abs(prediction - up);
+  const c = Math.abs(prediction - upperLeft);
+  return a <= b && a <= c ? left : b <= c ? up : upperLeft;
 }
 
 function pngChunk(type: string, data: Buffer): Buffer {

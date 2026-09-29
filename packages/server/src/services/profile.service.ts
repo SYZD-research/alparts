@@ -45,6 +45,13 @@ export async function updateProfile(userId: string, input: { displayName?: strin
     return;
   }
   await auditedTransaction(async (tx) => {
+    const [locked] = await tx.select({ displayName: users.displayName, bio: users.bio })
+      .from(users).where(eq(users.id, userId)).for('update');
+    if (!locked) throw new Error('USER_NOT_FOUND');
+    // The preflight read is only an optimization. Another save and a warning
+    // can commit before this transaction acquires the row.
+    if ((input.displayName === undefined || input.displayName === locked.displayName)
+      && (bio === undefined || bio === locked.bio)) return null;
     const set: Partial<typeof users.$inferInsert> = { profileUpdatedAt: sql`now()` as unknown as Date, updatedAt: new Date() };
     if (input.displayName !== undefined) set.displayName = input.displayName;
     if (bio !== undefined) set.bio = bio;
@@ -55,8 +62,8 @@ export async function updateProfile(userId: string, input: { displayName?: strin
 }
 
 /** Uploading the picture already in use changes nothing (sanitized bytes are canonical). */
-async function isCurrentAvatar(userId: string, image: Buffer): Promise<string | null> {
-  const user = await db.query.users.findFirst({ columns: { avatarObjectKey: true, avatarUrl: true }, where: eq(users.id, userId) });
+async function isCurrentAvatar(userId: string, image: Buffer, store = db): Promise<string | null> {
+  const user = await store.query.users.findFirst({ columns: { avatarObjectKey: true, avatarUrl: true }, where: eq(users.id, userId) });
   if (!user) throw new Error('USER_NOT_FOUND');
   if (!user.avatarObjectKey || !user.avatarUrl) return null;
   try {
@@ -68,7 +75,9 @@ async function isCurrentAvatar(userId: string, image: Buffer): Promise<string | 
       if (size > MAX_AVATAR_BYTES) return null;
       chunks.push(buffer);
     }
-    return Buffer.concat(chunks).equals(image) ? user.avatarUrl : null;
+    // Previously stored avatars may use different PNG row filters. Compare
+    // canonical pixels for those too, without requiring a storage migration.
+    return sanitizeAvatarPng(Buffer.concat(chunks)).equals(image) ? user.avatarUrl : null;
   } catch {
     return null;
   }
@@ -98,10 +107,13 @@ export async function setAvatar(userId: string, upload: Buffer) {
   const objectKey = `avatars/v1/${userId}/${version}`;
   await putStoredObject(objectKey, image);
   let previousKey: string | null = null;
+  let savedUrl = avatarPath(userId, version);
   try {
-    await auditedTransaction(async (tx) => {
+    savedUrl = await auditedTransaction(async (tx) => {
       const [current] = await tx.select({ key: users.avatarObjectKey }).from(users).where(eq(users.id, userId)).for('update');
       if (!current) throw new Error('USER_NOT_FOUND');
+      const unchanged = await isCurrentAvatar(userId, image, tx as typeof db);
+      if (unchanged) return unchanged;
       previousKey = current.key;
       await tx.update(users).set({
         avatarObjectKey: objectKey,
@@ -109,7 +121,7 @@ export async function setAvatar(userId: string, upload: Buffer) {
         profileUpdatedAt: sql`now()` as unknown as Date,
         updatedAt: new Date(),
       }).where(eq(users.id, userId));
-      return null;
+      return avatarPath(userId, version);
     }, () => ({ actorId: userId, action: 'user.avatar.update', targetType: 'user', targetId: userId }));
   } catch (error) {
     // An error does not prove the commit failed (the connection can drop
@@ -124,8 +136,9 @@ export async function setAvatar(userId: string, upload: Buffer) {
     if (referenced !== undefined) await removeStoredObjectBestEffort(objectKey);
     throw error;
   }
+  if (savedUrl !== avatarPath(userId, version)) await removeStoredObjectBestEffort(objectKey);
   if (previousKey) await removeStoredObjectBestEffort(previousKey);
-  return { avatarUrl: avatarPath(userId, version) };
+  return { avatarUrl: savedUrl };
 }
 
 export async function removeAvatar(userId: string) {
@@ -136,6 +149,7 @@ export async function removeAvatar(userId: string) {
   await auditedTransaction(async (tx) => {
     const [locked] = await tx.select({ key: users.avatarObjectKey }).from(users).where(eq(users.id, userId)).for('update');
     if (!locked) throw new Error('USER_NOT_FOUND');
+    if (!locked.key) return null;
     previousKey = locked.key;
     await tx.update(users).set({ avatarObjectKey: null, avatarUrl: null, profileUpdatedAt: sql`now()` as unknown as Date, updatedAt: new Date() })
       .where(eq(users.id, userId));

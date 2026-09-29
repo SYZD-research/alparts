@@ -625,13 +625,15 @@ async function commitChannelKeyDistribution(
         || suppliedIds.size !== eligibleById.size
         || [...eligibleById.keys()].some((id) => !suppliedIds.has(id))
       ) throw new Error('INCOMPLETE_KEY_DISTRIBUTION');
-      if (!mls && channel.type !== 'dm' && (authorization.permissions & Permissions.MANAGE_CHANNELS) !== Permissions.MANAGE_CHANNELS) throw new Error('KEY_ROTATION_FORBIDDEN');
       if (activeEpoch && !freshStart) {
         if (!effectiveRotationRequired) throw new Error('KEY_ROTATION_NOT_REQUIRED');
-        if (
-          !historyRecoveryRequired
-          && !await hasAcceptedEpoch(tx, channelId, activeEpoch.version, senderDeviceId)
-        ) {
+        const hasRotationPermission = channel.type === 'dm'
+          || (authorization.permissions & Permissions.MANAGE_CHANNELS) === Permissions.MANAGE_CHANNELS;
+        // Match canRotate: an ordinary proposal needs an acknowledged holder,
+        // or a manager when all eligible holders are gone. Other viewers must
+        // use fresh-start, including its step-up and manager notification.
+        const senderAcknowledged = await hasAcceptedEpoch(tx, channelId, activeEpoch.version, senderDeviceId);
+        if (!senderAcknowledged && !(historyRecoveryRequired && hasRotationPermission)) {
           throw new Error('KEY_DISTRIBUTION_FORBIDDEN');
         }
       }

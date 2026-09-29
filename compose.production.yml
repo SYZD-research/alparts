@@ -37,6 +37,8 @@ services:
       AUDIT_INTEGRITY_KEY_FILE: /run/secrets/audit_integrity_key
       AUDIT_CHECKPOINT_PATH: /var/lib/alparts-audit/checkpoint.json
       AUDIT_CHECKPOINT_REQUIRED: "true"
+      AUDIT_HEAD_BUCKET: ${AUDIT_HEAD_BUCKET:?set a separate audit-head bucket}
+      AUDIT_HEAD_OBJECT_KEY: ${AUDIT_HEAD_OBJECT_KEY:?set a stable deployment identifier}
       # Independent audit witness. Files live in AUDIT_WITNESS_DIR (mounted as a
       # directory so an atomically replaced witness file is picked up), e.g.
       # AUDIT_WITNESS_PATH=/run/alparts-witness/witness.json

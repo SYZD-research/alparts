@@ -26,6 +26,7 @@ function productionEnvironment(overrides: NodeJS.ProcessEnv = {}): NodeJS.Proces
     PASSWORD_PEPPER: strong,
     AUDIT_CHECKPOINT_PATH: '/tmp/alparts-synthetic-checkpoint.json',
     AUDIT_CHECKPOINT_REQUIRED: 'true',
+    AUDIT_HEAD_OBJECT_KEY: 'synthetic-deployment',
     CORS_ORIGINS: 'https://chat.example.test',
     ...overrides,
   };
@@ -58,6 +59,12 @@ describe('production startup configuration', () => {
     const result = loadConfiguration(withoutPath);
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /Production requires AUDIT_CHECKPOINT_PATH/);
+  });
+
+  it('requires a stable durable audit head identity', () => {
+    const result = loadConfiguration(productionEnvironment({ AUDIT_HEAD_OBJECT_KEY: '' }));
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Production requires AUDIT_HEAD_OBJECT_KEY/);
   });
 
   it('rejects insecure remote dependencies even with the loopback acknowledgement', () => {

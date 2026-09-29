@@ -127,6 +127,7 @@ jobs:
           export DATABASE_URL
           pnpm --filter @alparts/server test:integration
           pnpm --filter @alparts/server test:account-security
+          pnpm --filter @alparts/server test:formal-conformance
         env:
           NODE_ENV: test
           DATABASE_USER: alparts_test
@@ -247,6 +248,8 @@ jobs:
             --env AUDIT_INTEGRITY_KEY
             --env AUDIT_CHECKPOINT_PATH=/var/lib/alparts-audit/checkpoint.json
             --env AUDIT_CHECKPOINT_REQUIRED=true
+            --env AUDIT_HEAD_BUCKET=alparts-supply-audit
+            --env AUDIT_HEAD_OBJECT_KEY=supply-ci
             --env ALLOW_INSECURE_LOOPBACK_DEPENDENCIES=true
             --env CORS_ORIGINS=https://alparts.invalid
           )

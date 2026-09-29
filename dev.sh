@@ -57,6 +57,8 @@ JWT_SECRET=$(rand_hex 48)
 AUDIT_INTEGRITY_KEY=$(rand_hex 48)
 AUDIT_CHECKPOINT_PATH=$PWD/.local/audit-checkpoint.json
 AUDIT_CHECKPOINT_REQUIRED=true
+AUDIT_HEAD_BUCKET=alparts-audit
+AUDIT_HEAD_OBJECT_KEY=$(rand_hex 16)
 REGISTRATION_INVITE_SECRET=$(rand_hex 48)
 CORS_ORIGINS=http://localhost:5173,http://localhost:3000,http://127.0.0.1:3000
 VOICE_ICE_SERVERS_JSON=[]
@@ -79,7 +81,7 @@ is_supported_env_key() {
     STORAGE_QUOTA_BYTES_PER_USER|STORAGE_QUOTA_BYTES_PER_WORKSPACE|STORAGE_QUOTA_BYTES_PER_CHANNEL|\
     JWT_SECRET|JWT_ISSUER|JWT_AUDIENCE|JWT_EXPIRES_IN_SECONDS|COOKIE_SECURE|\
     PASSWORD_PEPPER|PASSWORD_PEPPER_PREVIOUS|WEBAUTHN_RP_ID|WEBAUTHN_ORIGINS|AUDIT_INTEGRITY_KEY|AUDIT_CHECKPOINT_PATH|AUDIT_CHECKPOINT_REQUIRED|\
-    AUDIT_WITNESS_REQUIRED|AUDIT_WITNESS_PUBLIC_KEY_FILE|AUDIT_WITNESS_PATH|AUDIT_WITNESS_DEPLOYMENT_ID|\
+    AUDIT_HEAD_BUCKET|AUDIT_HEAD_OBJECT_KEY|AUDIT_WITNESS_REQUIRED|AUDIT_WITNESS_PUBLIC_KEY_FILE|AUDIT_WITNESS_PATH|AUDIT_WITNESS_DEPLOYMENT_ID|\
     METRICS_ENABLED|METRICS_TOKEN|ALLOW_INSECURE_LOOPBACK_DEPENDENCIES|VITE_ALLOWED_HOSTS|\
     REGISTRATION_INVITE_SECRET|CORS_ORIGIN|CORS_ORIGINS|TRUSTED_PROXIES|VOICE_ICE_SERVERS_JSON|BIND_HOST|PORT)
       return 0 ;;
@@ -120,6 +122,7 @@ append_env() {
 }
 
 checkpoint_added=0
+head_added=0
 if [ -z "${PASSWORD_PEPPER:-}" ] && [ -z "${PASSWORD_PEPPER_FILE:-}" ]; then
   info ".env に PASSWORD_PEPPER がないため、新しい値を追加します"
   PASSWORD_PEPPER="$(rand_hex 48)"
@@ -134,6 +137,15 @@ if [ -z "${AUDIT_CHECKPOINT_PATH:-}" ]; then
   append_env AUDIT_CHECKPOINT_REQUIRED "$AUDIT_CHECKPOINT_REQUIRED"
   export AUDIT_CHECKPOINT_PATH AUDIT_CHECKPOINT_REQUIRED
   checkpoint_added=1
+fi
+
+: "${AUDIT_HEAD_BUCKET:=${MINIO_BUCKET:-alparts}-audit}"
+export AUDIT_HEAD_BUCKET
+if [ -z "${AUDIT_HEAD_OBJECT_KEY:-}" ]; then
+  AUDIT_HEAD_OBJECT_KEY="$(rand_hex 16)"
+  append_env AUDIT_HEAD_OBJECT_KEY "$AUDIT_HEAD_OBJECT_KEY"
+  export AUDIT_HEAD_OBJECT_KEY
+  head_added=1
 fi
 
 : "${POSTGRES_USER:?POSTGRES_USER が .env にありません}"
@@ -187,6 +199,8 @@ pnpm --filter @alparts/server exec tsx src/scripts/migrate-runtime.ts
 
 if [ "${created_env}" = 1 ] || [ "${checkpoint_added}" = 1 ]; then
   pnpm --filter @alparts/server audit:checkpoint:init
+elif [ "${head_added}" = 1 ]; then
+  die "監査記録の保存先を追加しました。サーバーを停止し、docs/OPERATIONS.md の監査 head 移行手順で確認・初期化してから再実行してください"
 fi
 
 info "開発サーバーを起動します (client: http://localhost:5173 / 停止: Ctrl+C, 全停止: ./dev.sh down)"

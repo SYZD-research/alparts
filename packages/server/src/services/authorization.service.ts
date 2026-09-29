@@ -104,7 +104,7 @@ export interface WorkspaceAuthorizationSnapshot {
 }
 
 export function assertValidChannelOverrideMask(value: number): void {
-  if (!Number.isSafeInteger(value) || value < 0 || (value & ~CHANNEL_SCOPED_PERMISSION_MASK) !== 0) {
+  if (!Number.isSafeInteger(value) || value < 0 || value > CHANNEL_SCOPED_PERMISSION_MASK || (value & ~CHANNEL_SCOPED_PERMISSION_MASK) !== 0) {
     throw new Error('INVALID_OVERRIDE_PERMISSIONS');
   }
 }
@@ -343,7 +343,7 @@ function isChannelViewer(authorization: ChannelAuthorization | null, channel: Sn
 }
 
 /**
- * Hierarchy protection for role and override changes: a non-owner actor must
+ * Hierarchy protection for authorization and channel changes: a non-owner actor must
  * not reduce the workspace permissions, channel permissions or channel
  * visibility of any member ranked at or above the actor (the same boundary
  * as member removal and role removal). `after` is the post-change snapshot,

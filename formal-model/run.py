@@ -18,6 +18,7 @@ MODELS = {
     'M1c': ('conformance', 'model/implementation conformance'),
     'M1': ('m1_authorization', 'authorization algebra'),
     'M2': ('m2_hierarchy', 'role hierarchy'),
+    'M2c': ('hierarchy_conformance', 'superior guard implementation conformance'),
     'M3': ('m3_key_epochs', 'channel key epochs'),
     'M4': ('m4_devices', 'devices and sessions'),
     'M5': ('m5_audit', 'audit chain'),

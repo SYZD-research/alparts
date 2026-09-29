@@ -114,6 +114,9 @@ docker compose -f compose.production.yml run --rm --no-deps app \
 docker compose -f compose.production.yml up --detach --wait
 ```
 
+Set `AUDIT_HEAD_BUCKET` to a separate object-store bucket and `AUDIT_HEAD_OBJECT_KEY` to a stable deployment identifier before provisioning/startup. Give the application get/put access to that head; DB/checkpoint repair and data-restore identities must not overwrite it. Existing checkpoints need the stopped-server `audit:head:init` upgrade described in [OPERATIONS](../OPERATIONS.md), after independent verification. Never regenerate the head identity or replay this bucket as part of a normal restore.
+
+
 The image contains the exact ordered migration bundle used to build it. Its database-only runtime migrator receives only the separate migration URL and bounded DB settings, uses a non-waiting PostgreSQL advisory lock, honors connection/statement deadlines, and exits if another migrator is active. The server then compares every applied migration timestamp and SHA-256 plus the bounded PostgreSQL 16 `public` catalog fingerprint with the image contract at startup and readiness; an empty, stale, modified, reordered, newer unknown, or persistently altered schema fails closed. This requires a dedicated Alparts `public` schema and deliberately rejects another PostgreSQL major until a reviewed compatibility migration updates the fingerprint. Existing deployments must complete the quiesced backup/isolated-restore gate before this command. Skip the checkpoint initializer after the first deployment; an existing checkpoint is never overwritten.
 
 Pin and deploy the resulting image by digest in a real release system. The repository currently pins base image tags and CI actions but does not publish signed releases or attestations.
