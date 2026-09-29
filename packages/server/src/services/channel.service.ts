@@ -19,6 +19,8 @@ import {
 } from '../security/limits.js';
 import {
   applyViewerEffectsAndRotation,
+  assertNoSuperiorAccessLoss,
+  captureChannelViewersFromSnapshot,
   captureChannelViewersFromStore,
   getChannelAuthorizationFromSnapshot,
   getChannelAuthorizationFromStore,
@@ -432,12 +434,19 @@ export async function removeChannelMember(channelId: string, userId: string, act
     });
     if (explicitMembers.length > MAX_WORKSPACE_MEMBERS) throw new Error('PRIVATE_MEMBERSHIP_INVARIANT_EXCEEDED');
     if (explicitMembers.length <= 1) throw new Error('LAST_PRIVATE_MEMBER');
-    const before = await captureChannelViewersFromStore(transaction, channel.workspaceId, [channelId]);
+    const snapshotBefore = await loadWorkspaceAuthorizationSnapshot(transaction, channel.workspaceId, [channelId]);
+    if (!snapshotBefore) throw new Error('PRIVATE_CHANNEL_NOT_FOUND');
+    const before = captureChannelViewersFromSnapshot(snapshotBefore);
     await transaction.delete(channelMembers).where(and(
       eq(channelMembers.channelId, channelId),
       eq(channelMembers.userId, userId),
     ));
-    const after = await captureChannelViewersFromStore(transaction, channel.workspaceId, [channelId]);
+    const snapshotAfter = await loadWorkspaceAuthorizationSnapshot(transaction, channel.workspaceId, [channelId]);
+    if (!snapshotAfter) throw new Error('PRIVATE_CHANNEL_NOT_FOUND');
+    // Same boundary as role and override changes: only a higher-ranked member
+    // (or the owner, or the member themself) may remove someone.
+    assertNoSuperiorAccessLoss(snapshotBefore, snapshotAfter, actorId);
+    const after = captureChannelViewersFromSnapshot(snapshotAfter);
     const roomEffects = await applyViewerEffectsAndRotation(transaction, before, after);
     return {
       workspaceId: channel.workspaceId,

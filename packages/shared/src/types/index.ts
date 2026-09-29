@@ -350,7 +350,8 @@ export interface WsKeyRotated {
   version: number;
 }
 
-export type AttentionNotificationKind = 'mention' | 'reply';
+/** `channel-restarted`: sent to managers when a member restarted a channel whose history no device could show. */
+export type AttentionNotificationKind = 'mention' | 'reply' | 'channel-restarted';
 
 /** A content-free realtime notification. Message plaintext is never included. */
 export interface WsAttentionNotification {

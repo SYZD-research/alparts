@@ -11,7 +11,7 @@ export function parseAttentionNotification(value: unknown): WsAttentionNotificat
     typeof candidate.notificationId !== 'string' || !UUID.test(candidate.notificationId)
     || typeof candidate.workspaceId !== 'string' || !UUID.test(candidate.workspaceId)
     || typeof candidate.channelId !== 'string' || !UUID.test(candidate.channelId)
-    || (candidate.kind !== 'mention' && candidate.kind !== 'reply')
+    || (candidate.kind !== 'mention' && candidate.kind !== 'reply' && candidate.kind !== 'channel-restarted')
   ) return null;
   return candidate as unknown as WsAttentionNotification;
 }

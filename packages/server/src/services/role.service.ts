@@ -13,6 +13,7 @@ import {
 import { auditedTransaction } from '../middleware/audit.js';
 import {
   applyViewerEffectsAndRotation,
+  assertNoSuperiorAccessLoss,
   captureChannelViewersFromSnapshot,
   computeAuthorizationRevisionFromStore,
   loadWorkspaceAuthorizationSnapshot,
@@ -140,6 +141,7 @@ export async function updateRole(
     if (!updated) throw new Error('ROLE_NOT_FOUND');
 
     const snapshotAfter = await requireAuthorizationSnapshot(transaction, workspaceId);
+    assertNoSuperiorAccessLoss(snapshotBefore, snapshotAfter, actorId);
     const affectedAfter = affectedUserIds.map((userId) => evaluateMemberFromSnapshot(snapshotAfter, userId));
     const accessChanges = compareAccess(affectedBefore, affectedAfter);
     const channelViewersAfter = captureChannelViewersFromSnapshot(snapshotAfter);
@@ -238,6 +240,7 @@ export async function changeRoleAssignment(
       changed = true;
     }
     const snapshotAfter = await requireAuthorizationSnapshot(transaction, workspaceId);
+    assertNoSuperiorAccessLoss(snapshotBefore, snapshotAfter, actorId);
     const after = evaluateMemberFromSnapshot(snapshotAfter, userId);
     const accessChanges = compareAccess([before], [after]);
     const channelViewersAfter = captureChannelViewersFromSnapshot(snapshotAfter);
@@ -291,6 +294,10 @@ export async function previewRoleChange(workspaceId: string, actorId: string, in
       if (input.operation === 'role.assign') assertCanCreateOrAssign(actor, role.permissions, role.position);
       const snapshot = await requireAuthorizationSnapshot(transaction, workspaceId);
       if (input.operation === 'role.unassign') assertMemberCanBeManaged(actor, actorId, snapshot, input.userId);
+      assertNoSuperiorAccessLoss(snapshot, snapshot, actorId, {
+        roleMutation: { roleId: role.id, included: input.operation === 'role.assign' },
+        roleMutationUserIds: [input.userId],
+      });
       const before = evaluateMemberFromSnapshot(snapshot, input.userId);
       const after = evaluateMemberFromSnapshot(snapshot, input.userId, {
         roleId: role.id,
@@ -309,6 +316,10 @@ export async function previewRoleChange(workspaceId: string, actorId: string, in
       .filter(([, roleIds]) => roleIds.includes(role.id))
       .map(([userId]) => userId)
       .sort();
+    assertNoSuperiorAccessLoss(snapshot, snapshot, actorId, {
+      roleMutation: { roleId: role.id, included: true, permissions: input.permissions },
+      roleMutationUserIds: affectedUserIds,
+    });
     const before = affectedUserIds.map((userId) => evaluateMemberFromSnapshot(snapshot, userId));
     const after = affectedUserIds.map((userId) => evaluateMemberFromSnapshot(snapshot, userId, {
         roleId: role.id,
@@ -359,10 +370,10 @@ function assertMemberCanBeManaged(
 ) {
   if (actor.owner || userId === actorId) return;
   if (!snapshot.membersByUserId.has(userId)) throw new Error('MEMBER_NOT_FOUND');
-  if (snapshot.ownerId === userId) throw new Error('ROLE_HIERARCHY');
+  if (snapshot.ownerId === userId) throw new Error('MEMBER_HIERARCHY');
   const targetPosition = Math.max(-1, ...(snapshot.roleIdsByUserId.get(userId) ?? [])
     .map((roleId) => snapshot.rolesById.get(roleId)?.position ?? -1));
-  if (targetPosition >= actor.highestPosition) throw new Error('ROLE_HIERARCHY');
+  if (targetPosition >= actor.highestPosition) throw new Error('MEMBER_HIERARCHY');
 }
 
 function assertRoleCanBeManaged(actor: { owner: boolean; highestPosition: number }, role: { name: string; position: number }) {

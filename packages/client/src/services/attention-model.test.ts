@@ -14,5 +14,7 @@ describe('attention notification model', () => {
     expect(attentionNotificationKey(notification)).toBe(`${notification.notificationId}:reply`);
     expect(parseAttentionNotification({ ...notification, message: 'secret body' })).toBeNull();
     expect(parseAttentionNotification({ ...notification, kind: 'all' })).toBeNull();
+    const restarted = { ...notification, kind: 'channel-restarted' as const };
+    expect(parseAttentionNotification(restarted)).toEqual(restarted);
   });
 });

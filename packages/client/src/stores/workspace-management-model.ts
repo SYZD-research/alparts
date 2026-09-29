@@ -86,6 +86,9 @@ export function managementErrorMessage(error: unknown, fallback: string): string
   const status = typeof error === 'object' && error !== null && 'status' in error
     ? (error as { status?: unknown }).status
     : null;
+  if (status === 403 && (error as { code?: unknown }).code === 'MEMBER_HIERARCHY') {
+    return '自分と同じか上の順位のメンバーの権限や表示が減るため、この変更はできません。';
+  }
   if (status === 403) {
     return '権限が不足しています。自身以上の階層のロール操作、または保有していない権限の付与はできません。';
   }

@@ -34,6 +34,9 @@ const EMPTY_CHANNEL_FORM: ChannelFormState = {
 };
 
 function mutationError(error: unknown): string {
+  if (error instanceof ApiError && error.code === 'MEMBER_HIERARCHY') {
+    return '自分と同じか上の順位のメンバーは、非公開チャンネルから削除できません。';
+  }
   if (error instanceof ApiError && error.status === 403) return 'チャンネル管理権限がありません。状態は変更されていません。';
   if (error instanceof Error && error.message === '位置は0〜1000000の整数で入力してください') return error.message;
   return '変更を保存できませんでした。もう一度お試しください。';

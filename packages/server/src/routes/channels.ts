@@ -225,6 +225,10 @@ router.delete('/channels/:id/members/:userId', authMiddleware, requireChannelPer
       res.status(409).json({ error: 'LAST_PRIVATE_MEMBER', message: 'A private channel must retain an explicit member', statusCode: 409 });
       return;
     }
+    if (error.message === 'MEMBER_HIERARCHY') {
+      res.status(403).json({ error: 'MEMBER_HIERARCHY', message: 'Change would reduce a higher-ranked member', statusCode: 403 });
+      return;
+    }
     throw error;
   }
 });
