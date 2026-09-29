@@ -14,6 +14,7 @@ contextBridge.exposeInMainWorld('alpartsDesktop', Object.freeze({
   configureServer: (serverUrl: string) => ipcRenderer.invoke('desktop:configure-server', serverUrl),
   setIdleLockMinutes: (minutes: number) => ipcRenderer.invoke('desktop:set-idle-lock', minutes),
   lockNow: () => ipcRenderer.invoke('desktop:lock-now'),
+  clearHttpCache: () => ipcRenderer.invoke('desktop:clear-http-cache'),
   unlockComplete: () => ipcRenderer.invoke('desktop:unlock-complete'),
   showConnectionSettings: () => ipcRenderer.invoke('desktop:show-connection-settings'),
   secrets: Object.freeze({

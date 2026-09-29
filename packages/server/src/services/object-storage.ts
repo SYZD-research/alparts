@@ -118,6 +118,49 @@ export async function checkObjectStorage(): Promise<void> {
   });
 }
 
+/** Operator-only provisioning; normal audit reads/writes never recreate a missing head. */
+export async function provisionAuditHeadBucket(): Promise<void> {
+  if (!config.audit.headObjectKey) throw new Error('AUDIT_HEAD_REQUIRED');
+  await withObjectStorageDeadline(async () => {
+    if (!await minioClient.bucketExists(config.audit.headBucket)) {
+      await minioClient.makeBucket(config.audit.headBucket);
+    }
+  });
+}
+
+export async function readStoredAuditHead(): Promise<string | null> {
+  if (!config.audit.headObjectKey) throw new Error('AUDIT_HEAD_REQUIRED');
+  return withObjectStorageDeadline(async () => {
+    let stream: Readable;
+    try {
+      stream = await minioClient.getObject(config.audit.headBucket, config.audit.headObjectKey!);
+    } catch (error: any) {
+      if (['NoSuchKey', 'NoSuchBucket', 'NotFound'].includes(error?.code)) return null;
+      throw error;
+    }
+    const chunks: Buffer[] = [];
+    let length = 0;
+    try {
+      for await (const part of stream) {
+        const chunk = Buffer.isBuffer(part) ? part : Buffer.from(part);
+        length += chunk.length;
+        if (length > 16 * 1024) throw new Error('INVALID_AUDIT_HEAD');
+        chunks.push(chunk);
+      }
+      return Buffer.concat(chunks).toString('utf8');
+    } finally { stream.destroy(); }
+  });
+}
+
+export async function writeStoredAuditHead(serialized: string): Promise<void> {
+  if (!config.audit.headObjectKey) throw new Error('AUDIT_HEAD_REQUIRED');
+  const body = Buffer.from(serialized);
+  await withObjectStorageDeadline(() => minioClient.putObject(
+    config.audit.headBucket, config.audit.headObjectKey!, body, body.length,
+    { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+  ));
+}
+
 export function statStoredObject(storageKey: string, deadline?: number) {
   return withObjectStorageDeadline(
     () => minioClient.statObject(config.minio.bucket, storageKey),

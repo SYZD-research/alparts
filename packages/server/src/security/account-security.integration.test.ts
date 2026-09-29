@@ -398,8 +398,8 @@ describe('account security end to end', { skip: !enabled }, () => {
     } finally {
       await migrationClient.end();
     }
-    process.env.MINIO_ACCESS_KEY = 'account-security-test-access';
-    process.env.MINIO_SECRET_KEY = 'account-security-test-secret';
+    assert.ok(process.env.MINIO_ACCESS_KEY && process.env.MINIO_SECRET_KEY,
+      'Account integration tests require a disposable object store for the durable audit head');
     process.env.AUDIT_INTEGRITY_KEY = 'account-security-test-audit-key-32-bytes';
 process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
     process.env.JWT_SECRET = 'account-security-test-session-key-32-bytes';
@@ -407,9 +407,10 @@ process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
     auditDirectory = await mkdtemp(join(tmpdir(), 'alparts-account-security-'));
     process.env.AUDIT_CHECKPOINT_PATH = join(auditDirectory, 'checkpoint');
     process.env.AUDIT_CHECKPOINT_REQUIRED = 'true';
+    process.env.AUDIT_HEAD_OBJECT_KEY = `test-${randomUUID()}`;
     const database = await import('../db/index.js');
     closeDb = database.closeDb;
-    assert.equal(await database.checkDatabaseSchema(), 18);
+    assert.equal(await database.checkDatabaseSchema(), 20);
     const audit = await import('../middleware/audit.js');
     await audit.provisionAuditCheckpoint();
     const app = await import('../app.js');
@@ -476,6 +477,10 @@ process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
       db.execute(
         sql`UPDATE device_directory_events SET hash = ${'f'.repeat(64)} WHERE user_id = ${legacyUser}`,
       ),
+      (error: any) => /append-only/.test(error.cause?.message),
+    );
+    await assert.rejects(
+      db.execute(sql`TRUNCATE device_directory_events CASCADE`),
       (error: any) => /append-only/.test(error.cause?.message),
     );
   });
@@ -938,6 +943,22 @@ process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
       (await request('/api/auth/passkeys/login/verify', { id: ceremony.id, response }, '')).status,
       403,
     );
+    // A passkey session stops counting as a fresh assertion for enrollment.
+    const { db } = await import('../db/index.js');
+    const { sql } = await import('drizzle-orm');
+    const agedPasskeyCookie = login.headers.get('set-cookie')!.split(';')[0];
+    await db.execute(sql`UPDATE sessions SET created_at = now() - interval '11 minutes'
+      WHERE user_id = ${userId} AND authentication_method = 'passkey'`);
+    const agedKeys = deviceKeys();
+    const agedChallenge = (await json(await request('/api/devices/challenge', {}, agedPasskeyCookie))).challenge;
+    const agedEnrollment = await request('/api/devices', {
+      name: 'Aged passkey session',
+      identityKey: agedKeys.identityKey,
+      challenge: agedChallenge,
+      proof: signature(agedKeys.privateKey, serializeDeviceChallengeProof(userId, agedChallenge)),
+    }, agedPasskeyCookie);
+    assert.equal(agedEnrollment.status, 403);
+    assert.equal(((await agedEnrollment.json()) as { error: string }).error, 'DEVICE_STEP_UP_REQUIRED');
     for (const wrong of [
       { origin: 'https://evil.example' },
       { rp: 'evil.example' },

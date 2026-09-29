@@ -11,6 +11,7 @@ export function WorkspaceSidebar() {
   const { logout } = useAuthStore();
   const openDmComposer = useUiStore((state) => state.openDmComposer);
   const openAccountSecurity = useUiStore((state) => state.openAccountSecurity);
+  const openProfileSettings = useUiStore((state) => state.openProfileSettings);
   const openSavedMessages = useUiStore((state) => state.openSavedMessages);
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [workspaceName, setWorkspaceName] = useState('');
@@ -142,6 +143,15 @@ export function WorkspaceSidebar() {
         aria-label="保存済みメッセージを開く"
       >
         <span aria-hidden="true">🔖</span>
+      </button>
+      <button
+        type="button"
+        onClick={openProfileSettings}
+        className="w-12 h-12 rounded-2xl bg-discord-bg hover:bg-discord-accent hover:rounded-xl flex items-center justify-center transition-all duration-200 text-discord-muted hover:text-white"
+        title="プロフィール"
+        aria-label="プロフィールを編集"
+      >
+        <span aria-hidden="true">👤</span>
       </button>
       <button
         onClick={openAccountSecurity}

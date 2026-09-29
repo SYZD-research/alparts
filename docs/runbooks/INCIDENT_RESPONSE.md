@@ -44,6 +44,8 @@ This runbook is deliberately fail-safe. Commands that delete, prune, drop, or ov
 - **Rotate:** session/JWT secret rotation invalidates sessions; database/MinIO/TURN/metrics/audit/backup keys have different blast radii and procedures. Use overlap only where the protocol safely supports it.
 - **Recover:** deploy through secret files/provider, restart/drain as required, verify old credential rejection and new operation, audit affected actions, notify according to policy.
 - **Special:** the historically tracked development-account password must be rotated or the account destroyed in every retained environment; repository removal cannot revoke it.
+- **Password pepper:** stored hashes are `p2:` (pepper id + salt + HMAC) or legacy `p1:`. To rotate, set the new value as `PASSWORD_PEPPER` and the old one as `PASSWORD_PEPPER_PREVIOUS` (or the `_FILE` / compose `password_pepper_previous` secret), then restart. Each successful password login rewraps that user's hash under the new pepper and records `passwordRewrapped` in the `user.login` audit entry. Hashes cannot be rewrapped without the password, so keep the previous pepper until the remaining users have signed in or reset their passwords, then remove it. Until then, anyone holding a database snapshot and the old pepper can attempt offline guessing against the not-yet-rewrapped hashes.
+- **Secrets in git history:** rotate first, then purge. `scripts/check-history-files.sh` and the `secret-history` CI job (gitleaks over full history) fail while such objects remain reachable. Purging requires `git filter-repo`, a force-push, and every clone/fork/CI cache to be replaced; deleting a file in a new commit does not remove it.
 
 ## Dependency outage
 

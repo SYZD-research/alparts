@@ -6,6 +6,7 @@ import { cleanupExpiredUploads } from './services/file.service.js';
 import { flushAuditCheckpoint, verifyAuditChain } from './middleware/audit.js';
 import { checkDatabaseSchema, closeDb } from './db/index.js';
 import { closePasswordWorkers } from './security/password-work.js';
+import { resetPresenceAfterStartup } from './websocket/presence.handler.js';
 
 const runtime = await acquireRuntimeLease();
 const migrationCount = await checkDatabaseSchema();
@@ -14,12 +15,14 @@ logInfo('database.schema_verified', { migrations: migrationCount });
 const auditState = await verifyAuditChain();
 if (!auditState.valid) throw new Error('Audit log integrity verification failed');
 logInfo('audit.verified', { entries: auditState.checked, checkpoint: auditState.checkpoint });
+await resetPresenceAfterStartup();
 
 const { httpServer, io, beginShutdown } = createApp();
 httpServer.listen(config.port, config.bindHost, () => logInfo('server.started', {
   host: config.bindHost,
   port: config.port,
   environment: config.nodeEnv,
+  trustedProxies: config.network.trustedProxies.join(',') || 'none',
 }));
 
 let uploadCleanupRunning = false;
@@ -72,19 +75,25 @@ function shutdown(signal: string): Promise<void> {
   return shutdownPromise;
 }
 
-runtime.onLost(() => { void shutdown('runtime-lease-lost'); });
+// Without the lease this process must not keep serving; a stuck checkpoint
+// flush must not leave it alive, so apply the same forced-exit deadline.
+runtime.onLost(() => { terminate('runtime-lease-lost'); });
 
 process.once('SIGTERM', () => { void shutdown('SIGTERM'); });
 process.once('SIGINT', () => { void shutdown('SIGINT'); });
 
-function fatal(kind: 'uncaughtException' | 'unhandledRejection', error: unknown): void {
-  logError(`process.${kind}`, error);
+function terminate(reason: string): void {
   const forcedExit = setTimeout(() => process.exit(1), 30_000);
   forcedExit.unref();
-  void shutdown(kind).finally(() => {
+  void shutdown(reason).finally(() => {
     clearTimeout(forcedExit);
     process.exit(1);
   });
+}
+
+function fatal(kind: 'uncaughtException' | 'unhandledRejection', error: unknown): void {
+  logError(`process.${kind}`, error);
+  terminate(kind);
 }
 
 process.once('uncaughtException', (error) => fatal('uncaughtException', error));

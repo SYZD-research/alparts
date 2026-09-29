@@ -14,6 +14,8 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    security_opt:
+      - no-new-privileges:true
 
   minio:
     image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
@@ -45,6 +47,7 @@ services:
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:?MINIO_ACCESS_KEY must be set}
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:?MINIO_SECRET_KEY must be set}
       MINIO_BUCKET: ${MINIO_BUCKET:-alparts}
+      AUDIT_HEAD_BUCKET: ${AUDIT_HEAD_BUCKET:-alparts-audit}
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
@@ -55,6 +58,7 @@ services:
           sleep 1
         done
         mc mb --ignore-existing "local/$${MINIO_BUCKET}"
+        mc mb --ignore-existing "local/$${AUDIT_HEAD_BUCKET}"
         cat > /tmp/alparts-app-policy.json <<EOF
         {
           "Version": "2012-10-17",
@@ -68,6 +72,16 @@ services:
               "Effect": "Allow",
               "Action": ["s3:AbortMultipartUpload", "s3:DeleteObject", "s3:GetObject", "s3:ListMultipartUploadParts", "s3:PutObject"],
               "Resource": ["arn:aws:s3:::$${MINIO_BUCKET}/*"]
+            },
+            {
+              "Effect": "Allow",
+              "Action": ["s3:GetBucketLocation", "s3:ListBucket"],
+              "Resource": ["arn:aws:s3:::$${AUDIT_HEAD_BUCKET}"]
+            },
+            {
+              "Effect": "Allow",
+              "Action": ["s3:GetObject", "s3:PutObject"],
+              "Resource": ["arn:aws:s3:::$${AUDIT_HEAD_BUCKET}/*"]
             }
           ]
         }

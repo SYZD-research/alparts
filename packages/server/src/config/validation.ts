@@ -133,3 +133,26 @@ function optionalIceCredential(
   ) throw new Error(`VOICE_ICE_SERVERS_JSON[${index}].${field} is invalid`);
   return value;
 }
+
+/**
+ * Express `trust proxy` accepts wildcards and named ranges that silently trust
+ * every hop. Only literal addresses, bounded CIDRs and `loopback` are allowed.
+ */
+export function parseTrustedProxies(configured: string | undefined, isProduction: boolean): string[] {
+  const entries = (configured || '').split(',').map((entry) => entry.trim()).filter(Boolean);
+  if (entries.length > 32) throw new Error('TRUSTED_PROXIES may list at most 32 entries');
+  for (const entry of entries) {
+    if (entry === 'loopback') continue;
+    const [address, prefix, extra] = entry.split('/');
+    const family = isIP(address);
+    if (!family || extra !== undefined) throw new Error(`TRUSTED_PROXIES entry is not an IP address or CIDR: ${entry}`);
+    if (prefix === undefined) continue;
+    if (!/^\d{1,3}$/.test(prefix)) throw new Error(`TRUSTED_PROXIES entry has an invalid prefix: ${entry}`);
+    const bits = Number(prefix);
+    const maxBits = family === 4 ? 32 : 128;
+    // Production proxies are a handful of hosts; a short prefix trusts clients.
+    const minBits = isProduction ? (family === 4 ? 8 : 32) : 1;
+    if (bits > maxBits || bits < minBits) throw new Error(`TRUSTED_PROXIES entry is too broad or invalid: ${entry}`);
+  }
+  return entries;
+}

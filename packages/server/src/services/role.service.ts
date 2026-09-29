@@ -13,6 +13,7 @@ import {
 import { auditedTransaction } from '../middleware/audit.js';
 import {
   applyViewerEffectsAndRotation,
+  assertNoSuperiorAccessLoss,
   captureChannelViewersFromSnapshot,
   computeAuthorizationRevisionFromStore,
   loadWorkspaceAuthorizationSnapshot,
@@ -41,7 +42,7 @@ interface RolePreviewInput {
 }
 
 export function assertValidPermissionMask(value: number): void {
-  if (!Number.isSafeInteger(value) || value < 0 || (value & ~ALL_PERMISSION_MASK) !== 0) {
+  if (!Number.isSafeInteger(value) || value < 0 || value > ALL_PERMISSION_MASK || (value & ~ALL_PERMISSION_MASK) !== 0) {
     throw new Error('INVALID_PERMISSIONS');
   }
 }
@@ -140,6 +141,7 @@ export async function updateRole(
     if (!updated) throw new Error('ROLE_NOT_FOUND');
 
     const snapshotAfter = await requireAuthorizationSnapshot(transaction, workspaceId);
+    assertNoSuperiorAccessLoss(snapshotBefore, snapshotAfter, actorId);
     const affectedAfter = affectedUserIds.map((userId) => evaluateMemberFromSnapshot(snapshotAfter, userId));
     const accessChanges = compareAccess(affectedBefore, affectedAfter);
     const channelViewersAfter = captureChannelViewersFromSnapshot(snapshotAfter);
@@ -216,6 +218,7 @@ export async function changeRoleAssignment(
     });
     if (!member) throw new Error('MEMBER_NOT_FOUND');
     const snapshotBefore = await requireAuthorizationSnapshot(transaction, workspaceId);
+    if (action === 'unassign') assertMemberCanBeManaged(actor, actorId, snapshotBefore, userId);
     const before = evaluateMemberFromSnapshot(snapshotBefore, userId);
     const channelViewersBefore = captureChannelViewersFromSnapshot(snapshotBefore);
     const existing = await transaction.query.memberRoles.findFirst({
@@ -237,6 +240,7 @@ export async function changeRoleAssignment(
       changed = true;
     }
     const snapshotAfter = await requireAuthorizationSnapshot(transaction, workspaceId);
+    assertNoSuperiorAccessLoss(snapshotBefore, snapshotAfter, actorId);
     const after = evaluateMemberFromSnapshot(snapshotAfter, userId);
     const accessChanges = compareAccess([before], [after]);
     const channelViewersAfter = captureChannelViewersFromSnapshot(snapshotAfter);
@@ -289,6 +293,11 @@ export async function previewRoleChange(workspaceId: string, actorId: string, in
       if (!input.userId) throw new Error('INVALID_PREVIEW');
       if (input.operation === 'role.assign') assertCanCreateOrAssign(actor, role.permissions, role.position);
       const snapshot = await requireAuthorizationSnapshot(transaction, workspaceId);
+      if (input.operation === 'role.unassign') assertMemberCanBeManaged(actor, actorId, snapshot, input.userId);
+      assertNoSuperiorAccessLoss(snapshot, snapshot, actorId, {
+        roleMutation: { roleId: role.id, included: input.operation === 'role.assign' },
+        roleMutationUserIds: [input.userId],
+      });
       const before = evaluateMemberFromSnapshot(snapshot, input.userId);
       const after = evaluateMemberFromSnapshot(snapshot, input.userId, {
         roleId: role.id,
@@ -307,6 +316,10 @@ export async function previewRoleChange(workspaceId: string, actorId: string, in
       .filter(([, roleIds]) => roleIds.includes(role.id))
       .map(([userId]) => userId)
       .sort();
+    assertNoSuperiorAccessLoss(snapshot, snapshot, actorId, {
+      roleMutation: { roleId: role.id, included: true, permissions: input.permissions },
+      roleMutationUserIds: affectedUserIds,
+    });
     const before = affectedUserIds.map((userId) => evaluateMemberFromSnapshot(snapshot, userId));
     const after = affectedUserIds.map((userId) => evaluateMemberFromSnapshot(snapshot, userId, {
         roleId: role.id,
@@ -343,6 +356,24 @@ function assertCanCreateOrAssign(
   if (actor.owner) return;
   if (position >= actor.highestPosition) throw new Error('ROLE_HIERARCHY');
   if ((permissions & ~actor.permissions) !== 0) throw new Error('PERMISSION_ESCALATION');
+}
+
+/**
+ * Removing a role is bounded by the target member's rank, not only by the
+ * role's rank: like member removal, only a strictly higher member may do it.
+ */
+function assertMemberCanBeManaged(
+  actor: { owner: boolean; highestPosition: number },
+  actorId: string,
+  snapshot: WorkspaceAuthorizationSnapshot,
+  userId: string,
+) {
+  if (actor.owner || userId === actorId) return;
+  if (!snapshot.membersByUserId.has(userId)) throw new Error('MEMBER_NOT_FOUND');
+  if (snapshot.ownerId === userId) throw new Error('MEMBER_HIERARCHY');
+  const targetPosition = Math.max(-1, ...(snapshot.roleIdsByUserId.get(userId) ?? [])
+    .map((roleId) => snapshot.rolesById.get(roleId)?.position ?? -1));
+  if (targetPosition >= actor.highestPosition) throw new Error('MEMBER_HIERARCHY');
 }
 
 function assertRoleCanBeManaged(actor: { owner: boolean; highestPosition: number }, role: { name: string; position: number }) {

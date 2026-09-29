@@ -1,4 +1,6 @@
+import { randomUUID } from 'node:crypto';
 import { Router, type NextFunction } from 'express';
+import type { WsAttentionNotification } from '@alparts/shared';
 import { isAccountSecurityError } from '../security/account-errors.js';
 import { z } from 'zod';
 import { authMiddleware, type AuthRequest } from '../middleware/auth.js';
@@ -162,7 +164,7 @@ router.post(
       res.sendStatus(400);
       return;
     }
-    const result = await proposeMlsChannelEpoch(
+    const { notifyManagerUserIds, workspaceId, ...result } = await proposeMlsChannelEpoch(
       req.userId!,
       req.deviceId!,
       body.epoch,
@@ -170,10 +172,16 @@ router.post(
       body.freshStartSignature,
       req.stepUpProof,
     );
-    req.app
-      .get('io')
-      ?.to(`channel:${req.params.id}`)
-      .emit('channel:key-rotation-required', { channelId: req.params.id });
+    const io = req.app.get('io');
+    io?.to(`channel:${req.params.id}`).emit('channel:key-rotation-required', { channelId: req.params.id });
+    for (const managerId of notifyManagerUserIds) {
+      io?.to(`user:${managerId}`).emit('attention:new', {
+        notificationId: randomUUID(),
+        workspaceId,
+        channelId: req.params.id,
+        kind: 'channel-restarted',
+      } satisfies WsAttentionNotification);
+    }
     res.status(201).json(result);
   }),
 );

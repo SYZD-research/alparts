@@ -8,7 +8,7 @@ The scripts in `scripts/` create one recipient-encrypted backup of PostgreSQL an
 - Use a short-lived, read-only backup identity where possible. The MinIO identity needs `GetBucketLocation`, `ListBucket`, and `GetObject` on the source bucket. PostgreSQL needs enough read access for a complete `pg_dump`.
 - The plaintext dump, object bytes, inventory, checksums, and manifest exist only below a mode-`0700` `mktemp` directory and are removed by a trap. The published artifact is mode `0600` and encrypted to an `age` recipient public key.
 - Point `TMPDIR` at an adequately sized encrypted local filesystem (or appropriately sized protected tmpfs). The trap covers normal exit, errors, HUP, INT, and TERM; no process can clean up after `SIGKILL`, power loss, or storage-device failure, and ordinary unlinking is not a secure-erasure guarantee on SSDs or snapshots.
-- The artifact includes ciphertext attachment objects, but object names, sizes, and database metadata remain sensitive and are therefore protected by the outer `age` encryption.
+- The artifact includes ciphertext attachment objects and plaintext 256×256 PNG profile avatars (visible to workspace co-members in the product), but object names, sizes, and database metadata remain sensitive and are therefore protected by the outer `age` encryption.
 - The server's `AUDIT_INTEGRITY_KEY`, external audit checkpoint file, deployment credentials, reverse-proxy configuration, and browser device private keys are not included. Back up the audit key, checkpoint evidence, and deployment configuration as separately encrypted assets with independent access control. Browser device private keys intentionally remain client-held.
 - `age` recipient encryption supplies confidentiality and payload integrity, not proof of who created the backup: anyone with the public recipient can create a different valid artifact. Protect the delivery channel and record the encrypted artifact digest in an independently authenticated system when provenance matters.
 
@@ -49,7 +49,7 @@ The only standard-output line is the final artifact path. The encrypted payload 
 
 - one PostgreSQL custom-format dump made with `--serializable-deferrable`;
 - the latest bytes for every object mirrored from the configured bucket;
-- table row counts, attachment/object references, an object inventory, SHA-256 checksums, tool versions, one run ID, and one UTC creation time.
+- table row counts, attachment and avatar object references, an object inventory, SHA-256 checksums, tool versions, one run ID, and one UTC creation time.
 
 The script refuses to replace an existing output. Publication uses an atomic hard link in the output filesystem, so even a same-name race cannot cause an overwrite.
 
