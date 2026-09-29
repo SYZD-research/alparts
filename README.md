@@ -189,4 +189,6 @@ pnpm --filter @alparts/server test:account-security
 
 ## ライセンス
 
-このリポジトリのライセンス表記は`UNLICENSED`です。ソースコードを閲覧できること自体は、利用・改変・再配布の許諾を意味しません。
+Copyright (c) 2026 SYZD Research. All rights reserved.
+
+利用・複製・改変・再配布などには、法令で認められる場合を除き、SYZD Researchの事前の書面による許可が必要です。詳しくは[LICENSE](LICENSE)を参照してください。
