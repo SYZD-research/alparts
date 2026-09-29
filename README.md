@@ -1,107 +1,192 @@
-# alparts
+<p align="center">
+  <img src="icon/png/alparts.png" width="120" alt="Alpartsのロゴ">
+</p>
 
-alpartsは、serverへ平文messageを渡さないchannel型communication基盤の **Phase 1 Web / desktop prototype** です。React/TypeScript SPA、Electron、Node.js/TypeScript API、PostgreSQL、MinIOで構成され、少人数向けP2P音声通話も提供します。
+# Alparts
 
-このrepositoryは `SPECIFICATION.md` の正式運用版ではありません。現在の到達点はWindows・macOS・Linux desktop / Web / single-process / basic per-channel key / text中心＋最大8人P2P音声のprototypeです。2026-08-30に公式npx CLIのDeep Security Scanを実施し、pre-change treeへ13 canonical finding / 15 report instanceを報告しました。検出根本原因を現treeで修正し、fresh PostgreSQL/MinIOを含む回帰検証を行っていますが、scan coverageはtime ceiling等により`partial`で、独立外部reviewでもありません。ゼロデイ、認証情報、Embargo情報には使用しないでください。正確な境界は [docs/INDEX.md](./docs/INDEX.md)、[LIMITATIONS.md](./docs/policies/LIMITATIONS.md)、[risk register](./docs/RISK_REGISTER.md) を参照してください。
+**チームの会話を、自分たちのサーバーで。**
 
-## 現在の到達点
+Alpartsは、チャンネルでのチャット、ダイレクトメッセージ、ファイル共有、音声通話をひとつにまとめた、セルフホスト型のコミュニケーションアプリです。チームやプロジェクトごとに会話の場所を作り、参加者と公開範囲を自分たちで管理できます。
 
-Android 開発クライアントと移行・配布・復元演習の検証ツールを追加しました。
-[Android のビルド手順](docs/ANDROID.md) と [Phase 2 の実装状況・残作業](docs/PHASE2.md) を参照してください。
-Phase 2 全体の完了や正式運用への適合を示すものではありません。
+メッセージ本文と添付ファイルは、送信前に端末で暗号化するエンドツーエンド暗号化に対応しています。Webブラウザー、Windows・macOS・Linux向けデスクトップアプリ、Androidアプリから同じワークスペースを利用できます。
 
-- workspace/category/public・private channelと、基本的なE2EE text投稿、返信、編集、削除、reaction、pin、bookmark
-- 読み込み済み履歴を対象にするthread panel、最大20 pageを遡るUUID message link、大量貼り付け確認preview
-- 1対1 DM/group DMのAPI・member model・一覧/作成UI
-- 耐久化eventからの決定的client projector、REST/WebSocket同期、idempotent send
-- 招待の作成/一覧/失効/受諾UI、role CRUD/割当/preview/有効権限理由、session/device失効UI
-- read position/unread、favorite/mute/hide/notification、保存済みmessage
-- same-origin IndexedDBへ暗号化するchannel draft/outboxと、online復帰時の再送
-- すでに読み込み・復号済みのmessageだけを対象にするlocal search
-- preview/revision/effective reasonを備えたcategory/channel role permission overrideと、失権時のroom退出・rekey・client局所消去
-- file別key、暗号化filename、5 MiB chunk AEAD、中断再開、opaque download復号、危険形式警告を備えた添付flow
-- 同梱UIだけを読み込むWindows・macOS・Linux向けElectron client、OS保護領域を使う鍵保存、OS/idle連動app lock、隔離属性付きnative添付保存
-- 最大8人のP2P WebRTC音声通話、署名付きSDP/ICE、参加・退出、ミュート、音声検出／プッシュトゥトーク、入出力device切替、発言者・接続品質表示
-- HMAC chained audit、起動時検証、監査閲覧の自己監査、設定可能なHMAC checkpoint
-- startup/liveness/readiness、fatal pathを含むgraceful shutdown、structured correlation log、private bearer-protected metrics
-- non-root/read-only OCI/systemd例、安全側configuration/TLS、`*_FILE` secret、tracked-file secret/dependency/CI scan
-- image内のdatabase-only migrator、migration journal＋PostgreSQL 16 catalog fingerprintによるstartup/readinessのschema/image coupling
-- age recipientで暗号化するbackup gate、systemd daily schedule、安全なlocal retention、空の隔離DB/bucketだけを対象にするrestore verification
-- tenant/resource/database/object listing/password/audit/upload work、およびbrowser outbox/realtime/voice/attachment workのtransactional・bounded admissionとbulk authorization snapshot
+[主な機能](#主な機能) · [ローカルで始める](#ローカルで始める) · [サーバーの運用](#サーバーの運用) · [ドキュメント](docs/INDEX.md)
 
-Category/channel permission override、client attachment flow、音声signalingは、fresh PostgreSQL/MinIOを使う認可matrix・複数chunk再開/download SHA・2端末の通話参加/relay/失権退出まで確認しています。OIDC、Restricted profile、HA、PITR/WORM/off-site/automatic DR、retention/export、signed updates、映像・画面共有・SFU/SFrame、Bot/Webhook、独立外部reviewは正式版blockerとして未実装です。
+## 主な機能
 
-## ローカル起動
+### 話題ごとに会話を整理
 
-必要なもの:
+ワークスペースの中にカテゴリーとチャンネルを作り、プロジェクト、議題、チームごとに会話を分けられます。ワークスペース内で公開するチャンネルと、参加者を限定する非公開チャンネルに対応。同じワークスペースのメンバーとは、1対1のDMやグループDMでも話せます。
 
-- Linux/macOSまたは互換shell
-- Node.js 24以降
-- pnpm 11.21.0（Corepackを利用可能）
-- DockerとDocker Compose plugin
-- OpenSSL
+### 日々のやり取りを支えるチャット
 
-初回起動:
+- Markdown、メンション、返信、スレッド表示、メッセージの編集・削除、リアクション。
+- 大切な投稿のピン留め、保存済みメッセージ、メッセージへのリンク。
+- 未読表示、お気に入り、ミュート、非表示、チャンネルごとの通知設定。
+- 本文・投稿者・チャンネル名での検索。検索はその端末で読み込み済みの履歴を対象とし、検索語をサーバーへ送りません。
+- 端末内に暗号化して保存する下書きと送信待ちメッセージ。テキストはオフラインでも送信待ちにでき、接続が戻ると再送します。
+
+### ファイルを共有し、声で話す
+
+添付ファイルは内容とファイル名を暗号化して共有できます。1ファイル最大100 MiB、1メッセージにつき4件まで添付でき、アップロードの中断・再開にも対応しています。添付ファイルの送信にはオンライン接続が必要です。
+
+音声チャンネルでは最大8人で通話できます。ミュート、音声検出、ボタンを押している間だけ話すプッシュトゥトーク、マイクの切り替え、発言者と接続品質の表示を備えています。対応環境では出力先のスピーカーも切り替えられます。
+
+### 参加者と権限を管理
+
+期限付き・一回限りの招待コードでメンバーを招待できます。ロールの作成と割り当てに加え、カテゴリー・チャンネルごとの閲覧や投稿の権限を設定でき、変更前の確認と、権限が適用される理由の表示にも対応しています。管理画面では招待の取り消しや操作履歴の確認も行えます。
+
+### 端末を確認し、履歴を引き継ぐ
+
+新しい端末の承認、確認コードの照合、不要になった端末の登録解除、ログインの終了を管理できます。Web版ではパスキーでのログインと重要操作の本人確認に対応しています。
+
+履歴の復元を設定すると、対応するパスキーまたは保管済みの復旧コードで、保存した履歴を別の端末へ引き継げます。デスクトップ・Androidアプリには、端末の保護機能を使った鍵の保存とアプリのロックも備えています。
+
+## 利用できるクライアント
+
+| クライアント | 対応環境・特徴 | 手順 |
+| --- | --- | --- |
+| Web | ブラウザーから利用。狭い画面ではスワイプでチャンネルと会話を切り替え | [ローカル起動](#ローカルで始める) |
+| デスクトップ | Windows、macOS 13以降、Linux。各OSのx64・ARM64向けパッケージ構成を用意 | [デスクトップガイド](docs/DESKTOP.md) |
+| Android | Android 9以降の開発版。端末の画面ロックとHTTPSの接続先が必要 | [Androidガイド](docs/ANDROID.md) |
+
+パスキーの登録・ログイン・本人確認はWeb版で行います。履歴復元の新規設定にはPRF対応のパスキーが必要です。デスクトップ・Android版で履歴を復元する場合は、保管済みの復旧コードを使います。
+
+## ローカルで始める
+
+### 必要なもの
+
+- LinuxまたはmacOSのBash環境
+- Node.js **24.8.0以上**、pnpm **11.21.0**
+- 起動済みのDockerとDocker Composeプラグイン
+- OpenSSL、`sudo`でDockerを実行できる権限
+
+### 起動
+
+リポジトリのルートで実行します。
 
 ```bash
 ./dev.sh
 ```
 
-`.env` がなければ、scriptはmode `0600`のfileへrandomな開発用secretを生成します。その後、loopback限定のPostgreSQL/MinIOを起動し、MinIO専用app userを作成し、依存関係とmigrationを準備してclient/serverを起動します。既存volumeと新しいcredentialが一致しない場合もvolumeを自動削除しません。
+初回は開発用の認証情報を生成して`.env`に保存し、PostgreSQLとMinIOの起動、依存パッケージのインストール、データベースの移行、監査チェックポイントの初期化を行ってから、WebとAPIを起動します。Dockerの操作には`sudo docker compose`を使用します。
 
-- Web: `http://localhost:5173`
-- API: `http://localhost:3000`
-- Desktop（別terminal）: `pnpm dev:desktop` を実行し、初回画面へ `http://localhost:5173` を入力
-- Process停止: 実行中terminalで `Ctrl+C`
-- 依存serviceも停止: `./dev.sh down`
+| 接続先 | URL |
+| --- | --- |
+| Web | <http://localhost:5173> |
+| API | <http://localhost:3000> |
 
-Public self-registrationは既定で無効です。`.env` の `REGISTRATION_INVITE_SECRET` はdeployment最初のaccountだけを作るbootstrap secretです。通常の追加userは、workspace管理者がUIで発行する一回限り・期限付きtokenを安全なout-of-band経路で受け取ります。Email配送機能はありません。
+### 最初のワークスペースを作る
 
-音声通話は第三者ICE serviceを既定で利用しません。同一LAN外やNAT越しで確実に接続するには、operatorが管理するSTUN/TURNを `.env` の `VOICE_ICE_SERVERS_JSON` に設定してください。例えば `[{"urls":["turns:turn.example.test:5349?transport=tcp"],"username":"短命user","credential":"短命secret"}]` です。TURN credentialは参加clientへ渡るため、固定の管理credentialではなく短命credentialを使用してください。
+1. Web画面で「アカウント作成」を開きます。
+2. `.env`の`REGISTRATION_INVITE_SECRET`の値を「招待コード」に入力し、表示名・メールアドレス・パスワードを設定します。このコードで作成できるのは、そのサーバーの最初のアカウントだけです。
+3. ログイン後、左側の「＋」からワークスペースを作成します。最初のテキストチャンネル`general`が自動で作られます。
+4. ワークスペースの管理画面で「招待を管理」を開き、メンバー用の招待コードを発行します。受け取った人は、そのコードでアカウントを作成して参加できます。
 
-## 検証
+招待メールの自動送信はありません。発行したコードを相手に安全な方法で共有してください。既存アカウントで別のワークスペースへ参加する場合は、管理画面の「招待を受諾」から入力できます。
+
+別のブラウザーやアプリで同じアカウントを使う場合は、以前から使っている端末の「ログイン中の端末」で確認コードを照合して承認するか、設定済みの履歴復元を使って端末を追加します。履歴を引き継ぐための設定も、この画面の「履歴の復元」から行えます。復旧コードは端末とは別の安全な場所に保管してください。
+
+### デスクトップ・Androidで使う
+
+デスクトップは、`./dev.sh`を動かしたまま別のターミナルで起動します。
+
+```bash
+pnpm dev:desktop
+```
+
+初回画面の接続先には`http://localhost:5173`を入力します。アプリの画面は同梱され、ローカルの開発サーバーへ接続します。LinuxではOSの鍵保管サービスが必要です。
+
+Androidは、JDK 21とAndroid SDKなどを[Androidガイド](docs/ANDROID.md)に従って用意し、次のコマンドで開発用APKを作成します。
+
+```bash
+pnpm android:build
+```
+
+出力先は`packages/android/app/build/outputs/apk/debug/app-debug.apk`です。Androidからは端末が到達できるHTTPSのサーバーへ接続してください。ローカル起動時のHTTPアドレスは利用できません。
+
+### 停止と再開
+
+WebとAPIは実行中のターミナルで`Ctrl+C`を押すと停止します。PostgreSQLとMinIOも停止するには次を実行します。
+
+```bash
+./dev.sh down
+```
+
+再開は`./dev.sh`です。停止時にデータ用のボリュームは削除されません。生成された`.env`と`.local/audit-checkpoint.json`も保持してください。
+
+## サーバーの運用
+
+Alpartsのサーバーは、**1つのアプリケーションプロセス、PostgreSQL 16、MinIOなどのS3互換ストレージ**で構成します。Webクライアントの配信もサーバーに含まれます。コンテナー向けの[Dockerfile](Dockerfile)・[Compose構成](compose.production.yml)と、Linux向けの[systemdユニット](deploy/alparts.service)を用意しています。
+
+`docker-compose.yml`はローカル開発用のPostgreSQL・MinIOを起動します。`compose.production.yml`ではアプリケーションと移行処理を定義しており、データベース・ストレージ・HTTPSのリバースプロキシは別途用意します。
+
+- **接続と認証情報** — 公開するWeb/APIにはHTTPSを使い、`CORS_ORIGINS`に実際の接続元を設定します。認証情報は保護されたファイルから`*_FILE`で渡せます。設定項目は[環境変数の例](.env.example)を参照してください。
+- **音声通話** — 初期状態では外部の通話中継サービスを使いません。異なるネットワーク間での接続には、運用者が管理するSTUN/TURNを`VOICE_ICE_SERVERS_JSON`に設定します。TURNには参加者へ渡してよい短命の認証情報を使います。
+- **更新とバックアップ** — 更新時はアプリを停止し、バックアップと復元確認を行ってからデータベースを移行します。暗号化バックアップ、日次実行用のsystemdタイマー、隔離環境への復元確認ツールを同梱しています。
+- **監視と監査** — 起動・稼働・受付可否の確認用エンドポイント、認証付きメトリクス、操作履歴の整合性検証を備えています。監査チェックポイントは開発環境でも必要です。
+- **アプリの配布** — デスクトップのパッケージ化とAndroidのリリースビルドには、接続先の証明書固定設定が必要です。ビルド時の設定と更新時の注意は[配布・運用の設定ガイド](docs/security/AUDIT_ALPARTS_REMEDIATION.md#接続先のビルド設定)を参照してください。
+
+具体的な導入手順は[デプロイガイド](docs/policies/DEPLOYMENT.md)、日常の管理は[運用ガイド](docs/OPERATIONS.md)、データの保全は[バックアップと復元](docs/BACKUP.md)を参照してください。
+
+## 暗号化と現在の対応範囲
+
+本文、添付ファイルの内容、ファイル名は端末で暗号化します。送信者、参加者、投稿時刻、通信量などの情報はサーバーから確認できます。端末や配信されるWebアプリが侵害された場合まで、暗号化だけで保護できるわけではありません。
+
+端末の承認と参加者の変更に応じた鍵の更新を実装していますが、更新には対象となる承認済み端末すべての確認が必要です。オフラインの端末があると送信を待つ場合があります。また、過去の履歴を読むための鍵を保持するため、メッセージ単位の完全な前方秘匿性は保証していません。
+
+履歴の復元には事前の設定と保存が必要です。使える端末、復元用パスキー、復旧コードをすべて失うと、サーバー管理者でも本文を復元できません。方式と移行手順は[アカウント・端末・履歴の保護](docs/security/ACCOUNT_AND_GROUP_SECURITY.md)と[パスキー・復旧コードの設定](docs/security/AUDIT_ALPARTS_REMEDIATION.md#パスキーと復旧コード)に記載しています。
+
+現在は単一サーバー構成が対象です。複数アプリプロセスでの冗長化、自動フェイルオーバー、iOSアプリ、ビデオ通話・画面共有、Bot/Webhook、OIDCによるSSOは未対応です。Androidのバックグラウンド同期・Push通知、ネイティブ版のパスキー連携、自動更新の組み込みも残作業です。
+
+独立した外部セキュリティレビューは未完了です。未公開の脆弱性情報や認証情報など、漏えい時の影響が大きい秘密の共有には使用しないでください。詳しくは[既知の制限](docs/policies/LIMITATIONS.md)と[リスク一覧](docs/RISK_REGISTER.md)を参照してください。
+
+## 開発
+
+### コードの構成
+
+| パス | 内容 |
+| --- | --- |
+| [packages/client](packages/client) | React・TypeScript・Viteによる共通の画面、暗号化、端末内の状態管理 |
+| [packages/server](packages/server) | Node.js・ExpressのAPI、Socket.IO、認証・権限・監査、DrizzleによるDB管理 |
+| [packages/shared](packages/shared) | クライアントとサーバーで共有する型・定数・通信の定義 |
+| [packages/desktop](packages/desktop) | Electronアプリ、OSの鍵保管、ロック、ファイル保存 |
+| [packages/android](packages/android) | Androidアプリ、同梱画面、端末の鍵保管、ロック、ファイル選択・保存 |
+| [scripts](scripts) / [deploy](deploy) | バックアップ・復元・配布の検証ツール、systemd設定 |
+| [docs](docs) | 設計、運用、セキュリティ、検証記録 |
+
+### 基本の検証
 
 ```bash
 pnpm install --frozen-lockfile
+pnpm lint
 pnpm typecheck
 pnpm test
-pnpm --filter @alparts/server test:integration
-pnpm --filter @alparts/server test:account-security
-pnpm build
 pnpm test:backup-security
+pnpm test:release
+pnpm build
 pnpm security:secrets
-pnpm audit --prod --audit-level high
+pnpm audit --prod --audit-level moderate
 git diff --check
 ```
 
-DB integrationは、既存dataを含まない一意な使い捨てPostgreSQL/MinIOで実行してください。通常の `pnpm test` でintegration suiteがskipされた場合、それだけでfinal gateを通過したとは扱いません。
+データベースとストレージを使う結合テストは、通常の`pnpm test`とは別に実行します。[CIの構成](.github/workflows/ci.yml)に従って、使い捨てのPostgreSQL・MinIOと環境変数を用意してください。
 
-## Cryptoとlocal stateの境界
+```bash
+pnpm --filter @alparts/server test:integration
+pnpm --filter @alparts/server test:account-security
+```
 
-Message本文はAES-256-GCMで暗号化し、端末署名で送信元と文脈を検証します。新しい鍵は固定suiteのMLSライブラリを使って端末ごとに更新し、承認済みの全参加端末が確認した場合だけ送信に使えます。端末の承認・失効は検証可能な追記型履歴に残り、他端末の確認コードと照合できます。Web版のPasskeyと重要操作の再認証、利用者が保管する復旧コードによる暗号化履歴バックアップも実装しています。
+結合テストには既存データを含む環境を使わないでください。Androidのビルドとテストは`pnpm android:build`で実行します。開発時の方針とリリース前の確認事項は[開発ガイド](docs/policies/CONTRIBUTING.md)にまとめています。
 
-MLSはアプリの鍵epochごとに新しいgroupを作る構成です。保存済み履歴の鍵は保持するため、message単位の完全なforward secrecyや独立review済みという保証はありません。初回の端末一覧はTOFUで、独立witnessとnativeアプリのWebAuthn連携は残作業です。[方式・保証範囲・移行手順](./docs/security/ACCOUNT_AND_GROUP_SECURITY.md)を確認してください。
+## ドキュメント
 
-Web版では、device private keyとdraft/outbox用AES-GCM keyをnon-extractable WebCrypto `CryptoKey`としてsame-origin IndexedDBへ保存します。Desktop版ではprivate materialをOS保護領域でwrapし、IndexedDBには参照情報だけを置きます。どちらも実行中の正規clientは鍵を利用できるため、client code侵害への完全な防御ではありません。Searchはmemory上の読み込み済み復号messageだけを対象とし、永続暗号化indexや端末間同期はありません。
+- [ドキュメント一覧](docs/INDEX.md) — 設計・運用・検証資料の入口
+- [デスクトップ](docs/DESKTOP.md) / [Android](docs/ANDROID.md) — 各クライアントの起動・ビルド
+- [APIとリアルタイム通信](docs/api/README.md) — 開発者向けインターフェース
+- [セキュリティ対応記録](docs/security/AUDIT_ALPARTS_REMEDIATION.md) — 修正内容と導入時の設定
+- [セキュリティポリシー](docs/policies/SECURITY.md) — 脆弱性の報告方法
 
-## 運用
+## ライセンス
 
-- [Documentation index](./docs/INDEX.md): inventory、architecture、security、reliability、deployment、runbookへの入口
-- [Desktop client](./docs/DESKTOP.md): 開発起動、3 OS向けpackage、trust boundary、検証
-- [運用手順](./docs/policies/OPERATIONS.md): monitoring、migration、probe、audit checkpoint、shutdownの境界
-- [Backup / restore verification](./docs/BACKUP.md): migration前gate、age暗号化artifact、隔離restore
-- [Deployment](./docs/policies/DEPLOYMENT.md): development、single-host、air-gapped、cluster/multi-region非保証
-- [Disaster recovery](./docs/policies/DISASTER_RECOVERY.md): RPO/RTO objective、資産、復旧順序、演習
-- `Dockerfile`: non-root runtime、readiness healthcheck、production dependencyのみ
-- `compose.production.yml`: loopback publish、secret mount、read-only/cap-drop/resource limitのsingle-host profile
-- `deploy/alparts.service`: systemd credentials、read-only filesystem hardening、restart/backoff
-
-External公開時はTLS 1.3を優先するreverse proxyを使用し、PostgreSQL、MinIO、管理・監視endpointをpublic networkへ出さないでください。`AUDIT_CHECKPOINT_PATH` がPostgreSQL operatorとはwrite/delete権限を分離したmountにある場合だけ、checkpointをoperator-independentと呼べます。
-
-## Repository policy
-
-脆弱性の報告方法は [SECURITY.md](./docs/policies/SECURITY.md) を参照してください。過去の監査、完了済みstandard scan、2026-08-27に停止したDeep Scan、および2026-08-30にartifact packagingまで完了したcoverage-partial Deep Scanのfindingと修正結果は [SECURITY_AUDIT.md](./docs/policies/SECURITY_AUDIT.md) で分離しています。
-
-このrepositoryは現在 `UNLICENSED` であり、公開閲覧できること自体は利用・改変・再配布の許諾を意味しません。Project licenseの選定は権利者判断が必要な正式版TODOです。Production依存の機械的inventoryでは MIT / ISC / BSD-3-Clause / Apache-2.0 / BlueOak-1.0.0 を確認していますが、これはproject licenseの付与または法的助言ではありません。
-
-2026-09-17 の追加修正・移行条件は [SECURITY_AUDIT_2.md](./SECURITY_AUDIT_2.md) を参照してください。更新時はサーバーを停止し、独立した `PASSWORD_PEPPER` を設定してruntime migrationを実行します。開発環境を含め、外部監査checkpointが必須です。
+このリポジトリのライセンス表記は`UNLICENSED`です。ソースコードを閲覧できること自体は、利用・改変・再配布の許諾を意味しません。
