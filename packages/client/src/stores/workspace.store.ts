@@ -4,12 +4,14 @@ import type { Workspace, Category, WorkspaceMember } from '@alparts/shared';
 import { useChannelStore } from './channel.store';
 import { useMessageStore } from './message.store';
 import { usePresenceStore } from './presence.store';
+import type { WarnedUsers } from './profile-visibility';
 
 interface WorkspaceState {
   workspaces: Workspace[];
   activeWorkspaceId: string | null;
   categories: Category[];
   members: WorkspaceMember[];
+  warnedUsers: WarnedUsers | null;
   isLoading: boolean;
   error: string | null;
 
@@ -34,6 +36,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   activeWorkspaceId: null,
   categories: [],
   members: [],
+  warnedUsers: null,
   isLoading: false,
   error: null,
 
@@ -70,7 +73,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     selectionLoading = true;
     useMessageStore.getState().reset();
     useChannelStore.getState().reset();
-    set({ activeWorkspaceId: id, categories: [], members: [], isLoading: true, error: null });
+    set({ activeWorkspaceId: id, categories: [], members: [], warnedUsers: null, isLoading: true, error: null });
 
     try {
       const [categories, members, channels] = await Promise.all([
@@ -88,7 +91,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       if (generation !== workspaceSelectionGeneration || get().activeWorkspaceId !== id) return;
       useChannelStore.getState().reset();
       selectionLoading = false;
-      set({ categories: [], members: [], isLoading: listLoading, error: error instanceof Error ? error.message : 'ワークスペースを読み込めませんでした' });
+      set({ categories: [], members: [], warnedUsers: null, isLoading: listLoading, error: error instanceof Error ? error.message : 'ワークスペースを読み込めませんでした' });
     }
   },
 
@@ -112,9 +115,12 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   loadMembers: async (workspaceId) => {
     const generation = workspaceSelectionGeneration;
     try {
-      const members = await api.getWorkspaceMembers(workspaceId);
+      const [members, warned] = await Promise.all([
+        api.getWorkspaceMembers(workspaceId),
+        api.getWarnedUsers(workspaceId).catch(() => null),
+      ]);
       if (generation === workspaceSelectionGeneration && get().activeWorkspaceId === workspaceId) {
-        set({ members });
+        set({ members, warnedUsers: warned ? { ids: new Set(warned.userIds), complete: warned.complete } : null });
         // The list carries each member's current presence; events keep it fresh afterwards.
         usePresenceStore.getState().seedStatuses(
           Object.fromEntries(members.map((member) => [member.userId, member.user.status ?? 'offline'])),
@@ -149,6 +155,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         activeWorkspaceId: null,
         categories: [],
         members: [],
+        warnedUsers: null,
         isLoading: false,
         error: null,
       } : {}),
@@ -164,6 +171,6 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     workspaceSelectionGeneration += 1;
     listLoading = false;
     selectionLoading = false;
-    set({ workspaces: [], activeWorkspaceId: null, categories: [], members: [], isLoading: false, error: null });
+    set({ workspaces: [], activeWorkspaceId: null, categories: [], members: [], warnedUsers: null, isLoading: false, error: null });
   },
 }));

@@ -1,4 +1,4 @@
-import { crc32, inflateSync } from 'node:zlib';
+import { crc32, deflateSync, inflateSync } from 'node:zlib';
 import { z } from 'zod';
 
 export const MAX_BIO_CHARACTERS = 200;
@@ -24,16 +24,17 @@ const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0
 
 /**
  * Accepts only a 256x256, 8-bit RGB/RGBA, non-interlaced PNG whose chunks and
- * compressed pixel data are well formed, and returns it rebuilt from IHDR,
- * IDAT and IEND alone (text, colour-profile and every other ancillary chunk
- * is dropped). Clients re-encode through a canvas before upload; this is the
- * server-side check that nothing else is stored or served.
+ * compressed pixel data are well formed, and returns a new PNG encoded from
+ * the decoded pixels alone: IHDR, one freshly compressed IDAT and IEND.
+ * Nothing else from the upload survives (no ancillary chunks and no bytes
+ * hidden after the compressed stream), and equal pixels give equal bytes.
+ * Clients re-encode through a canvas before upload; this is the server-side
+ * guarantee for what is stored and served.
  */
 export function sanitizeAvatarPng(input: Buffer): Buffer {
   if (input.length > MAX_AVATAR_BYTES || input.length < PNG_SIGNATURE.length || !input.subarray(0, 8).equals(PNG_SIGNATURE)) {
     throw new Error('INVALID_AVATAR');
   }
-  const kept: Buffer[] = [];
   const idat: Buffer[] = [];
   let offset = 8;
   let header: Buffer | null = null;
@@ -49,21 +50,17 @@ export function sanitizeAvatarPng(input: Buffer): Buffer {
     if (crc32(data, crc32(input.subarray(offset + 4, offset + 8))) !== input.readUInt32BE(offset + 8 + length)) {
       throw new Error('INVALID_AVATAR');
     }
-    const chunk = input.subarray(offset, end);
     if (type === 'IHDR') {
       if (header || length !== 13) throw new Error('INVALID_AVATAR');
       header = data;
-      kept.push(chunk);
     } else if (!header) {
       throw new Error('INVALID_AVATAR');
     } else if (type === 'IDAT') {
       if (idatDone) throw new Error('INVALID_AVATAR');
       idat.push(data);
-      kept.push(chunk);
     } else if (type === 'IEND') {
       if (length !== 0 || idat.length === 0) throw new Error('INVALID_AVATAR');
       ended = true;
-      kept.push(chunk);
     } else if (type.charCodeAt(0) < 0x61) {
       throw new Error('INVALID_AVATAR');          // unknown critical chunk (e.g. PLTE is not expected)
     } else if (idat.length > 0) {
@@ -91,5 +88,19 @@ export function sanitizeAvatarPng(input: Buffer): Buffer {
   for (let row = 0; row < height; row += 1) {
     if (pixels[row * (expected / height)] > 4) throw new Error('INVALID_AVATAR');
   }
-  return Buffer.concat([PNG_SIGNATURE, ...kept]);
+  return Buffer.concat([
+    PNG_SIGNATURE,
+    pngChunk('IHDR', header),
+    pngChunk('IDAT', deflateSync(pixels, { level: 9 })),
+    pngChunk('IEND', Buffer.alloc(0)),
+  ]);
+}
+
+function pngChunk(type: string, data: Buffer): Buffer {
+  const chunk = Buffer.alloc(12 + data.length);
+  chunk.writeUInt32BE(data.length, 0);
+  chunk.write(type, 4, 'latin1');
+  data.copy(chunk, 8);
+  chunk.writeUInt32BE(crc32(data, crc32(chunk.subarray(4, 8))), 8 + data.length);
+  return chunk;
 }

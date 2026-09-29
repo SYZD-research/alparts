@@ -7,6 +7,7 @@ import { AttachmentItem } from './AttachmentItem';
 import { useChannelStore } from '../../stores/channel.store';
 import { buildMessagePermalink } from '../../stores/permalink-model';
 import { useWorkspaceStore } from '../../stores/workspace.store';
+import { isPictureHidden } from '../../stores/profile-visibility';
 import { messageMentionsCurrentUser } from '../../services/mention-model';
 import { MessageContent } from './MessageContent';
 import { userFacingMessageText } from '../../services/message-display';
@@ -44,11 +45,10 @@ export function MessageItem({ message, isFirst, onJumpToMessage }: Props) {
   ));
   const user = useAuthStore((state) => state.user);
   const workspaceMembers = useWorkspaceStore((state) => state.members);
-  // Pictures of profiles an administrator warned about stay hidden in lists.
-  const authorFlagged = Boolean(workspaceMembers.find((member) => member.userId === message.authorId)?.profileFlagged);
-  const referencedAuthorFlagged = Boolean(
-    referencedMessage && workspaceMembers.find((member) => member.userId === referencedMessage.authorId)?.profileFlagged,
-  );
+  const warnedUsers = useWorkspaceStore((state) => state.warnedUsers);
+  // Pictures of profiles an administrator warned about stay hidden, also for former members.
+  const authorFlagged = isPictureHidden(message.authorId, workspaceMembers, warnedUsers);
+  const referencedAuthorFlagged = Boolean(referencedMessage && isPictureHidden(referencedMessage.authorId, workspaceMembers, warnedUsers));
   const mentionMembers = useMemo(() => workspaceMembers.map((member) => ({
     userId: member.userId,
     displayName: member.user.displayName,

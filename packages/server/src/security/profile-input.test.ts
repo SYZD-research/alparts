@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { crc32, deflateSync } from 'node:zlib';
+import { crc32, deflateSync, inflateSync } from 'node:zlib';
 import { AVATAR_SIZE, MAX_AVATAR_BYTES, profileBio, sanitizeAvatarPng } from './profile-input.js';
 
 function chunk(type: string, data: Buffer = Buffer.alloc(0), badCrc = false): Buffer {
@@ -39,6 +39,23 @@ describe('avatar PNG sanitizer', () => {
     assert.equal(output.includes(Buffer.from('eXIf')), false);
     assert.deepEqual(sanitizeAvatarPng(output), output, 'the result is itself a valid avatar');
     assert.equal(sanitizeAvatarPng(png(ihdr(AVATAR_SIZE, AVATAR_SIZE, 2), chunk('IDAT', pixels(AVATAR_SIZE, AVATAR_SIZE, 3)), chunk('IEND'))).length > 0, true);
+  });
+
+  it('stores only re-encoded pixels, never bytes hidden after the compressed stream', () => {
+    const hidden = Buffer.from('<script>alert(1)</script>'.repeat(40));
+    const plain = sanitizeAvatarPng(png(ihdr(), chunk('IDAT', pixels()), chunk('IEND')));
+    for (const trailer of [hidden, deflateSync(hidden)]) {
+      const output = sanitizeAvatarPng(png(ihdr(), chunk('IDAT', Buffer.concat([pixels(), trailer])), chunk('IEND')));
+      assert.equal(output.includes(hidden.subarray(0, 25)), false);
+      assert.deepEqual(output, plain, 'equal pixels give equal bytes');
+    }
+    // One IDAT whose compressed stream ends exactly at the chunk end.
+    const idatLength = plain.readUInt32BE(33);
+    assert.equal(plain.toString('latin1', 37, 41), 'IDAT');
+    const idat = plain.subarray(41, 41 + idatLength);
+    const { engine } = inflateSync(idat, { info: true }) as unknown as { engine: { bytesWritten: number } };
+    assert.equal(engine.bytesWritten, idat.length);
+    assert.equal(plain.toString('latin1', 41 + idatLength + 8, 41 + idatLength + 12), 'IEND');
   });
 
   it('rejects anything that is not exactly the expected image', () => {

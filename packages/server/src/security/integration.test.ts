@@ -1156,6 +1156,8 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
     const servedBytes = Buffer.from(await servedAvatar.arrayBuffer());
     assert.equal(servedBytes.includes(Buffer.from('home address')), false, 'embedded text is removed before storage');
     assert.equal((await request(avatarUrl.replace(/[0-9a-f-]{36}$/, randomUUID()), { cookie: profileOwner.cookie })).status, 404);
+    const sameAvatar = await request('/api/profile/avatar', { method: 'PUT', cookie: subject.cookie, body: avatarPng, contentType: 'image/png' });
+    assert.equal((await json<{ avatarUrl: string }>(sameAvatar)).avatarUrl, avatarUrl, 'the picture already in use is not stored again');
     assert.equal((await fetch(`${baseUrl}${avatarUrl}`, { headers: { Origin: 'http://localhost:5173' } })).status, 401);
     assert.equal((await request(avatarUrl, { cookie: mallory.cookie })).status, 404, 'no shared workspace, no avatar');
     const profileMembers = await json<Array<{ userId: string; user: { displayName: string; avatarUrl: string | null } }>>(
@@ -1187,6 +1189,14 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
     const needsChange = await request(appealPath, { method: 'POST', cookie: subject.cookie, body: {} });
     assert.equal(needsChange.status, 409);
     assert.equal((await json<{ error: string }>(needsChange)).error, 'PROFILE_APPEAL_NEEDS_CHANGE');
+    // Saving the same name, text or picture is not a change.
+    assert.equal((await request('/api/profile', {
+      method: 'PATCH', cookie: subject.cookie, body: { displayName: 'Subject Renamed', bio: 'こんにちは\nよろしくお願いします' },
+    })).status, 200);
+    assert.equal((await request('/api/profile/avatar', { method: 'PUT', cookie: subject.cookie, body: avatarPng, contentType: 'image/png' })).status, 200);
+    assert.equal((await json<{ flags: Array<{ canAppeal: boolean }> }>(await request('/api/profile', { cookie: subject.cookie }))).flags[0].canAppeal, false);
+    assert.equal((await json<{ error: string }>(await request(appealPath, { method: 'POST', cookie: subject.cookie, body: {} }))).error,
+      'PROFILE_APPEAL_NEEDS_CHANGE');
     assert.equal((await request('/api/profile', { method: 'PATCH', cookie: subject.cookie, body: { bio: '内容を見直しました' } })).status, 200);
     assert.equal((await json<{ flags: Array<{ canAppeal: boolean }> }>(await request('/api/profile', { cookie: subject.cookie }))).flags[0].canAppeal, true);
     const appealNotice = onceSocketEventMatching<{ kind: string; workspaceId: string; channelId: string | null }>(
@@ -1227,6 +1237,20 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
     }
     assert.equal((await request('/api/profile/avatar', { method: 'DELETE', cookie: subject.cookie })).status, 200);
     assert.equal((await request(avatarUrl, { cookie: profileOwner.cookie })).status, 404);
+
+    // A warned member who leaves stays listed, so their old messages keep the picture hidden.
+    assert.equal((await request(`/api/workspaces/${profileWorkspace.id}/members/${subject.user.id}/profile-flag`, {
+      method: 'PUT', cookie: profileOwner.cookie, body: {},
+    })).status, 200);
+    assert.equal((await request(`/api/workspaces/${profileWorkspace.id}/members/${subject.user.id}`, {
+      method: 'DELETE', cookie: profileOwner.cookie,
+    })).status, 200);
+    const warnedAfterLeaving = await json<{ userIds: string[]; complete: boolean }>(
+      await request(`/api/workspaces/${profileWorkspace.id}/warned-users`, { cookie: profileOwner.cookie }),
+    );
+    assert.deepEqual(warnedAfterLeaving, { userIds: [subject.user.id], complete: true });
+    assert.equal((await request(`/api/workspaces/${profileWorkspace.id}/warned-users`, { cookie: mallory.cookie })).status >= 400, true,
+      'only members see who is warned');
 
     ownerSocket.disconnect();
 
