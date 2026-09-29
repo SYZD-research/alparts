@@ -699,6 +699,10 @@ class ApiService {
     return this.request<MemberProfile>(`/workspaces/${workspaceId}/members/${userId}/profile`);
   }
 
+  async getWarnedUsers(workspaceId: string) {
+    return this.request<{ userIds: string[]; complete: boolean }>(`/workspaces/${workspaceId}/warned-users`);
+  }
+
   async listProfileFlags(workspaceId: string) {
     return this.request<ProfileFlagEntry[]>(`/workspaces/${workspaceId}/profile-flags`);
   }

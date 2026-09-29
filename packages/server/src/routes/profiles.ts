@@ -142,6 +142,10 @@ router.get('/workspaces/:wid/profile-flags', authMiddleware, requireWorkspaceMem
   res.json(await profileService.listProfileFlags(req.params.wid, req.userId!));
 }));
 
+router.get('/workspaces/:wid/warned-users', authMiddleware, requireWorkspaceMembership('wid'), handle(async (req, res) => {
+  res.json(await profileService.listWarnedUserIds(req.params.wid));
+}));
+
 function announceFlags(req: Request, workspaceId: string) {
   io(req)?.to(`workspace:${workspaceId}`).emit('workspace:profile-flags-changed', { workspaceId });
 }

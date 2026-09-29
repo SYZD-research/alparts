@@ -1,12 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import type { Readable } from 'node:stream';
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { Permissions, type MemberProfile, type OwnProfile, type ProfileAppealStatus, type ProfileFlagEntry } from '@alparts/shared';
 import { db } from '../db/index.js';
 import { profileFlags, users, workspaceMembers, workspaces } from '../db/schema.js';
 import { auditedTransaction } from '../middleware/audit.js';
 import { MAX_WORKSPACE_MEMBERS, MAX_WORKSPACE_MEMBERSHIPS_PER_USER } from '../security/limits.js';
-import { sanitizeAvatarPng } from '../security/profile-input.js';
+import { MAX_AVATAR_BYTES, sanitizeAvatarPng } from '../security/profile-input.js';
 import {
   getWorkspaceAuthorizationFromSnapshot,
   loadWorkspaceAuthorizationSnapshot,
@@ -30,19 +30,70 @@ export async function workspaceIdsOf(userId: string): Promise<string[]> {
   return rows.map((row) => row.workspaceId);
 }
 
+/**
+ * A save that changes nothing leaves profileUpdatedAt alone: that timestamp is
+ * what allows a warned user to ask for the warning to be lifted. It is taken
+ * from the database clock, like profile_flags.flagged_at, so the two compare
+ * without depending on the application host's clock.
+ */
 export async function updateProfile(userId: string, input: { displayName?: string; bio?: string }) {
+  const bio = input.bio === undefined ? undefined : input.bio.length > 0 ? input.bio : null;
+  const current = await db.query.users.findFirst({ columns: { displayName: true, bio: true }, where: eq(users.id, userId) });
+  if (!current) throw new Error('USER_NOT_FOUND');
+  if ((input.displayName === undefined || input.displayName === current.displayName)
+    && (bio === undefined || bio === current.bio)) {
+    return;
+  }
   await auditedTransaction(async (tx) => {
-    const set: Partial<typeof users.$inferInsert> = { profileUpdatedAt: new Date(), updatedAt: new Date() };
+    const set: Partial<typeof users.$inferInsert> = { profileUpdatedAt: sql`now()` as unknown as Date, updatedAt: new Date() };
     if (input.displayName !== undefined) set.displayName = input.displayName;
-    if (input.bio !== undefined) set.bio = input.bio.length > 0 ? input.bio : null;
+    if (bio !== undefined) set.bio = bio;
     const updated = await tx.update(users).set(set).where(eq(users.id, userId)).returning({ id: users.id });
     if (updated.length !== 1) throw new Error('USER_NOT_FOUND');
     return null;
   }, () => ({ actorId: userId, action: 'user.profile.update', targetType: 'user', targetId: userId }));
 }
 
+/** Uploading the picture already in use changes nothing (sanitized bytes are canonical). */
+async function isCurrentAvatar(userId: string, image: Buffer): Promise<string | null> {
+  const user = await db.query.users.findFirst({ columns: { avatarObjectKey: true, avatarUrl: true }, where: eq(users.id, userId) });
+  if (!user) throw new Error('USER_NOT_FOUND');
+  if (!user.avatarObjectKey || !user.avatarUrl) return null;
+  try {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    for await (const part of await getStoredObject(user.avatarObjectKey)) {
+      const buffer = Buffer.isBuffer(part) ? part : Buffer.from(part);
+      size += buffer.length;
+      if (size > MAX_AVATAR_BYTES) return null;
+      chunks.push(buffer);
+    }
+    return Buffer.concat(chunks).equals(image) ? user.avatarUrl : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The avatar key the row settles on. FOR UPDATE waits for a transaction that
+ * is still committing on another connection, so the answer is final. Returns
+ * undefined when the row cannot be read.
+ */
+async function settledAvatarKey(userId: string): Promise<string | null | undefined> {
+  try {
+    return await db.transaction(async (tx) => {
+      const [row] = await tx.select({ key: users.avatarObjectKey }).from(users).where(eq(users.id, userId)).for('update');
+      return row ? row.key : null;
+    });
+  } catch {
+    return undefined;
+  }
+}
+
 export async function setAvatar(userId: string, upload: Buffer) {
   const image = sanitizeAvatarPng(upload);
+  const unchanged = await isCurrentAvatar(userId, image);
+  if (unchanged) return { avatarUrl: unchanged };
   const version = randomUUID();
   const objectKey = `avatars/v1/${userId}/${version}`;
   await putStoredObject(objectKey, image);
@@ -55,13 +106,22 @@ export async function setAvatar(userId: string, upload: Buffer) {
       await tx.update(users).set({
         avatarObjectKey: objectKey,
         avatarUrl: avatarPath(userId, version),
-        profileUpdatedAt: new Date(),
+        profileUpdatedAt: sql`now()` as unknown as Date,
         updatedAt: new Date(),
       }).where(eq(users.id, userId));
       return null;
     }, () => ({ actorId: userId, action: 'user.avatar.update', targetType: 'user', targetId: userId }));
   } catch (error) {
-    await removeStoredObjectBestEffort(objectKey);
+    // An error does not prove the commit failed (the connection can drop
+    // after COMMIT). Delete the new object only when the row is known not to
+    // reference it: a referenced missing object would break the avatar and
+    // stop backups. When the row cannot be read, the object is left behind.
+    const referenced = await settledAvatarKey(userId);
+    if (referenced === objectKey) {
+      if (previousKey) await removeStoredObjectBestEffort(previousKey);
+      return { avatarUrl: avatarPath(userId, version) };
+    }
+    if (referenced !== undefined) await removeStoredObjectBestEffort(objectKey);
     throw error;
   }
   if (previousKey) await removeStoredObjectBestEffort(previousKey);
@@ -69,12 +129,15 @@ export async function setAvatar(userId: string, upload: Buffer) {
 }
 
 export async function removeAvatar(userId: string) {
+  const current = await db.query.users.findFirst({ columns: { avatarObjectKey: true }, where: eq(users.id, userId) });
+  if (!current) throw new Error('USER_NOT_FOUND');
+  if (!current.avatarObjectKey) return;
   let previousKey: string | null = null;
   await auditedTransaction(async (tx) => {
-    const [current] = await tx.select({ key: users.avatarObjectKey }).from(users).where(eq(users.id, userId)).for('update');
-    if (!current) throw new Error('USER_NOT_FOUND');
-    previousKey = current.key;
-    await tx.update(users).set({ avatarObjectKey: null, avatarUrl: null, profileUpdatedAt: new Date(), updatedAt: new Date() })
+    const [locked] = await tx.select({ key: users.avatarObjectKey }).from(users).where(eq(users.id, userId)).for('update');
+    if (!locked) throw new Error('USER_NOT_FOUND');
+    previousKey = locked.key;
+    await tx.update(users).set({ avatarObjectKey: null, avatarUrl: null, profileUpdatedAt: sql`now()` as unknown as Date, updatedAt: new Date() })
       .where(eq(users.id, userId));
     return null;
   }, () => ({ actorId: userId, action: 'user.avatar.remove', targetType: 'user', targetId: userId }));
@@ -208,6 +271,24 @@ export async function listProfileFlags(workspaceId: string, actorId: string): Pr
     appealStatus: row.appealStatus as ProfileAppealStatus,
     appealRequestedAt: row.appealRequestedAt?.toISOString() ?? null,
   }));
+}
+
+export const MAX_WARNED_USER_IDS = 1000;
+
+/**
+ * Users warned in this workspace, including former members whose messages
+ * remain, so clients can hide their pictures everywhere in it. `complete` is
+ * false when the list was cut; clients then treat unknown non-members as warned.
+ */
+export async function listWarnedUserIds(workspaceId: string): Promise<{ userIds: string[]; complete: boolean }> {
+  const rows = await db.select({ userId: profileFlags.userId }).from(profileFlags)
+    .where(eq(profileFlags.workspaceId, workspaceId))
+    .orderBy(desc(profileFlags.flaggedAt))
+    .limit(MAX_WARNED_USER_IDS + 1);
+  return {
+    userIds: rows.slice(0, MAX_WARNED_USER_IDS).map((row) => row.userId),
+    complete: rows.length <= MAX_WARNED_USER_IDS,
+  };
 }
 
 export async function flagProfile(workspaceId: string, actorId: string, userId: string) {

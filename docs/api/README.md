@@ -51,13 +51,14 @@ This is an inventory, not a stable public OpenAPI contract. No formal API versio
 
 | Paths | Responsibility |
 | --- | --- |
-| `GET/PATCH /api/profile` | own display name, plain-text bio (≤200 code points, ≤5 lines; control/format/line-separator characters rejected) and warnings on the own profile per workspace; 30 updates/hour |
-| `PUT/DELETE /api/profile/avatar` | replace/remove the avatar; body is raw `image/png`, exactly 256×256, ≤320 KiB, re-emitted with only IHDR/IDAT/IEND; the previous object is deleted immediately; 10 uploads/hour |
+| `GET/PATCH /api/profile` | own display name, plain-text bio (≤200 code points, ≤5 lines; control/format/line-separator characters rejected) and warnings on the own profile per workspace; 30 updates/hour. A save that changes nothing is not recorded and does not count as a change |
+| `PUT/DELETE /api/profile/avatar` | replace/remove the avatar; body is raw `image/png`, exactly 256×256, ≤320 KiB; the decoded pixels are re-encoded into a fresh IHDR/IDAT/IEND PNG (nothing else from the upload is kept); re-uploading the picture in use is a no-op; the previous object is deleted immediately; 10 uploads/hour |
 | `GET /api/users/:userId/avatar/:version` | avatar bytes for oneself or a user sharing a workspace, else 404; `private, max-age=86400, immutable`, `nosniff`, `default-src 'none'; sandbox`, same-origin CORP |
 | `GET /api/workspaces/:wid/members/:userId/profile` | member profile; for a warned profile the bio and avatar are returned and the client withholds them until the viewer confirms |
 | `GET /api/workspaces/:wid/profile-flags` | warned profiles in this workspace (MANAGE_MEMBERS or owner) |
+| `GET /api/workspaces/:wid/warned-users` | any member: IDs of users warned in this workspace, including former members whose messages remain (newest 1,000; `complete: false` when cut, and clients then hide pictures of unlisted non-members) |
 | `PUT/DELETE /api/workspaces/:wid/members/:userId/profile-flag`, `POST .../profile-flag/deny` | warn/clear/deny an appeal; MANAGE_MEMBERS or owner, target strictly below the actor (owner never), step-up required |
-| `POST /api/workspaces/:wid/profile-flag/appeal` | the warned user asks this workspace's managers to clear the warning; only after editing the profile following the warning, and once per account across all workspaces |
+| `POST /api/workspaces/:wid/profile-flag/appeal` | the warned user asks this workspace's managers to clear the warning; only after actually changing the profile following the warning (both times come from the database clock), and once per account across all workspaces |
 
 Bio, display name and avatar are server-readable profile data, not end-to-end encrypted. Profile edits audit only actor/action/time (`user.profile.update`, `user.avatar.update|remove`, no content). Warning operations audit actor, target and workspace (`profile.flag|unflag`, `profile.appeal.request|deny`).
 

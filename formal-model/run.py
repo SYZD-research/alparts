@@ -21,6 +21,7 @@ MODELS = {
     'M3': ('m3_key_epochs', 'channel key epochs'),
     'M4': ('m4_devices', 'devices and sessions'),
     'M5': ('m5_audit', 'audit chain'),
+    'M6': ('m6_profiles', 'profiles, avatars and profile warnings'),
 }
 
 
