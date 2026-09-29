@@ -1,5 +1,8 @@
 import { solveLoginChallenge } from './login-challenge';
 import type {
+  MemberProfile,
+  OwnProfile,
+  ProfileFlagEntry,
   Attachment,
   Category,
   Channel,
@@ -662,6 +665,64 @@ class ApiService {
 
   async getWorkspaceMembers(id: string) {
     return this.request<WorkspaceMember[]>(`/workspaces/${id}/members`);
+  }
+
+  // Profiles
+  async getOwnProfile() {
+    return this.request<OwnProfile>('/profile');
+  }
+
+  async updateOwnProfile(input: { displayName?: string; bio?: string }) {
+    return this.request<OwnProfile>('/profile', { method: 'PATCH', body: JSON.stringify(input) });
+  }
+
+  async uploadAvatar(png: Blob) {
+    return this.request<{ avatarUrl: string }>('/profile/avatar', {
+      method: 'PUT',
+      body: png,
+      headers: { 'Content-Type': 'image/png' },
+    });
+  }
+
+  async removeAvatar() {
+    return this.request<{ success: boolean }>('/profile/avatar', { method: 'DELETE' });
+  }
+
+  /** Only server-issued avatar paths are fetched. */
+  async getAvatarBytes(avatarUrl: string) {
+    const match = /^\/api(\/users\/[0-9a-f-]{36}\/avatar\/[0-9a-f-]{36})$/.exec(avatarUrl);
+    if (!match) throw new Error('INVALID_AVATAR_URL');
+    return this.requestArrayBuffer(match[1]);
+  }
+
+  async getMemberProfile(workspaceId: string, userId: string) {
+    return this.request<MemberProfile>(`/workspaces/${workspaceId}/members/${userId}/profile`);
+  }
+
+  async listProfileFlags(workspaceId: string) {
+    return this.request<ProfileFlagEntry[]>(`/workspaces/${workspaceId}/profile-flags`);
+  }
+
+  async flagProfile(workspaceId: string, userId: string) {
+    return this.request<{ success: boolean }>(`/workspaces/${workspaceId}/members/${userId}/profile-flag`, {
+      method: 'PUT', body: JSON.stringify({}),
+    });
+  }
+
+  async unflagProfile(workspaceId: string, userId: string) {
+    return this.request<{ success: boolean }>(`/workspaces/${workspaceId}/members/${userId}/profile-flag`, { method: 'DELETE' });
+  }
+
+  async denyProfileAppeal(workspaceId: string, userId: string) {
+    return this.request<{ success: boolean }>(`/workspaces/${workspaceId}/members/${userId}/profile-flag/deny`, {
+      method: 'POST', body: JSON.stringify({}),
+    });
+  }
+
+  async requestProfileAppeal(workspaceId: string) {
+    return this.request<{ success: boolean }>(`/workspaces/${workspaceId}/profile-flag/appeal`, {
+      method: 'POST', body: JSON.stringify({}),
+    });
   }
 
   async getWorkspaceChannelState(workspaceId: string) {

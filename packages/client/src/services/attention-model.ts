@@ -10,8 +10,11 @@ export function parseAttentionNotification(value: unknown): WsAttentionNotificat
   if (
     typeof candidate.notificationId !== 'string' || !UUID.test(candidate.notificationId)
     || typeof candidate.workspaceId !== 'string' || !UUID.test(candidate.workspaceId)
-    || typeof candidate.channelId !== 'string' || !UUID.test(candidate.channelId)
-    || (candidate.kind !== 'mention' && candidate.kind !== 'reply' && candidate.kind !== 'channel-restarted')
+    || !(['mention', 'reply', 'channel-restarted', 'profile-appeal'] as unknown[]).includes(candidate.kind)
+    // Only a profile appeal concerns a member instead of a channel.
+    || (candidate.kind === 'profile-appeal'
+      ? candidate.channelId !== null
+      : typeof candidate.channelId !== 'string' || !UUID.test(candidate.channelId))
   ) return null;
   return candidate as unknown as WsAttentionNotification;
 }

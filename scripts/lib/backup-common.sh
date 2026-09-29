@@ -526,6 +526,14 @@ write_object_references() {
       >> "$output_file"
   fi
 
+  if column_exists "$service_file" "$service_name" 'users' 'avatar_object_key'; then
+    postgres_with_service "$service_file" "$service_name" \
+      psql -X --no-psqlrc --quiet --tuples-only --no-align \
+      --field-separator=$'\t' --set=ON_ERROR_STOP=1 \
+      --command "SELECT 'avatar', id::text, avatar_object_key, '1' FROM public.users WHERE avatar_object_key IS NOT NULL ORDER BY id;" \
+      >> "$output_file"
+  fi
+
   LC_ALL=C sort -o "$output_file" "$output_file"
   validate_object_references_file "$output_file"
 }
@@ -533,7 +541,7 @@ write_object_references() {
 validate_object_references_file() {
   local references_file="$1"
   if [[ -s "$references_file" ]] && ! awk -F '\t' '
-    NF != 4 || $1 !~ /^(attachment|thumbnail|upload_chunk)$/ ||
+    NF != 4 || $1 !~ /^(attachment|thumbnail|upload_chunk|avatar)$/ ||
       $2 !~ /^[a-f0-9-]+(:[0-9]+)?$/ ||
       $3 !~ /^[A-Za-z0-9][A-Za-z0-9._\/-]*$/ ||
       $3 ~ /(^|\/)\.\.?($|\/)/ || $4 !~ /^[1-9][0-9]*$/ { exit 1 }
@@ -603,7 +611,7 @@ verify_object_references() {
         [[ "$actual_count" == "$expected_count" ]] \
           || backup_die "Attachment ${reference_id} expected ${expected_count} object chunk(s), found ${actual_count}"
         ;;
-      thumbnail|upload_chunk)
+      thumbnail|upload_chunk|avatar)
         [[ -f "$object_root/$object_key" ]] \
           || backup_die "${kind} ${reference_id} has no corresponding object"
         ;;

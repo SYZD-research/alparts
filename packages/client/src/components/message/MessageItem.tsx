@@ -13,6 +13,8 @@ import { userFacingMessageText } from '../../services/message-display';
 import { useHorizontalSwipe } from '../../hooks/useHorizontalSwipe';
 import { canSwipeMessage, messageSwipeAction } from './message-swipe-model';
 import { formatDateParts } from '../../stores/date-format';
+import { useUiStore } from '../../stores/ui.store';
+import { UserAvatar } from '../user/UserAvatar';
 
 interface Props {
   message: Message;
@@ -25,6 +27,8 @@ export function MessageItem({ message, isFirst, onJumpToMessage }: Props) {
   const [bookmarkFailure, setBookmarkFailure] = useState<string | null>(null);
   const [copyStatus, setCopyStatus] = useState<string | null>(null);
   const [fallbackLink, setFallbackLink] = useState<string | null>(null);
+  const activeWorkspaceId = useWorkspaceStore((state) => state.activeWorkspaceId);
+  const openMemberProfile = useUiStore((state) => state.openMemberProfile);
   const deleteMessage = useMessageStore((state) => state.deleteMessage);
   const toggleReaction = useMessageStore((state) => state.toggleReaction);
   const pinMessage = useMessageStore((state) => state.pinMessage);
@@ -40,6 +44,11 @@ export function MessageItem({ message, isFirst, onJumpToMessage }: Props) {
   ));
   const user = useAuthStore((state) => state.user);
   const workspaceMembers = useWorkspaceStore((state) => state.members);
+  // Pictures of profiles an administrator warned about stay hidden in lists.
+  const authorFlagged = Boolean(workspaceMembers.find((member) => member.userId === message.authorId)?.profileFlagged);
+  const referencedAuthorFlagged = Boolean(
+    referencedMessage && workspaceMembers.find((member) => member.userId === referencedMessage.authorId)?.profileFlagged,
+  );
   const mentionMembers = useMemo(() => workspaceMembers.map((member) => ({
     userId: member.userId,
     displayName: member.user.displayName,
@@ -183,9 +192,12 @@ export function MessageItem({ message, isFirst, onJumpToMessage }: Props) {
         style={{ transform: swipe.isDragging ? `translateX(${Math.max(-184, swipe.offsetX)}px)` : undefined }}
       >
         {isFirst ? (
-          <div className={`flex-shrink-0 w-10 h-10 rounded-full bg-discord-accent flex items-center justify-center text-white font-bold ${message.refMessageId ? 'mt-6' : 'mt-0.5'}`}>
-            {(message.author?.displayName || '?').slice(0, 1).toUpperCase()}
-          </div>
+          <UserAvatar
+            displayName={message.author?.displayName || '?'}
+            avatarUrl={message.author?.avatarUrl}
+            hidden={authorFlagged}
+            className={message.refMessageId ? 'mt-6' : 'mt-0.5'}
+          />
         ) : (
           <div className={`flex-shrink-0 w-10 text-xs text-discord-muted text-center opacity-0 group-hover:opacity-100 ${message.refMessageId ? 'pt-7' : 'pt-1'}`}>
             {timestamp}
@@ -202,9 +214,12 @@ export function MessageItem({ message, isFirst, onJumpToMessage }: Props) {
               aria-label="返信先のメッセージへ移動"
             >
               <span aria-hidden="true" className="absolute -left-9 top-1/2 h-4 w-9 -translate-y-px rounded-tl-md border-l-2 border-t-2 border-discord-hover" />
-              <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-discord-accent text-[9px] font-bold text-white">
-                {(referencedMessage?.author?.displayName || '?').slice(0, 1).toUpperCase()}
-              </span>
+              <UserAvatar
+                displayName={referencedMessage?.author?.displayName || '?'}
+                avatarUrl={referencedMessage?.author?.avatarUrl}
+                hidden={referencedAuthorFlagged}
+                size="xs"
+              />
               {referencedMessage ? (
                 <>
                   <span className="shrink-0 font-semibold text-discord-text">{referencedMessage.author?.displayName || '不明なユーザー'}</span>
@@ -221,9 +236,13 @@ export function MessageItem({ message, isFirst, onJumpToMessage }: Props) {
           )}
           {isFirst && (
             <div className="flex items-baseline gap-2 mb-0.5">
-              <span className="font-medium text-white hover:underline cursor-pointer">
+              <button
+                type="button"
+                onClick={() => { if (activeWorkspaceId) openMemberProfile(activeWorkspaceId, message.authorId); }}
+                className="font-medium text-white hover:underline"
+              >
                 {message.author?.displayName || '不明なユーザー'}
-              </span>
+              </button>
               <span className="text-xs text-discord-muted">
                 {date} {timestamp}
               </span>

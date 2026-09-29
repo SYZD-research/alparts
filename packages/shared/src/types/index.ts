@@ -70,6 +70,8 @@ export interface WorkspaceMember {
   workspaceId: string;
   userId: string;
   user: PublicUser;
+  /** An administrator of this workspace marked the profile; show it only after confirmation. */
+  profileFlagged?: boolean;
   roles: Role[];
   joinedAt: string;
 }
@@ -351,14 +353,53 @@ export interface WsKeyRotated {
 }
 
 /** `channel-restarted`: sent to managers when a member restarted a channel whose history no device could show. */
-export type AttentionNotificationKind = 'mention' | 'reply' | 'channel-restarted';
+export type AttentionNotificationKind = 'mention' | 'reply' | 'channel-restarted' | 'profile-appeal';
 
 /** A content-free realtime notification. Message plaintext is never included. */
 export interface WsAttentionNotification {
   notificationId: string;
   workspaceId: string;
-  channelId: string;
+  /** null only for 'profile-appeal', which concerns a member rather than a channel. */
+  channelId: string | null;
   kind: AttentionNotificationKind;
+}
+
+// === Profiles ===
+
+export type ProfileAppealStatus = 'none' | 'pending' | 'denied';
+
+export interface MemberProfile {
+  userId: string;
+  displayName: string;
+  avatarUrl: string | null;
+  bio: string | null;
+  flagged: boolean;
+  /** Present only for viewers who may manage the warning. */
+  appealStatus?: ProfileAppealStatus;
+  canManageFlag: boolean;
+}
+
+export interface OwnProfile {
+  displayName: string;
+  avatarUrl: string | null;
+  bio: string | null;
+  /** The one lifetime request to lift a warning has been used. */
+  appealUsed: boolean;
+  flags: Array<{
+    workspaceId: string;
+    workspaceName: string;
+    appealStatus: ProfileAppealStatus;
+    /** Changed since the warning, and the lifetime request is unused. */
+    canAppeal: boolean;
+  }>;
+}
+
+export interface ProfileFlagEntry {
+  userId: string;
+  displayName: string;
+  flaggedAt: string;
+  appealStatus: ProfileAppealStatus;
+  appealRequestedAt: string | null;
 }
 
 // === API Responses ===

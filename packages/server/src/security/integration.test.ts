@@ -16,6 +16,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
+import { crc32, deflateSync } from 'node:zlib';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import pg from 'pg';
 import {
@@ -63,7 +64,7 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
     const auditModule = await import('../middleware/audit.js');
     const dbModule = await import('../db/index.js');
     closeDb = dbModule.closeDb;
-    assert.equal(await dbModule.checkDatabaseSchema(), 19);
+    assert.equal(await dbModule.checkDatabaseSchema(), 20);
     verifyAuditChain = auditModule.verifyAuditChain;
     await auditModule.provisionAuditCheckpoint();
     const startupAudit = await verifyAuditChain();
@@ -1072,6 +1073,163 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
     presenceSocket.disconnect();
     assert.equal((await bobOffline).status, 'offline');
     assert.equal(await memberStatusOf(bob.user.id), 'offline');
+
+    // Profiles: display name, self-introduction and avatar, visible only to
+    // people who share a workspace; workspace-scoped warnings with a single
+    // lifetime request to lift one. A dedicated owner keeps this independent.
+    const profileHost = await json<{ id: string }>(await request('/api/workspaces', {
+      method: 'POST', cookie: mallory.cookie, body: { name: 'Profile host' },
+    }));
+    const profileOwnerInvitation = await createWorkspaceInvitation(profileHost.id, mallory.cookie, 'profile-owner@example.test');
+    const profileOwner = await createAccount('profile-owner@example.test', 'Correct-Horse-Battery-13!', 'Profile Owner', profileOwnerInvitation.token);
+    await registerDevice(profileOwner, deviceFixture(), 'Profile owner device');
+    const profileWorkspace = await json<{ id: string }>(await request('/api/workspaces', {
+      method: 'POST', cookie: profileOwner.cookie, body: { name: 'Profiles' },
+    }));
+    const secondProfileWorkspace = await json<{ id: string }>(await request('/api/workspaces', {
+      method: 'POST', cookie: profileOwner.cookie, body: { name: 'Profiles Two' },
+    }));
+    const subjectInvitation = await createWorkspaceInvitation(profileWorkspace.id, profileOwner.cookie, 'profile-subject@example.test');
+    const subject = await createAccount('profile-subject@example.test', 'Correct-Horse-Battery-12!', 'Subject', subjectInvitation.token);
+    await registerDevice(subject, deviceFixture(), 'Profile subject device');
+    const secondSubjectInvitation = await createWorkspaceInvitation(secondProfileWorkspace.id, profileOwner.cookie, 'profile-subject@example.test');
+    assert.equal((await request('/api/invitations/accept', {
+      method: 'POST', cookie: subject.cookie, body: { token: secondSubjectInvitation.token },
+    })).status, 200);
+    const { io: profileIo } = await import('socket.io-client');
+    const ownerSocket = profileIo(baseUrl, {
+      transports: ['websocket'],
+      extraHeaders: { Cookie: profileOwner.cookie, Origin: 'http://localhost:5173' },
+    });
+    sockets.push(ownerSocket);
+    await onceConnected(ownerSocket);
+    const profileUpdate = await request('/api/profile', {
+      method: 'PATCH', cookie: subject.cookie, body: { displayName: 'Subject Renamed', bio: '  こんにちは\nよろしくお願いします ' },
+    });
+    assert.equal(profileUpdate.status, 200);
+    const ownProfile = await json<{ displayName: string; bio: string; appealUsed: boolean }>(profileUpdate);
+    assert.equal(ownProfile.displayName, 'Subject Renamed');
+    assert.equal(ownProfile.bio, 'こんにちは\nよろしくお願いします');
+    assert.equal((await request('/api/profile', { method: 'PATCH', cookie: subject.cookie, body: { bio: '1\n2\n3\n4\n5\n6' } })).status, 400);
+    assert.equal((await request('/api/profile', { method: 'PATCH', cookie: subject.cookie, body: { displayName: '\u2800' } })).status, 400);
+    const { db: profileDb } = await import('../db/index.js');
+    const { auditLogs: profileAudit } = await import('../db/schema.js');
+    const profileEvents = await profileDb.select().from(profileAudit).where(eq(profileAudit.action, 'user.profile.update'));
+    assert.equal(profileEvents.length > 0, true);
+    assert.equal(profileEvents.every((event) => event.actorId === subject.user.id
+      && Object.keys((event.details ?? {}) as Record<string, unknown>).every((key) => ['requestId', 'traceId', 'result'].includes(key))), true,
+      'profile changes are logged without their content');
+
+    const pngChunk = (type: string, data: Buffer = Buffer.alloc(0)) => {
+      const header = Buffer.alloc(8);
+      header.writeUInt32BE(data.length, 0);
+      header.write(type, 4, 'latin1');
+      const crc = Buffer.alloc(4);
+      crc.writeUInt32BE(crc32(data, crc32(Buffer.from(type, 'latin1'))) >>> 0);
+      return Buffer.concat([header, data, crc]);
+    };
+    const avatarHeader = Buffer.alloc(13);
+    avatarHeader.writeUInt32BE(256, 0);
+    avatarHeader.writeUInt32BE(256, 4);
+    avatarHeader.set([8, 6, 0, 0, 0], 8);
+    const avatarPng = Buffer.concat([
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      pngChunk('IHDR', avatarHeader),
+      pngChunk('tEXt', Buffer.from('Comment\0home address')),
+      pngChunk('IDAT', deflateSync(Buffer.concat(Array.from({ length: 256 }, () => Buffer.concat([Buffer.from([0]), Buffer.alloc(1024, 7)]))))),
+      pngChunk('IEND'),
+    ]);
+    assert.equal((await request('/api/profile/avatar', {
+      method: 'PUT', cookie: subject.cookie, body: Buffer.from('<svg onload="alert(1)"/>'), contentType: 'image/png',
+    })).status, 400);
+    assert.equal((await request('/api/profile/avatar', {
+      method: 'PUT', cookie: subject.cookie, body: avatarPng, contentType: 'image/svg+xml',
+    })).status, 415);
+    const avatarResponse = await request('/api/profile/avatar', { method: 'PUT', cookie: subject.cookie, body: avatarPng, contentType: 'image/png' });
+    assert.equal(avatarResponse.status, 200);
+    const { avatarUrl } = await json<{ avatarUrl: string }>(avatarResponse);
+    assert.match(avatarUrl, new RegExp(`^/api/users/${subject.user.id}/avatar/[0-9a-f-]{36}$`));
+    const servedAvatar = await request(avatarUrl, { cookie: profileOwner.cookie });
+    assert.equal(servedAvatar.status, 200);
+    assert.equal(servedAvatar.headers.get('content-type'), 'image/png');
+    assert.equal(servedAvatar.headers.get('x-content-type-options'), 'nosniff');
+    const servedBytes = Buffer.from(await servedAvatar.arrayBuffer());
+    assert.equal(servedBytes.includes(Buffer.from('home address')), false, 'embedded text is removed before storage');
+    assert.equal((await request(avatarUrl.replace(/[0-9a-f-]{36}$/, randomUUID()), { cookie: profileOwner.cookie })).status, 404);
+    assert.equal((await fetch(`${baseUrl}${avatarUrl}`, { headers: { Origin: 'http://localhost:5173' } })).status, 401);
+    assert.equal((await request(avatarUrl, { cookie: mallory.cookie })).status, 404, 'no shared workspace, no avatar');
+    const profileMembers = await json<Array<{ userId: string; user: { displayName: string; avatarUrl: string | null } }>>(
+      await request(`/api/workspaces/${profileWorkspace.id}/members`, { cookie: profileOwner.cookie }),
+    );
+    assert.equal(profileMembers.find((member) => member.userId === subject.user.id)?.user.avatarUrl, avatarUrl);
+
+    const bobViewed = await json<{ bio: string; flagged: boolean; canManageFlag: boolean }>(
+      await request(`/api/workspaces/${profileWorkspace.id}/members/${subject.user.id}/profile`, { cookie: profileOwner.cookie }),
+    );
+    assert.deepEqual([bobViewed.bio, bobViewed.flagged, bobViewed.canManageFlag], ['こんにちは\nよろしくお願いします', false, true]);
+    assert.equal((await request(`/api/workspaces/${profileWorkspace.id}/members/${profileOwner.user.id}/profile-flag`, {
+      method: 'PUT', cookie: subject.cookie, body: {},
+    })).status, 403, 'nobody can flag the owner');
+    assert.equal((await request(`/api/workspaces/${profileWorkspace.id}/members/${subject.user.id}/profile-flag`, {
+      method: 'PUT', cookie: profileOwner.cookie, body: {},
+    })).status, 200);
+    const flaggedMembers = await json<Array<{ userId: string; profileFlagged?: boolean }>>(
+      await request(`/api/workspaces/${profileWorkspace.id}/members`, { cookie: profileOwner.cookie }),
+    );
+    assert.equal(flaggedMembers.find((member) => member.userId === subject.user.id)?.profileFlagged, true);
+    assert.equal(flaggedMembers.find((member) => member.userId === profileOwner.user.id)?.profileFlagged, false);
+    const outsiderView = await json<{ flagged: boolean }>(
+      await request(`/api/workspaces/${secondProfileWorkspace.id}/members/${subject.user.id}/profile`, { cookie: profileOwner.cookie }),
+    );
+    assert.equal(outsiderView.flagged, false, 'a warning applies to its own workspace only');
+
+    const appealPath = `/api/workspaces/${profileWorkspace.id}/profile-flag/appeal`;
+    const needsChange = await request(appealPath, { method: 'POST', cookie: subject.cookie, body: {} });
+    assert.equal(needsChange.status, 409);
+    assert.equal((await json<{ error: string }>(needsChange)).error, 'PROFILE_APPEAL_NEEDS_CHANGE');
+    assert.equal((await request('/api/profile', { method: 'PATCH', cookie: subject.cookie, body: { bio: '内容を見直しました' } })).status, 200);
+    assert.equal((await json<{ flags: Array<{ canAppeal: boolean }> }>(await request('/api/profile', { cookie: subject.cookie }))).flags[0].canAppeal, true);
+    const appealNotice = onceSocketEventMatching<{ kind: string; workspaceId: string; channelId: string | null }>(
+      ownerSocket, 'attention:new', (payload) => payload.kind === 'profile-appeal', 5_000,
+    );
+    assert.equal((await request(appealPath, { method: 'POST', cookie: subject.cookie, body: {} })).status, 200);
+    const appealAlert = await appealNotice;
+    assert.deepEqual([appealAlert.workspaceId, appealAlert.channelId], [profileWorkspace.id, null]);
+    const secondAppeal = await request(appealPath, { method: 'POST', cookie: subject.cookie, body: {} });
+    assert.equal(secondAppeal.status, 409);
+    assert.equal((await json<{ error: string }>(secondAppeal)).error, 'PROFILE_APPEAL_USED');
+    const pendingFlags = await json<Array<{ userId: string; appealStatus: string }>>(
+      await request(`/api/workspaces/${profileWorkspace.id}/profile-flags`, { cookie: profileOwner.cookie }),
+    );
+    assert.equal(pendingFlags.find((flag) => flag.userId === subject.user.id)?.appealStatus, 'pending');
+    assert.equal((await request(`/api/workspaces/${profileWorkspace.id}/members/${subject.user.id}/profile-flag/deny`, {
+      method: 'POST', cookie: profileOwner.cookie, body: {},
+    })).status, 200);
+    assert.equal((await request(`/api/workspaces/${profileWorkspace.id}/profile-flags`, { cookie: subject.cookie })).status, 403,
+      'only managers list warnings');
+    // Denied: the warning stays and no further request is possible anywhere.
+    assert.equal((await request(`/api/workspaces/${secondProfileWorkspace.id}/members/${subject.user.id}/profile-flag`, {
+      method: 'PUT', cookie: profileOwner.cookie, body: {},
+    })).status, 200);
+    assert.equal((await request('/api/profile', { method: 'PATCH', cookie: subject.cookie, body: { bio: 'もう一度見直しました' } })).status, 200);
+    const exhausted = await json<{ appealUsed: boolean; flags: Array<{ workspaceId: string; appealStatus: string; canAppeal: boolean }> }>(
+      await request('/api/profile', { cookie: subject.cookie }),
+    );
+    assert.equal(exhausted.appealUsed, true);
+    assert.equal(exhausted.flags.every((flag) => !flag.canAppeal), true);
+    assert.equal((await request(`/api/workspaces/${secondProfileWorkspace.id}/profile-flag/appeal`, {
+      method: 'POST', cookie: subject.cookie, body: {},
+    })).status, 409, 'the single request is per account, across all workspaces');
+    for (const flaggedWorkspaceId of [profileWorkspace.id, secondProfileWorkspace.id]) {
+      assert.equal((await request(`/api/workspaces/${flaggedWorkspaceId}/members/${subject.user.id}/profile-flag`, {
+        method: 'DELETE', cookie: profileOwner.cookie,
+      })).status, 200, 'a manager can still clear the warning');
+    }
+    assert.equal((await request('/api/profile/avatar', { method: 'DELETE', cookie: subject.cookie })).status, 200);
+    assert.equal((await request(avatarUrl, { cookie: profileOwner.cookie })).status, 404);
+
+    ownerSocket.disconnect();
+
     assert.equal(await joinChannel(aliceSocket, privateChannel.id), true);
     assert.equal(await joinChannel(mallorySocket, privateChannel.id), false);
     assert.equal(await joinChannel(aliceSocket, channelId), true);
@@ -2868,7 +3026,7 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
       await client.end();
     }
     const { checkDatabaseSchema } = await import('../db/index.js');
-    assert.equal(await checkDatabaseSchema(), 19);
+    assert.equal(await checkDatabaseSchema(), 20);
   });
 
   it('never re-signs a shortened audit chain after the external checkpoint anchor is deleted', async () => {
@@ -3148,7 +3306,7 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
     return json<{ version: number; status: string; activated: boolean }>(response);
   }
 
-  async function request(path: string, options: { method?: string; cookie?: string; body?: unknown } = {}): Promise<Response> {
+  async function request(path: string, options: { method?: string; cookie?: string; body?: unknown; contentType?: string } = {}): Promise<Response> {
     const headers: Record<string, string> = { Origin: 'http://localhost:5173' };
     if (options.cookie) {
       headers.Cookie = options.cookie;
@@ -3177,7 +3335,7 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
       }
     }
     const rawBody = Buffer.isBuffer(options.body) ? options.body : null;
-    if (options.body !== undefined) headers['Content-Type'] = rawBody ? 'application/octet-stream' : 'application/json';
+    if (options.body !== undefined) headers['Content-Type'] = options.contentType ?? (rawBody ? 'application/octet-stream' : 'application/json');
     const response = await fetch(`${baseUrl}${path}`, {
       method: options.method || 'GET',
       headers,
