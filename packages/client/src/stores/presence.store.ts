@@ -6,6 +6,8 @@ interface PresenceState {
   typingUsers: Record<string, Record<string, boolean>>; // channelId -> userId -> isTyping
 
   setStatus: (userId: string, status: UserStatusType) => void;
+  /** Replace statuses with an authoritative snapshot (member list load). */
+  seedStatuses: (statuses: Record<string, UserStatusType>) => void;
   setTyping: (channelId: string, userId: string, isTyping: boolean) => void;
   clearChannel: (channelId: string) => void;
   reset: () => void;
@@ -22,6 +24,10 @@ export const usePresenceStore = create<PresenceState>((set, get) => ({
     set(state => ({
       statuses: { ...state.statuses, [userId]: status },
     }));
+  },
+
+  seedStatuses: (statuses) => {
+    set(state => ({ statuses: { ...state.statuses, ...statuses } }));
   },
 
   setTyping: (channelId, userId, isTyping) => {
