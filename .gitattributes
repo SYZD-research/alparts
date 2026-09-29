@@ -1,0 +1,12 @@
+# Binary artifacts must never be diffed, merged or normalized as text.
+*.jar binary
+*.png binary
+*.apk binary
+*.keystore binary
+
+# Keep development-only material out of `git archive` release tarballs.
+.github/ export-ignore
+.gitleaks.toml export-ignore
+.secretlintignore export-ignore
+.secretlintrc.json export-ignore
+.oxlintrc.json export-ignore

@@ -12,10 +12,13 @@ import { MLS_CIPHERSUITE, Permissions } from '@alparts/shared';
 import { validateMlsKeyPackage } from './mls-package.js';
 import { consumeLoginChallenge, issueLoginChallenge } from './login-challenge.js';
 import { normalizeEmail } from './email.js';
+import { createHmac } from 'node:crypto';
+import bcrypt from 'bcryptjs';
 import { protectPasswordHash, passwordSalt } from './password-pepper.js';
 import {
   hashPassword,
   verifyPassword,
+  verifyPasswordForUpgrade,
   runPublicAuthentication,
   closePasswordWorkers,
 } from './password-work.js';
@@ -44,6 +47,32 @@ describe('second audit regressions', () => {
       assert.equal(await verifyPassword('correct-test-password', hash), false);
     } finally {
       process.env.PASSWORD_PEPPER = previous;
+    }
+  });
+
+  it('rewraps credentials protected by a retired pepper and rejects unknown peppers', async () => {
+    const original = process.env.PASSWORD_PEPPER!;
+    const legacy = await hashPassword('rotated-test-password', 12);
+    const legacyV1 = `p1:${legacy.split(':')[2]}:${createHmac('sha256', original)
+      .update('alparts.password.pepper.v1\0').update(bcrypt.hashSync('rotated-test-password', passwordSalt(legacy))).digest('base64url')}`;
+    try {
+      process.env.PASSWORD_PEPPER = 'rotated-test-only-independent-password-pepper';
+      assert.deepEqual(await verifyPasswordForUpgrade('rotated-test-password', legacy), { valid: false });
+      process.env.PASSWORD_PEPPER_PREVIOUS = original;
+      for (const stored of [legacy, legacyV1]) {
+        const match = await verifyPasswordForUpgrade('rotated-test-password', stored);
+        assert.equal(match.valid, true);
+        assert.match(match.upgradedHash!, /^p2:/);
+        assert.deepEqual(await verifyPasswordForUpgrade('rotated-test-password', match.upgradedHash!), { valid: true });
+        assert.deepEqual(await verifyPasswordForUpgrade('wrong-test-password', stored), { valid: false });
+      }
+      delete process.env.PASSWORD_PEPPER_PREVIOUS;
+      assert.equal(await verifyPassword('rotated-test-password', legacy), false);
+      process.env.PASSWORD_PEPPER_PREVIOUS = process.env.PASSWORD_PEPPER;
+      await assert.rejects(verifyPassword('rotated-test-password', legacy), /PREVIOUS_INVALID/);
+    } finally {
+      process.env.PASSWORD_PEPPER = original;
+      delete process.env.PASSWORD_PEPPER_PREVIOUS;
     }
   });
 

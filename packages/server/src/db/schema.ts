@@ -91,7 +91,10 @@ export const authenticationChallenges = pgTable('authentication_challenges', {
   purpose: text('purpose').notNull(),
   challenge: text('challenge').notNull(),
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
-}, (t) => [index('authentication_challenges_expiry_idx').on(t.expiresAt)]);
+}, (t) => [
+  index('authentication_challenges_expiry_idx').on(t.expiresAt),
+  index('authentication_challenges_session_idx').on(t.sessionId),
+]);
 
 export const stepUpGrants = pgTable('step_up_grants', {
   tokenHash: text('token_hash').primaryKey(),

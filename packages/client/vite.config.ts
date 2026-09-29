@@ -14,6 +14,13 @@ const developmentCsp = [
   "connect-src 'self' ws: wss:",
 ].join('; ');
 
+// Extra dev-server hostnames (e.g. a private tunnel) come from the local
+// environment, not from the repository: VITE_ALLOWED_HOSTS=host1,host2
+const allowedHosts = (process.env.VITE_ALLOWED_HOSTS ?? '')
+  .split(',')
+  .map((host) => host.trim())
+  .filter(Boolean);
+
 export default defineConfig({
   plugins: [react()],
   build: {
@@ -40,7 +47,7 @@ export default defineConfig({
   },
   server: {
     port: 5173,
-    allowedHosts: ['citrus.taila87037.ts.net'],
+    allowedHosts,
     headers: {
       'Content-Security-Policy': developmentCsp,
       'Permissions-Policy': 'camera=(), display-capture=(), geolocation=(), microphone=(self), speaker-selection=(self)',

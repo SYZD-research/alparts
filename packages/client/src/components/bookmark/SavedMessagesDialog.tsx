@@ -7,6 +7,7 @@ import { useUserStateStore } from '../../stores/user-state.store';
 import { useWorkspaceStore } from '../../stores/workspace.store';
 import { Dialog } from '../ui/Dialog';
 import { userFacingMessageText } from '../../services/message-display';
+import { formatDateTime } from '../../stores/date-format';
 
 const HISTORY_PAGE_LIMIT = 20;
 
@@ -95,7 +96,7 @@ export function SavedMessagesDialog() {
                   className="min-w-0 flex-1 rounded text-left disabled:opacity-60"
                   aria-label={`${channel?.name || '保存先チャンネル'}の保存済みメッセージへ移動`}
                 >
-                  <span className="block text-xs text-discord-muted">#{channel?.name || '保存先チャンネル'} · {new Date(bookmark.createdAt).toLocaleString('ja-JP')}</span>
+                  <span className="block text-xs text-discord-muted">#{channel?.name || '保存先チャンネル'} · {formatDateTime(bookmark.createdAt)}</span>
                   <span className="mt-1 line-clamp-2 block break-words text-sm text-discord-text">
                     {navigating
                       ? '履歴を読み込み中…'

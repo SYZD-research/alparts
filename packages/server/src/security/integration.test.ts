@@ -16,7 +16,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import pg from 'pg';
 import {
   Permissions,
@@ -63,7 +63,7 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
     const auditModule = await import('../middleware/audit.js');
     const dbModule = await import('../db/index.js');
     closeDb = dbModule.closeDb;
-    assert.equal(await dbModule.checkDatabaseSchema(), 18);
+    assert.equal(await dbModule.checkDatabaseSchema(), 19);
     verifyAuditChain = auditModule.verifyAuditChain;
     await auditModule.provisionAuditCheckpoint();
     const startupAudit = await verifyAuditChain();
@@ -435,6 +435,22 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
     });
     assert.equal(revokedRegistration.status, 403);
 
+    const expiredInvitation = await createWorkspaceInvitation(workspace.id, alice.cookie, 'expired@example.test');
+    const { db: invitationDb } = await import('../db/index.js');
+    await invitationDb.execute(sql`UPDATE workspace_invitations SET expires_at = now() - interval '1 minute' WHERE id = ${expiredInvitation.id}`);
+    assert.equal((await request('/api/auth/register', {
+      method: 'POST',
+      body: { email: 'expired@example.test', password: 'Correct-Horse-Battery-8!', displayName: 'Expired', inviteToken: expiredInvitation.token },
+    })).status, 403, 'an expired invitation must not admit a registration');
+
+    const singleUseInvitation = await createWorkspaceInvitation(workspace.id, alice.cookie);
+    const racingRegistrations = await Promise.all(['race-a@example.test', 'race-b@example.test'].map((email) => request('/api/auth/register', {
+      method: 'POST',
+      body: { email, password: 'Correct-Horse-Battery-9!', displayName: 'Race', inviteToken: singleUseInvitation.token },
+    })));
+    assert.deepEqual(racingRegistrations.map((response) => response.status).sort(), [201, 403],
+      'a single-use invitation must be consumed at most once under concurrency');
+
     const bobKeys = deviceFixture();
     const malloryKeys = deviceFixture();
     const bobDevice = await registerDevice(bob, bobKeys, 'Bob test device');
@@ -759,6 +775,44 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
     assert.equal((await request(`/api/workspaces/${workspace.id}/members/${retryDeviceAccount.user.id}`, {
       method: 'DELETE', cookie: bob.cookie,
     })).status, 403, 'a kicker must not remove an equal-or-higher ranked member');
+    const limitedRoleManagerResponse = await request(`/api/workspaces/${workspace.id}/roles`, {
+      method: 'POST', cookie: alice.cookie,
+      body: { name: 'Limited Role Manager', permissions: Permissions.MANAGE_ROLES, position: 62 },
+    });
+    assert.equal(limitedRoleManagerResponse.status, 201);
+    const limitedRoleManager = await json<{ id: string }>(limitedRoleManagerResponse);
+    await assignWorkspaceRole(workspace.id, alice.cookie, limitedRoleManager.id, bob.user.id);
+    const higherMemberUnassignPreview = await request(`/api/workspaces/${workspace.id}/roles/preview`, {
+      method: 'POST', cookie: bob.cookie,
+      body: { operation: 'role.unassign', roleId: reviewerRole.id, userId: retryDeviceAccount.user.id },
+    });
+    assert.equal(higherMemberUnassignPreview.status, 403, 'role removal preview must respect the target member rank');
+    const managerRevisionPreview = await request(`/api/workspaces/${workspace.id}/roles/preview`, {
+      method: 'POST', cookie: bob.cookie,
+      body: { operation: 'role.assign', roleId: reviewerRole.id, userId: bob.user.id },
+    });
+    assert.equal(managerRevisionPreview.status, 200);
+    const managerRevision = (await json<{ authorizationRevision: string }>(managerRevisionPreview)).authorizationRevision;
+    assert.equal((await request(`/api/workspaces/${workspace.id}/members/${retryDeviceAccount.user.id}/roles/${memberRole.id}`, {
+      method: 'DELETE', cookie: bob.cookie, body: { expectedAuthorizationRevision: managerRevision },
+    })).status, 403, 'a role manager must not strip roles from an equal-or-higher ranked member');
+    assert.equal((await request(`/api/workspaces/${workspace.id}/members/${alice.user.id}/roles/${memberRole.id}`, {
+      method: 'DELETE', cookie: bob.cookie, body: { expectedAuthorizationRevision: managerRevision },
+    })).status, 403, 'a role manager must not strip roles from the workspace owner');
+    const managerSelfRemovalPreview = await request(`/api/workspaces/${workspace.id}/roles/preview`, {
+      method: 'POST', cookie: bob.cookie,
+      body: { operation: 'role.unassign', roleId: limitedRoleManager.id, userId: bob.user.id },
+    });
+    assert.equal(managerSelfRemovalPreview.status, 403, 'a role at the actor rank still cannot be managed');
+    const ownerRemovesManager = await request(`/api/workspaces/${workspace.id}/roles/preview`, {
+      method: 'POST', cookie: alice.cookie,
+      body: { operation: 'role.unassign', roleId: limitedRoleManager.id, userId: bob.user.id },
+    });
+    assert.equal(ownerRemovesManager.status, 200);
+    assert.equal((await request(`/api/workspaces/${workspace.id}/members/${bob.user.id}/roles/${limitedRoleManager.id}`, {
+      method: 'DELETE', cookie: alice.cookie,
+      body: { expectedAuthorizationRevision: (await json<{ authorizationRevision: string }>(ownerRemovesManager)).authorizationRevision },
+    })).status, 200);
     const blockedDeletePreview = await request(`/api/workspaces/${workspace.id}/roles/preview`, {
       method: 'POST', cookie: alice.cookie, body: { operation: 'role.delete', roleId: reviewerRole.id },
     });
@@ -803,6 +857,9 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
     assert.ok(normalChannel);
     const channelId = normalChannel.id;
     assert.equal((await request(`/api/channels/${channelId}/messages`, { cookie: mallory.cookie })).status, 404);
+    assert.equal((await request(`/api/channels/${channelId}/messages`, {
+      method: 'POST', cookie: mallory.cookie, body: { encryptedContent: 'x' },
+    })).status, 404, 'a non-member must not post into another workspace channel');
 
     const privateChannelResponse = await request(`/api/workspaces/${workspace.id}/channels`, {
       method: 'POST', cookie: alice.cookie, body: { name: 'private', isPrivate: true },
@@ -2623,7 +2680,7 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
       await client.end();
     }
     const { checkDatabaseSchema } = await import('../db/index.js');
-    assert.equal(await checkDatabaseSchema(), 18);
+    assert.equal(await checkDatabaseSchema(), 19);
   });
 
   it('never re-signs a shortened audit chain after the external checkpoint anchor is deleted', async () => {
@@ -2633,7 +2690,17 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
     await auditModule.flushAuditCheckpoint();
     const checkpointBefore = await readFile(auditCheckpointPath, 'utf8');
     const checkpoint = JSON.parse(checkpointBefore) as { logId: string };
-    await db.delete(auditLogs).where(eq(auditLogs.id, checkpoint.logId));
+    await assert.rejects(db.delete(auditLogs).where(eq(auditLogs.id, checkpoint.logId)),
+      (error: any) => /append-only/.test(error.cause?.message ?? error.message));
+    await assert.rejects(db.execute(sql`TRUNCATE audit_logs`),
+      (error: any) => /append-only/.test(error.cause?.message ?? error.message));
+    // Simulate an owner-level attacker who bypasses the append-only triggers;
+    // the checkpoint anchor must still detect the shortened chain.
+    await db.transaction(async (transaction) => {
+      await transaction.execute(sql`ALTER TABLE audit_logs DISABLE TRIGGER audit_logs_no_rewrite`);
+      await transaction.delete(auditLogs).where(eq(auditLogs.id, checkpoint.logId));
+      await transaction.execute(sql`ALTER TABLE audit_logs ENABLE TRIGGER audit_logs_no_rewrite`);
+    });
     const rowsAfterTruncation = await db.select({ id: auditLogs.id }).from(auditLogs);
     const target = await db.query.users.findFirst();
     assert.ok(target);

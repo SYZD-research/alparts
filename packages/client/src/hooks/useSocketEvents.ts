@@ -69,11 +69,16 @@ export function useSocketEvents() {
       return Boolean(channel && channel.type !== 'voice');
     };
 
+    let authorizationResyncRequired = false;
     const enqueueAuthorizationWork = (operation: () => Promise<void>) => {
       // Revocation handlers erase the affected security scope before entering
-      // this queue. Dropping later reconciliation work at the exact cap is
-      // therefore fail-closed and a reconnect will rebuild the visible state.
-      if (authorizationQueueDepth >= maxPendingAuthorizationTasks) return;
+      // this queue. At the cap, individual events are coalesced into one full
+      // refresh of the active workspace once the queue drains, so no event is
+      // silently lost until the next reload.
+      if (authorizationQueueDepth >= maxPendingAuthorizationTasks) {
+        authorizationResyncRequired = true;
+        return;
+      }
       authorizationQueueDepth += 1;
       authorizationQueue = authorizationQueue
         .catch(() => undefined)
@@ -81,7 +86,17 @@ export function useSocketEvents() {
           if (!disposed) await operation();
         })
         .catch(() => undefined)
-        .finally(() => { authorizationQueueDepth -= 1; });
+        .finally(() => {
+          authorizationQueueDepth -= 1;
+          if (authorizationQueueDepth === 0 && authorizationResyncRequired && !disposed) {
+            authorizationResyncRequired = false;
+            enqueueAuthorizationWork(async () => {
+              const workspaceId = useWorkspaceStore.getState().activeWorkspaceId;
+              await loadWorkspaces();
+              if (workspaceId) await refreshWorkspaceAuthorization(workspaceId);
+            });
+          }
+        });
     };
 
     const scheduleKeySync = (channelIds: string[]) => {

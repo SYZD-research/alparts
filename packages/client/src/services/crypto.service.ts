@@ -718,8 +718,22 @@ function hasAdjacentEpochStatus(
   ));
 }
 
+// Mirrors the server bounds: 50 members with at most 8 active devices each.
+const MAX_KEY_RECIPIENT_USERS = 50;
+const MAX_KEY_RECIPIENTS = MAX_KEY_RECIPIENT_USERS * 8;
+
 function assertKeyRecipientState(state: ChannelKeyRecipientState): void {
+  if (
+    !Array.isArray(state.recipients)
+    || state.recipients.length > MAX_KEY_RECIPIENTS
+    || new Set(state.recipients.map((recipient) => recipient.userId)).size > MAX_KEY_RECIPIENT_USERS
+  ) {
+    throw new Error('Server returned an unbounded channel key recipient set');
+  }
   const recipientIds = new Set(state.recipients.map((recipient) => recipient.deviceId));
+  if (recipientIds.size !== state.recipients.length) {
+    throw new Error('Server returned duplicate channel key recipients');
+  }
   if (
     typeof state.pendingInvalid !== 'boolean'
     || typeof state.historyRecoveryRequired !== 'boolean'
@@ -766,19 +780,16 @@ async function loadChannelKeyDelivery(
   shouldAcknowledge: (delivery: ChannelKeyDelivery) => boolean,
 ): Promise<LoadedChannelKeyDelivery | null> {
   if (deliveries.length === 0) return null;
-  const ids = [...new Set(deliveries.map((d) => d.distributorDeviceId))];
-  for (let i = 0; i < ids.length; i += 64) {
-    const directory = await api.getChannelDeviceDirectory(channelId, ids.slice(i, i + 64));
-    for (const delivery of deliveries.filter((d) => ids.slice(i, i + 64).includes(d.distributorDeviceId))) {
-      if (directory.find((d) => d.deviceId === delivery.distributorDeviceId)?.identityKey !== delivery.distributorIdentityKey) throw new Error('DIRECTORY_INVALID');
-    }
-  }
+  await assertDeliveriesMatchDirectory(channelId, deliveries);
   const attempted = await tryChannelKeyDeliveries(deliveries, async (delivery) => {
     const storageId = channelStorageId(device, channelId, delivery.version);
     const stored = await loadPersistedChannelKey(storageId);
     channelKeyScopes.assertCurrent(scope);
     if (stored instanceof CryptoKey && delivery.confirmedAt && !mlsLocator(delivery.encryptedKey)) {
-      return { key: stored, acknowledged: false };
+      // The cached key is reused only for the commitment it was verified against.
+      const storedCommitment = await readSecurityState<string>(device, keyCommitmentStateName(channelId, delivery.version));
+      channelKeyScopes.assertCurrent(scope);
+      if (storedCommitment === delivery.keyCommitment) return { key: stored, acknowledged: false };
     }
 
     // Every unconfirmed immutable candidate is checked independently. A
@@ -788,6 +799,7 @@ async function loadChannelKeyDelivery(
     try {
       const key = await importChannelKey(raw);
       await saveChannelKeyForScope(storageId, key, scope, raw);
+      await writeSecurityState(device, keyCommitmentStateName(channelId, delivery.version), delivery.keyCommitment, scope);
       let acknowledged = false;
       if (!delivery.confirmedAt && shouldAcknowledge(delivery)) {
         await acknowledgeCommittedChannelKey(channelId, delivery, device);
@@ -807,6 +819,25 @@ async function loadChannelKeyDelivery(
   return { ...attempted.value, delivery: attempted.delivery };
 }
 
+function keyCommitmentStateName(channelId: string, version: number): string {
+  return `key-commitment:${channelId}:${version}`;
+}
+
+/**
+ * Distributor identities come from the server with each delivery. Bind them to
+ * the verified channel directory before any wrap signature is trusted.
+ */
+async function assertDeliveriesMatchDirectory(channelId: string, deliveries: readonly ChannelKeyDelivery[]): Promise<void> {
+  const ids = [...new Set(deliveries.map((d) => d.distributorDeviceId))];
+  for (let i = 0; i < ids.length; i += 64) {
+    const batch = ids.slice(i, i + 64);
+    const directory = await api.getChannelDeviceDirectory(channelId, batch);
+    for (const delivery of deliveries.filter((d) => batch.includes(d.distributorDeviceId))) {
+      if (directory.find((d) => d.deviceId === delivery.distributorDeviceId)?.identityKey !== delivery.distributorIdentityKey) throw new Error('DIRECTORY_INVALID');
+    }
+  }
+}
+
 async function acknowledgeCommittedChannelKey(
   channelId: string,
   wrapped: ChannelKeyDelivery,
@@ -823,6 +854,8 @@ async function acknowledgeCommittedChannelKey(
   }));
   await api.acknowledgeChannelKey(channelId, wrapped.deliveryId, signature);
 }
+
+const EQUIVOCATION_ERRORS = new Set(['INVALID_MLS_TRANSCRIPT', 'INVALID_MLS_SIGNATURE', 'DIRECTORY_INVALID']);
 
 async function unwrapCommittedChannelKey(
   channelId: string,
@@ -846,7 +879,10 @@ async function unwrapCommittedChannelKey(
     const locator = mlsLocator(wrapped.encryptedKey);
     if (locator && locator.version !== wrapped.version) return null;
     raw = locator ? await deriveMlsDelivery(channelId, wrapped.version, locator.transcript, wrapped.epochStatus) : await unwrapChannelKey(wrapped.encryptedKey, device);
-  } catch {
+  } catch (error) {
+    // A delivery that is simply not ours is skipped. Conflicting signed
+    // history is evidence of server equivocation and must stay visible.
+    if (error instanceof Error && EQUIVOCATION_ERRORS.has(error.message)) throw error;
     return null;
   }
   if (await computeKeyCommitment(raw) !== wrapped.keyCommitment) {
@@ -1253,10 +1289,13 @@ export async function exportHistoryKey(channelId: string, version: number): Prom
   const recovered = await readSecurityState<{raw: string}>(device, `recovered:${channelId}:${version}`);
   channelKeyScopes.assertCurrent(scope);
   if (recovered?.raw) return fromBase64(recovered.raw);
-  const deliveries = await api.getChannelKeys(channelId, [version]);
+  const deliveries = (await api.getChannelKeys(channelId, [version]))
+    .filter((delivery) => delivery.confirmedAt && isDecryptableChannelKeyEpoch(delivery.epochStatus));
+  channelKeyScopes.assertCurrent(scope);
+  if (deliveries.length === 0) return null;
+  await assertDeliveriesMatchDirectory(channelId, deliveries);
   channelKeyScopes.assertCurrent(scope);
   for (const delivery of deliveries) {
-    if (!delivery.confirmedAt || !isDecryptableChannelKeyEpoch(delivery.epochStatus)) continue;
     const raw = await unwrapCommittedChannelKey(channelId, delivery, device);
     channelKeyScopes.assertCurrent(scope);
     if (raw) return raw;

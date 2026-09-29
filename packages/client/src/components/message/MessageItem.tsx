@@ -12,6 +12,7 @@ import { MessageContent } from './MessageContent';
 import { userFacingMessageText } from '../../services/message-display';
 import { useHorizontalSwipe } from '../../hooks/useHorizontalSwipe';
 import { canSwipeMessage, messageSwipeAction } from './message-swipe-model';
+import { formatDateParts } from '../../stores/date-format';
 
 interface Props {
   message: Message;
@@ -126,16 +127,8 @@ export function MessageItem({ message, isFirst, onJumpToMessage }: Props) {
     );
   }
 
-  const timestamp = new Date(message.createdAt).toLocaleTimeString('ja-JP', {
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-
-  const date = new Date(message.createdAt).toLocaleDateString('ja-JP', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  });
+  const timestamp = formatDateParts(message.createdAt, { hour: '2-digit', minute: '2-digit' }, 'time');
+  const date = formatDateParts(message.createdAt, { year: 'numeric', month: '2-digit', day: '2-digit' }, 'date');
 
   const handleReaction = (emoji: string) => {
     if (!user) return;

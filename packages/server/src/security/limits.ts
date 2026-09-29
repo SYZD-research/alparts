@@ -1,6 +1,8 @@
 /** Phase-one limits keep fanout and authorization work predictably bounded. */
 export const MAX_ACTIVE_DEVICES_PER_USER = 8;
 export const MAX_ACTIVE_SESSIONS_PER_USER = 16;
+/** A passkey sign-in counts as a fresh assertion for device enrollment only this long. */
+export const PASSKEY_DEVICE_ENROLLMENT_WINDOW_MS = 10 * 60 * 1000;
 export const MAX_WORKSPACE_MEMBERS = 50;
 export const MAX_WORKSPACES_OWNED_PER_USER = 20;
 export const MAX_WORKSPACE_MEMBERSHIPS_PER_USER = 50;

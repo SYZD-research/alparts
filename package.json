@@ -37,7 +37,8 @@
     "dr:drill": "node scripts/release/dr-drill.mjs",
     "android:build": "pnpm build:shared && pnpm --filter @alparts/client build && cd packages/android && ./gradlew assembleDebug testDebugUnitTest lintDebug runtimeInventory",
     "lint": "oxlint --deny-warnings packages",
-    "security:secrets": "bash scripts/check-secrets.sh"
+    "security:secrets": "bash scripts/check-secrets.sh",
+    "security:history": "bash scripts/check-history-files.sh"
   },
   "workspaces": ["packages/*"]
 }

@@ -216,6 +216,7 @@ export async function changeRoleAssignment(
     });
     if (!member) throw new Error('MEMBER_NOT_FOUND');
     const snapshotBefore = await requireAuthorizationSnapshot(transaction, workspaceId);
+    if (action === 'unassign') assertMemberCanBeManaged(actor, actorId, snapshotBefore, userId);
     const before = evaluateMemberFromSnapshot(snapshotBefore, userId);
     const channelViewersBefore = captureChannelViewersFromSnapshot(snapshotBefore);
     const existing = await transaction.query.memberRoles.findFirst({
@@ -289,6 +290,7 @@ export async function previewRoleChange(workspaceId: string, actorId: string, in
       if (!input.userId) throw new Error('INVALID_PREVIEW');
       if (input.operation === 'role.assign') assertCanCreateOrAssign(actor, role.permissions, role.position);
       const snapshot = await requireAuthorizationSnapshot(transaction, workspaceId);
+      if (input.operation === 'role.unassign') assertMemberCanBeManaged(actor, actorId, snapshot, input.userId);
       const before = evaluateMemberFromSnapshot(snapshot, input.userId);
       const after = evaluateMemberFromSnapshot(snapshot, input.userId, {
         roleId: role.id,
@@ -343,6 +345,24 @@ function assertCanCreateOrAssign(
   if (actor.owner) return;
   if (position >= actor.highestPosition) throw new Error('ROLE_HIERARCHY');
   if ((permissions & ~actor.permissions) !== 0) throw new Error('PERMISSION_ESCALATION');
+}
+
+/**
+ * Removing a role is bounded by the target member's rank, not only by the
+ * role's rank: like member removal, only a strictly higher member may do it.
+ */
+function assertMemberCanBeManaged(
+  actor: { owner: boolean; highestPosition: number },
+  actorId: string,
+  snapshot: WorkspaceAuthorizationSnapshot,
+  userId: string,
+) {
+  if (actor.owner || userId === actorId) return;
+  if (!snapshot.membersByUserId.has(userId)) throw new Error('MEMBER_NOT_FOUND');
+  if (snapshot.ownerId === userId) throw new Error('ROLE_HIERARCHY');
+  const targetPosition = Math.max(-1, ...(snapshot.roleIdsByUserId.get(userId) ?? [])
+    .map((roleId) => snapshot.rolesById.get(roleId)?.position ?? -1));
+  if (targetPosition >= actor.highestPosition) throw new Error('ROLE_HIERARCHY');
 }
 
 function assertRoleCanBeManaged(actor: { owner: boolean; highestPosition: number }, role: { name: string; position: number }) {
