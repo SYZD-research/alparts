@@ -3,6 +3,7 @@ import { usePresenceStore } from '../../stores/presence.store';
 import { useAuthStore } from '../../stores/auth.store';
 import { useUiStore } from '../../stores/ui.store';
 import type { WorkspaceMember } from '@alparts/shared';
+import { partitionMembersByPresence } from '../../stores/presence-model';
 
 export function UserList() {
   const { members, activeWorkspaceId } = useWorkspaceStore();
@@ -10,8 +11,7 @@ export function UserList() {
   const currentUserId = useAuthStore((state) => state.user?.id);
   const openDmComposer = useUiStore((state) => state.openDmComposer);
 
-  const onlineMembers = members.filter(m => statuses[m.userId] !== 'offline');
-  const offlineMembers = members.filter(m => statuses[m.userId] === 'offline' || !statuses[m.userId]);
+  const { online: onlineMembers, offline: offlineMembers } = partitionMembersByPresence(members, statuses);
 
   return (
     <div className="h-full w-full bg-discord-sidebar overflow-y-auto">
@@ -22,11 +22,11 @@ export function UserList() {
             <h3 className="text-xs font-bold text-discord-muted uppercase tracking-wide px-2 mb-2">
               オンライン — {onlineMembers.length}
             </h3>
-            {onlineMembers.map(member => (
+            {onlineMembers.map(({ member, status }) => (
               <MemberItem
                 key={member.userId}
                 member={member}
-                status={statuses[member.userId] || 'online'}
+                status={status}
                 canDm={Boolean(activeWorkspaceId && member.userId !== currentUserId)}
                 onDm={() => { if (activeWorkspaceId) openDmComposer(activeWorkspaceId, [member.userId]); }}
               />
@@ -40,7 +40,7 @@ export function UserList() {
             <h3 className="text-xs font-bold text-discord-muted uppercase tracking-wide px-2 mb-2">
               オフライン — {offlineMembers.length}
             </h3>
-            {offlineMembers.map(member => (
+            {offlineMembers.map(({ member }) => (
               <MemberItem
                 key={member.userId}
                 member={member}

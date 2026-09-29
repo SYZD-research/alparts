@@ -6,6 +6,7 @@ import { cleanupExpiredUploads } from './services/file.service.js';
 import { flushAuditCheckpoint, verifyAuditChain } from './middleware/audit.js';
 import { checkDatabaseSchema, closeDb } from './db/index.js';
 import { closePasswordWorkers } from './security/password-work.js';
+import { resetPresenceAfterStartup } from './websocket/presence.handler.js';
 
 const runtime = await acquireRuntimeLease();
 const migrationCount = await checkDatabaseSchema();
@@ -14,6 +15,7 @@ logInfo('database.schema_verified', { migrations: migrationCount });
 const auditState = await verifyAuditChain();
 if (!auditState.valid) throw new Error('Audit log integrity verification failed');
 logInfo('audit.verified', { entries: auditState.checked, checkpoint: auditState.checkpoint });
+await resetPresenceAfterStartup();
 
 const { httpServer, io, beginShutdown } = createApp();
 httpServer.listen(config.port, config.bindHost, () => logInfo('server.started', {

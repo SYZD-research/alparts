@@ -9,7 +9,7 @@ import { readCookie } from '../security/cookies.js';
 import { logError, logInfo } from '../security/logger.js';
 import { isSessionActive, verifySessionToken } from '../security/session.js';
 import { handleMessageEvents } from './message.handler.js';
-import { handlePresenceEvents, setOfflineIfLastConnection } from './presence.handler.js';
+import { handlePresenceEvents, syncPresence } from './presence.handler.js';
 import { handleTypingEvents } from './typing.handler.js';
 import {
   acquirePendingHandshakeLease,
@@ -196,7 +196,7 @@ export function setupWebSocket(io: SocketServer) {
     socket.on('disconnect', async () => {
       logInfo('websocket.disconnected');
       try {
-        await setOfflineIfLastConnection(io, socket.userId!);
+        await syncPresence(io, socket.userId!);
       } catch (error) {
         logError('websocket.disconnect_presence', error);
       }
@@ -205,6 +205,9 @@ export function setupWebSocket(io: SocketServer) {
     try {
       await identityRoomsReady;
       if (!socket.connected) return;
+      // The socket is now counted in its user room; publish "online" if this
+      // is the user's first live connection.
+      void syncPresence(io, socket.userId!).catch((error) => logError('websocket.connect_presence', error));
       const memberships = await db.query.workspaceMembers.findMany({
         columns: { workspaceId: true },
         where: eq(workspaceMembers.userId, socket.userId!),

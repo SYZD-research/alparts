@@ -1049,6 +1049,29 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
     });
     sockets.push(aliceSocket, mallorySocket);
     await Promise.all([onceConnected(aliceSocket), onceConnected(mallorySocket)]);
+
+    // Presence follows live connections: online while a socket is open,
+    // offline after the last one closes, in both events and the member list.
+    const memberStatusOf = async (userId: string) => (await json<Array<{ userId: string; user: { status: string } }>>(
+      await request(`/api/workspaces/${workspace.id}/members`, { cookie: alice.cookie }),
+    )).find((member) => member.userId === userId)?.user.status;
+    const bobOnline = onceSocketEventMatching<{ userId: string; status: string }>(
+      aliceSocket, 'presence:changed', (payload) => payload.userId === bob.user.id, 5_000,
+    );
+    const presenceSocket = io(baseUrl, {
+      transports: ['websocket'],
+      extraHeaders: { Cookie: bob.cookie, Origin: 'http://localhost:5173' },
+    });
+    sockets.push(presenceSocket);
+    await onceConnected(presenceSocket);
+    assert.equal((await bobOnline).status, 'online');
+    assert.equal(await memberStatusOf(bob.user.id), 'online');
+    const bobOffline = onceSocketEventMatching<{ userId: string; status: string }>(
+      aliceSocket, 'presence:changed', (payload) => payload.userId === bob.user.id, 5_000,
+    );
+    presenceSocket.disconnect();
+    assert.equal((await bobOffline).status, 'offline');
+    assert.equal(await memberStatusOf(bob.user.id), 'offline');
     assert.equal(await joinChannel(aliceSocket, privateChannel.id), true);
     assert.equal(await joinChannel(mallorySocket, privateChannel.id), false);
     assert.equal(await joinChannel(aliceSocket, channelId), true);

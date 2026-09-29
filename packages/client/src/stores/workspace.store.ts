@@ -3,6 +3,7 @@ import { api } from '../services/api';
 import type { Workspace, Category, WorkspaceMember } from '@alparts/shared';
 import { useChannelStore } from './channel.store';
 import { useMessageStore } from './message.store';
+import { usePresenceStore } from './presence.store';
 
 interface WorkspaceState {
   workspaces: Workspace[];
@@ -112,7 +113,13 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     const generation = workspaceSelectionGeneration;
     try {
       const members = await api.getWorkspaceMembers(workspaceId);
-      if (generation === workspaceSelectionGeneration && get().activeWorkspaceId === workspaceId) set({ members });
+      if (generation === workspaceSelectionGeneration && get().activeWorkspaceId === workspaceId) {
+        set({ members });
+        // The list carries each member's current presence; events keep it fresh afterwards.
+        usePresenceStore.getState().seedStatuses(
+          Object.fromEntries(members.map((member) => [member.userId, member.user.status ?? 'offline'])),
+        );
+      }
     } catch (error) {
       if (generation === workspaceSelectionGeneration && get().activeWorkspaceId === workspaceId) {
         set({ error: error instanceof Error ? error.message : 'メンバーを読み込めませんでした' });
