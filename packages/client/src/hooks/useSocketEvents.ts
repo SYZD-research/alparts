@@ -312,6 +312,11 @@ export function useSocketEvents() {
     const onAttention = (value: unknown) => {
       const notification = parseAttentionNotification(value);
       if (!notification) return;
+      // Managers are told about a restarted channel even when they cannot see it.
+      if (notification.kind === 'channel-restarted') {
+        addAttention(notification);
+        return;
+      }
       const state = useUserStateStore.getState();
       if (Object.prototype.hasOwnProperty.call(state.channelStatesByWorkspace, notification.workspaceId)) {
         if (state.channelStatesByWorkspace[notification.workspaceId]?.[notification.channelId]) {

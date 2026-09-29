@@ -20,7 +20,9 @@ import { getChannelAuthorization } from '../middleware/rbac.js';
 import {
   getChannelAuthorizationFromStore,
   getChannelViewerIdsFromStore,
+  getWorkspaceAuthorizationFromSnapshot,
   isVisibleChannelAuthorization,
+  loadWorkspaceAuthorizationSnapshot,
   lockChannelAuthorization,
   lockWorkspaceForAuthorization,
 } from './authorization.service.js';
@@ -587,12 +589,20 @@ async function commitChannelKeyDistribution(
     const historyRecoveryRequired = Boolean(
       activeEpoch && effectiveRotationRequired && !activeHasEligibleHolder
     );
+    let restartedByMember = false;
     if (freshStart) {
       if (version !== nextVersion) throw new Error('KEY_FRESH_START_CONFLICT');
       if (activeEpoch && !effectiveRotationRequired && !historyRecoveryRequired) throw new Error('KEY_FRESH_START_NOT_REQUIRED');
       const hasRotationPermission = channel.type === 'dm'
         || (authorization.permissions & Permissions.MANAGE_CHANNELS) === Permissions.MANAGE_CHANNELS;
-      if (!hasRotationPermission) throw new Error('KEY_FRESH_START_FORBIDDEN');
+      // No eligible device holds the active key: nothing more can be lost, so
+      // any current viewer may restart the channel (after step-up) instead of
+      // waiting for a manager. A manager's in-flight proposal is only replaced
+      // once it has stalled.
+      const orphanedChannel = historyRecoveryRequired
+        && (!pendingEpoch || Date.now() - pendingEpoch.createdAt.getTime() >= 15 * 60_000);
+      if (!hasRotationPermission && !orphanedChannel) throw new Error('KEY_FRESH_START_FORBIDDEN');
+      restartedByMember = !hasRotationPermission;
       if (!activeEpoch && !pendingEpoch) throw new Error('KEY_FRESH_START_NOT_REQUIRED');
       if (
         activeEpoch
@@ -666,6 +676,9 @@ async function commitChannelKeyDistribution(
         mode: 'proposal' as const,
         historyRecovery: historyRecoveryRequired || Boolean(freshStart),
         freshStart: Boolean(freshStart),
+        // Managers learn that earlier messages became unreadable when a member
+        // (not a manager) restarted the channel. Not part of the API response.
+        notifyManagerUserIds: restartedByMember ? await channelManagersToNotify(tx, channel.workspaceId, userId) : [],
       };
     }
 
@@ -825,6 +838,8 @@ async function commitChannelKeyDistribution(
     mode: result.mode,
     historyRecovery: result.historyRecovery,
     freshStart: result.freshStart,
+    workspaceId: result.workspaceId,
+    notifyManagerUserIds: ('notifyManagerUserIds' in result ? result.notifyManagerUserIds : []) as string[],
   };
 }
 
@@ -1142,6 +1157,17 @@ async function hasAnyAcceptedEpochRecipient(
     ),
   });
   return Boolean(recipient);
+}
+
+async function channelManagersToNotify(store: any, workspaceId: string, actorId: string): Promise<string[]> {
+  const snapshot = await loadWorkspaceAuthorizationSnapshot(store, workspaceId, []);
+  if (!snapshot) return [];
+  return [...snapshot.membersByUserId.keys()].filter((memberId) => {
+    if (memberId === actorId) return false;
+    if (snapshot.ownerId === memberId) return true;
+    const authorization = getWorkspaceAuthorizationFromSnapshot(snapshot, memberId);
+    return Boolean(authorization && (authorization.permissionMask & Permissions.MANAGE_CHANNELS) === Permissions.MANAGE_CHANNELS);
+  }).sort();
 }
 
 async function isRecipientSnapshotStillAuthorized(

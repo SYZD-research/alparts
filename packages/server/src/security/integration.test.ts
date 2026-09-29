@@ -454,7 +454,89 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
     const bobKeys = deviceFixture();
     const malloryKeys = deviceFixture();
     const bobDevice = await registerDevice(bob, bobKeys, 'Bob test device');
-    await registerDevice(mallory, malloryKeys, 'Mallory test device');
+    const malloryDevice = await registerDevice(mallory, malloryKeys, 'Mallory test device');
+
+    // A channel left only with a non-manager who never held the active key
+    // must not stay unwritable: that viewer may start fresh after step-up,
+    // while automatic rotation stays manager-only.
+    const orphanWorkspaceResponse = await request('/api/workspaces', {
+      method: 'POST', cookie: alice.cookie, body: { name: 'Orphan recovery' },
+    });
+    assert.equal(orphanWorkspaceResponse.status, 201);
+    const orphanWorkspace = await json<{ id: string }>(orphanWorkspaceResponse);
+    const orphanChannelResponse = await request(`/api/workspaces/${orphanWorkspace.id}/channels`, {
+      method: 'POST', cookie: alice.cookie, body: { name: 'orphan-check', isPrivate: true },
+    });
+    assert.equal(orphanChannelResponse.status, 201);
+    const orphanChannel = await json<{ id: string }>(orphanChannelResponse);
+    const holderOnly = await json<{ recipients: Array<{ deviceId: string; identityKey: string }> }>(
+      await request(`/api/channels/${orphanChannel.id}/key-recipients`, { cookie: alice.cookie }),
+    );
+    assert.deepEqual(holderOnly.recipients.map((recipient) => recipient.deviceId), [aliceDevice.id]);
+    await distributeAndAcknowledgeChannelKey({
+      channelId: orphanChannel.id,
+      version: 1,
+      rawKey: randomBytes(32),
+      senderCookie: alice.cookie,
+      senderKeys: aliceKeys,
+      recipients: holderOnly.recipients,
+      acknowledgements: [{ deviceId: aliceDevice.id, cookie: alice.cookie, keys: aliceKeys }],
+    });
+    const orphanInvitation = await createWorkspaceInvitation(orphanWorkspace.id, alice.cookie, 'mallory@example.test');
+    assert.equal((await request('/api/invitations/accept', {
+      method: 'POST', cookie: mallory.cookie, body: { token: orphanInvitation.token },
+    })).status, 200);
+    assert.equal((await request(`/api/channels/${orphanChannel.id}/members`, {
+      method: 'POST', cookie: alice.cookie, body: { userId: mallory.user.id },
+    })).status, 201);
+    assert.equal((await request(`/api/channels/${orphanChannel.id}/members/${alice.user.id}`, {
+      method: 'DELETE', cookie: alice.cookie,
+    })).status, 200);
+    const orphanState = await json<{
+      historyRecoveryRequired: boolean;
+      canRotate: boolean;
+      nextVersion: number;
+      recipients: Array<{ deviceId: string; identityKey: string }>;
+    }>(await request(`/api/channels/${orphanChannel.id}/key-recipients`, { cookie: mallory.cookie }));
+    assert.equal(orphanState.historyRecoveryRequired, true);
+    assert.equal(orphanState.canRotate, false, 'automatic rotation stays manager-only');
+    assert.deepEqual(orphanState.recipients.map((recipient) => recipient.deviceId), [malloryDevice.id]);
+    const { io: orphanIo } = await import('socket.io-client');
+    const orphanManagerSocket = orphanIo(baseUrl, {
+      transports: ['websocket'],
+      extraHeaders: { Cookie: alice.cookie, Origin: 'http://localhost:5173' },
+    });
+    sockets.push(orphanManagerSocket);
+    await onceConnected(orphanManagerSocket);
+    const managerNotice = onceSocketEventMatching<{ kind: string; workspaceId: string; channelId: string }>(
+      orphanManagerSocket, 'attention:new', (payload) => payload.kind === 'channel-restarted', 5_000,
+    );
+    const orphanKey = randomBytes(32);
+    const { keyCommitment: orphanCommitment, keys: orphanWraps } = await proposeFixtureMls({
+      channelId: orphanChannel.id, version: orphanState.nextVersion, rawKey: orphanKey,
+      senderCookie: mallory.cookie, senderKeys: malloryKeys, recipients: orphanState.recipients, fresh: true,
+    });
+    const notice = await managerNotice;
+    assert.equal(notice.workspaceId, orphanWorkspace.id, 'managers are told that earlier messages became unreadable');
+    assert.equal(notice.channelId, orphanChannel.id);
+    orphanManagerSocket.disconnect();
+    const orphanAcknowledgement = await acknowledgeChannelKeyDelivery({
+      channelId: orphanChannel.id,
+      version: orphanState.nextVersion,
+      keyCommitment: orphanCommitment,
+      encryptedKey: orphanWraps[0].encryptedKey,
+      deviceId: malloryDevice.id,
+      cookie: mallory.cookie,
+      keys: malloryKeys,
+    });
+    assert.equal(orphanAcknowledgement.status, 'active');
+    assert.equal((await request(`/api/channels/${orphanChannel.id}/messages`, {
+      method: 'POST', cookie: mallory.cookie,
+      body: encryptedMessage(
+        orphanChannel.id, mallory.user.id, malloryDevice.id, malloryKeys.signingPrivateKey, orphanKey,
+        'the remaining member restarted the channel', undefined, orphanState.nextVersion,
+      ).body,
+    })).status, 201);
 
     const membersResponse = await request(`/api/workspaces/${workspace.id}/members`, { cookie: alice.cookie });
     assert.equal(membersResponse.status, 200);
@@ -804,6 +886,89 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
       body: { operation: 'role.unassign', roleId: limitedRoleManager.id, userId: bob.user.id },
     });
     assert.equal(managerSelfRemovalPreview.status, 403, 'a role at the actor rank still cannot be managed');
+
+    // Role edits, overrides and assignment must not reduce a higher-ranked member either.
+    const hierarchyChannelResponse = await request(`/api/workspaces/${workspace.id}/channels`, {
+      method: 'POST', cookie: alice.cookie, body: { name: 'hierarchy-check' },
+    });
+    assert.equal(hierarchyChannelResponse.status, 201);
+    const hierarchyChannel = await json<{ id: string }>(hierarchyChannelResponse);
+    const channelManagerResponse = await request(`/api/workspaces/${workspace.id}/roles`, {
+      method: 'POST', cookie: alice.cookie,
+      body: { name: 'Limited Channel Manager', permissions: Permissions.MANAGE_CHANNELS, position: 62 },
+    });
+    assert.equal(channelManagerResponse.status, 201);
+    const channelManager = await json<{ id: string }>(channelManagerResponse);
+    await assignWorkspaceRole(workspace.id, alice.cookie, channelManager.id, bob.user.id);
+    const bobRevision = async () => (await json<{ authorizationRevision: string }>(await request(`/api/workspaces/${workspace.id}/roles/preview`, {
+      method: 'POST', cookie: bob.cookie,
+      body: { operation: 'role.assign', roleId: reviewerRole.id, userId: bob.user.id },
+    }))).authorizationRevision;
+    const overridePath = (roleId: string) => `/api/workspaces/${workspace.id}/channels/${hierarchyChannel.id}/permission-overrides/${roleId}`;
+    const sharedRoleDenyPreview = await request(`/api/workspaces/${workspace.id}/channels/${hierarchyChannel.id}/permission-overrides/preview`, {
+      method: 'POST', cookie: bob.cookie,
+      body: { operation: 'upsert', roleId: memberRole.id, allowMask: 0, denyMask: Permissions.SEND_MESSAGES },
+    });
+    assert.equal(sharedRoleDenyPreview.status, 403, 'a deny on a role shared with a higher member must be refused in preview');
+    assert.equal((await json<{ error: string }>(sharedRoleDenyPreview)).error, 'MEMBER_HIERARCHY');
+    assert.equal((await request(overridePath(memberRole.id), {
+      method: 'PUT', cookie: bob.cookie,
+      body: { allowMask: 0, denyMask: Permissions.SEND_MESSAGES, expectedRevision: 0, expectedAuthorizationRevision: await bobRevision() },
+    })).status, 403, 'a deny on a role shared with a higher member must be refused');
+    const mutedRoleResponse = await request(`/api/workspaces/${workspace.id}/roles`, {
+      method: 'POST', cookie: bob.cookie, body: { name: 'Muted Here', permissions: 0, position: 10 },
+    });
+    assert.equal(mutedRoleResponse.status, 201);
+    const mutedRole = await json<{ id: string }>(mutedRoleResponse);
+    assert.equal((await request(overridePath(mutedRole.id), {
+      method: 'PUT', cookie: bob.cookie,
+      body: { allowMask: 0, denyMask: Permissions.SEND_MESSAGES, expectedRevision: 0, expectedAuthorizationRevision: await bobRevision() },
+    })).status, 200, 'an override on an unassigned lower role affects nobody');
+    assert.equal((await request(`/api/workspaces/${workspace.id}/roles/preview`, {
+      method: 'POST', cookie: bob.cookie,
+      body: { operation: 'role.assign', roleId: mutedRole.id, userId: retryDeviceAccount.user.id },
+    })).status, 403, 'assigning a deny-carrying role to a higher member must be refused in preview');
+    assert.equal((await request(`/api/workspaces/${workspace.id}/members/${retryDeviceAccount.user.id}/roles/${mutedRole.id}`, {
+      method: 'POST', cookie: bob.cookie, body: { expectedAuthorizationRevision: await bobRevision() },
+    })).status, 403, 'assigning a deny-carrying role to a higher member must be refused');
+    assert.equal((await request(`/api/workspaces/${workspace.id}/members/${bob.user.id}/roles/${mutedRole.id}`, {
+      method: 'POST', cookie: bob.cookie, body: { expectedAuthorizationRevision: await bobRevision() },
+    })).status, 200, 'an actor may still restrict itself');
+    assert.equal((await request(`/api/workspaces/${workspace.id}/roles/preview`, {
+      method: 'POST', cookie: bob.cookie,
+      body: { operation: 'role.update', roleId: memberRole.id, permissions: memberRole.permissionMask & ~Permissions.SEND_MESSAGES },
+    })).status, 403, 'editing a role shared with a higher member must be refused when it reduces them');
+    const privateHierarchyResponse = await request(`/api/workspaces/${workspace.id}/channels`, {
+      method: 'POST', cookie: alice.cookie, body: { name: 'hierarchy-private', isPrivate: true },
+    });
+    assert.equal(privateHierarchyResponse.status, 201);
+    const privateHierarchy = await json<{ id: string }>(privateHierarchyResponse);
+    for (const userId of [bob.user.id, retryDeviceAccount.user.id]) {
+      assert.equal((await request(`/api/channels/${privateHierarchy.id}/members`, {
+        method: 'POST', cookie: alice.cookie, body: { userId },
+      })).status, 201);
+    }
+    const superiorRemoval = await request(`/api/channels/${privateHierarchy.id}/members/${retryDeviceAccount.user.id}`, {
+      method: 'DELETE', cookie: bob.cookie,
+    });
+    assert.equal(superiorRemoval.status, 403, 'a lower channel manager must not remove a higher member from a private channel');
+    assert.equal((await json<{ error: string }>(superiorRemoval)).error, 'MEMBER_HIERARCHY');
+    assert.equal((await request(`/api/channels/${privateHierarchy.id}/members/${bob.user.id}`, {
+      method: 'DELETE', cookie: bob.cookie,
+    })).status, 200, 'a member may still leave a private channel');
+    assert.equal((await request(`/api/channels/${privateHierarchy.id}/members/${retryDeviceAccount.user.id}`, {
+      method: 'DELETE', cookie: alice.cookie,
+    })).status, 200, 'the owner may remove anyone');
+    assert.equal((await request(`/api/channels/${privateHierarchy.id}`, { method: 'DELETE', cookie: alice.cookie })).status, 200);
+    const ownerRemovesChannelManager = await request(`/api/workspaces/${workspace.id}/roles/preview`, {
+      method: 'POST', cookie: alice.cookie,
+      body: { operation: 'role.unassign', roleId: channelManager.id, userId: bob.user.id },
+    });
+    assert.equal((await request(`/api/workspaces/${workspace.id}/members/${bob.user.id}/roles/${channelManager.id}`, {
+      method: 'DELETE', cookie: alice.cookie,
+      body: { expectedAuthorizationRevision: (await json<{ authorizationRevision: string }>(ownerRemovesChannelManager)).authorizationRevision },
+    })).status, 200);
+    assert.equal((await request(`/api/channels/${hierarchyChannel.id}`, { method: 'DELETE', cookie: alice.cookie })).status, 200);
     const ownerRemovesManager = await request(`/api/workspaces/${workspace.id}/roles/preview`, {
       method: 'POST', cookie: alice.cookie,
       body: { operation: 'role.unassign', roleId: limitedRoleManager.id, userId: bob.user.id },

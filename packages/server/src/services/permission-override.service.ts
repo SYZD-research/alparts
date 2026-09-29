@@ -12,12 +12,14 @@ import { auditedTransaction } from '../middleware/audit.js';
 import { MAX_ROLES_PER_WORKSPACE, MAX_TOTAL_CHANNELS_PER_WORKSPACE } from '../security/limits.js';
 import {
   applyViewerEffectsAndRotation,
+  assertNoSuperiorAccessLoss,
   assertValidChannelOverrideMask,
-  captureChannelViewersFromStore,
+  captureChannelViewersFromSnapshot,
   computeAuthorizationRevisionFromStore,
   getChannelAuthorizationFromStore,
   getWorkspaceAuthorizationFromStore,
   isVisibleChannelAuthorization,
+  loadWorkspaceAuthorizationSnapshot,
   lockChannelAuthorization,
   lockWorkspaceForAuthorization,
   type ChannelViewerEffect,
@@ -109,16 +111,19 @@ export async function previewPermissionOverride(
       normalized.allowMask | normalized.denyMask | (current?.allowMask ?? 0) | (current?.denyMask ?? 0));
     if (input.operation === 'delete' && !current) throw new Error('OVERRIDE_NOT_FOUND');
     const affectedChannelIds = await getAffectedChannelIds(transaction, target, workspaceId, targetId);
-    const before = await captureChannelViewersFromStore(transaction, workspaceId, affectedChannelIds);
+    const snapshot = await requireOverrideSnapshot(transaction, workspaceId, affectedChannelIds);
     const mutation: OverrideMutation = {
       roleId: input.roleId,
       allowMask: normalized.allowMask,
       denyMask: normalized.denyMask,
       deleted: input.operation === 'delete',
     };
-    const after = await captureChannelViewersFromStore(transaction, workspaceId, affectedChannelIds, target === 'category'
+    const options = target === 'category'
       ? { categoryOverrideMutation: mutation }
-      : { channelOverrideMutation: mutation });
+      : { channelOverrideMutation: mutation };
+    assertNoSuperiorAccessLoss(snapshot, snapshot, actorId, options);
+    const before = captureChannelViewersFromSnapshot(snapshot);
+    const after = captureChannelViewersFromSnapshot(snapshot, options);
     return {
       target,
       workspaceId,
@@ -162,7 +167,8 @@ export async function upsertPermissionOverride(
     await assertOverrideAuthority(transaction, target, workspaceId, targetId, actorId, roleId,
       input.allowMask | input.denyMask | (current?.allowMask ?? 0) | (current?.denyMask ?? 0));
     if ((current?.revision ?? 0) !== input.expectedRevision) throw new Error('STALE_OVERRIDE');
-    const before = await captureChannelViewersFromStore(transaction, workspaceId, affectedChannelIds);
+    const snapshotBefore = await requireOverrideSnapshot(transaction, workspaceId, affectedChannelIds);
+    const before = captureChannelViewersFromSnapshot(snapshotBefore);
     const nextRevision = input.expectedRevision + 1;
     const now = new Date();
     let row;
@@ -209,7 +215,9 @@ export async function upsertPermissionOverride(
           updatedAt: now,
         }).returning();
     }
-    const after = await captureChannelViewersFromStore(transaction, workspaceId, affectedChannelIds);
+    const snapshotAfter = await requireOverrideSnapshot(transaction, workspaceId, affectedChannelIds);
+    assertNoSuperiorAccessLoss(snapshotBefore, snapshotAfter, actorId);
+    const after = captureChannelViewersFromSnapshot(snapshotAfter);
     const roomEffects = await applyViewerEffectsAndRotation(transaction, before, after);
     return {
       row,
@@ -261,7 +269,8 @@ export async function deletePermissionOverride(
     if (!current) throw new Error('OVERRIDE_NOT_FOUND');
     await assertOverrideAuthority(transaction, target, workspaceId, targetId, actorId, roleId, current.allowMask | current.denyMask);
     if (current.revision !== expectedRevision) throw new Error('STALE_OVERRIDE');
-    const before = await captureChannelViewersFromStore(transaction, workspaceId, affectedChannelIds);
+    const snapshotBefore = await requireOverrideSnapshot(transaction, workspaceId, affectedChannelIds);
+    const before = captureChannelViewersFromSnapshot(snapshotBefore);
     if (target === 'category') {
       await transaction.delete(categoryRolePermissionOverrides).where(and(
         eq(categoryRolePermissionOverrides.workspaceId, workspaceId),
@@ -275,7 +284,9 @@ export async function deletePermissionOverride(
         eq(channelRolePermissionOverrides.roleId, roleId),
       ));
     }
-    const after = await captureChannelViewersFromStore(transaction, workspaceId, affectedChannelIds);
+    const snapshotAfter = await requireOverrideSnapshot(transaction, workspaceId, affectedChannelIds);
+    assertNoSuperiorAccessLoss(snapshotBefore, snapshotAfter, actorId);
+    const after = captureChannelViewersFromSnapshot(snapshotAfter);
     const roomEffects = await applyViewerEffectsAndRotation(transaction, before, after);
     return {
       current,
@@ -307,6 +318,12 @@ export async function deletePermissionOverride(
     authorizationRevision: result.authorizationRevision,
     roomEffects: result.roomEffects,
   };
+}
+
+async function requireOverrideSnapshot(store: any, workspaceId: string, channelIds: string[]) {
+  const snapshot = await loadWorkspaceAuthorizationSnapshot(store, workspaceId, channelIds);
+  if (!snapshot) throw new Error('TARGET_NOT_FOUND');
+  return snapshot;
 }
 
 async function assertManagementAuthorization(

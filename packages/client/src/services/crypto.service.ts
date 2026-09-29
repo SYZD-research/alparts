@@ -75,6 +75,7 @@ export interface ChannelKey {
 
 export const CHANNEL_KEY_ACTIVATION_PENDING = 'CHANNEL_KEY_ACTIVATION_PENDING';
 export const CHANNEL_KEY_DELIVERY_PENDING = 'CHANNEL_KEY_DELIVERY_PENDING';
+export const CHANNEL_HISTORY_UNAVAILABLE = 'CHANNEL_HISTORY_UNAVAILABLE';
 
 /**
  * The candidate key is valid, but the server cannot activate it until every
@@ -111,8 +112,11 @@ export function isChannelKeyActivationPendingError(
 export class ChannelKeyDeliveryPendingError extends Error {
   readonly code = CHANNEL_KEY_DELIVERY_PENDING;
 
-  constructor() {
-    super('A previously registered device must make this channel available to the current device');
+  /** `historyUnavailable`: no current device holds the key, so waiting cannot help. */
+  constructor(historyUnavailable = false) {
+    super(historyUnavailable
+      ? CHANNEL_HISTORY_UNAVAILABLE
+      : 'A previously registered device must make this channel available to the current device');
     this.name = 'ChannelKeyDeliveryPendingError';
   }
 }
@@ -594,7 +598,7 @@ async function ensureChannelKeyAttempt(
 
     if (state.rotationRequired || state.currentVersion === 0) {
       if (!state.canRotate) {
-        throw new ChannelKeyDeliveryPendingError();
+        throw new ChannelKeyDeliveryPendingError(state.historyRecoveryRequired);
       }
       if (!state.recipients.some((recipient) => recipient.deviceId === device.deviceId)) {
         throw new Error('Current device is not an authorized key recipient');
