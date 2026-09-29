@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useChannelStore } from '../../stores/channel.store';
 import { useMessageStore } from '../../stores/message.store';
 import { searchLoadedMessages } from '../../stores/search-loaded-messages';
+import { formatDateTime } from '../../stores/date-format';
 
 interface MessageSearchProps {
   membersOpen: boolean;
@@ -118,7 +119,7 @@ export function MessageSearch({ membersOpen, membersAvailable, onToggleMembers, 
                   <div className="flex items-center gap-2 text-xs text-discord-muted">
                     <span>#{result.channelName}</span>
                     <span>{result.authorName}</span>
-                    <time>{new Date(result.createdAt).toLocaleString('ja-JP')}</time>
+                    <time>{formatDateTime(result.createdAt)}</time>
                   </div>
                   <p className="mt-1 line-clamp-2 break-words text-sm text-discord-text">{result.content}</p>
                 </button>

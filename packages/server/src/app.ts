@@ -26,6 +26,7 @@ import dmRoutes from './routes/dms.js';
 import userStateRoutes from './routes/user-state.js';
 import auditLogRoutes from './routes/audit-logs.js';
 import permissionOverrideRoutes from './routes/permission-overrides.js';
+import profileRoutes from './routes/profiles.js';
 import { enforceBrowserOrigin } from './middleware/origin.js';
 import { rateLimit } from './middleware/rate-limit.js';
 import { logError } from './security/logger.js';
@@ -38,8 +39,23 @@ import { renderPrometheusMetrics } from './observability/metrics.js';
 import { matchesSecret } from './security/cookies.js';
 import { createReadinessCheck } from './security/readiness-cache.js';
 
+/**
+ * Expected domain failures that individual routes do not translate. They are
+ * fail-closed already; this keeps them from surfacing as retry-hostile 500s.
+ */
+const DOMAIN_ERROR_STATUS: Record<string, { status: number; message: string; retryAfter?: string }> = {
+  DIRECTORY_CONFLICT: { status: 409, message: 'Device directory changed' },
+  DIRECTORY_LIMIT: { status: 409, message: 'Device directory limit reached' },
+  DEVICE_APPROVAL_REQUIRED: { status: 403, message: 'Device approval is required' },
+  DEVICE_REQUIRED: { status: 428, message: 'A bound device is required' },
+  DEVICE_CHALLENGE_CAPACITY: { status: 503, message: 'Device verification is temporarily busy', retryAfter: '5' },
+  CHANNEL_NOT_FOUND: { status: 404, message: 'Channel not found' },
+  NOT_AUTHORIZED: { status: 403, message: 'Not authorized' },
+};
+
 export function createApp() {
   if (!config.audit.checkpointPath || !config.audit.checkpointRequired) throw new Error('AUDIT_CHECKPOINT_REQUIRED');
+  if (!config.audit.headObjectKey) throw new Error('AUDIT_HEAD_REQUIRED');
   const runtime = requireRuntimeLease();
   const app = express();
   const httpServer = createServer(app);
@@ -224,6 +240,7 @@ export function createApp() {
   app.use('/api', userStateRoutes);
   app.use('/api', auditLogRoutes);
   app.use('/api', permissionOverrideRoutes);
+  app.use('/api', profileRoutes);
 
   // WebSocket
   setupWebSocket(io);
@@ -265,6 +282,12 @@ export function createApp() {
     )) {
       res.setHeader('Retry-After', '30');
       res.status(503).json({ error: 'DATA_INVARIANT', message: 'A bounded data invariant requires operator attention', statusCode: 503 });
+      return;
+    }
+    const domain = typeof err?.message === 'string' ? DOMAIN_ERROR_STATUS[err.message] : undefined;
+    if (domain && !res.headersSent) {
+      if (domain.retryAfter) res.setHeader('Retry-After', domain.retryAfter);
+      res.status(domain.status).json({ error: err.message, message: domain.message, statusCode: domain.status });
       return;
     }
     if (err?.type === 'entity.parse.failed' || err?.type === 'request.size.invalid') {

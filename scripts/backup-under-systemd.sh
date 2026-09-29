@@ -9,7 +9,18 @@ SERVICE_NAME="${ALPARTS_SERVICE_NAME:-alparts.service}"
   exit 2
 }
 
-exec 9>"${ALPARTS_BACKUP_LOCK_FILE:-/run/lock/alparts-backup.lock}"
+# This script runs as root: only accept a plain lock file name under
+# /run/lock, and open it without truncation before taking the lock.
+LOCK_FILE="${ALPARTS_BACKUP_LOCK_FILE:-/run/lock/alparts-backup.lock}"
+[[ "$LOCK_FILE" =~ ^/run/lock/[A-Za-z0-9_.-]{1,64}\.lock$ ]] || {
+  printf 'ALPARTS_BACKUP_LOCK_FILE must be a .lock file directly under /run/lock\n' >&2
+  exit 2
+}
+[[ ! -L "$LOCK_FILE" ]] || {
+  printf 'Refusing a symbolic-link lock file\n' >&2
+  exit 2
+}
+exec 9>>"$LOCK_FILE"
 flock -n 9 || {
   printf 'Another alparts backup is already running\n' >&2
   exit 1

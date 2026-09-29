@@ -21,9 +21,10 @@ export const useAttentionStore = create<AttentionState>((set, get) => ({
   items: [],
 
   add: (notification) => {
-    const preference = useUserStateStore.getState()
+    const preference = notification.channelId === null ? undefined : useUserStateStore.getState()
       .channelStatesByWorkspace[notification.workspaceId]?.[notification.channelId];
-    if (!preference || preference.muted || preference.notificationLevel === 'none') return;
+    const channelNotice = notification.kind === 'channel-restarted' || notification.kind === 'profile-appeal';
+    if (!channelNotice && (!preference || preference.muted || preference.notificationLevel === 'none')) return;
     const key = attentionNotificationKey(notification);
     if (get().items.some((item) => attentionNotificationKey(item) === key)) return;
     set((state) => ({

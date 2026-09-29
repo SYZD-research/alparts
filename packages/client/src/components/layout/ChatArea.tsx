@@ -11,6 +11,7 @@ import { useAuthStore } from '../../stores/auth.store';
 import { directMessageTitle } from '../../stores/dm-model';
 import { useUiStore } from '../../stores/ui.store';
 import { ApiError } from '../../services/api';
+import { CHANNEL_HISTORY_UNAVAILABLE } from '../../services/crypto.service';
 import { Dialog } from '../ui/Dialog';
 
 export function ChatArea({ visible = true }: { visible?: boolean }) {
@@ -181,8 +182,17 @@ export function ChatArea({ visible = true }: { visible?: boolean }) {
         </div>
       ) : channelRecoveryPending ? (
         <div role="status" className="flex flex-1 flex-col items-center justify-center gap-3 px-8 text-center text-discord-muted">
-          <p className="text-discord-text">この端末でメッセージを表示する準備をしています。</p>
-          <p className="max-w-lg text-sm">以前使っていた端末でalpartsを開いたままにしてください。準備が終わると自動で表示されます。</p>
+          {channelKeyPending === CHANNEL_HISTORY_UNAVAILABLE ? (
+            <>
+              <p className="text-discord-text">このチャンネルのメッセージを表示できる端末が残っていません。</p>
+              <p className="max-w-lg text-sm">待っても表示されるようにはなりません。新しいメッセージから開始すると、メンバー全員が再び送信できるようになります。以前のメッセージは表示できないままです。</p>
+            </>
+          ) : (
+            <>
+              <p className="text-discord-text">この端末でメッセージを表示する準備をしています。</p>
+              <p className="max-w-lg text-sm">以前使っていた端末でalpartsを開いたままにしてください。準備が終わると自動で表示されます。</p>
+            </>
+          )}
           <button
             type="button"
             disabled={isRetryingKey}

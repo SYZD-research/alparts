@@ -37,7 +37,7 @@ it('migrates retained password hashes atomically, idempotently, and only with a 
     await client.query('delete from users where id = $1', [weakId]);
     await migrate();
     const stored = (await client.query('select password_hash from users where id = $1', [id])).rows[0].password_hash;
-    assert.match(stored, /^p1:/);
+    assert.match(stored, /^p2:/);
     assert.equal(await verifyPassword('retained-valid-password', stored), true);
     await migrate();
     assert.equal((await client.query('select password_hash from users where id = $1', [id])).rows[0].password_hash, stored);

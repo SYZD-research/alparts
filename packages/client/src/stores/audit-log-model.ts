@@ -18,6 +18,13 @@ const DETAIL_LABELS: Record<string, string> = {
 const ACTION_LABELS: Record<string, string> = {
   'user.register': 'アカウントを作成',
   'user.login': 'ログイン',
+  'user.profile.update': 'プロフィールを変更',
+  'user.avatar.update': 'プロフィール画像を変更',
+  'user.avatar.remove': 'プロフィール画像を削除',
+  'profile.flag': 'プロフィールに警告を付与',
+  'profile.unflag': 'プロフィールの警告を解除',
+  'profile.appeal.request': 'プロフィールの警告の解除を依頼',
+  'profile.appeal.deny': 'プロフィールの警告の解除依頼を却下',
   'user.login.failed': 'ログインに失敗',
   'user.logout': 'ログアウト',
   'session.revoke': 'ログインを終了',

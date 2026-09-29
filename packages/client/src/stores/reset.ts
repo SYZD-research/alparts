@@ -11,6 +11,7 @@ import { useUserStateStore } from './user-state.store';
 import { useAttachmentStore } from './attachment.store';
 import { useVoiceStore } from './voice.store';
 import { useAttentionStore } from './attention.store';
+import { clearAvatarCache } from './avatar-cache';
 
 /** Remove all decrypted and authentication-scoped in-memory state. */
 export function resetAuthenticatedState(): void {
@@ -26,5 +27,6 @@ export function resetAuthenticatedState(): void {
   useChannelStore.getState().reset();
   useWorkspaceStore.getState().reset();
   useUiStore.getState().reset();
+  clearAvatarCache();
   clearLocalStateSession();
 }

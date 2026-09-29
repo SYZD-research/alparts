@@ -4,6 +4,7 @@ import {
   invitationStatusAt,
   managementErrorMessage,
 } from '../../stores/workspace-management-model';
+import { formatDateTime } from '../../stores/date-format';
 
 interface InvitationManagerProps {
   mode: 'accept' | 'manage';
@@ -256,7 +257,7 @@ export function InvitationManager({
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
                     <p className="font-medium text-white">{invitation.email || 'メールアドレス指定なし'} · {invitation.role?.name || '削除済みロール'}</p>
-                    <p className="mt-1 text-xs text-discord-muted">状態: {statusLabels[status]} / 期限: {new Date(invitation.expiresAt).toLocaleString()}</p>
+                    <p className="mt-1 text-xs text-discord-muted">状態: {statusLabels[status]} / 期限: {formatDateTime(invitation.expiresAt)}</p>
                   </div>
                   {status === 'active' && pendingRevokeId !== invitation.id && (
                     <button type="button" onClick={() => setPendingRevokeId(invitation.id)} className="rounded px-3 py-1 text-discord-red hover:bg-discord-red/10">無効にする</button>

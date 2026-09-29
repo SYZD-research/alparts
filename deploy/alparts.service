@@ -26,6 +26,8 @@ Environment=PASSWORD_PEPPER_FILE=%d/password_pepper
 Environment=AUDIT_INTEGRITY_KEY_FILE=%d/audit_integrity_key
 Environment=AUDIT_CHECKPOINT_PATH=/var/lib/alparts-audit/checkpoint.json
 Environment=AUDIT_CHECKPOINT_REQUIRED=true
+# Set AUDIT_HEAD_BUCKET and stable AUDIT_HEAD_OBJECT_KEY in /etc/alparts/alparts.env.
+# Provision/upgrade while stopped; do not restore this bucket with the DB.
 Environment=ALLOW_INSECURE_LOOPBACK_DEPENDENCIES=true
 ExecStart=/usr/bin/node --permission --allow-fs-read=/opt/alparts --allow-fs-read=%d --allow-fs-read=/var/lib/alparts-audit --allow-fs-write=/var/lib/alparts-audit --allow-worker --disallow-code-generation-from-strings /opt/alparts/packages/server/dist/index.js
 Restart=on-failure

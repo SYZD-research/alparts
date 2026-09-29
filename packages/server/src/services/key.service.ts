@@ -20,7 +20,9 @@ import { getChannelAuthorization } from '../middleware/rbac.js';
 import {
   getChannelAuthorizationFromStore,
   getChannelViewerIdsFromStore,
+  getWorkspaceAuthorizationFromSnapshot,
   isVisibleChannelAuthorization,
+  loadWorkspaceAuthorizationSnapshot,
   lockChannelAuthorization,
   lockWorkspaceForAuthorization,
 } from './authorization.service.js';
@@ -45,10 +47,7 @@ import {
   hasRevokedEpochRecipient,
   nextChannelKeyVersion,
 } from './key-epoch-state.js';
-import {
-  assertCurrentPasswordSnapshot,
-  verifyCurrentPasswordSnapshot,
-} from './auth.service.js';
+import { assertCurrentPasswordSnapshot } from './auth.service.js';
 
 const KEY_PROTOCOL_VERSION = 2;
 const MAX_KEY_VERSION = 1_000_000;
@@ -501,29 +500,6 @@ export async function distributeChannelKeys(
   );
 }
 
-export async function startFreshChannelKey(
-  channelId: string,
-  userId: string,
-  senderDeviceId: string,
-  version: number,
-  keyCommitment: string,
-  wrappedKeys: WrappedKeyInput[],
-  signature: string,
-  currentPassword: string,
-) {
-  // Password work must finish before the audit/key/workspace locks below.
-  const expectedPasswordHash = await verifyCurrentPasswordSnapshot(userId, currentPassword);
-  return commitChannelKeyDistribution(
-    channelId,
-    userId,
-    senderDeviceId,
-    version,
-    keyCommitment,
-    wrappedKeys,
-    { expectedPasswordHash, signature },
-  );
-}
-
 async function commitChannelKeyDistribution(
   channelId: string,
   userId: string,
@@ -613,12 +589,20 @@ async function commitChannelKeyDistribution(
     const historyRecoveryRequired = Boolean(
       activeEpoch && effectiveRotationRequired && !activeHasEligibleHolder
     );
+    let restartedByMember = false;
     if (freshStart) {
       if (version !== nextVersion) throw new Error('KEY_FRESH_START_CONFLICT');
       if (activeEpoch && !effectiveRotationRequired && !historyRecoveryRequired) throw new Error('KEY_FRESH_START_NOT_REQUIRED');
       const hasRotationPermission = channel.type === 'dm'
         || (authorization.permissions & Permissions.MANAGE_CHANNELS) === Permissions.MANAGE_CHANNELS;
-      if (!hasRotationPermission) throw new Error('KEY_FRESH_START_FORBIDDEN');
+      // No eligible device holds the active key: nothing more can be lost, so
+      // any current viewer may restart the channel (after step-up) instead of
+      // waiting for a manager. A manager's in-flight proposal is only replaced
+      // once it has stalled.
+      const orphanedChannel = historyRecoveryRequired
+        && (!pendingEpoch || Date.now() - pendingEpoch.createdAt.getTime() >= 15 * 60_000);
+      if (!hasRotationPermission && !orphanedChannel) throw new Error('KEY_FRESH_START_FORBIDDEN');
+      restartedByMember = !hasRotationPermission;
       if (!activeEpoch && !pendingEpoch) throw new Error('KEY_FRESH_START_NOT_REQUIRED');
       if (
         activeEpoch
@@ -641,13 +625,15 @@ async function commitChannelKeyDistribution(
         || suppliedIds.size !== eligibleById.size
         || [...eligibleById.keys()].some((id) => !suppliedIds.has(id))
       ) throw new Error('INCOMPLETE_KEY_DISTRIBUTION');
-      if (!mls && channel.type !== 'dm' && (authorization.permissions & Permissions.MANAGE_CHANNELS) !== Permissions.MANAGE_CHANNELS) throw new Error('KEY_ROTATION_FORBIDDEN');
       if (activeEpoch && !freshStart) {
         if (!effectiveRotationRequired) throw new Error('KEY_ROTATION_NOT_REQUIRED');
-        if (
-          !historyRecoveryRequired
-          && !await hasAcceptedEpoch(tx, channelId, activeEpoch.version, senderDeviceId)
-        ) {
+        const hasRotationPermission = channel.type === 'dm'
+          || (authorization.permissions & Permissions.MANAGE_CHANNELS) === Permissions.MANAGE_CHANNELS;
+        // Match canRotate: an ordinary proposal needs an acknowledged holder,
+        // or a manager when all eligible holders are gone. Other viewers must
+        // use fresh-start, including its step-up and manager notification.
+        const senderAcknowledged = await hasAcceptedEpoch(tx, channelId, activeEpoch.version, senderDeviceId);
+        if (!senderAcknowledged && !(historyRecoveryRequired && hasRotationPermission)) {
           throw new Error('KEY_DISTRIBUTION_FORBIDDEN');
         }
       }
@@ -692,6 +678,9 @@ async function commitChannelKeyDistribution(
         mode: 'proposal' as const,
         historyRecovery: historyRecoveryRequired || Boolean(freshStart),
         freshStart: Boolean(freshStart),
+        // Managers learn that earlier messages became unreadable when a member
+        // (not a manager) restarted the channel. Not part of the API response.
+        notifyManagerUserIds: restartedByMember ? await channelManagersToNotify(tx, channel.workspaceId, userId) : [],
       };
     }
 
@@ -851,6 +840,8 @@ async function commitChannelKeyDistribution(
     mode: result.mode,
     historyRecovery: result.historyRecovery,
     freshStart: result.freshStart,
+    workspaceId: result.workspaceId,
+    notifyManagerUserIds: ('notifyManagerUserIds' in result ? result.notifyManagerUserIds : []) as string[],
   };
 }
 
@@ -1168,6 +1159,17 @@ async function hasAnyAcceptedEpochRecipient(
     ),
   });
   return Boolean(recipient);
+}
+
+async function channelManagersToNotify(store: any, workspaceId: string, actorId: string): Promise<string[]> {
+  const snapshot = await loadWorkspaceAuthorizationSnapshot(store, workspaceId, []);
+  if (!snapshot) return [];
+  return [...snapshot.membersByUserId.keys()].filter((memberId) => {
+    if (memberId === actorId) return false;
+    if (snapshot.ownerId === memberId) return true;
+    const authorization = getWorkspaceAuthorizationFromSnapshot(snapshot, memberId);
+    return Boolean(authorization && (authorization.permissionMask & Permissions.MANAGE_CHANNELS) === Permissions.MANAGE_CHANNELS);
+  }).sort();
 }
 
 async function isRecipientSnapshotStillAuthorized(

@@ -13,6 +13,7 @@ import {
   readSecurityState,
   writeSecurityState,
   deleteSecurityState,
+  listSecurityStateNames,
   toBase64,
   fromBase64,
 } from './security-storage';
@@ -211,12 +212,47 @@ export async function backupRawHistoryKey(channelId: string, version: number, ra
   const local = await readSecurityState<LocalRecovery>(owner, 'recovery');
   if (!local) return;
   const name = `recovery-sent:${channelId}:${version}`;
-  if ((await readSecurityState<string>(owner, name)) === local.generation) return;
+  if ((await readSecurityState<string>(owner, name)) === local.generation) {
+    await deleteSecurityState(owner, `recovery-backup-pending:${channelId}:${version}`);
+    return;
+  }
   const record = await encryptedHistoryKey(channelId, version, raw, local);
   channelKeyScopes.assertCurrent(scope);
   await recoveryPage('/recovery/keys', record);
   await writeSecurityState(owner, name, local.generation, scope);
   await deleteSecurityState(owner, `recovery-backup-pending:${channelId}:${version}`);
+}
+/** Retries history backups that failed when their key was first accepted. */
+export async function retryPendingHistoryBackups(limit = 64): Promise<number> {
+  const owner = getActiveDevice();
+  if (!await readSecurityState<LocalRecovery>(owner, 'recovery')) return 0;
+  let completed = 0;
+  for (const name of await listSecurityStateNames(owner, 'recovery-backup-pending:', limit)) {
+    const match = /^recovery-backup-pending:([a-f0-9-]{36}):([1-9]\d{0,6})$/.exec(name);
+    if (!match) {
+      await deleteSecurityState(owner, name);
+      continue;
+    }
+    const [, channelId, versionText] = match;
+    const version = Number(versionText);
+    try {
+      const raw = await exportHistoryKey(channelId, version);
+      if (!raw) {
+        // The key is no longer available on this device; nothing to back up.
+        await deleteSecurityState(owner, name);
+        continue;
+      }
+      try {
+        await backupRawHistoryKey(channelId, version, raw);
+        completed++;
+      } finally {
+        raw.fill(0);
+      }
+    } catch {
+      // Keep the marker; the next retry gets another chance.
+    }
+  }
+  return completed;
 }
 export async function backupAvailableHistory() {
   const owner = getActiveDevice();
@@ -265,6 +301,15 @@ export async function backupAvailableHistory() {
     if (!cursor) return count;
   }
   throw new Error('RECOVERY_LIMIT');
+}
+async function saveRecoveredChannelKeyIfAllowed(channelId: string, version: number, plain: Uint8Array): Promise<boolean> {
+  try {
+    await saveRecoveredChannelKey(channelId, version, plain);
+    return true;
+  } catch (error) {
+    if (error instanceof Error && /^Channel key scope (is revoked|changed during operation)$/.test(error.message)) return false;
+    throw error;
+  }
 }
 export async function restoreHistory(code?: string) {
   const owner = getActiveDevice();
@@ -376,8 +421,9 @@ export async function restoreHistory(code?: string) {
           if (plain.length !== 32 || digest !== record.keyCommitment)
             throw new Error('INVALID_RECOVERY');
           assertRecoveryOwner(owner);
-          await saveRecoveredChannelKey(record.channelId, record.version, plain);
-          count++;
+          // A channel this device may no longer use must not abort the rest
+          // of an otherwise valid archive; the archive itself was verified.
+          if (await saveRecoveredChannelKeyIfAllowed(record.channelId, record.version, plain)) count++;
         } finally {
           plain.fill(0);
         }

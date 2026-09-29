@@ -11,6 +11,7 @@ import { AUDIT_COMMIT_WAIT_MS, MAX_PENDING_AUDIT_COMMITS } from '../security/lim
 import { currentLogContext } from '../security/log-context.js';
 import { logError } from '../security/logger.js';
 import { readWitnessFile, verifyAuditWitness, type AuditWitnessPayload } from '../security/audit-witness.js';
+import { provisionAuditHeadBucket, readStoredAuditHead, writeStoredAuditHead } from '../services/object-storage.js';
 
 export interface AuditEntry {
   actorId?: string;
@@ -54,6 +55,7 @@ let checkpointFailure: Error | null = null;
 let checkpointIntegrityFailure: Error | null = null;
 let lastFullVerification: { valid: boolean; checkpoint: 'disabled' | 'initialized' | 'verified' } | null = null;
 let lastAcceptedCheckpoint: AuditCheckpointV2 | null = null;
+let durableAuditHead: AuditCheckpointV2 | null = null;
 let externalWitness: { payload: AuditWitnessPayload; checkedAt: number } | null = null;
 
 async function loadExternalWitness(): Promise<AuditWitnessPayload | null> {
@@ -299,6 +301,13 @@ function enqueueCheckpoint(entry: CommittedAuditEntry): Promise<void> {
 }
 
 export async function checkAuditCheckpoint(): Promise<void> {
+  // Reading the local and remote copies must not interleave with our own
+  // checkpoint advancement; otherwise a legitimate newer remote head looks
+  // like a replay of the file read a moment earlier.
+  await withSerializedAuditCommit(checkAuditCheckpointNow);
+}
+
+async function checkAuditCheckpointNow(): Promise<void> {
   await assertExternalWitness();
   for (;;) {
     const observed = checkpointQueue;
@@ -324,6 +333,7 @@ export async function checkAuditCheckpoint(): Promise<void> {
     try {
       await db.transaction(async (transaction) => {
         await transaction.execute(sql`select pg_advisory_xact_lock(1095520321)`);
+        if (durableAuditHead) await loadCheckpointAnchor(transaction, durableAuditHead);
         await loadCheckpointAnchor(transaction, checkpoint);
       });
     } catch (error) {
@@ -341,7 +351,7 @@ export async function verifyAuditChain(): Promise<{
   checked: number;
   checkpoint: 'disabled' | 'initialized' | 'verified';
 }> {
-  const result = await verifyAuditChainNow();
+  const result = await withSerializedAuditCommit(verifyAuditChainNow);
   lastFullVerification = { valid: result.valid, checkpoint: result.checkpoint };
   return result;
 }
@@ -351,7 +361,7 @@ async function verifyAuditChainNow(): Promise<{
   checked: number;
   checkpoint: 'disabled' | 'initialized' | 'verified';
 }> {
-  await checkAuditCheckpoint();
+  await checkAuditCheckpointNow();
   const checkpoint = config.audit.checkpointPath ? await readAuditCheckpoint() : null;
   const scan = await scanAuditRows(checkpoint);
   if (!scan.valid) return { valid: false, checked: scan.checked, checkpoint: checkpointMode() };
@@ -367,7 +377,7 @@ async function verifyAuditChainNow(): Promise<{
   if (checkpoint) {
     if (!checkpointMatched) return { valid: false, checked, checkpoint: 'verified' };
     if (checkpoint.version === 2) lastAcceptedCheckpoint = checkpoint;
-    if (latest && (latest.id !== checkpoint.logId || checkpoint.version === 1)) {
+    if (latest) {
       await writeAuditCheckpoint(latest.id, latest.hash, latest.createdAt);
     }
     return { valid: true, checked, checkpoint: 'verified' };
@@ -398,7 +408,9 @@ export async function getAuditIntegrityStatus(): Promise<{
 /** Explicit one-time operator action for a required checkpoint. */
 export async function provisionAuditCheckpoint(): Promise<void> {
   if (!config.audit.checkpointPath) throw new Error('AUDIT_CHECKPOINT_PATH is required');
-  if (await readAuditCheckpoint()) throw new Error('Audit checkpoint is already provisioned');
+  if (await readAuditCheckpoint(true)) throw new Error('Audit checkpoint is already provisioned');
+  await provisionAuditHeadBucket();
+  durableAuditHead = await readDurableAuditHead(true);
   // This command is the sole recovery/initialization boundary allowed to
   // replace a missing witness after independently validating the full chain.
   // Normal request/readiness paths can only set, never clear, the sticky latch.
@@ -424,6 +436,22 @@ export async function provisionAuditCheckpoint(): Promise<void> {
   if (!verified.valid) throw new Error('Provisioned audit checkpoint did not verify');
 }
 
+/** Explicit upgrade for an existing, independently verified local checkpoint.
+ * Never call this from startup/readiness: loss of an existing head must fail closed.
+ */
+export async function provisionAuditHead(): Promise<void> {
+  if (await readDurableAuditHead(true)) throw new Error('Audit head is already provisioned');
+  const checkpoint = await readAuditCheckpoint(true);
+  if (!checkpoint) throw new Error('Existing audit checkpoint is required');
+  const scan = await scanAuditRows(checkpoint);
+  if (!scan.valid || !scan.checkpointMatched || !scan.latest) throw new AuditCheckpointIntegrityError('Audit log integrity verification failed');
+  await provisionAuditHeadBucket();
+  // The explicit operator action also upgrades legacy v1 files. The full scan
+  // above, including the existing anchor, is required before creating a head.
+  await writeAuditCheckpoint(scan.latest.id, scan.latest.hash, scan.latest.createdAt, true);
+  if (!(await verifyAuditChain()).valid) throw new Error('Provisioned audit head did not verify');
+}
+
 async function scanAuditRows(checkpoint: AuditCheckpoint | null): Promise<{
   valid: boolean;
   checked: number;
@@ -431,8 +459,10 @@ async function scanAuditRows(checkpoint: AuditCheckpoint | null): Promise<{
   checkpointMatched: boolean;
 }> {
   const witness = await loadExternalWitness();
+  const head = durableAuditHead;
   return db.transaction(async (transaction) => {
     let witnessMatched = !witness;
+    let headMatched = !head;
     let previous: string | null = null;
     let checked = 0;
     let cursor: { id: string; createdAt: Date } | null = null;
@@ -459,6 +489,8 @@ async function scanAuditRows(checkpoint: AuditCheckpoint | null): Promise<{
       if (rows.length === 0) break;
 
       for (const row of rows) {
+        if (head && row.id === head.logId && row.hash === head.logHash
+          && row.createdAt.toISOString() === head.logCreatedAt) headMatched = true;
         if (witness && row.id === witness.logId && row.hash === witness.logHash
           && row.createdAt.toISOString() === witness.logCreatedAt) witnessMatched = true;
         if (row.prevHash !== previous) return { valid: false, checked, latest, checkpointMatched };
@@ -492,7 +524,7 @@ async function scanAuditRows(checkpoint: AuditCheckpoint | null): Promise<{
       cursor = { id: tail.id, createdAt: tail.createdAt };
       if (rows.length < 1_000) break;
     }
-    return { valid: witnessMatched, checked, latest, checkpointMatched };
+    return { valid: witnessMatched && headMatched, checked, latest, checkpointMatched };
   }, { isolationLevel: 'repeatable read', accessMode: 'read only' });
 }
 
@@ -554,8 +586,9 @@ async function assertCheckpointDescendant(
   if (checkpointIntegrityFailure && !allowCheckpointInitialization) throw checkpointIntegrityFailure;
   try {
     const checkpoint = suppliedCheckpoint === undefined
-      ? await readAuditCheckpoint()
+      ? await readAuditCheckpoint(allowCheckpointInitialization)
       : suppliedCheckpoint;
+    if (durableAuditHead) await loadCheckpointAnchor(store, durableAuditHead);
     if (!checkpoint) {
       if (!allowCheckpointInitialization && (config.audit.checkpointRequired || lastAcceptedCheckpoint)) {
         throw new AuditCheckpointIntegrityError('Required audit checkpoint is missing');
@@ -646,7 +679,40 @@ function checkpointSignature(checkpoint: {
     .digest('hex');
 }
 
-async function readAuditCheckpoint(): Promise<AuditCheckpoint | null> {
+function parseCheckpoint(serialized: string): AuditCheckpoint {
+  if (Buffer.byteLength(serialized) > 16 * 1024) throw new AuditCheckpointIntegrityError('Invalid audit checkpoint file');
+  let parsed: unknown;
+  try { parsed = JSON.parse(serialized); } catch { throw new AuditCheckpointIntegrityError('Invalid audit checkpoint file'); }
+  if (!isAuditCheckpoint(parsed)) throw new AuditCheckpointIntegrityError('Invalid audit checkpoint file');
+  const { signature, ...unsigned } = parsed;
+  if (!safeEqualHex(signature, checkpointSignature(unsigned))) throw new AuditCheckpointIntegrityError('Invalid audit checkpoint signature');
+  return parsed;
+}
+
+function assertNotOlder(parsed: AuditCheckpoint, previous: AuditCheckpointV2 | null): void {
+  if (!previous) return;
+  if (parsed.version !== 2) throw new AuditCheckpointIntegrityError('Audit checkpoint rollback detected');
+  const previousTime = Date.parse(previous.logCreatedAt);
+  const currentTime = Date.parse(parsed.logCreatedAt);
+  if (currentTime < previousTime || (currentTime === previousTime
+    && (parsed.logId !== previous.logId || !safeEqualHex(parsed.logHash, previous.logHash)))) {
+    throw new AuditCheckpointIntegrityError('Audit checkpoint rollback detected');
+  }
+}
+
+async function readDurableAuditHead(allowMissing = false): Promise<AuditCheckpointV2 | null> {
+  const serialized = await readStoredAuditHead();
+  if (serialized === null) {
+    if (allowMissing) return null;
+    throw new AuditCheckpointIntegrityError('Required durable audit head is missing');
+  }
+  const head = parseCheckpoint(serialized);
+  if (head.version !== 2) throw new AuditCheckpointIntegrityError('Invalid durable audit head version');
+  assertNotOlder(head, durableAuditHead);
+  return head;
+}
+
+async function readAuditCheckpoint(allowMissingHead = false): Promise<AuditCheckpoint | null> {
   const path = config.audit.checkpointPath;
   if (!path) return null;
   let metadata;
@@ -659,30 +725,10 @@ async function readAuditCheckpoint(): Promise<AuditCheckpoint | null> {
   if (!metadata.isFile() || metadata.size > 16 * 1024) {
     throw new AuditCheckpointIntegrityError('Invalid audit checkpoint file');
   }
-  let parsed: unknown;
-  const serialized = await readFile(path, 'utf8');
-  try {
-    parsed = JSON.parse(serialized);
-  } catch {
-    throw new AuditCheckpointIntegrityError('Invalid audit checkpoint file');
-  }
-  if (!isAuditCheckpoint(parsed)) throw new AuditCheckpointIntegrityError('Invalid audit checkpoint file');
-  const { signature, ...unsigned } = parsed;
-  if (!safeEqualHex(signature, checkpointSignature(unsigned))) {
-    throw new AuditCheckpointIntegrityError('Invalid audit checkpoint signature');
-  }
-  if (lastAcceptedCheckpoint) {
-    if (parsed.version !== 2) throw new AuditCheckpointIntegrityError('Audit checkpoint rollback detected');
-    const previousTime = Date.parse(lastAcceptedCheckpoint.logCreatedAt);
-    const currentTime = Date.parse(parsed.logCreatedAt);
-    if (
-      currentTime < previousTime
-      || (currentTime === previousTime && (
-        parsed.logId !== lastAcceptedCheckpoint.logId
-        || !safeEqualHex(parsed.logHash, lastAcceptedCheckpoint.logHash)
-      ))
-    ) throw new AuditCheckpointIntegrityError('Audit checkpoint rollback detected');
-  }
+  const parsed = parseCheckpoint(await readFile(path, 'utf8'));
+  assertNotOlder(parsed, lastAcceptedCheckpoint);
+  durableAuditHead = await readDurableAuditHead(allowMissingHead);
+  assertNotOlder(parsed, durableAuditHead);
   return parsed;
 }
 
@@ -700,10 +746,11 @@ async function writeAuditCheckpoint(
       // atomically replacing the external witness. This makes checkpoint
       // advancement a chain CAS instead of a timestamp-only overwrite.
       await transaction.execute(sql`select pg_advisory_xact_lock(1095520321)`);
-      const current = await readAuditCheckpoint();
+      const current = await readAuditCheckpoint(allowInitialization);
       if (!current && !allowInitialization && (config.audit.checkpointRequired || lastAcceptedCheckpoint)) {
         throw new AuditCheckpointIntegrityError('Required audit checkpoint is missing');
       }
+      if (durableAuditHead) await loadCheckpointAnchor(transaction, durableAuditHead);
       const currentAnchor = current ? await loadCheckpointAnchor(transaction, current) : null;
       if (current?.version === 2) {
         const currentTime = Date.parse(current.logCreatedAt);
@@ -712,6 +759,10 @@ async function writeAuditCheckpoint(
           if (current.logId !== logId || !safeEqualHex(current.logHash, logHash)) {
             throw new AuditCheckpointIntegrityError('Audit checkpoint conflicts with the committed audit row');
           }
+          // A crash may have happened after the local rename and before the
+          // object-store write. Only repair forward after checking the DB row.
+          if (durableAuditHead?.logId !== current.logId) await writeStoredAuditHead(JSON.stringify(current));
+          durableAuditHead = current;
           return;
         }
       } else if (current?.version === 1 && currentAnchor) {
@@ -721,7 +772,7 @@ async function writeAuditCheckpoint(
           if (current.logId !== logId || !safeEqualHex(current.logHash, logHash)) {
             throw new AuditCheckpointIntegrityError('Audit checkpoint conflicts with the committed audit row');
           }
-          return;
+          // Continue to upgrade the v1 checkpoint after validating its anchor.
         }
       }
 
@@ -751,7 +802,9 @@ async function writeAuditCheckpoint(
         } finally {
           await directory.close();
         }
-        lastAcceptedCheckpoint = checkpoint as AuditCheckpointV2;
+        await writeStoredAuditHead(JSON.stringify(checkpoint));
+        durableAuditHead = checkpoint;
+        lastAcceptedCheckpoint = checkpoint;
       } catch (error) {
         await handle?.close().catch(() => undefined);
         await unlink(temporary).catch(() => undefined);

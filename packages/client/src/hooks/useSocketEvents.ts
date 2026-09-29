@@ -3,6 +3,7 @@ import type { Attachment, Device, Message, Reaction, ReadPosition, UserStatusTyp
 import { getActiveDevice } from '../services/crypto.service';
 import { getSocket } from '../services/socket';
 import type { DirectMessageConversation } from '../services/api';
+import { api } from '../services/api';
 import { useAttachmentStore } from '../stores/attachment.store';
 import {
   parseChannelAuthorizationEvent,
@@ -69,11 +70,16 @@ export function useSocketEvents() {
       return Boolean(channel && channel.type !== 'voice');
     };
 
+    let authorizationResyncRequired = false;
     const enqueueAuthorizationWork = (operation: () => Promise<void>) => {
       // Revocation handlers erase the affected security scope before entering
-      // this queue. Dropping later reconciliation work at the exact cap is
-      // therefore fail-closed and a reconnect will rebuild the visible state.
-      if (authorizationQueueDepth >= maxPendingAuthorizationTasks) return;
+      // this queue. At the cap, individual events are coalesced into one full
+      // refresh of the active workspace once the queue drains, so no event is
+      // silently lost until the next reload.
+      if (authorizationQueueDepth >= maxPendingAuthorizationTasks) {
+        authorizationResyncRequired = true;
+        return;
+      }
       authorizationQueueDepth += 1;
       authorizationQueue = authorizationQueue
         .catch(() => undefined)
@@ -81,7 +87,17 @@ export function useSocketEvents() {
           if (!disposed) await operation();
         })
         .catch(() => undefined)
-        .finally(() => { authorizationQueueDepth -= 1; });
+        .finally(() => {
+          authorizationQueueDepth -= 1;
+          if (authorizationQueueDepth === 0 && authorizationResyncRequired && !disposed) {
+            authorizationResyncRequired = false;
+            enqueueAuthorizationWork(async () => {
+              const workspaceId = useWorkspaceStore.getState().activeWorkspaceId;
+              await loadWorkspaces();
+              if (workspaceId) await refreshWorkspaceAuthorization(workspaceId);
+            });
+          }
+        });
     };
 
     const scheduleKeySync = (channelIds: string[]) => {
@@ -291,21 +307,42 @@ export function useSocketEvents() {
       }
     };
     const onPresenceChanged = (data: { userId: string; status: UserStatusType }) => setStatus(data.userId, data.status);
+    // Profile (name, picture, self-introduction) or warning changes: refresh
+    // the member list of the workspace being shown.
+    const onMemberProfileChanged = (value: unknown) => {
+      if (typeof value !== 'object' || value === null) return;
+      const { workspaceId, userId: changedUserId } = value as { workspaceId?: unknown; userId?: unknown };
+      if (typeof workspaceId !== 'string') return;
+      if (workspaceId === useWorkspaceStore.getState().activeWorkspaceId) void loadMembers(workspaceId);
+      if (changedUserId === userId) {
+        void api.getMe().then((me) => {
+          const current = useAuthStore.getState().user;
+          if (current && current.id === me.id) useAuthStore.setState({ user: me });
+        }).catch(() => undefined);
+      }
+    };
     const onTypingUpdate = (data: { channelId: string; userId: string; isTyping: boolean }) => {
       if (isAuthorizedLoadedChannel(data.channelId)) setTyping(data.channelId, data.userId, data.isTyping);
     };
     const onAttention = (value: unknown) => {
       const notification = parseAttentionNotification(value);
       if (!notification) return;
+      // Managers are told about a restarted channel even when they cannot see
+      // it; a profile appeal concerns a member, not a channel.
+      if (notification.kind === 'channel-restarted' || notification.kind === 'profile-appeal' || notification.channelId === null) {
+        addAttention(notification);
+        return;
+      }
+      const channelId = notification.channelId;
       const state = useUserStateStore.getState();
       if (Object.prototype.hasOwnProperty.call(state.channelStatesByWorkspace, notification.workspaceId)) {
-        if (state.channelStatesByWorkspace[notification.workspaceId]?.[notification.channelId]) {
+        if (state.channelStatesByWorkspace[notification.workspaceId]?.[channelId]) {
           addAttention(notification);
         }
         return;
       }
       void loadWorkspaceState(notification.workspaceId).then((channelStates) => {
-        if (channelStates[notification.channelId]) addAttention(notification);
+        if (channelStates[channelId]) addAttention(notification);
       });
     };
 
@@ -345,6 +382,8 @@ export function useSocketEvents() {
     socket.on('attachment:created', onAttachmentCreated);
     socket.on('dm:created', onDmCreated);
     socket.on('presence:changed', onPresenceChanged);
+    socket.on('member:profile-updated', onMemberProfileChanged);
+    socket.on('workspace:profile-flags-changed', onMemberProfileChanged);
     socket.on('typing:update', onTypingUpdate);
     socket.on('read:updated', onReadUpdated);
     socket.on('attention:new', onAttention);
@@ -387,6 +426,8 @@ export function useSocketEvents() {
       socket.off('attachment:created', onAttachmentCreated);
       socket.off('dm:created', onDmCreated);
       socket.off('presence:changed', onPresenceChanged);
+      socket.off('member:profile-updated', onMemberProfileChanged);
+      socket.off('workspace:profile-flags-changed', onMemberProfileChanged);
       socket.off('typing:update', onTypingUpdate);
       socket.off('read:updated', onReadUpdated);
       socket.off('attention:new', onAttention);

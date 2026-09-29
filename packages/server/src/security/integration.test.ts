@@ -16,7 +16,8 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
-import { and, eq, inArray } from 'drizzle-orm';
+import { crc32, deflateSync } from 'node:zlib';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import pg from 'pg';
 import {
   Permissions,
@@ -55,6 +56,7 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
     auditCheckpointPath = join(auditCheckpointDirectory, 'checkpoint.json');
     process.env.AUDIT_CHECKPOINT_PATH = auditCheckpointPath;
     process.env.AUDIT_CHECKPOINT_REQUIRED = 'true';
+    process.env.AUDIT_HEAD_OBJECT_KEY = `test-${randomUUID()}`;
     // The suite represents several independent clients but they all originate
     // from the loopback test runner. Trust only that loopback reverse proxy and
     // assign a stable documentation-range address per authenticated session so
@@ -63,7 +65,7 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
     const auditModule = await import('../middleware/audit.js');
     const dbModule = await import('../db/index.js');
     closeDb = dbModule.closeDb;
-    assert.equal(await dbModule.checkDatabaseSchema(), 18);
+    assert.equal(await dbModule.checkDatabaseSchema(), 20);
     verifyAuditChain = auditModule.verifyAuditChain;
     await auditModule.provisionAuditCheckpoint();
     const startupAudit = await verifyAuditChain();
@@ -435,10 +437,108 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
     });
     assert.equal(revokedRegistration.status, 403);
 
+    const expiredInvitation = await createWorkspaceInvitation(workspace.id, alice.cookie, 'expired@example.test');
+    const { db: invitationDb } = await import('../db/index.js');
+    await invitationDb.execute(sql`UPDATE workspace_invitations SET expires_at = now() - interval '1 minute' WHERE id = ${expiredInvitation.id}`);
+    assert.equal((await request('/api/auth/register', {
+      method: 'POST',
+      body: { email: 'expired@example.test', password: 'Correct-Horse-Battery-8!', displayName: 'Expired', inviteToken: expiredInvitation.token },
+    })).status, 403, 'an expired invitation must not admit a registration');
+
+    const singleUseInvitation = await createWorkspaceInvitation(workspace.id, alice.cookie);
+    const racingRegistrations = await Promise.all(['race-a@example.test', 'race-b@example.test'].map((email) => request('/api/auth/register', {
+      method: 'POST',
+      body: { email, password: 'Correct-Horse-Battery-9!', displayName: 'Race', inviteToken: singleUseInvitation.token },
+    })));
+    assert.deepEqual(racingRegistrations.map((response) => response.status).sort(), [201, 403],
+      'a single-use invitation must be consumed at most once under concurrency');
+
     const bobKeys = deviceFixture();
     const malloryKeys = deviceFixture();
     const bobDevice = await registerDevice(bob, bobKeys, 'Bob test device');
-    await registerDevice(mallory, malloryKeys, 'Mallory test device');
+    const malloryDevice = await registerDevice(mallory, malloryKeys, 'Mallory test device');
+
+    // A channel left only with a non-manager who never held the active key
+    // must not stay unwritable: that viewer may start fresh after step-up,
+    // while automatic rotation stays manager-only.
+    const orphanWorkspaceResponse = await request('/api/workspaces', {
+      method: 'POST', cookie: alice.cookie, body: { name: 'Orphan recovery' },
+    });
+    assert.equal(orphanWorkspaceResponse.status, 201);
+    const orphanWorkspace = await json<{ id: string }>(orphanWorkspaceResponse);
+    const orphanChannelResponse = await request(`/api/workspaces/${orphanWorkspace.id}/channels`, {
+      method: 'POST', cookie: alice.cookie, body: { name: 'orphan-check', isPrivate: true },
+    });
+    assert.equal(orphanChannelResponse.status, 201);
+    const orphanChannel = await json<{ id: string }>(orphanChannelResponse);
+    const holderOnly = await json<{ recipients: Array<{ deviceId: string; identityKey: string }> }>(
+      await request(`/api/channels/${orphanChannel.id}/key-recipients`, { cookie: alice.cookie }),
+    );
+    assert.deepEqual(holderOnly.recipients.map((recipient) => recipient.deviceId), [aliceDevice.id]);
+    await distributeAndAcknowledgeChannelKey({
+      channelId: orphanChannel.id,
+      version: 1,
+      rawKey: randomBytes(32),
+      senderCookie: alice.cookie,
+      senderKeys: aliceKeys,
+      recipients: holderOnly.recipients,
+      acknowledgements: [{ deviceId: aliceDevice.id, cookie: alice.cookie, keys: aliceKeys }],
+    });
+    const orphanInvitation = await createWorkspaceInvitation(orphanWorkspace.id, alice.cookie, 'mallory@example.test');
+    assert.equal((await request('/api/invitations/accept', {
+      method: 'POST', cookie: mallory.cookie, body: { token: orphanInvitation.token },
+    })).status, 200);
+    assert.equal((await request(`/api/channels/${orphanChannel.id}/members`, {
+      method: 'POST', cookie: alice.cookie, body: { userId: mallory.user.id },
+    })).status, 201);
+    assert.equal((await request(`/api/channels/${orphanChannel.id}/members/${alice.user.id}`, {
+      method: 'DELETE', cookie: alice.cookie,
+    })).status, 200);
+    const orphanState = await json<{
+      historyRecoveryRequired: boolean;
+      canRotate: boolean;
+      nextVersion: number;
+      recipients: Array<{ deviceId: string; identityKey: string }>;
+    }>(await request(`/api/channels/${orphanChannel.id}/key-recipients`, { cookie: mallory.cookie }));
+    assert.equal(orphanState.historyRecoveryRequired, true);
+    assert.equal(orphanState.canRotate, false, 'automatic rotation stays manager-only');
+    assert.deepEqual(orphanState.recipients.map((recipient) => recipient.deviceId), [malloryDevice.id]);
+    const { io: orphanIo } = await import('socket.io-client');
+    const orphanManagerSocket = orphanIo(baseUrl, {
+      transports: ['websocket'],
+      extraHeaders: { Cookie: alice.cookie, Origin: 'http://localhost:5173' },
+    });
+    sockets.push(orphanManagerSocket);
+    await onceConnected(orphanManagerSocket);
+    const managerNotice = onceSocketEventMatching<{ kind: string; workspaceId: string; channelId: string }>(
+      orphanManagerSocket, 'attention:new', (payload) => payload.kind === 'channel-restarted', 5_000,
+    );
+    const orphanKey = randomBytes(32);
+    const { keyCommitment: orphanCommitment, keys: orphanWraps } = await proposeFixtureMls({
+      channelId: orphanChannel.id, version: orphanState.nextVersion, rawKey: orphanKey,
+      senderCookie: mallory.cookie, senderKeys: malloryKeys, recipients: orphanState.recipients, fresh: true,
+    });
+    const notice = await managerNotice;
+    assert.equal(notice.workspaceId, orphanWorkspace.id, 'managers are told that earlier messages became unreadable');
+    assert.equal(notice.channelId, orphanChannel.id);
+    orphanManagerSocket.disconnect();
+    const orphanAcknowledgement = await acknowledgeChannelKeyDelivery({
+      channelId: orphanChannel.id,
+      version: orphanState.nextVersion,
+      keyCommitment: orphanCommitment,
+      encryptedKey: orphanWraps[0].encryptedKey,
+      deviceId: malloryDevice.id,
+      cookie: mallory.cookie,
+      keys: malloryKeys,
+    });
+    assert.equal(orphanAcknowledgement.status, 'active');
+    assert.equal((await request(`/api/channels/${orphanChannel.id}/messages`, {
+      method: 'POST', cookie: mallory.cookie,
+      body: encryptedMessage(
+        orphanChannel.id, mallory.user.id, malloryDevice.id, malloryKeys.signingPrivateKey, orphanKey,
+        'the remaining member restarted the channel', undefined, orphanState.nextVersion,
+      ).body,
+    })).status, 201);
 
     const membersResponse = await request(`/api/workspaces/${workspace.id}/members`, { cookie: alice.cookie });
     assert.equal(membersResponse.status, 200);
@@ -759,6 +859,127 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
     assert.equal((await request(`/api/workspaces/${workspace.id}/members/${retryDeviceAccount.user.id}`, {
       method: 'DELETE', cookie: bob.cookie,
     })).status, 403, 'a kicker must not remove an equal-or-higher ranked member');
+    const limitedRoleManagerResponse = await request(`/api/workspaces/${workspace.id}/roles`, {
+      method: 'POST', cookie: alice.cookie,
+      body: { name: 'Limited Role Manager', permissions: Permissions.MANAGE_ROLES, position: 62 },
+    });
+    assert.equal(limitedRoleManagerResponse.status, 201);
+    const limitedRoleManager = await json<{ id: string }>(limitedRoleManagerResponse);
+    await assignWorkspaceRole(workspace.id, alice.cookie, limitedRoleManager.id, bob.user.id);
+    const higherMemberUnassignPreview = await request(`/api/workspaces/${workspace.id}/roles/preview`, {
+      method: 'POST', cookie: bob.cookie,
+      body: { operation: 'role.unassign', roleId: reviewerRole.id, userId: retryDeviceAccount.user.id },
+    });
+    assert.equal(higherMemberUnassignPreview.status, 403, 'role removal preview must respect the target member rank');
+    const managerRevisionPreview = await request(`/api/workspaces/${workspace.id}/roles/preview`, {
+      method: 'POST', cookie: bob.cookie,
+      body: { operation: 'role.assign', roleId: reviewerRole.id, userId: bob.user.id },
+    });
+    assert.equal(managerRevisionPreview.status, 200);
+    const managerRevision = (await json<{ authorizationRevision: string }>(managerRevisionPreview)).authorizationRevision;
+    assert.equal((await request(`/api/workspaces/${workspace.id}/members/${retryDeviceAccount.user.id}/roles/${memberRole.id}`, {
+      method: 'DELETE', cookie: bob.cookie, body: { expectedAuthorizationRevision: managerRevision },
+    })).status, 403, 'a role manager must not strip roles from an equal-or-higher ranked member');
+    assert.equal((await request(`/api/workspaces/${workspace.id}/members/${alice.user.id}/roles/${memberRole.id}`, {
+      method: 'DELETE', cookie: bob.cookie, body: { expectedAuthorizationRevision: managerRevision },
+    })).status, 403, 'a role manager must not strip roles from the workspace owner');
+    const managerSelfRemovalPreview = await request(`/api/workspaces/${workspace.id}/roles/preview`, {
+      method: 'POST', cookie: bob.cookie,
+      body: { operation: 'role.unassign', roleId: limitedRoleManager.id, userId: bob.user.id },
+    });
+    assert.equal(managerSelfRemovalPreview.status, 403, 'a role at the actor rank still cannot be managed');
+
+    // Role edits, overrides and assignment must not reduce a higher-ranked member either.
+    const hierarchyChannelResponse = await request(`/api/workspaces/${workspace.id}/channels`, {
+      method: 'POST', cookie: alice.cookie, body: { name: 'hierarchy-check' },
+    });
+    assert.equal(hierarchyChannelResponse.status, 201);
+    const hierarchyChannel = await json<{ id: string }>(hierarchyChannelResponse);
+    const channelManagerResponse = await request(`/api/workspaces/${workspace.id}/roles`, {
+      method: 'POST', cookie: alice.cookie,
+      body: { name: 'Limited Channel Manager', permissions: Permissions.MANAGE_CHANNELS, position: 62 },
+    });
+    assert.equal(channelManagerResponse.status, 201);
+    const channelManager = await json<{ id: string }>(channelManagerResponse);
+    await assignWorkspaceRole(workspace.id, alice.cookie, channelManager.id, bob.user.id);
+    const bobRevision = async () => (await json<{ authorizationRevision: string }>(await request(`/api/workspaces/${workspace.id}/roles/preview`, {
+      method: 'POST', cookie: bob.cookie,
+      body: { operation: 'role.assign', roleId: reviewerRole.id, userId: bob.user.id },
+    }))).authorizationRevision;
+    const overridePath = (roleId: string) => `/api/workspaces/${workspace.id}/channels/${hierarchyChannel.id}/permission-overrides/${roleId}`;
+    const sharedRoleDenyPreview = await request(`/api/workspaces/${workspace.id}/channels/${hierarchyChannel.id}/permission-overrides/preview`, {
+      method: 'POST', cookie: bob.cookie,
+      body: { operation: 'upsert', roleId: memberRole.id, allowMask: 0, denyMask: Permissions.SEND_MESSAGES },
+    });
+    assert.equal(sharedRoleDenyPreview.status, 403, 'a deny on a role shared with a higher member must be refused in preview');
+    assert.equal((await json<{ error: string }>(sharedRoleDenyPreview)).error, 'MEMBER_HIERARCHY');
+    assert.equal((await request(overridePath(memberRole.id), {
+      method: 'PUT', cookie: bob.cookie,
+      body: { allowMask: 0, denyMask: Permissions.SEND_MESSAGES, expectedRevision: 0, expectedAuthorizationRevision: await bobRevision() },
+    })).status, 403, 'a deny on a role shared with a higher member must be refused');
+    const mutedRoleResponse = await request(`/api/workspaces/${workspace.id}/roles`, {
+      method: 'POST', cookie: bob.cookie, body: { name: 'Muted Here', permissions: 0, position: 10 },
+    });
+    assert.equal(mutedRoleResponse.status, 201);
+    const mutedRole = await json<{ id: string }>(mutedRoleResponse);
+    assert.equal((await request(overridePath(mutedRole.id), {
+      method: 'PUT', cookie: bob.cookie,
+      body: { allowMask: 0, denyMask: Permissions.SEND_MESSAGES, expectedRevision: 0, expectedAuthorizationRevision: await bobRevision() },
+    })).status, 200, 'an override on an unassigned lower role affects nobody');
+    assert.equal((await request(`/api/workspaces/${workspace.id}/roles/preview`, {
+      method: 'POST', cookie: bob.cookie,
+      body: { operation: 'role.assign', roleId: mutedRole.id, userId: retryDeviceAccount.user.id },
+    })).status, 403, 'assigning a deny-carrying role to a higher member must be refused in preview');
+    assert.equal((await request(`/api/workspaces/${workspace.id}/members/${retryDeviceAccount.user.id}/roles/${mutedRole.id}`, {
+      method: 'POST', cookie: bob.cookie, body: { expectedAuthorizationRevision: await bobRevision() },
+    })).status, 403, 'assigning a deny-carrying role to a higher member must be refused');
+    assert.equal((await request(`/api/workspaces/${workspace.id}/members/${bob.user.id}/roles/${mutedRole.id}`, {
+      method: 'POST', cookie: bob.cookie, body: { expectedAuthorizationRevision: await bobRevision() },
+    })).status, 200, 'an actor may still restrict itself');
+    assert.equal((await request(`/api/workspaces/${workspace.id}/roles/preview`, {
+      method: 'POST', cookie: bob.cookie,
+      body: { operation: 'role.update', roleId: memberRole.id, permissions: memberRole.permissionMask & ~Permissions.SEND_MESSAGES },
+    })).status, 403, 'editing a role shared with a higher member must be refused when it reduces them');
+    const privateHierarchyResponse = await request(`/api/workspaces/${workspace.id}/channels`, {
+      method: 'POST', cookie: alice.cookie, body: { name: 'hierarchy-private', isPrivate: true },
+    });
+    assert.equal(privateHierarchyResponse.status, 201);
+    const privateHierarchy = await json<{ id: string }>(privateHierarchyResponse);
+    for (const userId of [bob.user.id, retryDeviceAccount.user.id]) {
+      assert.equal((await request(`/api/channels/${privateHierarchy.id}/members`, {
+        method: 'POST', cookie: alice.cookie, body: { userId },
+      })).status, 201);
+    }
+    const superiorRemoval = await request(`/api/channels/${privateHierarchy.id}/members/${retryDeviceAccount.user.id}`, {
+      method: 'DELETE', cookie: bob.cookie,
+    });
+    assert.equal(superiorRemoval.status, 403, 'a lower channel manager must not remove a higher member from a private channel');
+    assert.equal((await json<{ error: string }>(superiorRemoval)).error, 'MEMBER_HIERARCHY');
+    assert.equal((await request(`/api/channels/${privateHierarchy.id}/members/${bob.user.id}`, {
+      method: 'DELETE', cookie: bob.cookie,
+    })).status, 200, 'a member may still leave a private channel');
+    assert.equal((await request(`/api/channels/${privateHierarchy.id}/members/${retryDeviceAccount.user.id}`, {
+      method: 'DELETE', cookie: alice.cookie,
+    })).status, 200, 'the owner may remove anyone');
+    assert.equal((await request(`/api/channels/${privateHierarchy.id}`, { method: 'DELETE', cookie: alice.cookie })).status, 200);
+    const ownerRemovesChannelManager = await request(`/api/workspaces/${workspace.id}/roles/preview`, {
+      method: 'POST', cookie: alice.cookie,
+      body: { operation: 'role.unassign', roleId: channelManager.id, userId: bob.user.id },
+    });
+    assert.equal((await request(`/api/workspaces/${workspace.id}/members/${bob.user.id}/roles/${channelManager.id}`, {
+      method: 'DELETE', cookie: alice.cookie,
+      body: { expectedAuthorizationRevision: (await json<{ authorizationRevision: string }>(ownerRemovesChannelManager)).authorizationRevision },
+    })).status, 200);
+    assert.equal((await request(`/api/channels/${hierarchyChannel.id}`, { method: 'DELETE', cookie: alice.cookie })).status, 200);
+    const ownerRemovesManager = await request(`/api/workspaces/${workspace.id}/roles/preview`, {
+      method: 'POST', cookie: alice.cookie,
+      body: { operation: 'role.unassign', roleId: limitedRoleManager.id, userId: bob.user.id },
+    });
+    assert.equal(ownerRemovesManager.status, 200);
+    assert.equal((await request(`/api/workspaces/${workspace.id}/members/${bob.user.id}/roles/${limitedRoleManager.id}`, {
+      method: 'DELETE', cookie: alice.cookie,
+      body: { expectedAuthorizationRevision: (await json<{ authorizationRevision: string }>(ownerRemovesManager)).authorizationRevision },
+    })).status, 200);
     const blockedDeletePreview = await request(`/api/workspaces/${workspace.id}/roles/preview`, {
       method: 'POST', cookie: alice.cookie, body: { operation: 'role.delete', roleId: reviewerRole.id },
     });
@@ -803,6 +1024,9 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
     assert.ok(normalChannel);
     const channelId = normalChannel.id;
     assert.equal((await request(`/api/channels/${channelId}/messages`, { cookie: mallory.cookie })).status, 404);
+    assert.equal((await request(`/api/channels/${channelId}/messages`, {
+      method: 'POST', cookie: mallory.cookie, body: { encryptedContent: 'x' },
+    })).status, 404, 'a non-member must not post into another workspace channel');
 
     const privateChannelResponse = await request(`/api/workspaces/${workspace.id}/channels`, {
       method: 'POST', cookie: alice.cookie, body: { name: 'private', isPrivate: true },
@@ -827,6 +1051,210 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
     });
     sockets.push(aliceSocket, mallorySocket);
     await Promise.all([onceConnected(aliceSocket), onceConnected(mallorySocket)]);
+
+    // Presence follows live connections: online while a socket is open,
+    // offline after the last one closes, in both events and the member list.
+    const memberStatusOf = async (userId: string) => (await json<Array<{ userId: string; user: { status: string } }>>(
+      await request(`/api/workspaces/${workspace.id}/members`, { cookie: alice.cookie }),
+    )).find((member) => member.userId === userId)?.user.status;
+    const bobOnline = onceSocketEventMatching<{ userId: string; status: string }>(
+      aliceSocket, 'presence:changed', (payload) => payload.userId === bob.user.id, 5_000,
+    );
+    const presenceSocket = io(baseUrl, {
+      transports: ['websocket'],
+      extraHeaders: { Cookie: bob.cookie, Origin: 'http://localhost:5173' },
+    });
+    sockets.push(presenceSocket);
+    await onceConnected(presenceSocket);
+    assert.equal((await bobOnline).status, 'online');
+    assert.equal(await memberStatusOf(bob.user.id), 'online');
+    const bobOffline = onceSocketEventMatching<{ userId: string; status: string }>(
+      aliceSocket, 'presence:changed', (payload) => payload.userId === bob.user.id, 5_000,
+    );
+    presenceSocket.disconnect();
+    assert.equal((await bobOffline).status, 'offline');
+    assert.equal(await memberStatusOf(bob.user.id), 'offline');
+
+    // Profiles: display name, self-introduction and avatar, visible only to
+    // people who share a workspace; workspace-scoped warnings with a single
+    // lifetime request to lift one. A dedicated owner keeps this independent.
+    const profileHost = await json<{ id: string }>(await request('/api/workspaces', {
+      method: 'POST', cookie: mallory.cookie, body: { name: 'Profile host' },
+    }));
+    const profileOwnerInvitation = await createWorkspaceInvitation(profileHost.id, mallory.cookie, 'profile-owner@example.test');
+    const profileOwner = await createAccount('profile-owner@example.test', 'Correct-Horse-Battery-13!', 'Profile Owner', profileOwnerInvitation.token);
+    await registerDevice(profileOwner, deviceFixture(), 'Profile owner device');
+    const profileWorkspace = await json<{ id: string }>(await request('/api/workspaces', {
+      method: 'POST', cookie: profileOwner.cookie, body: { name: 'Profiles' },
+    }));
+    const secondProfileWorkspace = await json<{ id: string }>(await request('/api/workspaces', {
+      method: 'POST', cookie: profileOwner.cookie, body: { name: 'Profiles Two' },
+    }));
+    const subjectInvitation = await createWorkspaceInvitation(profileWorkspace.id, profileOwner.cookie, 'profile-subject@example.test');
+    const subject = await createAccount('profile-subject@example.test', 'Correct-Horse-Battery-12!', 'Subject', subjectInvitation.token);
+    await registerDevice(subject, deviceFixture(), 'Profile subject device');
+    const secondSubjectInvitation = await createWorkspaceInvitation(secondProfileWorkspace.id, profileOwner.cookie, 'profile-subject@example.test');
+    assert.equal((await request('/api/invitations/accept', {
+      method: 'POST', cookie: subject.cookie, body: { token: secondSubjectInvitation.token },
+    })).status, 200);
+    const { io: profileIo } = await import('socket.io-client');
+    const ownerSocket = profileIo(baseUrl, {
+      transports: ['websocket'],
+      extraHeaders: { Cookie: profileOwner.cookie, Origin: 'http://localhost:5173' },
+    });
+    sockets.push(ownerSocket);
+    await onceConnected(ownerSocket);
+    const profileUpdate = await request('/api/profile', {
+      method: 'PATCH', cookie: subject.cookie, body: { displayName: 'Subject Renamed', bio: '  こんにちは\nよろしくお願いします ' },
+    });
+    assert.equal(profileUpdate.status, 200);
+    const ownProfile = await json<{ displayName: string; bio: string; appealUsed: boolean }>(profileUpdate);
+    assert.equal(ownProfile.displayName, 'Subject Renamed');
+    assert.equal(ownProfile.bio, 'こんにちは\nよろしくお願いします');
+    assert.equal((await request('/api/profile', { method: 'PATCH', cookie: subject.cookie, body: { bio: '1\n2\n3\n4\n5\n6' } })).status, 400);
+    assert.equal((await request('/api/profile', { method: 'PATCH', cookie: subject.cookie, body: { displayName: '\u2800' } })).status, 400);
+    const { db: profileDb } = await import('../db/index.js');
+    const { auditLogs: profileAudit } = await import('../db/schema.js');
+    const profileEvents = await profileDb.select().from(profileAudit).where(eq(profileAudit.action, 'user.profile.update'));
+    assert.equal(profileEvents.length > 0, true);
+    assert.equal(profileEvents.every((event) => event.actorId === subject.user.id
+      && Object.keys((event.details ?? {}) as Record<string, unknown>).every((key) => ['requestId', 'traceId', 'result'].includes(key))), true,
+      'profile changes are logged without their content');
+
+    const pngChunk = (type: string, data: Buffer = Buffer.alloc(0)) => {
+      const header = Buffer.alloc(8);
+      header.writeUInt32BE(data.length, 0);
+      header.write(type, 4, 'latin1');
+      const crc = Buffer.alloc(4);
+      crc.writeUInt32BE(crc32(data, crc32(Buffer.from(type, 'latin1'))) >>> 0);
+      return Buffer.concat([header, data, crc]);
+    };
+    const avatarHeader = Buffer.alloc(13);
+    avatarHeader.writeUInt32BE(256, 0);
+    avatarHeader.writeUInt32BE(256, 4);
+    avatarHeader.set([8, 6, 0, 0, 0], 8);
+    const avatarPng = Buffer.concat([
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      pngChunk('IHDR', avatarHeader),
+      pngChunk('tEXt', Buffer.from('Comment\0home address')),
+      pngChunk('IDAT', deflateSync(Buffer.concat(Array.from({ length: 256 }, () => Buffer.concat([Buffer.from([0]), Buffer.alloc(1024, 7)]))))),
+      pngChunk('IEND'),
+    ]);
+    assert.equal((await request('/api/profile/avatar', {
+      method: 'PUT', cookie: subject.cookie, body: Buffer.from('<svg onload="alert(1)"/>'), contentType: 'image/png',
+    })).status, 400);
+    assert.equal((await request('/api/profile/avatar', {
+      method: 'PUT', cookie: subject.cookie, body: avatarPng, contentType: 'image/svg+xml',
+    })).status, 415);
+    const avatarResponse = await request('/api/profile/avatar', { method: 'PUT', cookie: subject.cookie, body: avatarPng, contentType: 'image/png' });
+    assert.equal(avatarResponse.status, 200);
+    const { avatarUrl } = await json<{ avatarUrl: string }>(avatarResponse);
+    assert.match(avatarUrl, new RegExp(`^/api/users/${subject.user.id}/avatar/[0-9a-f-]{36}$`));
+    const servedAvatar = await request(avatarUrl, { cookie: profileOwner.cookie });
+    assert.equal(servedAvatar.status, 200);
+    assert.equal(servedAvatar.headers.get('content-type'), 'image/png');
+    assert.equal(servedAvatar.headers.get('x-content-type-options'), 'nosniff');
+    const servedBytes = Buffer.from(await servedAvatar.arrayBuffer());
+    assert.equal(servedBytes.includes(Buffer.from('home address')), false, 'embedded text is removed before storage');
+    assert.equal((await request(avatarUrl.replace(/[0-9a-f-]{36}$/, randomUUID()), { cookie: profileOwner.cookie })).status, 404);
+    const sameAvatar = await request('/api/profile/avatar', { method: 'PUT', cookie: subject.cookie, body: avatarPng, contentType: 'image/png' });
+    assert.equal((await json<{ avatarUrl: string }>(sameAvatar)).avatarUrl, avatarUrl, 'the picture already in use is not stored again');
+    assert.equal((await fetch(`${baseUrl}${avatarUrl}`, { headers: { Origin: 'http://localhost:5173' } })).status, 401);
+    assert.equal((await request(avatarUrl, { cookie: mallory.cookie })).status, 404, 'no shared workspace, no avatar');
+    const profileMembers = await json<Array<{ userId: string; user: { displayName: string; avatarUrl: string | null } }>>(
+      await request(`/api/workspaces/${profileWorkspace.id}/members`, { cookie: profileOwner.cookie }),
+    );
+    assert.equal(profileMembers.find((member) => member.userId === subject.user.id)?.user.avatarUrl, avatarUrl);
+
+    const bobViewed = await json<{ bio: string; flagged: boolean; canManageFlag: boolean }>(
+      await request(`/api/workspaces/${profileWorkspace.id}/members/${subject.user.id}/profile`, { cookie: profileOwner.cookie }),
+    );
+    assert.deepEqual([bobViewed.bio, bobViewed.flagged, bobViewed.canManageFlag], ['こんにちは\nよろしくお願いします', false, true]);
+    assert.equal((await request(`/api/workspaces/${profileWorkspace.id}/members/${profileOwner.user.id}/profile-flag`, {
+      method: 'PUT', cookie: subject.cookie, body: {},
+    })).status, 403, 'nobody can flag the owner');
+    assert.equal((await request(`/api/workspaces/${profileWorkspace.id}/members/${subject.user.id}/profile-flag`, {
+      method: 'PUT', cookie: profileOwner.cookie, body: {},
+    })).status, 200);
+    const flaggedMembers = await json<Array<{ userId: string; profileFlagged?: boolean }>>(
+      await request(`/api/workspaces/${profileWorkspace.id}/members`, { cookie: profileOwner.cookie }),
+    );
+    assert.equal(flaggedMembers.find((member) => member.userId === subject.user.id)?.profileFlagged, true);
+    assert.equal(flaggedMembers.find((member) => member.userId === profileOwner.user.id)?.profileFlagged, false);
+    const outsiderView = await json<{ flagged: boolean }>(
+      await request(`/api/workspaces/${secondProfileWorkspace.id}/members/${subject.user.id}/profile`, { cookie: profileOwner.cookie }),
+    );
+    assert.equal(outsiderView.flagged, false, 'a warning applies to its own workspace only');
+
+    const appealPath = `/api/workspaces/${profileWorkspace.id}/profile-flag/appeal`;
+    const needsChange = await request(appealPath, { method: 'POST', cookie: subject.cookie, body: {} });
+    assert.equal(needsChange.status, 409);
+    assert.equal((await json<{ error: string }>(needsChange)).error, 'PROFILE_APPEAL_NEEDS_CHANGE');
+    // Saving the same name, text or picture is not a change.
+    assert.equal((await request('/api/profile', {
+      method: 'PATCH', cookie: subject.cookie, body: { displayName: 'Subject Renamed', bio: 'こんにちは\nよろしくお願いします' },
+    })).status, 200);
+    assert.equal((await request('/api/profile/avatar', { method: 'PUT', cookie: subject.cookie, body: avatarPng, contentType: 'image/png' })).status, 200);
+    assert.equal((await json<{ flags: Array<{ canAppeal: boolean }> }>(await request('/api/profile', { cookie: subject.cookie }))).flags[0].canAppeal, false);
+    assert.equal((await json<{ error: string }>(await request(appealPath, { method: 'POST', cookie: subject.cookie, body: {} }))).error,
+      'PROFILE_APPEAL_NEEDS_CHANGE');
+    assert.equal((await request('/api/profile', { method: 'PATCH', cookie: subject.cookie, body: { bio: '内容を見直しました' } })).status, 200);
+    assert.equal((await json<{ flags: Array<{ canAppeal: boolean }> }>(await request('/api/profile', { cookie: subject.cookie }))).flags[0].canAppeal, true);
+    const appealNotice = onceSocketEventMatching<{ kind: string; workspaceId: string; channelId: string | null }>(
+      ownerSocket, 'attention:new', (payload) => payload.kind === 'profile-appeal', 5_000,
+    );
+    assert.equal((await request(appealPath, { method: 'POST', cookie: subject.cookie, body: {} })).status, 200);
+    const appealAlert = await appealNotice;
+    assert.deepEqual([appealAlert.workspaceId, appealAlert.channelId], [profileWorkspace.id, null]);
+    const secondAppeal = await request(appealPath, { method: 'POST', cookie: subject.cookie, body: {} });
+    assert.equal(secondAppeal.status, 409);
+    assert.equal((await json<{ error: string }>(secondAppeal)).error, 'PROFILE_APPEAL_USED');
+    const pendingFlags = await json<Array<{ userId: string; appealStatus: string }>>(
+      await request(`/api/workspaces/${profileWorkspace.id}/profile-flags`, { cookie: profileOwner.cookie }),
+    );
+    assert.equal(pendingFlags.find((flag) => flag.userId === subject.user.id)?.appealStatus, 'pending');
+    assert.equal((await request(`/api/workspaces/${profileWorkspace.id}/members/${subject.user.id}/profile-flag/deny`, {
+      method: 'POST', cookie: profileOwner.cookie, body: {},
+    })).status, 200);
+    assert.equal((await request(`/api/workspaces/${profileWorkspace.id}/profile-flags`, { cookie: subject.cookie })).status, 403,
+      'only managers list warnings');
+    // Denied: the warning stays and no further request is possible anywhere.
+    assert.equal((await request(`/api/workspaces/${secondProfileWorkspace.id}/members/${subject.user.id}/profile-flag`, {
+      method: 'PUT', cookie: profileOwner.cookie, body: {},
+    })).status, 200);
+    assert.equal((await request('/api/profile', { method: 'PATCH', cookie: subject.cookie, body: { bio: 'もう一度見直しました' } })).status, 200);
+    const exhausted = await json<{ appealUsed: boolean; flags: Array<{ workspaceId: string; appealStatus: string; canAppeal: boolean }> }>(
+      await request('/api/profile', { cookie: subject.cookie }),
+    );
+    assert.equal(exhausted.appealUsed, true);
+    assert.equal(exhausted.flags.every((flag) => !flag.canAppeal), true);
+    assert.equal((await request(`/api/workspaces/${secondProfileWorkspace.id}/profile-flag/appeal`, {
+      method: 'POST', cookie: subject.cookie, body: {},
+    })).status, 409, 'the single request is per account, across all workspaces');
+    for (const flaggedWorkspaceId of [profileWorkspace.id, secondProfileWorkspace.id]) {
+      assert.equal((await request(`/api/workspaces/${flaggedWorkspaceId}/members/${subject.user.id}/profile-flag`, {
+        method: 'DELETE', cookie: profileOwner.cookie,
+      })).status, 200, 'a manager can still clear the warning');
+    }
+    assert.equal((await request('/api/profile/avatar', { method: 'DELETE', cookie: subject.cookie })).status, 200);
+    assert.equal((await request(avatarUrl, { cookie: profileOwner.cookie })).status, 404);
+
+    // A warned member who leaves stays listed, so their old messages keep the picture hidden.
+    assert.equal((await request(`/api/workspaces/${profileWorkspace.id}/members/${subject.user.id}/profile-flag`, {
+      method: 'PUT', cookie: profileOwner.cookie, body: {},
+    })).status, 200);
+    assert.equal((await request(`/api/workspaces/${profileWorkspace.id}/members/${subject.user.id}`, {
+      method: 'DELETE', cookie: profileOwner.cookie,
+    })).status, 200);
+    const warnedAfterLeaving = await json<{ userIds: string[]; complete: boolean }>(
+      await request(`/api/workspaces/${profileWorkspace.id}/warned-users`, { cookie: profileOwner.cookie }),
+    );
+    assert.deepEqual(warnedAfterLeaving, { userIds: [subject.user.id], complete: true });
+    assert.equal((await request(`/api/workspaces/${profileWorkspace.id}/warned-users`, { cookie: mallory.cookie })).status >= 400, true,
+      'only members see who is warned');
+
+    ownerSocket.disconnect();
+
     assert.equal(await joinChannel(aliceSocket, privateChannel.id), true);
     assert.equal(await joinChannel(mallorySocket, privateChannel.id), false);
     assert.equal(await joinChannel(aliceSocket, channelId), true);
@@ -2623,7 +3051,7 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
       await client.end();
     }
     const { checkDatabaseSchema } = await import('../db/index.js');
-    assert.equal(await checkDatabaseSchema(), 18);
+    assert.equal(await checkDatabaseSchema(), 20);
   });
 
   it('never re-signs a shortened audit chain after the external checkpoint anchor is deleted', async () => {
@@ -2633,7 +3061,17 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
     await auditModule.flushAuditCheckpoint();
     const checkpointBefore = await readFile(auditCheckpointPath, 'utf8');
     const checkpoint = JSON.parse(checkpointBefore) as { logId: string };
-    await db.delete(auditLogs).where(eq(auditLogs.id, checkpoint.logId));
+    await assert.rejects(db.delete(auditLogs).where(eq(auditLogs.id, checkpoint.logId)),
+      (error: any) => /append-only/.test(error.cause?.message ?? error.message));
+    await assert.rejects(db.execute(sql`TRUNCATE audit_logs`),
+      (error: any) => /append-only/.test(error.cause?.message ?? error.message));
+    // Simulate an owner-level attacker who bypasses the append-only triggers;
+    // the checkpoint anchor must still detect the shortened chain.
+    await db.transaction(async (transaction) => {
+      await transaction.execute(sql`ALTER TABLE audit_logs DISABLE TRIGGER audit_logs_no_rewrite`);
+      await transaction.delete(auditLogs).where(eq(auditLogs.id, checkpoint.logId));
+      await transaction.execute(sql`ALTER TABLE audit_logs ENABLE TRIGGER audit_logs_no_rewrite`);
+    });
     const rowsAfterTruncation = await db.select({ id: auditLogs.id }).from(auditLogs);
     const target = await db.query.users.findFirst();
     assert.ok(target);
@@ -2893,7 +3331,7 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
     return json<{ version: number; status: string; activated: boolean }>(response);
   }
 
-  async function request(path: string, options: { method?: string; cookie?: string; body?: unknown } = {}): Promise<Response> {
+  async function request(path: string, options: { method?: string; cookie?: string; body?: unknown; contentType?: string } = {}): Promise<Response> {
     const headers: Record<string, string> = { Origin: 'http://localhost:5173' };
     if (options.cookie) {
       headers.Cookie = options.cookie;
@@ -2922,7 +3360,7 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
       }
     }
     const rawBody = Buffer.isBuffer(options.body) ? options.body : null;
-    if (options.body !== undefined) headers['Content-Type'] = rawBody ? 'application/octet-stream' : 'application/json';
+    if (options.body !== undefined) headers['Content-Type'] = options.contentType ?? (rawBody ? 'application/octet-stream' : 'application/json');
     const response = await fetch(`${baseUrl}${path}`, {
       method: options.method || 'GET',
       headers,

@@ -472,7 +472,7 @@ function RolePreviewConfirmation({
       {pending.preview.affectedMembers.length > 0 && (
         <ul className="max-h-48 space-y-2 overflow-y-auto" aria-label="ユーザーごとの権限の変化">
           {pending.preview.affectedMembers.map((affected) => {
-            const memberName = members.find((member) => member.userId === affected.userId)?.user.displayName || affected.userId;
+            const memberName = members.find((member) => member.userId === affected.userId)?.user.displayName || '不明なメンバー';
             return (
               <li key={affected.userId} className="rounded bg-discord-sidebar p-3 text-sm">
                 <p className="font-medium text-white">{memberName}</p>

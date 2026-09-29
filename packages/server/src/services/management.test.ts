@@ -37,7 +37,7 @@ describe('management security invariants', () => {
       verifyPassword,
     } = await import('../security/password-work.js');
     const hash = await hashPassword('worker-isolated-password', 12);
-    assert.match(hash, /^p1:/);
+    assert.match(hash, /^p2:/);
     assert.equal(await verifyPassword('worker-isolated-password', hash), true);
     assert.equal(await verifyPassword('incorrect-password', hash), false);
     await assert.rejects(
@@ -60,6 +60,9 @@ describe('management security invariants', () => {
     assert.throws(() => assertValidPermissionMask(-1), /INVALID_PERMISSIONS/);
     assert.throws(() => assertValidPermissionMask(ALL_PERMISSION_MASK + 1), /INVALID_PERMISSIONS/);
     assert.throws(() => assertValidPermissionMask(1.5), /INVALID_PERMISSIONS/);
+    for (const value of [2 ** 31, 2 ** 32, 2 ** 32 + 64, 2 ** 40, Number.MAX_SAFE_INTEGER, NaN, Infinity]) {
+      assert.throws(() => assertValidPermissionMask(value), /INVALID_PERMISSIONS/);
+    }
     assert.doesNotThrow(() => assertValidRolePosition(0));
     assert.doesNotThrow(() => assertValidRolePosition(1_000_000));
     assert.throws(() => assertValidRolePosition(-1), /INVALID_POSITION/);
@@ -133,6 +136,9 @@ describe('management security invariants', () => {
     assert.doesNotThrow(() => assertValidChannelOverrideMask(CHANNEL_SCOPED_PERMISSION_MASK));
     assert.throws(() => assertValidChannelOverrideMask(Permissions.MANAGE_CHANNELS), /INVALID_OVERRIDE_PERMISSIONS/);
     assert.throws(() => assertValidChannelOverrideMask(-1), /INVALID_OVERRIDE_PERMISSIONS/);
+    for (const value of [2 ** 31, 2 ** 32, 2 ** 32 + Permissions.VIEW_CHANNELS, 2 ** 40, NaN, Infinity]) {
+      assert.throws(() => assertValidChannelOverrideMask(value), /INVALID_OVERRIDE_PERMISSIONS/);
+    }
 
     const ownerAuthorization = {
       permissions: CHANNEL_SCOPED_PERMISSION_MASK,

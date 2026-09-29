@@ -9,7 +9,7 @@ import { config } from '../config/index.js';
 import { audit, auditedTransaction, type AuditEntry } from '../middleware/audit.js';
 import { hashSessionToken } from '../security/session.js';
 import { matchesSecret } from '../security/cookies.js';
-import { hashPassword, verifyPassword, runPublicAuthentication } from '../security/password-work.js';
+import { hashPassword, verifyPassword, verifyPasswordForUpgrade, runPublicAuthentication } from '../security/password-work.js';
 import { MAX_ACTIVE_SESSIONS_PER_USER } from '../security/limits.js';
 import {
   consumeLockedInvitation,
@@ -107,7 +107,7 @@ export async function login(email: string, password: string, deviceInfo?: Record
   return runPublicAuthentication(async () => {
     const normalizedEmail = normalizeEmail(email);
     const user = await db.query.users.findFirst({ where: eq(users.email, normalizedEmail) });
-    const valid = await verifyPassword(password, user?.passwordHash || DUMMY_PASSWORD_HASH);
+    const { valid, upgradedHash } = await verifyPasswordForUpgrade(password, user?.passwordHash || DUMMY_PASSWORD_HASH);
     if (!user || user.disabledAt || !valid) {
       await audit({
         action: 'user.login.failed',
@@ -123,7 +123,7 @@ export async function login(email: string, password: string, deviceInfo?: Record
       throw new Error('INVALID_CREDENTIALS');
     }
 
-    return establishSession(user, deviceInfo);
+    return establishSession(user, deviceInfo, 'password', undefined, upgradedHash);
   });
 }
 
@@ -132,6 +132,7 @@ export async function establishSession(
   deviceInfo?: Record<string, unknown>,
   method = 'password',
   beforeCreate?: (transaction: any) => Promise<void>,
+  upgradedPasswordHash?: string,
 ) {
   const sessionId = randomUUID();
   const expiresAt = new Date(Date.now() + config.jwt.expiresInSeconds * 1000);
@@ -171,9 +172,17 @@ export async function establishSession(
       authenticationMethod: method,
       expiresAt,
     });
-    await transaction.update(users).set({ updatedAt: new Date() }).where(eq(users.id, user.id));
-    return { sessionId };
-  }, () => ({ actorId: user.id, action: 'user.login', targetType: 'user', targetId: user.id }));
+    // A pepper rotation rewraps each credential the first time its password is proven.
+    const passwordUpgrade = method === 'password' && upgradedPasswordHash ? { passwordHash: upgradedPasswordHash } : {};
+    await transaction.update(users).set({ ...passwordUpgrade, updatedAt: new Date() }).where(eq(users.id, user.id));
+    return { sessionId, passwordRewrapped: 'passwordHash' in passwordUpgrade };
+  }, (result) => ({
+    actorId: user.id,
+    action: 'user.login',
+    targetType: 'user',
+    targetId: user.id,
+    ...(result.passwordRewrapped ? { details: { passwordRewrapped: true } } : {}),
+  }));
 
   return { token, user: publicUser(user) };
 }

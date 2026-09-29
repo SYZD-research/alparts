@@ -26,6 +26,7 @@ import {
   readSecurityState,
   writeSecurityState,
   deleteSecurityState,
+  listSecurityStateNames,
   sha256,
   toBase64,
   fromBase64,
@@ -44,6 +45,7 @@ export async function prepareMlsPackage(channelId: string, version: number) {
   const save = (name: string, value: unknown) => writeSecurityState(owner, name, value, scope);
   const name = `mls-package:${channelId}:${version}`;
   return navigator.locks.request(`alparts-${name}:${owner.deviceId}`, async () => {
+    await pruneOlderMlsPackages(owner, channelId, version);
     let stored = await readSecurityState<LocalPackage>(owner, name);
     if (!stored || Date.now() - stored.createdAt > 6 * 24 * 60 * 60_000) {
       stored = {
@@ -74,6 +76,22 @@ export async function prepareMlsPackage(channelId: string, version: number) {
     channelKeyScopes.assertCurrent(scope);
     return stored;
   });
+}
+const MAX_RETAINED_OLDER_MLS_PACKAGES = 8;
+/**
+ * Packages for abandoned epochs are never consumed. Keep only a bounded number
+ * of older ones so a late welcome can still be joined.
+ */
+async function pruneOlderMlsPackages(owner: { userId: string; deviceId: string }, channelId: string, version: number) {
+  const prefix = `mls-package:${channelId}:`;
+  const older = (await listSecurityStateNames(owner, prefix, 256))
+    .map((name) => Number(name.slice(prefix.length)))
+    .filter((candidate) => Number.isSafeInteger(candidate) && candidate < version)
+    .sort((left, right) => right - left);
+  for (const stale of older.slice(MAX_RETAINED_OLDER_MLS_PACKAGES)) {
+    await deleteSecurityState(owner, `${prefix}${stale}`);
+    await deleteSecurityState(owner, `mls-proposal:${channelId}:${stale}`);
+  }
 }
 async function validateRoster(epoch: MlsEpoch) {
   if (
@@ -332,8 +350,13 @@ export async function deriveMlsDelivery(
         !local ||
         self.packageId !== local.packageId ||
         self.keyPackage !== local.material.publicPackage
-      )
+      ) {
+        // A verified final roster without this package can never use it.
+        if (local && response.status !== 'pending') {
+          await deleteSecurityState(owner, `mls-package:${channelId}:${version}`);
+        }
         throw new Error('MLS_PACKAGE_UNAVAILABLE');
+      }
       const proposal = await readSecurityState<{
         raw: string;
         transcript: string;

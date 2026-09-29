@@ -27,9 +27,30 @@ export const users = pgTable('users', {
   avatarUrl: text('avatar_url'),
   status: text('status').default('offline').notNull(),
   disabledAt: timestamp('disabled_at', { withTimezone: true }),
+  bio: text('bio'),
+  avatarObjectKey: text('avatar_object_key'),
+  profileUpdatedAt: timestamp('profile_updated_at', { withTimezone: true }),
+  flagAppealUsedAt: timestamp('flag_appeal_used_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
-});
+}, (t) => [
+  check('users_bio_length_check', sql`${t.bio} IS NULL OR char_length(${t.bio}) <= 200`),
+  check('users_avatar_key_check', sql`${t.avatarObjectKey} IS NULL OR ${t.avatarObjectKey} ~ '^avatars/v1/[0-9a-f-]{36}/[0-9a-f-]{36}$'`),
+]);
+
+export const profileFlags = pgTable('profile_flags', {
+  workspaceId: uuid('workspace_id').notNull().references(() => workspaces.id),
+  userId: uuid('user_id').notNull().references(() => users.id),
+  flaggedBy: uuid('flagged_by').notNull().references(() => users.id),
+  flaggedAt: timestamp('flagged_at', { withTimezone: true }).defaultNow().notNull(),
+  appealStatus: text('appeal_status').default('none').notNull(),
+  appealRequestedAt: timestamp('appeal_requested_at', { withTimezone: true }),
+}, (t) => [
+  primaryKey({ name: 'profile_flags_pk', columns: [t.workspaceId, t.userId] }),
+  index('profile_flags_user_idx').on(t.userId),
+  check('profile_flags_appeal_status_check', sql`${t.appealStatus} IN ('none', 'pending', 'denied')`),
+  check('profile_flags_appeal_time_check', sql`(${t.appealStatus} = 'none') = (${t.appealRequestedAt} IS NULL)`),
+]);
 
 export const usersRelations = relations(users, ({ many }) => ({
   workspaceMembers: many(workspaceMembers),
@@ -91,7 +112,10 @@ export const authenticationChallenges = pgTable('authentication_challenges', {
   purpose: text('purpose').notNull(),
   challenge: text('challenge').notNull(),
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
-}, (t) => [index('authentication_challenges_expiry_idx').on(t.expiresAt)]);
+}, (t) => [
+  index('authentication_challenges_expiry_idx').on(t.expiresAt),
+  index('authentication_challenges_session_idx').on(t.sessionId),
+]);
 
 export const stepUpGrants = pgTable('step_up_grants', {
   tokenHash: text('token_hash').primaryKey(),

@@ -2,6 +2,7 @@ import { loginWithPasskey } from '../services/passkey.service';
 import { create } from 'zustand';
 import type { User } from '@alparts/shared';
 import { api } from '../services/api';
+import { getDesktopBridge } from '../services/desktop.service';
 import { clearActiveDevice, ensureDeviceSession } from '../services/crypto.service';
 import { connectSocket, disconnectSocket, setSocketUnauthorizedHandler } from '../services/socket';
 import { resetAuthenticatedState } from './reset';
@@ -30,7 +31,13 @@ function serializeAuthentication<T>(operation: () => Promise<T>): Promise<T> {
 async function initializeAuthenticatedClient(user: User, generation: number, stepUpPassword?: string): Promise<void> {
   const device = await ensureDeviceSession(user, stepUpPassword);
   if (generation !== authenticationGeneration) throw new Error('AUTHENTICATION_CHANGED');
-  if (device.approved) connectSocket();
+  if (device.approved) {
+    connectSocket();
+    // Best effort: history backups that failed earlier are retried in the background.
+    void import('../services/recovery.service')
+      .then(({ retryPendingHistoryBackups }) => retryPendingHistoryBackups())
+      .catch(() => undefined);
+  }
 }
 
 export const useAuthStore = create<AuthState>((set, get) => ({
@@ -105,6 +112,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     resetAuthenticatedState();
     set({ user: null, error: null, isLoading: false, isInitialized: true });
     await serializeAuthentication(() => api.logout()).catch(() => undefined);
+    await getDesktopBridge()?.clearHttpCache().catch(() => undefined);
   },
 
   loadUser: async () => {
@@ -168,7 +176,8 @@ function invalidateExpiredSession(): void {
     user: null,
     isLoading: false,
     isInitialized: true,
-    error: 'ログインの有効期限が切れました。もう一度ログインしてください。',
+    // Expiry and a sign-out from another device look the same here; say both.
+    error: 'ログイン状態が終了しました。もう一度ログインしてください。心当たりがない場合は、ログイン後にログイン中の端末を確認してください。',
   });
 }
 

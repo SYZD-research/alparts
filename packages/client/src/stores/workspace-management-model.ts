@@ -19,8 +19,8 @@ const permissionLabels: Record<Permission, string> = {
   MANAGE_ROLES: 'ロールを管理',
   VIEW_AUDIT_LOG: '監査ログを閲覧',
   ATTACH_FILES: 'ファイルを添付',
-  MANAGE_WEBHOOKS: '連携（Webhook）を管理',
-  MANAGE_BOTS: '連携（Bot）を管理',
+  MANAGE_WEBHOOKS: '外部サービスからの投稿を管理',
+  MANAGE_BOTS: '自動応答アカウントを管理',
 };
 
 export interface PermissionOption {
@@ -33,7 +33,8 @@ export const permissionOptions: PermissionOption[] = (Object.entries(Permissions
   .map(([name, value]) => ({ name, value, label: permissionLabels[name] }));
 
 export function permissionLabel(name: string): string {
-  return permissionLabels[name as Permission] || name;
+  // Unknown values come from the server; never show a raw internal name.
+  return Object.prototype.hasOwnProperty.call(permissionLabels, name) ? permissionLabels[name as Permission] : 'その他の権限';
 }
 
 export function permissionMaskFromNames(names: Iterable<string>): number {
@@ -85,6 +86,9 @@ export function managementErrorMessage(error: unknown, fallback: string): string
   const status = typeof error === 'object' && error !== null && 'status' in error
     ? (error as { status?: unknown }).status
     : null;
+  if (status === 403 && (error as { code?: unknown }).code === 'MEMBER_HIERARCHY') {
+    return '自分と同じか上の順位のメンバーの権限や表示が減るため、この変更はできません。';
+  }
   if (status === 403) {
     return '権限が不足しています。自身以上の階層のロール操作、または保有していない権限の付与はできません。';
   }

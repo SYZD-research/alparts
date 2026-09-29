@@ -98,6 +98,7 @@
 
 - PostgreSQL内のHMAC chainは改変検出に役立つが、DB operatorが末尾rowをcheckpointごと消せる配置では末尾切断を独立検出できない。
 - `AUDIT_CHECKPOINT_PATH` がPostgreSQL operatorとはwrite/delete権限を分離したmountまたはstorageに置かれた場合だけ、operator-independent checkpointと呼べる。同じhostの通常fileやsystemd `StateDirectory`だけなら、事故検出の改善に留まる。
+- 再起動後の巻き戻し検知には、別 bucket の永続 head (`AUDIT_HEAD_BUCKET` / `AUDIT_HEAD_OBJECT_KEY`) を保全する。DB・checkpoint file・head の全保存先を同時に巻き戻す権限を持つ攻撃者は、この局所的な検証だけでは検知できない。head は通常のアプリデータ復元対象に含めない。
 - Required checkpointの初期provisionは `pnpm --filter @alparts/server audit:checkpoint:init` を明示実行する。通常の起動・appendは欠落したcheckpointを自動再作成せず、現在anchorより前へ切断されたDB suffixを新しい正史として再署名しない。
 - Message create/edit/delete/replay、reaction/pin、preference/bookmarkとsecurity/administration mutationはaudit rowとatomic commitする。Read positionとprovisional upload chunk registration/cleanupは個別audit eventを生成しないが、同じprocess-local fail-closed admissionを通る。Presenceとdevice activity timestampはadvisoryで、認可・key・quota・retention・recovery判断に使わず、gate saturationを避けるため対象外である。
 - 外部SIEM/WORM監査保管、転送欠落alert、保持期間、backup取得・削除の集中監査、export approvalはない。
