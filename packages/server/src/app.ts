@@ -26,6 +26,7 @@ import dmRoutes from './routes/dms.js';
 import userStateRoutes from './routes/user-state.js';
 import auditLogRoutes from './routes/audit-logs.js';
 import permissionOverrideRoutes from './routes/permission-overrides.js';
+import profileRoutes from './routes/profiles.js';
 import { enforceBrowserOrigin } from './middleware/origin.js';
 import { rateLimit } from './middleware/rate-limit.js';
 import { logError } from './security/logger.js';
@@ -238,6 +239,7 @@ export function createApp() {
   app.use('/api', userStateRoutes);
   app.use('/api', auditLogRoutes);
   app.use('/api', permissionOverrideRoutes);
+  app.use('/api', profileRoutes);
 
   // WebSocket
   setupWebSocket(io);
