@@ -285,6 +285,23 @@ describe('locally signed REST message responses', () => {
       author: { ...response.author, id: 'different-user' },
     }, expected, signature)).toBe(false);
   });
+
+  it('rejects a forum response that names a different post', () => {
+    const forumExpected = { ...expected, postId: 'post-1' };
+    expect(matchesLocallySignedMessageResponse({ ...response, postId: 'post-1' }, forumExpected, signature)).toBe(true);
+    expect(matchesLocallySignedMessageResponse({ ...response, postId: 'post-2' }, forumExpected, signature)).toBe(false);
+    expect(matchesLocallySignedMessageResponse({ ...response, postId: null }, forumExpected, signature)).toBe(false);
+  });
+});
+
+describe('forum events in the projector', () => {
+  it('treats one event id carrying two different posts as an equivocation', () => {
+    const first = event({ id: 'reply', type: 'message', createdAt: '2026-01-01T00:00:00.000Z', postId: 'post-1', content: 'hello' });
+    const moved = event({ id: 'reply', type: 'message', createdAt: '2026-01-01T00:00:00.000Z', postId: 'post-2', content: 'hello' });
+    const [merged] = mergeMessageEvents([first], [moved]);
+    expect(hasAuthenticatedEnvelopeConflict(merged)).toBe(true);
+    expect(merged.content).toBe('');
+  });
 });
 
 function attachment(id: string): Attachment {

@@ -6,6 +6,8 @@ export interface OutboxCommand {
   channelId: string;
   content: string;
   refMessageId?: string;
+  /** Forum replies: the post the reply is signed for. */
+  postId?: string;
   mentionedUserIds?: string[];
   createdAt: string;
 }
@@ -20,6 +22,7 @@ export interface OutboxItem {
   channelId: string;
   content: string;
   refMessageId?: string;
+  postId?: string;
   mentionedUserIds?: string[];
   createdAt: string;
   status: OutboxStatus;
@@ -35,6 +38,7 @@ interface CreateOutboxCommandInput {
   channelId: string;
   content: string;
   refMessageId?: string;
+  postId?: string;
   mentionedUserIds?: string[];
 }
 
@@ -52,6 +56,7 @@ export function createOutboxCommand(
     channelId: input.channelId,
     content: input.content,
     ...(input.refMessageId ? { refMessageId: input.refMessageId } : {}),
+    ...(input.postId ? { postId: input.postId } : {}),
     ...(mentionedUserIds.length ? { mentionedUserIds } : {}),
     createdAt: now(),
   };
@@ -68,6 +73,7 @@ export function parseOutboxCommand(value: unknown): OutboxCommand | null {
     || typeof candidate.content !== 'string'
     || typeof candidate.createdAt !== 'string'
     || (candidate.refMessageId !== undefined && typeof candidate.refMessageId !== 'string')
+    || (candidate.postId !== undefined && (typeof candidate.postId !== 'string' || !UUID_PATTERN.test(candidate.postId)))
     || (candidate.mentionedUserIds !== undefined && (
       !Array.isArray(candidate.mentionedUserIds)
       || candidate.mentionedUserIds.length > MAX_DIRECT_MENTION_RECIPIENTS_PER_MESSAGE
@@ -84,6 +90,7 @@ export function outboxItemFromCommand(command: OutboxCommand): OutboxItem {
     channelId: command.channelId,
     content: command.content,
     ...(command.refMessageId ? { refMessageId: command.refMessageId } : {}),
+    ...(command.postId ? { postId: command.postId } : {}),
     ...(command.mentionedUserIds?.length ? { mentionedUserIds: [...command.mentionedUserIds] } : {}),
     createdAt: command.createdAt,
     status: 'queued',

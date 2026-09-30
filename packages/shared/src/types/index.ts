@@ -220,6 +220,15 @@ export interface ForumPostSummary {
   state: ForumPostState;
 }
 
+/** What the viewer may do in this forum, from their effective channel permissions. */
+export interface ForumViewerCapabilities {
+  canCreatePosts: boolean;
+  canReply: boolean;
+  canManage: boolean;
+  canPin: boolean;
+  canAttach: boolean;
+}
+
 /** Broadcast to every viewer; each client keeps its own unread flag. */
 export interface WsForumPostUpdated {
   channelId: string;

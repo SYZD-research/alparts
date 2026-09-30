@@ -8,6 +8,7 @@ import { useWorkspaceStore } from '../../stores/workspace.store';
 import { Dialog } from '../ui/Dialog';
 import { userFacingMessageText } from '../../services/message-display';
 import { formatDateTime } from '../../stores/date-format';
+import { useForumStore } from '../../stores/forum.store';
 
 const HISTORY_PAGE_LIMIT = 20;
 
@@ -50,6 +51,7 @@ export function SavedMessagesDialog() {
         setNavigationError('メッセージをまだ見つけられませんでした。チャンネルを上にスクロールして、さらに古いメッセージを読み込んでください。');
         return;
       }
+      await useForumStore.getState().revealMessage(channelId, messageId);
       close();
       window.setTimeout(() => {
         document.getElementById(`message-${messageId}`)?.scrollIntoView({ block: 'center', behavior: 'smooth' });

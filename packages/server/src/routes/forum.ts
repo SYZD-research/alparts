@@ -199,7 +199,7 @@ router.delete('/forum/tags/:tagId', authMiddleware, async (req: AuthRequest, res
     const result = await forumService.deleteForumTag(uuid.parse(req.params.tagId), req.userId!);
     const io = getSocketServer(req);
     if (io) broadcastForumTagsUpdated(io, result.channelId, result.tags);
-    res.sendStatus(204);
+    res.json({ success: true });
   } catch (error) {
     sendForumError(res, error);
   }

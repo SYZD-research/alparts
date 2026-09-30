@@ -152,7 +152,7 @@ function authenticatedEnvelope(message: Message): string | null {
     broadcastMention: message.broadcastMention,
     encryptedContent: message.encryptedContent,
     contentNonce: message.contentNonce,
-  })}\u0000${message.signature}`;
+  })}\u0000${message.postId ?? ''}\u0000${message.signature}`;
 }
 
 function withoutLegacyVerificationProperty(message: Message): Message {

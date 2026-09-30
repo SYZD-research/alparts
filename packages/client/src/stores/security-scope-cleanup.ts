@@ -4,6 +4,7 @@ import { useChannelStore } from './channel.store';
 import { useDmStore } from './dm.store';
 import { useDraftStore } from './draft.store';
 import { useMessageStore } from './message.store';
+import { useForumStore } from './forum.store';
 import { useOutboxStore } from './outbox.store';
 import { usePresenceStore } from './presence.store';
 import { useUiStore } from './ui.store';
@@ -28,6 +29,7 @@ export async function clearChannelSecurityScope(workspaceId: string, channelId: 
   // Clear channel-indexed user operations while message ids are still
   // available to invalidate pending bookmark requests.
   useUserStateStore.getState().clearChannel(workspaceId, channelId);
+  useForumStore.getState().clearChannel(channelId);
   useMessageStore.getState().clearChannel(channelId);
   useAttachmentStore.getState().clearChannel(channelId);
   usePresenceStore.getState().clearChannel(channelId);
