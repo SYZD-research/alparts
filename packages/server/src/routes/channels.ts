@@ -22,7 +22,7 @@ const position = z.number().int().min(0).max(1_000_000);
 const createChannelSchema = z.object({
   name: displayText(),
   categoryId: z.string().uuid().optional(),
-  type: z.enum(['text', 'announcement', 'voice']).optional(),
+  type: z.enum(['text', 'announcement', 'voice', 'forum']).optional(),
   isPrivate: z.boolean().optional(),
   topic: displayText(500, true).optional(),
   position: position.optional(),

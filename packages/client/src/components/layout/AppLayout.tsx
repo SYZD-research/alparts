@@ -23,6 +23,7 @@ import { useMessageStore } from '../../stores/message.store';
 import { api } from '../../services/api';
 import { parseMessageRoute } from '../../stores/permalink-model';
 import { focusMessageElement } from '../../services/message-navigation';
+import { useForumStore } from '../../stores/forum.store';
 import { ResizablePane } from './ResizablePane';
 import { useVoiceChannelPresence } from '../../hooks/useVoiceChannelPresence';
 import { AttentionNotifications } from '../notification/AttentionNotifications';
@@ -197,6 +198,8 @@ export function AppLayout() {
         if (!found) {
           throw new Error('リンク先メッセージを見つけられませんでした');
         }
+        await useForumStore.getState().revealMessage(messageRoute.channelId, messageRoute.messageId);
+        if (request !== permalinkRequest.current) return;
         if (!await focusMessageElement(messageRoute.messageId)) {
           throw new Error('メッセージは読み込みましたが表示要素を準備できませんでした');
         }

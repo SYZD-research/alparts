@@ -137,7 +137,13 @@ export function verifyMessageEnvelopeSignature(
   envelope: SignedMessageEnvelope,
   signature: string,
 ): boolean {
-  return verifyDeviceSignature(identityKey, serializeMessageEnvelope(envelope), signature);
+  let payload: string;
+  try {
+    payload = serializeMessageEnvelope(envelope);
+  } catch {
+    return false;
+  }
+  return verifyDeviceSignature(identityKey, payload, signature);
 }
 
 export function verifyAttachmentEnvelopeSignature(

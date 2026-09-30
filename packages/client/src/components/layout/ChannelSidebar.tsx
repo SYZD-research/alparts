@@ -246,7 +246,7 @@ function ChannelRow({
   onUpdate: (updates: { favorite?: boolean; muted?: boolean; hidden?: boolean; notificationLevel?: NotificationLevel }) => Promise<void>;
 }) {
   const isVoice = channel.type === 'voice';
-  const prefix = channel.type === 'dm' ? '@' : channel.type === 'announcement' ? '!' : isVoice ? '🔊' : '#';
+  const prefix = channel.type === 'dm' ? '@' : channel.type === 'announcement' ? '!' : isVoice ? '🔊' : channel.type === 'forum' ? '💬' : '#';
   const unreadLabel = preference.unreadCount > 99 ? '99+' : String(preference.unreadCount);
   const participantUsers = [...new Set(participants.map((participant) => participant.userId))]
     .map((userId) => ({

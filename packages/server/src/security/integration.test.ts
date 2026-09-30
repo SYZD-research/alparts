@@ -65,7 +65,7 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
     const auditModule = await import('../middleware/audit.js');
     const dbModule = await import('../db/index.js');
     closeDb = dbModule.closeDb;
-    assert.equal(await dbModule.checkDatabaseSchema(), 20);
+    assert.equal(await dbModule.checkDatabaseSchema(), 21);
     verifyAuditChain = auditModule.verifyAuditChain;
     await auditModule.provisionAuditCheckpoint();
     const startupAudit = await verifyAuditChain();
@@ -3031,6 +3031,343 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
     assert.ok(audit.checked > 0);
   });
 
+  it('keeps forum posts bound to their post, channel and permissions', async () => {
+    const { db } = await import('../db/index.js');
+    const { auditLogs, forumPosts: forumPostTable } = await import('../db/schema.js');
+    const messageService = await import('../services/message.service.js');
+    // An account from the first scenario that never enrolled a device.
+    const ownerLogin = await request('/api/auth/login', {
+      method: 'POST', body: { email: 'unbound@example.test', password: 'Correct-Horse-Battery-9!' },
+    });
+    assert.equal(ownerLogin.status, 200);
+    const owner = {
+      cookie: ownerLogin.headers.get('set-cookie')!.split(';', 1)[0],
+      user: (await json<{ user: { id: string } }>(ownerLogin)).user,
+      password: 'Correct-Horse-Battery-9!',
+    };
+    const ownerKeys = deviceFixture();
+    const ownerDevice = await registerDevice(owner, ownerKeys, 'Forum owner device');
+    const workspace = await json<{ id: string }>(await request('/api/workspaces', {
+      method: 'POST', cookie: owner.cookie, body: { name: 'Forum security' },
+    }));
+    const memberInvitation = await createWorkspaceInvitation(workspace.id, owner.cookie, 'forum-member@example.test');
+    const member = await createAccount('forum-member@example.test', 'Correct-Horse-Battery-31!', 'Forum Member', memberInvitation.token);
+    const memberKeys = deviceFixture();
+    const memberDevice = await registerDevice(member, memberKeys, 'Forum member device');
+    const outsiderInvitation = await createWorkspaceInvitation(workspace.id, owner.cookie, 'forum-outsider@example.test');
+    const outsider = await createAccount('forum-outsider@example.test', 'Correct-Horse-Battery-32!', 'Forum Outsider', outsiderInvitation.token);
+    const outsiderMembership = await request(`/api/workspaces/${workspace.id}/members/${outsider.user.id}`, {
+      method: 'DELETE', cookie: owner.cookie,
+    });
+    assert.equal(outsiderMembership.status, 200, await outsiderMembership.text());
+
+    const forumResponse = await request(`/api/workspaces/${workspace.id}/channels`, {
+      method: 'POST', cookie: owner.cookie, body: { name: 'questions', type: 'forum' },
+    });
+    assert.equal(forumResponse.status, 201);
+    const forum = await json<{ id: string; type: string }>(forumResponse);
+    assert.equal(forum.type, 'forum');
+    const recipients = await json<{ recipients: Array<{ deviceId: string; identityKey: string }> }>(
+      await request(`/api/channels/${forum.id}/key-recipients`, { cookie: owner.cookie }),
+    );
+    const forumKey = randomBytes(32);
+    await distributeAndAcknowledgeChannelKey({
+      channelId: forum.id,
+      version: 1,
+      rawKey: forumKey,
+      senderCookie: owner.cookie,
+      senderKeys: ownerKeys,
+      recipients: recipients.recipients,
+      acknowledgements: [
+        { deviceId: ownerDevice.id, cookie: owner.cookie, keys: ownerKeys },
+        { deviceId: memberDevice.id, cookie: member.cookie, keys: memberKeys },
+      ],
+    });
+    const asMember = (input: Omit<Parameters<typeof encryptedForumEvent>[0], 'channelId' | 'authorId' | 'deviceId' | 'privateKey' | 'key'>) => (
+      encryptedForumEvent({ ...input, channelId: forum.id, authorId: member.user.id, deviceId: memberDevice.id, privateKey: memberKeys.signingPrivateKey, key: forumKey })
+    );
+    const asOwner = (input: Omit<Parameters<typeof encryptedForumEvent>[0], 'channelId' | 'authorId' | 'deviceId' | 'privateKey' | 'key'>) => (
+      encryptedForumEvent({ ...input, channelId: forum.id, authorId: owner.user.id, deviceId: ownerDevice.id, privateKey: ownerKeys.signingPrivateKey, key: forumKey })
+    );
+
+    // Tags are managed by channel managers only.
+    assert.equal((await request(`/api/channels/${forum.id}/forum/tags`, {
+      method: 'POST', cookie: member.cookie, body: { name: 'bug' },
+    })).status, 403);
+    const tagResponse = await request(`/api/channels/${forum.id}/forum/tags`, {
+      method: 'POST', cookie: owner.cookie, body: { name: '質問' },
+    });
+    assert.equal(tagResponse.status, 201);
+    const tag = await json<{ id: string; name: string }>(tagResponse);
+    assert.equal((await request(`/api/channels/${forum.id}/forum/tags`, {
+      method: 'POST', cookie: owner.cookie, body: { name: '質問' },
+    })).status, 409);
+    assert.equal((await request(`/api/channels/${forum.id}/forum/tags`, {
+      method: 'POST', cookie: owner.cookie, body: { name: 'bad‮eman' },
+    })).status, 400);
+
+    // Starting a post needs the v4 envelope with no post; chat-style writes are refused.
+    const post = asMember({ type: 'message', refMessageId: null, postId: null, plaintext: 'Title\nBody that the server must not see' });
+    const legacyShape = encryptedMessage(forum.id, member.user.id, memberDevice.id, memberKeys.signingPrivateKey, forumKey, 'no post id');
+    assert.equal((await request(`/api/channels/${forum.id}/messages`, {
+      method: 'POST', cookie: member.cookie, body: legacyShape.body,
+    })).status, 400);
+    assert.equal((await request(`/api/channels/${forum.id}/forum/posts`, {
+      method: 'POST', cookie: member.cookie, body: legacyShape.body,
+    })).status, 400);
+    const postResponse = await request(`/api/channels/${forum.id}/forum/posts`, {
+      method: 'POST', cookie: member.cookie, body: { ...post.body, tagIds: [tag.id] },
+    });
+    assert.equal(postResponse.status, 201, await postResponse.clone().text());
+    const created = await json<{ message: { id: string; postId: string | null }; state: { tagIds: string[]; replyCount: number } }>(postResponse);
+    const postId = created.message.id;
+    assert.equal(created.message.postId, null);
+    assert.deepEqual(created.state.tagIds, [tag.id]);
+    assert.equal(created.state.replyCount, 0);
+
+    // A reply is bound to its post: a signature for another post, or a
+    // quote from another post, is rejected.
+    const secondPost = asOwner({ type: 'message', refMessageId: null, postId: null, plaintext: 'Other\npost' });
+    const secondResponse = await request(`/api/channels/${forum.id}/forum/posts`, {
+      method: 'POST', cookie: owner.cookie, body: secondPost.body,
+    });
+    assert.equal(secondResponse.status, 201);
+    const secondPostId = (await json<{ message: { id: string } }>(secondResponse)).message.id;
+    const relocated = asOwner({ type: 'message', refMessageId: null, postId: secondPostId, plaintext: 'moved' });
+    assert.equal((await request(`/api/channels/${forum.id}/messages`, {
+      method: 'POST', cookie: owner.cookie, body: { ...relocated.body, postId },
+    })).status, 400);
+    const crossQuote = asOwner({ type: 'message', refMessageId: secondPostId, postId, plaintext: 'cross' });
+    assert.equal((await request(`/api/channels/${forum.id}/messages`, {
+      method: 'POST', cookie: owner.cookie, body: { ...crossQuote.body, refMessageId: secondPostId },
+    })).status, 400);
+    const reply = asOwner({ type: 'message', refMessageId: null, postId, plaintext: 'An answer' });
+    const replyResponse = await request(`/api/channels/${forum.id}/messages`, {
+      method: 'POST', cookie: owner.cookie, body: reply.body,
+    });
+    assert.equal(replyResponse.status, 201);
+    const replyEvent = await json<{ id: string; postId: string }>(replyResponse);
+    assert.equal(replyEvent.postId, postId);
+    // Only the post itself can be pinned in a forum.
+    assert.equal((await request(`/api/messages/${replyEvent.id}/pin`, { method: 'POST', cookie: owner.cookie })).status, 403);
+
+    // A forum event outside a forum, and a missing post inside one, fail closed.
+    const general = (await json<Array<{ id: string; type: string }>>(
+      await request(`/api/workspaces/${workspace.id}/channels`, { cookie: owner.cookie }),
+    )).find((channel) => channel.type === 'text');
+    assert.ok(general);
+    await assert.rejects(messageService.createMessage(general.id, owner.user.id, {
+      ...reply.body, postId,
+    }), /INVALID_REFERENCE/);
+    const { postId: _omitted, ...withoutPost } = reply.body;
+    await assert.rejects(messageService.createMessage(forum.id, owner.user.id, {
+      ...withoutPost, idempotencyKey: randomUUID(),
+    }), /INVALID_REFERENCE/);
+
+    // Listing reflects the reply; unread is per viewer and uses server time.
+    const memberList = await json<{ data: Array<{ root: { id: string }; state: { postId: string; replyCount: number; unread: boolean } }> }>(
+      await request(`/api/channels/${forum.id}/forum/posts`, { cookie: member.cookie }),
+    );
+    const listed = memberList.data.find((entry) => entry.state.postId === postId);
+    assert.ok(listed);
+    assert.equal(listed.root.id, postId);
+    assert.equal(listed.state.replyCount, 1);
+    assert.equal(listed.state.unread, true);
+    const ownerList = await json<{ data: Array<{ state: { postId: string; unread: boolean } }> }>(
+      await request(`/api/channels/${forum.id}/forum/posts`, { cookie: owner.cookie }),
+    );
+    assert.equal(ownerList.data.find((entry) => entry.state.postId === postId)?.state.unread, false);
+    const tagged = await json<{ data: Array<{ state: { postId: string } }> }>(
+      await request(`/api/channels/${forum.id}/forum/posts?tagId=${tag.id}`, { cookie: owner.cookie }),
+    );
+    assert.deepEqual(tagged.data.map((entry) => entry.state.postId), [postId]);
+    const paged = await json<{ data: Array<{ state: { postId: string } }>; cursor: string | null; hasMore: boolean }>(
+      await request(`/api/channels/${forum.id}/forum/posts?limit=1`, { cookie: owner.cookie }),
+    );
+    assert.equal(paged.hasMore, true);
+    const nextPage = await json<{ data: Array<{ state: { postId: string } }> }>(
+      await request(`/api/channels/${forum.id}/forum/posts?limit=1&cursor=${paged.cursor}`, { cookie: owner.cookie }),
+    );
+    assert.deepEqual(new Set([...paged.data, ...nextPage.data].map((entry) => entry.state.postId)), new Set([postId, secondPostId]));
+    assert.equal((await request(`/api/forum/posts/${postId}/read`, { method: 'POST', cookie: member.cookie, body: {} })).status, 200);
+    const afterRead = await json<{ state: { unread: boolean } }>(await request(`/api/forum/posts/${postId}`, { cookie: member.cookie }));
+    assert.equal(afterRead.state.unread, false);
+    const thread = await json<{ data: Array<{ id: string; postId: string }> }>(
+      await request(`/api/forum/posts/${postId}/messages`, { cookie: member.cookie }),
+    );
+    assert.deepEqual(thread.data.map((event) => event.id), [replyEvent.id]);
+
+    // Moderation: only managers lock; a locked post refuses member replies.
+    assert.equal((await request(`/api/forum/posts/${postId}/lock`, {
+      method: 'PUT', cookie: member.cookie, body: { locked: true },
+    })).status, 403);
+    assert.equal((await request(`/api/forum/posts/${postId}/lock`, {
+      method: 'PUT', cookie: owner.cookie, body: { locked: true },
+    })).status, 200);
+    const lockedReply = asMember({ type: 'message', refMessageId: replyEvent.id, postId, plaintext: 'after lock' });
+    const lockedResponse = await request(`/api/channels/${forum.id}/messages`, {
+      method: 'POST', cookie: member.cookie, body: { ...lockedReply.body, refMessageId: replyEvent.id },
+    });
+    assert.equal(lockedResponse.status, 409);
+    const moderatorReply = asOwner({ type: 'message', refMessageId: null, postId, plaintext: 'locked by moderator' });
+    assert.equal((await request(`/api/channels/${forum.id}/messages`, {
+      method: 'POST', cookie: owner.cookie, body: moderatorReply.body,
+    })).status, 201);
+    // The author may mark their own post resolved and retag it; others may not.
+    assert.equal((await request(`/api/forum/posts/${secondPostId}/resolved`, {
+      method: 'PUT', cookie: member.cookie, body: { resolved: true },
+    })).status, 403);
+    const resolved = await request(`/api/forum/posts/${postId}/resolved`, {
+      method: 'PUT', cookie: member.cookie, body: { resolved: true },
+    });
+    assert.equal(resolved.status, 200);
+    assert.equal((await json<{ resolved: boolean }>(resolved)).resolved, true);
+    assert.equal((await request(`/api/forum/posts/${postId}/tags`, {
+      method: 'PUT', cookie: member.cookie, body: { tagIds: [randomUUID()] },
+    })).status, 400);
+
+    // CREATE_POSTS is separate from replying.
+    const memberRole = (await json<Array<{ id: string; name: string }>>(
+      await request(`/api/workspaces/${workspace.id}/roles`, { cookie: owner.cookie }),
+    )).find((role) => role.name === 'Member');
+    assert.ok(memberRole);
+    const overridePath = `/api/workspaces/${workspace.id}/channels/${forum.id}/permission-overrides`;
+    const denyPostsPreview = await json<any>(await request(`${overridePath}/preview`, {
+      method: 'POST', cookie: owner.cookie,
+      body: { operation: 'upsert', roleId: memberRole.id, allowMask: 0, denyMask: Permissions.CREATE_POSTS },
+    }));
+    assert.equal((await request(`${overridePath}/${memberRole.id}`, {
+      method: 'PUT', cookie: owner.cookie,
+      body: { allowMask: 0, denyMask: Permissions.CREATE_POSTS, expectedRevision: 0, expectedAuthorizationRevision: denyPostsPreview.authorizationRevision },
+    })).status, 200);
+    const deniedViewer = await json<{ viewer: { canCreatePosts: boolean; canReply: boolean; canManage: boolean } }>(
+      await request(`/api/channels/${forum.id}/forum/posts`, { cookie: member.cookie }),
+    );
+    assert.deepEqual(
+      [deniedViewer.viewer.canCreatePosts, deniedViewer.viewer.canReply, deniedViewer.viewer.canManage],
+      [false, true, false],
+    );
+    const deniedPost = asMember({ type: 'message', refMessageId: null, postId: null, plaintext: 'denied\npost' });
+    assert.equal((await request(`/api/channels/${forum.id}/forum/posts`, {
+      method: 'POST', cookie: member.cookie, body: deniedPost.body,
+    })).status, 403);
+    const allowedReply = asMember({ type: 'message', refMessageId: null, postId: secondPostId, plaintext: 'still replying' });
+    assert.equal((await request(`/api/channels/${forum.id}/messages`, {
+      method: 'POST', cookie: member.cookie, body: allowedReply.body,
+    })).status, 201);
+
+    // Posts are invisible outside the workspace.
+    assert.equal((await request(`/api/forum/posts/${postId}`, { cookie: outsider.cookie })).status, 404);
+    assert.equal((await request(`/api/forum/posts/${postId}/messages`, { cookie: outsider.cookie })).status, 404);
+    assert.equal((await request(`/api/forum/posts/${postId}/lock`, {
+      method: 'PUT', cookie: outsider.cookie, body: { locked: false },
+    })).status, 404);
+
+    // A quote-reply racing the deletion of the quoted reply must resolve to
+    // one order or the other, never a lock cycle.
+    for (let round = 0; round < 5; round += 1) {
+      const target = asOwner({ type: 'message', refMessageId: null, postId, plaintext: `race target ${round}` });
+      const targetEvent = await json<{ id: string }>(await request(`/api/channels/${forum.id}/messages`, {
+        method: 'POST', cookie: owner.cookie, body: target.body,
+      }));
+      const quote = asOwner({ type: 'message', refMessageId: targetEvent.id, postId, plaintext: `race quote ${round}` });
+      const removal = asOwner({ type: 'delete', refMessageId: targetEvent.id, postId, plaintext: '' });
+      const [quoted, removed] = await Promise.all([
+        request(`/api/channels/${forum.id}/messages`, {
+          method: 'POST', cookie: owner.cookie, body: { ...quote.body, refMessageId: targetEvent.id },
+        }),
+        request(`/api/messages/${targetEvent.id}`, {
+          method: 'DELETE', cookie: owner.cookie,
+          body: { deviceId: ownerDevice.id, keyVersion: 1, idempotencyKey: removal.envelope.idempotencyKey, signature: removal.body.signature, postId },
+        }),
+      ]);
+      assert.ok([201, 400].includes(quoted.status), `quote status ${quoted.status}`);
+      assert.equal(removed.status, 200);
+    }
+
+    // Deleting the post removes it from the list and closes it for replies.
+    const deletion = asMember({ type: 'delete', refMessageId: postId, postId, plaintext: '' });
+    const deleted = await request(`/api/messages/${postId}`, {
+      method: 'DELETE', cookie: member.cookie,
+      body: { deviceId: memberDevice.id, keyVersion: 1, idempotencyKey: deletion.envelope.idempotencyKey, signature: deletion.body.signature, postId },
+    });
+    assert.equal(deleted.status, 200, await deleted.clone().text());
+    assert.equal((await request(`/api/forum/posts/${postId}`, { cookie: member.cookie })).status, 404);
+    const afterDelete = await json<{ data: Array<{ state: { postId: string } }> }>(
+      await request(`/api/channels/${forum.id}/forum/posts`, { cookie: member.cookie }),
+    );
+    assert.deepEqual(afterDelete.data.map((entry) => entry.state.postId), [secondPostId]);
+    const lateReply = asOwner({ type: 'message', refMessageId: null, postId, plaintext: 'too late' });
+    assert.equal((await request(`/api/channels/${forum.id}/messages`, {
+      method: 'POST', cookie: owner.cookie, body: lateReply.body,
+    })).status, 400);
+    const stored = await db.query.forumPosts.findFirst({ where: eq(forumPostTable.messageId, postId) });
+    assert.ok(stored?.deletedAt);
+
+    // A privacy change that commits while a forum request waits for the
+    // workspace lock is the state that request must be judged against. The
+    // holder makes the change the way updateChannel does (workspace row FOR
+    // UPDATE, then the channel and its private members) and commits only once
+    // the request is observed waiting, so the race is exercised every time.
+    const lockHolder = new pg.Client({ connectionString: process.env.DATABASE_URL });
+    const observer = new pg.Client({ connectionString: process.env.DATABASE_URL });
+    await lockHolder.connect();
+    await observer.connect();
+    try {
+      const raceAgainstPrivacyChange = async (send: () => Promise<Response>) => {
+        await lockHolder.query('begin');
+        try {
+          await lockHolder.query('select id from workspaces where id = $1 for update', [workspace.id]);
+          await lockHolder.query('update channels set is_private = true where id = $1', [forum.id]);
+          await lockHolder.query('insert into channel_members (channel_id, user_id) values ($1, $2)', [forum.id, owner.user.id]);
+          const pending = send();
+          let waiting = false;
+          for (let attempt = 0; attempt < 100 && !waiting; attempt += 1) {
+            const { rows } = await observer.query<{ waiting: number }>(`
+              select count(*)::int as waiting from pg_stat_activity
+              where datname = current_database() and wait_event_type = 'Lock' and pid <> $1
+            `, [(lockHolder as unknown as { processID: number }).processID]);
+            waiting = rows[0]!.waiting > 0;
+            if (!waiting) await delay(20);
+          }
+          assert.equal(waiting, true, 'the forum request never waited for the workspace lock');
+          await lockHolder.query('commit');
+          return await pending;
+        } catch (error) {
+          await lockHolder.query('rollback').catch(() => undefined);
+          throw error;
+        }
+      };
+      const restorePublicForum = async () => {
+        await lockHolder.query('update channels set is_private = false where id = $1', [forum.id]);
+        await lockHolder.query('delete from channel_members where channel_id = $1', [forum.id]);
+      };
+
+      const listed = await raceAgainstPrivacyChange(() => request(`/api/channels/${forum.id}/forum/posts`, { cookie: member.cookie }));
+      assert.equal(listed.status, 404);
+      assert.equal((await request(`/api/channels/${forum.id}/forum/posts`, { cookie: owner.cookie })).status, 200);
+      await restorePublicForum();
+      assert.equal((await request(`/api/forum/posts/${secondPostId}`, { cookie: member.cookie })).status, 200);
+
+      const opened = await raceAgainstPrivacyChange(() => request(`/api/forum/posts/${secondPostId}`, { cookie: member.cookie }));
+      assert.equal(opened.status, 404);
+      await restorePublicForum();
+    } finally {
+      await lockHolder.end();
+      await observer.end();
+    }
+
+    const forumAudit = await db.select({ action: auditLogs.action, details: auditLogs.details })
+      .from(auditLogs)
+      .where(sql`${auditLogs.details}->>'workspaceId' = ${workspace.id}`);
+    const actions = new Set(forumAudit.map((row) => row.action));
+    for (const action of ['forum.post.create', 'forum.tag.create', 'forum.post.lock', 'forum.post.resolve', 'message.delete']) {
+      assert.equal(actions.has(action), true, action);
+    }
+    assert.equal(JSON.stringify(forumAudit).includes('the server must not see'), false);
+    assert.equal((await verifyAuditChain()).valid, true);
+  });
+
   it('fails the schema gate when the journal is intact but a catalog invariant is removed', async () => {
     const client = new pg.Client({ connectionString: process.env.DATABASE_URL });
     await client.connect();
@@ -3051,7 +3388,7 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
       await client.end();
     }
     const { checkDatabaseSchema } = await import('../db/index.js');
-    assert.equal(await checkDatabaseSchema(), 20);
+    assert.equal(await checkDatabaseSchema(), 21);
   });
 
   it('never re-signs a shortened audit chain after the external checkpoint anchor is deleted', async () => {
@@ -3484,6 +3821,55 @@ function encryptedCryptoEvent(
       idempotencyKey,
       broadcastMention: false,
       signature: signEnvelope(envelope, privateKey),
+    },
+  };
+}
+
+/** A v4 forum event. Deletes carry no ciphertext, like other deletes. */
+function encryptedForumEvent(input: {
+  type: 'message' | 'edit' | 'delete';
+  channelId: string;
+  refMessageId: string | null;
+  postId: string | null;
+  authorId: string;
+  deviceId: string;
+  privateKey: import('node:crypto').KeyObject;
+  key: Buffer;
+  plaintext: string;
+}) {
+  const idempotencyKey = randomUUID();
+  const unsigned = {
+    type: input.type,
+    channelId: input.channelId,
+    authorId: input.authorId,
+    deviceId: input.deviceId,
+    keyVersion: 1,
+    idempotencyKey,
+    refMessageId: input.refMessageId,
+    broadcastMention: false,
+    postId: input.postId,
+  };
+  let encryptedContent = '';
+  let contentNonce = '';
+  if (input.type !== 'delete') {
+    const nonce = randomBytes(12);
+    const cipher = createCipheriv('aes-256-gcm', input.key, nonce);
+    cipher.setAAD(Buffer.from(serializeMessageAad(unsigned)));
+    encryptedContent = Buffer.concat([cipher.update(input.plaintext, 'utf8'), cipher.final(), cipher.getAuthTag()]).toString('base64');
+    contentNonce = nonce.toString('base64');
+  }
+  const envelope: SignedMessageEnvelope = { ...unsigned, encryptedContent, contentNonce };
+  return {
+    envelope,
+    body: {
+      encryptedContent,
+      contentNonce,
+      deviceId: input.deviceId,
+      keyVersion: 1,
+      idempotencyKey,
+      broadcastMention: false,
+      signature: signEnvelope(envelope, input.privateKey),
+      ...(input.postId ? { postId: input.postId } : {}),
     },
   };
 }

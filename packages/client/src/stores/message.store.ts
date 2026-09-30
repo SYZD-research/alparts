@@ -35,6 +35,8 @@ import {
   type ProjectedMessage,
 } from './message-projector';
 import { useChannelStore } from './channel.store';
+import { encodeForumPostContent } from '../services/forum-post-model';
+import type { ForumPostState } from '@alparts/shared';
 
 export const MAX_RESIDENT_MESSAGE_EVENTS_PER_CHANNEL = 1_000;
 export const MAX_RESIDENT_MESSAGE_EVENTS_TOTAL = 5_000;
@@ -68,7 +70,12 @@ interface MessageState {
     idempotencyKey?: string,
     allowEmpty?: boolean,
     mentionedUserIds?: string[],
+    postId?: string,
   ) => Promise<Message>;
+  createForumPost: (
+    channelId: string,
+    post: { title: string; body: string; tagIds: string[]; mentionedUserIds: string[] },
+  ) => Promise<{ message: Message; state: Omit<ForumPostState, 'unread'> }>;
   addMessage: (channelId: string, message: Message) => void;
   addMessages: (channelId: string, messages: Message[]) => void;
   applyAttachment: (channelId: string, attachment: Attachment) => void;
@@ -188,6 +195,20 @@ function channelUpdate(state: MessageState, channelId: string, events: Message[]
   return update;
 }
 
+/** Forum channels sign every event with its post (v4); the type, not the payload, decides. */
+export function isForumChannel(channelId: string): boolean {
+  return useChannelStore.getState().channels.find((channel) => channel.id === channelId)?.type === 'forum';
+}
+
+/** The post a verified forum message belongs to: its own id if it started the post. */
+function forumPostIdOf(state: MessageState, channelId: string, messageId: string): string {
+  const base = (state.eventsByChannel[channelId] || []).find((event) => event.id === messageId && event.type === 'message');
+  if (!base || getMessageCryptoVerificationState(base) !== true) {
+    throw new Error('メッセージを確認できませんでした。再読み込みしてお試しください。');
+  }
+  return base.postId ?? base.id;
+}
+
 function isTransientSendError(error: unknown): boolean {
   return error instanceof TypeError || (error instanceof ApiError && (
     error.status === 408
@@ -231,6 +252,7 @@ export function matchesLocallySignedMessageResponse(
     && event.keyVersion === expected.keyVersion
     && event.idempotencyKey === expected.idempotencyKey
     && event.refMessageId === expected.refMessageId
+    && (expected.postId === undefined || (event.postId ?? null) === expected.postId)
     && event.broadcastMention === expected.broadcastMention
     && event.encryptedContent === expected.encryptedContent
     && event.contentNonce === expected.contentNonce
@@ -452,7 +474,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     await get().loadMessages(channelId);
   },
 
-  sendMessage: async (channelId, content, refMessageId, fixedIdempotencyKey, allowEmpty = false, mentionedUserIds = []) => {
+  sendMessage: async (channelId, content, refMessageId, fixedIdempotencyKey, allowEmpty = false, mentionedUserIds = [], postId) => {
     const generation = messageStoreGeneration;
     const channelEpoch = currentChannelEpoch(channelId);
     set((state) => ({ operationErrors: { ...state.operationErrors, [channelId]: null } }));
@@ -460,6 +482,9 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       if ((!content && !allowEmpty) || content.length > MAX_MESSAGE_LENGTH || new TextEncoder().encode(content).length > MAX_MESSAGE_LENGTH * 4) {
         throw new Error('Message is too long');
       }
+      // New posts go through createForumPost; everything else in a forum is a reply.
+      const forum = isForumChannel(channelId);
+      if (forum !== Boolean(postId)) throw new Error('メッセージを送信できませんでした');
       const device = getActiveDevice();
       const channelKey = await ensureChannelKey(channelId);
       const idempotencyKey = fixedIdempotencyKey || crypto.randomUUID();
@@ -473,6 +498,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         idempotencyKey,
         refMessageId: refMessageId ?? null,
         broadcastMention,
+        ...(forum ? { postId: postId! } : {}),
       };
       const encrypted = await encryptMessage(content, channelKey.key, unsigned);
       const envelope: SignedMessageEnvelope = { ...unsigned, encryptedContent: encrypted.encrypted, contentNonce: encrypted.nonce };
@@ -490,6 +516,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         broadcastMention,
         ...(notificationRecipientIds.length ? { mentionedUserIds: notificationRecipientIds } : {}),
         refMessageId: refMessageId || undefined,
+        ...(forum ? { postId } : {}),
       };
       // Network retries reuse the exact authenticated envelope. Re-encrypting
       // under the same idempotency key would correctly be rejected as a
@@ -511,6 +538,64 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     } catch (error) {
       if (isMessageContextCurrent(channelId, generation, channelEpoch)) {
         set((state) => ({ operationErrors: { ...state.operationErrors, [channelId]: errorMessage(error, 'メッセージを送信できませんでした') } }));
+      }
+      throw error;
+    }
+  },
+
+  createForumPost: async (channelId, post) => {
+    const generation = messageStoreGeneration;
+    const channelEpoch = currentChannelEpoch(channelId);
+    set((state) => ({ operationErrors: { ...state.operationErrors, [channelId]: null } }));
+    try {
+      if (!isForumChannel(channelId)) throw new Error('投稿を作成できませんでした');
+      const content = encodeForumPostContent({ title: post.title, body: post.body });
+      const device = getActiveDevice();
+      const channelKey = await ensureChannelKey(channelId);
+      const broadcastMention = containsBroadcastMention(content);
+      const unsigned = {
+        type: 'message' as const,
+        channelId,
+        authorId: device.userId,
+        deviceId: device.deviceId,
+        keyVersion: channelKey.version,
+        idempotencyKey: crypto.randomUUID(),
+        refMessageId: null,
+        broadcastMention,
+        postId: null,
+      };
+      const encrypted = await encryptMessage(content, channelKey.key, unsigned);
+      const envelope: SignedMessageEnvelope = { ...unsigned, encryptedContent: encrypted.encrypted, contentNonce: encrypted.nonce };
+      const signature = await signMessageEnvelope(envelope);
+      const mentionedUserIds = [...new Set(post.mentionedUserIds)].sort().slice(0, MAX_DIRECT_MENTION_RECIPIENTS_PER_MESSAGE);
+      const request = {
+        encryptedContent: envelope.encryptedContent,
+        contentNonce: envelope.contentNonce,
+        deviceId: envelope.deviceId,
+        keyVersion: envelope.keyVersion,
+        idempotencyKey: envelope.idempotencyKey,
+        signature,
+        broadcastMention,
+        ...(mentionedUserIds.length ? { mentionedUserIds } : {}),
+        ...(post.tagIds.length ? { tagIds: post.tagIds } : {}),
+      };
+      const result = await retrySameEncryptedEnvelope(
+        request,
+        (fixedRequest) => api.createForumPost(channelId, fixedRequest),
+        generation,
+        channelId,
+        channelEpoch,
+      );
+      if (!isMessageContextCurrent(channelId, generation, channelEpoch)) throw new Error('チャンネルの認可が変更されたため送信結果を破棄しました');
+      const message = { ...requireLocallySignedMessageResponse(result.message, envelope, signature), content } as Message;
+      if (result.state.postId !== message.id || result.state.channelId !== channelId) {
+        throw new Error('Server returned a post state for a different post');
+      }
+      get().addMessage(channelId, message);
+      return { message, state: result.state };
+    } catch (error) {
+      if (isMessageContextCurrent(channelId, generation, channelEpoch)) {
+        set((state) => ({ operationErrors: { ...state.operationErrors, [channelId]: errorMessage(error, '投稿を作成できませんでした') } }));
       }
       throw error;
     }
@@ -562,6 +647,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     const channelEpoch = currentChannelEpoch(channelId);
     set((state) => ({ operationErrors: { ...state.operationErrors, [channelId]: null } }));
     try {
+      const postId = isForumChannel(channelId) ? forumPostIdOf(get(), channelId, messageId) : undefined;
       const device = getActiveDevice();
       const channelKey = await ensureChannelKey(channelId);
       const idempotencyKey = crypto.randomUUID();
@@ -575,6 +661,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         idempotencyKey,
         refMessageId: messageId,
         broadcastMention,
+        ...(postId ? { postId } : {}),
       };
       const encrypted = await encryptMessage(content, channelKey.key, unsigned);
       const envelope: SignedMessageEnvelope = { ...unsigned, encryptedContent: encrypted.encrypted, contentNonce: encrypted.nonce };
@@ -587,6 +674,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         idempotencyKey: envelope.idempotencyKey,
         signature,
         broadcastMention,
+        ...(postId ? { postId } : {}),
       };
       const event = await retrySameEncryptedEnvelope(
         request,
@@ -613,6 +701,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     const channelEpoch = currentChannelEpoch(channelId);
     set((state) => ({ operationErrors: { ...state.operationErrors, [channelId]: null } }));
     try {
+      const postId = isForumChannel(channelId) ? forumPostIdOf(get(), channelId, messageId) : undefined;
       const device = getActiveDevice();
       const channelKey = await ensureChannelKey(channelId);
       const envelope: SignedMessageEnvelope = {
@@ -626,6 +715,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         broadcastMention: false,
         encryptedContent: '',
         contentNonce: '',
+        ...(postId ? { postId } : {}),
       };
       const signature = await signMessageEnvelope(envelope);
       const request = {
@@ -633,6 +723,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         keyVersion: envelope.keyVersion,
         idempotencyKey: envelope.idempotencyKey,
         signature,
+        ...(postId ? { postId } : {}),
       };
       const result = await retrySameEncryptedEnvelope(
         request,
@@ -718,6 +809,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     const generation = messageStoreGeneration;
     const channelEpoch = currentChannelEpoch(channelId);
     let unverified: Message[] = [];
+    const forumChannel = isForumChannel(channelId);
     try {
       const snapshot = get().eventsByChannel[channelId] || [];
       unverified = snapshot.filter((message) => (
@@ -771,12 +863,15 @@ export const useMessageStore = create<MessageState>((set, get) => ({
             broadcastMention: message.broadcastMention ?? null,
             encryptedContent: message.encryptedContent,
             contentNonce: message.contentNonce,
+            // The signed layout follows the channel type (the channel id is
+            // signed), so a server cannot pick v3 or v4 by adding a field.
+            ...(forumChannel ? { postId: message.postId ?? null } : {}),
           };
           const invalidSignature = (
             !identity
             || identity.userId !== message.authorId
             || message.author.id !== message.authorId
-            || !await verifyMessageSignature(envelope, message.signature, identity.identityKey)
+            || !await verifyMessageSignature(envelope, message.signature, identity.identityKey).catch(() => false)
           );
           if (invalidSignature) {
             if (message.type !== 'message') return null;

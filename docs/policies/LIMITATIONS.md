@@ -75,6 +75,7 @@
 - Searchはロード済み復号messageのin-memory検索だけである。全履歴・複数workspace検索、file抽出text、暗号化永続index、端末間index同期、破損時再構築はない。
 - Read position、unread、favorite/mute/hide/bookmarkは同期する。Mention数はclientが実際にロード・復号できた範囲でのみ数え、境界不明時に完全な件数を装わない。
 - Thread panelはこの端末で読み込み・復号済みの同一channel返信だけを表示し、serverから完全なthreadを追加取得しない。UUID形式のmessage linkは認可確認後に最大20 pageかつ上記1,000-event resident windowの範囲だけを開ける。大量貼り付けは2,000 bytesまたは20行以上で確認previewを表示する。Role/channel mentionとRestricted向けcopy/export確認はない。
+- Forumはforum channelのchannel keyで全postを暗号化する。後から参加したmember・端末は、他channelと同じく参加前のpost/replyを復号できない（UIは「この端末では読めない投稿」と表示する）。Post一覧の検索は読み込み・復号済みpostのtitle/本文だけが対象である。Tag名、post作成者、時刻、返信数、lock/resolved/pin状態、post単位の既読時刻はserverが知る。
 - Presence/typing/readをuserまたはworkspace単位で無効化する設定と、notificationのcategory継承はない。Notification levelはchannel単位のall/mentions/noneに限られる。
 - Push通知、background sync、notification本文policyはない。
 

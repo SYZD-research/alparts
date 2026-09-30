@@ -1,6 +1,7 @@
 import type { AttentionNotificationKind } from '@alparts/shared';
 import { useAttentionStore } from '../../stores/attention.store';
 import { useChannelStore } from '../../stores/channel.store';
+import { useForumStore } from '../../stores/forum.store';
 import { useWorkspaceStore } from '../../stores/workspace.store';
 import { useUiStore } from '../../stores/ui.store';
 
@@ -26,7 +27,10 @@ export function AttentionNotifications() {
     const channel = useChannelStore.getState().channels.find((candidate) => (
       candidate.id === latest.channelId && candidate.type !== 'voice'
     ));
-    if (channel) useChannelStore.getState().setActiveChannel(channel.id);
+    if (channel) {
+      useChannelStore.getState().setActiveChannel(channel.id);
+      if (channel.type === 'forum' && latest.postId) void useForumStore.getState().openPost(channel.id, latest.postId);
+    }
     if (kind === 'profile-appeal') useUiStore.getState().openWorkspaceManager();
     dismissKind(kind);
   };

@@ -1,6 +1,19 @@
 import { create } from 'zustand';
-import { deleteLocalDraft, loadLocalDraft, saveLocalDraft } from '../services/local-state.service';
+import {
+  deleteLocalDraft,
+  deleteLocalDraftsForChannel,
+  loadLocalDraft,
+  saveLocalDraft,
+} from '../services/local-state.service';
+import { draftScopeBelongsToChannel as belongsToChannel, draftScopeChannelId } from './draft-scope';
 
+export { forumPostDraftScope } from './draft-scope';
+
+function isRevoked(scope: string): boolean {
+  return revokedChannels.has(draftScopeChannelId(scope));
+}
+
+/** Keys are draft scopes: a channel id, or a forum post scope. */
 interface DraftState {
   drafts: Record<string, string>;
   loadedByChannel: Record<string, boolean>;
@@ -93,7 +106,7 @@ export const useDraftStore = create<DraftState>((set, get) => ({
   errorsByChannel: {},
 
   loadDraft: async (channelId) => {
-    if (revokedChannels.has(channelId)) return;
+    if (isRevoked(channelId)) return;
     if (get().loadedByChannel[channelId] || get().loadingByChannel[channelId]) return;
     const generation = draftGeneration;
     const version = draftVersions.get(channelId) || 0;
@@ -110,7 +123,7 @@ export const useDraftStore = create<DraftState>((set, get) => ({
         loadingByChannel: { ...state.loadingByChannel, [channelId]: false },
       }));
     } catch (error) {
-      if (generation !== draftGeneration || (draftVersions.get(channelId) || 0) !== version || revokedChannels.has(channelId)) return;
+      if (generation !== draftGeneration || (draftVersions.get(channelId) || 0) !== version || isRevoked(channelId)) return;
       set((state) => ({
         loadedByChannel: { ...state.loadedByChannel, [channelId]: true },
         loadingByChannel: { ...state.loadingByChannel, [channelId]: false },
@@ -120,7 +133,7 @@ export const useDraftStore = create<DraftState>((set, get) => ({
   },
 
   setDraft: (channelId, content) => {
-    if (revokedChannels.has(channelId)) return;
+    if (isRevoked(channelId)) return;
     const generation = draftGeneration;
     nextDraftVersion(channelId);
     const existingTimer = saveTimers.get(channelId);
@@ -137,13 +150,13 @@ export const useDraftStore = create<DraftState>((set, get) => ({
         channelId,
         generation,
         async () => {
-          if (!revokedChannels.has(channelId)) {
+          if (!isRevoked(channelId)) {
             if (content) await saveLocalDraft(channelId, content);
             else await deleteLocalDraft(channelId);
           }
         },
         (error) => {
-          if (generation === draftGeneration && !revokedChannels.has(channelId)) {
+          if (generation === draftGeneration && !isRevoked(channelId)) {
             set((state) => ({ errorsByChannel: { ...state.errorsByChannel, [channelId]: errorMessage(error) } }));
           }
         },
@@ -182,19 +195,26 @@ export const useDraftStore = create<DraftState>((set, get) => ({
   clearChannel: async (channelId) => {
     revokedChannels.add(channelId);
     const generation = draftGeneration;
-    nextDraftVersion(channelId);
-    const timer = saveTimers.get(channelId);
-    if (timer) clearTimeout(timer);
-    saveTimers.delete(channelId);
+    const scopes = new Set([channelId, ...Object.keys(get().drafts).filter((scope) => belongsToChannel(scope, channelId))]);
+    for (const scope of saveTimers.keys()) if (belongsToChannel(scope, channelId)) scopes.add(scope);
+    for (const scope of scopes) {
+      nextDraftVersion(scope);
+      const timer = saveTimers.get(scope);
+      if (timer) clearTimeout(timer);
+      saveTimers.delete(scope);
+    }
     set((state) => ({
-      drafts: withoutChannel(state.drafts, channelId),
-      loadedByChannel: withoutChannel(state.loadedByChannel, channelId),
-      loadingByChannel: withoutChannel(state.loadingByChannel, channelId),
-      errorsByChannel: withoutChannel(state.errorsByChannel, channelId),
+      drafts: withoutScopes(state.drafts, channelId),
+      loadedByChannel: withoutScopes(state.loadedByChannel, channelId),
+      loadingByChannel: withoutScopes(state.loadingByChannel, channelId),
+      errorsByChannel: withoutScopes(state.errorsByChannel, channelId),
     }));
-    // This delete is serialized after any already-running save for the same
-    // channel, so the final persistent state is absent even during a race.
-    await queuePersistence(channelId, generation, () => deleteLocalDraft(channelId), () => undefined);
+    // Wait for saves already running in any of the channel's scopes, then
+    // delete them all, so the final persistent state is absent even in a race.
+    await Promise.all([...persistQueues.entries()]
+      .filter(([scope]) => scope !== channelId && belongsToChannel(scope, channelId))
+      .map(([, queue]) => queue));
+    await queuePersistence(channelId, generation, () => deleteLocalDraftsForChannel(channelId), () => undefined);
   },
 
   restoreChannel: async (channelId) => {
@@ -218,9 +238,10 @@ export const useDraftStore = create<DraftState>((set, get) => ({
   },
 }));
 
-function withoutChannel<T>(record: Record<string, T>, channelId: string): Record<string, T> {
-  if (!(channelId in record)) return record;
+function withoutScopes<T>(record: Record<string, T>, channelId: string): Record<string, T> {
+  const scopes = Object.keys(record).filter((scope) => belongsToChannel(scope, channelId));
+  if (scopes.length === 0) return record;
   const next = { ...record };
-  delete next[channelId];
+  for (const scope of scopes) delete next[scope];
   return next;
 }
