@@ -21,9 +21,11 @@ interface Props {
   message: Message;
   isFirst: boolean;
   onJumpToMessage?: (messageId: string) => void;
+  /** Forum replies cannot be pinned; only whole posts can. */
+  canPin?: boolean;
 }
 
-export function MessageItem({ message, isFirst, onJumpToMessage }: Props) {
+export function MessageItem({ message, isFirst, onJumpToMessage, canPin = true }: Props) {
   const [showActions, setShowActions] = useState(false);
   const [bookmarkFailure, setBookmarkFailure] = useState<string | null>(null);
   const [copyStatus, setCopyStatus] = useState<string | null>(null);
@@ -319,13 +321,15 @@ export function MessageItem({ message, isFirst, onJumpToMessage }: Props) {
             >
               ↩
             </button>
-            <button
-              onClick={() => void pinMessage(message.id, message.channelId).catch(() => undefined)}
-              className="px-2 py-1 hover:bg-discord-hover text-discord-muted hover:text-discord-text text-sm"
-              title={message.isPinned ? 'ピンを外す' : 'ピン留め'}
-            >
-              📌
-            </button>
+            {canPin && (
+              <button
+                onClick={() => void pinMessage(message.id, message.channelId).catch(() => undefined)}
+                className="px-2 py-1 hover:bg-discord-hover text-discord-muted hover:text-discord-text text-sm"
+                title={message.isPinned ? 'ピンを外す' : 'ピン留め'}
+              >
+                📌
+              </button>
+            )}
             <button
               type="button"
               onClick={handleBookmark}

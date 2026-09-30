@@ -14,9 +14,12 @@ import {
   broadcastMessageCreated,
   broadcastMessageDeleted,
   broadcastMessageEdited,
+  broadcastForumPostUpdated,
   broadcastPinUpdated,
   broadcastReactionUpdated,
 } from '../websocket/message.handler.js';
+import { db } from '../db/index.js';
+import { loadForumPostStates } from '../services/forum-state.js';
 
 const router = Router();
 const ciphertextMax = Math.ceil((MAX_PADDED_MESSAGE_BYTES + 16) / 3) * 4;
@@ -207,7 +210,12 @@ router.post('/messages/:id/pin', authMiddleware, requireMessagePermission(Permis
   try {
     const result = await messageService.pinMessage(req.params.id, req.userId!);
     const io = getSocketServer(req);
-    if (io) broadcastPinUpdated(io, result);
+    if (io) {
+      broadcastPinUpdated(io, result);
+      // Pinned forum posts move to the top of every viewer's list.
+      const [forumPost] = await loadForumPostStates(db, [result.messageId]);
+      if (forumPost) broadcastForumPostUpdated(io, forumPost);
+    }
     res.json(result);
   } catch (error: any) {
     if (error.message === 'MESSAGE_NOT_FOUND') {

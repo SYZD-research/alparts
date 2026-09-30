@@ -19,7 +19,7 @@ interface ChannelFormState {
   name: string;
   topic: string;
   categoryId: string;
-  type: 'text' | 'announcement' | 'voice';
+  type: 'text' | 'announcement' | 'voice' | 'forum';
   isPrivate: boolean;
   position: string;
 }
@@ -53,7 +53,7 @@ function channelForm(channel: Channel): ChannelFormState {
     name: channel.name,
     topic: channel.topic || '',
     categoryId: channel.categoryId || '',
-    type: channel.type === 'announcement' || channel.type === 'voice' ? channel.type : 'text',
+    type: channel.type === 'announcement' || channel.type === 'voice' || channel.type === 'forum' ? channel.type : 'text',
     isPrivate: channel.isPrivate,
     position: String(channel.position),
   };
@@ -501,6 +501,7 @@ function ChannelForm({ form, setForm, categories, submit, busy, submitLabel, isE
             <option value="text">テキスト</option>
             <option value="announcement">アナウンス</option>
             <option value="voice">音声</option>
+            <option value="forum">フォーラム</option>
           </select>
         </label>
       )}

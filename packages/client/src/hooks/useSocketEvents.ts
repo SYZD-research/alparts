@@ -22,6 +22,12 @@ import { useUiStore } from '../stores/ui.store';
 import { useWorkspaceStore } from '../stores/workspace.store';
 import { parseAttentionNotification } from '../services/attention-model';
 import { useAttentionStore } from '../stores/attention.store';
+import { useForumStore } from '../stores/forum.store';
+import {
+  parseForumPostRef,
+  parseForumPostUpdated,
+  parseForumTagsUpdated,
+} from '../stores/forum-model';
 
 export function useSocketEvents() {
   const addMessages = useMessageStore((state) => state.addMessages);
@@ -237,6 +243,25 @@ export function useSocketEvents() {
       if (!isAuthorizedLoadedChannel(attachment.channelId || '')) return;
       applyAttachment(attachment.channelId!, attachment);
     };
+    const onForumPostUpdated = (value: unknown) => {
+      const state = parseForumPostUpdated(value);
+      if (state && isAuthorizedLoadedChannel(state.channelId)) useForumStore.getState().applyPostState(state);
+    };
+    const onForumPostRemoved = (value: unknown) => {
+      const data = parseForumPostRef(value);
+      if (data && isAuthorizedLoadedChannel(data.channelId)) useForumStore.getState().removePost(data.channelId, data.postId);
+    };
+    const onForumPostRead = (value: unknown) => {
+      const data = parseForumPostRef(value);
+      const at = (value as { lastReadActivityAt?: unknown } | null)?.lastReadActivityAt;
+      if (data && typeof at === 'string' && Number.isFinite(Date.parse(at)) && isAuthorizedLoadedChannel(data.channelId)) {
+        useForumStore.getState().applyPostRead(data.channelId, data.postId, at);
+      }
+    };
+    const onForumTagsUpdated = (value: unknown) => {
+      const data = parseForumTagsUpdated(value);
+      if (data && isAuthorizedLoadedChannel(data.channelId)) useForumStore.getState().applyTags(data.channelId, data.tags);
+    };
     const onDmCreated = (data: { dm: DirectMessageConversation }) => {
       upsertDm(data.dm);
       if (data.dm.workspaceId === useWorkspaceStore.getState().activeWorkspaceId) {
@@ -379,6 +404,10 @@ export function useSocketEvents() {
     socket.on('message:deleted', onMessageDeleted);
     socket.on('message:reaction', onReactionUpdated);
     socket.on('message:pinned', onPinUpdated);
+    socket.on('forum:post-updated', onForumPostUpdated);
+    socket.on('forum:post-removed', onForumPostRemoved);
+    socket.on('forum:post-read', onForumPostRead);
+    socket.on('forum:tags-updated', onForumTagsUpdated);
     socket.on('attachment:created', onAttachmentCreated);
     socket.on('dm:created', onDmCreated);
     socket.on('presence:changed', onPresenceChanged);
@@ -423,6 +452,10 @@ export function useSocketEvents() {
       socket.off('message:deleted', onMessageDeleted);
       socket.off('message:reaction', onReactionUpdated);
       socket.off('message:pinned', onPinUpdated);
+      socket.off('forum:post-updated', onForumPostUpdated);
+      socket.off('forum:post-removed', onForumPostRemoved);
+      socket.off('forum:post-read', onForumPostRead);
+      socket.off('forum:tags-updated', onForumTagsUpdated);
       socket.off('attachment:created', onAttachmentCreated);
       socket.off('dm:created', onDmCreated);
       socket.off('presence:changed', onPresenceChanged);

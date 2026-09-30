@@ -6,6 +6,7 @@ import {
   Permissions,
   type ForumPostSummary,
   type ForumTag,
+  type ForumViewerCapabilities,
 } from '@alparts/shared';
 import { db } from '../db/index.js';
 import {
@@ -46,7 +47,7 @@ export interface ForumPostListOptions {
 
 export async function listForumPosts(channelId: string, userId: string, options: ForumPostListOptions = {}) {
   return db.transaction(async (tx) => {
-    await authorizeForumChannel(tx, channelId, userId);
+    const { authorization } = await authorizeForumChannel(tx, channelId, userId);
     const limit = Math.min(Math.max(options.limit ?? FORUM_POSTS_PER_PAGE, 1), 50);
     const sortColumn = options.sort === 'created' ? forumPosts.createdAt : forumPosts.lastActivityAt;
     const pinned = sql<number>`(case when ${messagePins.messageId} is null then 0 else 1 end)`;
@@ -79,6 +80,7 @@ export async function listForumPosts(channelId: string, userId: string, options:
       data: await buildPostSummaries(tx, page, userId),
       hasMore,
       cursor: hasMore ? page[page.length - 1]!.post.messageId : null,
+      viewer: viewerCapabilities(authorization),
     };
   });
 }
@@ -377,6 +379,17 @@ async function lockLivePost(store: any, postId: string, channelId: string): Prom
   const post = await lockForumPost(store, postId, channelId, 'update');
   if (!post || post.deletedAt) throw new Error('FORUM_POST_NOT_FOUND');
   return post;
+}
+
+function viewerCapabilities(authorization: ChannelAuthorization): ForumViewerCapabilities {
+  const has = (permission: number) => (authorization.permissions & permission) === permission;
+  return {
+    canCreatePosts: has(Permissions.CREATE_POSTS),
+    canReply: has(Permissions.SEND_MESSAGES),
+    canManage: has(Permissions.MANAGE_CHANNELS),
+    canPin: has(Permissions.PIN_MESSAGES),
+    canAttach: has(Permissions.ATTACH_FILES),
+  };
 }
 
 function canManage(authorization: ChannelAuthorization): boolean {

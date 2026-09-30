@@ -3,6 +3,7 @@ import { useChannelStore } from './channel.store';
 import { useDraftStore } from './draft.store';
 import { useDmStore } from './dm.store';
 import { useMessageStore } from './message.store';
+import { useForumStore } from './forum.store';
 import { useOutboxStore } from './outbox.store';
 import { usePresenceStore } from './presence.store';
 import { useWorkspaceStore } from './workspace.store';
@@ -22,6 +23,7 @@ export function resetAuthenticatedState(): void {
   useDmStore.getState().reset();
   useOutboxStore.getState().reset();
   useUserStateStore.getState().reset();
+  useForumStore.getState().reset();
   useMessageStore.getState().reset();
   usePresenceStore.getState().reset();
   useChannelStore.getState().reset();

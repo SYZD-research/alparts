@@ -27,7 +27,7 @@ interface OutboxState {
   isFlushing: boolean;
   errorsByChannel: Record<string, string | null>;
   initialize: () => Promise<void>;
-  enqueue: (channelId: string, content: string, refMessageId?: string, mentionedUserIds?: string[]) => Promise<string>;
+  enqueue: (channelId: string, content: string, refMessageId?: string, mentionedUserIds?: string[], postId?: string) => Promise<string>;
   flushAll: () => Promise<void>;
   flushItem: (idempotencyKey: string) => Promise<void>;
   retry: (idempotencyKey: string) => void;
@@ -124,7 +124,7 @@ export const useOutboxStore = create<OutboxState>((set, get) => ({
     return initialization;
   },
 
-  enqueue: async (channelId, content, refMessageId, mentionedUserIds) => {
+  enqueue: async (channelId, content, refMessageId, mentionedUserIds, postId) => {
     const lifecycle = captureOutboxLifecycle();
     let reserved = false;
     try {
@@ -136,7 +136,7 @@ export const useOutboxStore = create<OutboxState>((set, get) => ({
       }
       pendingEnqueueReservations += 1;
       reserved = true;
-      const command = createOutboxCommand({ channelId, content, refMessageId, mentionedUserIds });
+      const command = createOutboxCommand({ channelId, content, refMessageId, mentionedUserIds, postId });
       await queuePersistence(
         lifecycle.context,
         channelId,
@@ -197,7 +197,17 @@ export const useOutboxStore = create<OutboxState>((set, get) => ({
         return;
       }
       if (!isOutboxLifecycleCurrent(lifecycle)) return;
-      if (command.mentionedUserIds?.length) {
+      if (command.postId) {
+        await useMessageStore.getState().sendMessage(
+          command.channelId,
+          command.content,
+          command.refMessageId,
+          command.idempotencyKey,
+          false,
+          command.mentionedUserIds ?? [],
+          command.postId,
+        );
+      } else if (command.mentionedUserIds?.length) {
         await useMessageStore.getState().sendMessage(
           command.channelId,
           command.content,

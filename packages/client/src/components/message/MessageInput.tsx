@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect, useLayoutEffect, useMemo } from 'react';
 import { useMessageStore } from '../../stores/message.store';
-import { useDraftStore } from '../../stores/draft.store';
+import { forumPostDraftScope, useDraftStore } from '../../stores/draft.store';
 import { useOutboxStore } from '../../stores/outbox.store';
 import { useAttachmentStore } from '../../stores/attachment.store';
 import { useWorkspaceStore } from '../../stores/workspace.store';
@@ -32,6 +32,9 @@ import {
 interface Props {
   channelId: string;
   sendDisabled?: boolean;
+  /** Forum channels: replies are signed for this post and drafted per post. */
+  postId?: string;
+  placeholder?: string;
 }
 
 interface PendingPaste {
@@ -43,7 +46,8 @@ interface PendingPaste {
   preview: LargePastePreview;
 }
 
-export function MessageInput({ channelId, sendDisabled = false }: Props) {
+export function MessageInput({ channelId, sendDisabled = false, postId, placeholder }: Props) {
+  const draftScope = postId ? forumPostDraftScope(channelId, postId) : channelId;
   const [editContent, setEditContent] = useState('');
   const [isSending, setIsSending] = useState(false);
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
@@ -62,8 +66,8 @@ export function MessageInput({ channelId, sendDisabled = false }: Props) {
   const editTarget = useMessageStore((state) => state.editTargets[channelId]);
   const setReplyTarget = useMessageStore((state) => state.setReplyTarget);
   const setEditTarget = useMessageStore((state) => state.setEditTarget);
-  const draft = useDraftStore((state) => state.drafts[channelId] || '');
-  const draftError = useDraftStore((state) => state.errorsByChannel[channelId]);
+  const draft = useDraftStore((state) => state.drafts[draftScope] || '');
+  const draftError = useDraftStore((state) => state.errorsByChannel[draftScope]);
   const loadDraft = useDraftStore((state) => state.loadDraft);
   const setDraft = useDraftStore((state) => state.setDraft);
   const clearDraft = useDraftStore((state) => state.clearDraft);
@@ -97,14 +101,14 @@ export function MessageInput({ channelId, sendDisabled = false }: Props) {
     activeMention && (activeMention.query.length === 0 || mentionCandidates.length > 0),
   );
   const channelOutboxItems = Object.values(outboxItems)
-    .filter((item) => item.channelId === channelId)
+    .filter((item) => item.channelId === channelId && item.postId === postId)
     .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
   const channelAttachmentTasks = Object.values(attachmentTasks)
     .filter((task) => task.channelId === channelId);
 
   useEffect(() => {
-    void loadDraft(channelId);
-  }, [channelId, loadDraft]);
+    void loadDraft(draftScope);
+  }, [draftScope, loadDraft]);
 
   useEffect(() => {
     setEditContent(editTarget?.content || '');
@@ -202,7 +206,7 @@ export function MessageInput({ channelId, sendDisabled = false }: Props) {
         setEditTarget(channelId, null);
       } else if (selectedFiles.length > 0) {
         if (!isOnline) throw new Error('添付ファイルはオンライン時のみ送信できます');
-        const message = await sendMessage(channelId, content.trim(), replyTarget?.id, undefined, true, mentionedUserIds);
+        const message = await sendMessage(channelId, content.trim(), replyTarget?.id, undefined, true, mentionedUserIds, postId);
         const files = selectedFiles;
         // Register upload runtimes immediately after the durable base message.
         // Draft persistence must not delay or accidentally suppress the file
@@ -212,11 +216,11 @@ export function MessageInput({ channelId, sendDisabled = false }: Props) {
         });
         setSelectedFiles([]);
         if (fileInputRef.current) fileInputRef.current.value = '';
-        await clearDraft(channelId);
+        await clearDraft(draftScope);
         setReplyTarget(channelId, null);
       } else {
-        await enqueue(channelId, content.trim(), replyTarget?.id, mentionedUserIds);
-        await clearDraft(channelId);
+        await enqueue(channelId, content.trim(), replyTarget?.id, mentionedUserIds, postId);
+        await clearDraft(draftScope);
         setReplyTarget(channelId, null);
       }
 
@@ -314,7 +318,7 @@ export function MessageInput({ channelId, sendDisabled = false }: Props) {
     const completion = applyMentionCompletion(content, activeMention, member, duplicateDisplayName);
     if (completion.content.length > MAX_MESSAGE_LENGTH) return;
     if (editTarget) setEditContent(completion.content);
-    else setDraft(channelId, completion.content);
+    else setDraft(draftScope, completion.content);
     setActiveMention(null);
     setActiveMentionIndex(0);
     handleTyping();
@@ -401,7 +405,7 @@ export function MessageInput({ channelId, sendDisabled = false }: Props) {
       if (nextContent.length > MAX_MESSAGE_LENGTH) return;
       event.preventDefault();
       if (editTarget) setEditContent(nextContent);
-      else setDraft(channelId, nextContent);
+      else setDraft(draftScope, nextContent);
       setActiveMention(findActiveMentionQuery(nextContent, nextContent.length));
       setActiveMentionIndex(0);
       handleTyping();
@@ -410,7 +414,7 @@ export function MessageInput({ channelId, sendDisabled = false }: Props) {
     };
     window.addEventListener('keydown', focusAndInsert);
     return () => window.removeEventListener('keydown', focusAndInsert);
-  }, [channelId, content, editTarget, handleTyping, setDraft]);
+  }, [channelId, content, draftScope, editTarget, handleTyping, setDraft]);
 
   const closePastePreview = () => {
     setPendingPaste(null);
@@ -428,7 +432,7 @@ export function MessageInput({ channelId, sendDisabled = false }: Props) {
     if (nextContent.length > MAX_MESSAGE_LENGTH) return;
     const caret = Math.min(pendingPaste.start + pendingPaste.text.length, nextContent.length);
     if (editTarget) setEditContent(nextContent);
-    else setDraft(channelId, nextContent);
+    else setDraft(draftScope, nextContent);
     setActiveMention(null);
     setActiveMentionIndex(0);
     handleTyping();
@@ -521,7 +525,7 @@ export function MessageInput({ channelId, sendDisabled = false }: Props) {
           <button
             type="button"
             onClick={() => {
-              clearDraftError(channelId);
+              clearDraftError(draftScope);
               clearOutboxError(channelId);
               setAttachmentError(null);
               setPasteError(null);
@@ -665,7 +669,7 @@ export function MessageInput({ channelId, sendDisabled = false }: Props) {
             onChange={(event) => {
               const nextContent = event.target.value;
               if (editTarget) setEditContent(nextContent);
-              else setDraft(channelId, nextContent);
+              else setDraft(draftScope, nextContent);
               setActiveMention(findActiveMentionQuery(nextContent, event.target.selectionStart));
               setActiveMentionIndex(0);
               handleTyping();
@@ -676,7 +680,7 @@ export function MessageInput({ channelId, sendDisabled = false }: Props) {
             }}
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
-            placeholder={editTarget ? 'メッセージを編集' : 'メッセージを送信'}
+            placeholder={editTarget ? 'メッセージを編集' : placeholder ?? 'メッセージを送信'}
             aria-label={editTarget ? 'メッセージを編集' : 'メッセージを送信'}
             aria-autocomplete="list"
             aria-expanded={showMentionPopup}

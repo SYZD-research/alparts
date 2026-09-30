@@ -4,6 +4,7 @@ import {
   parseOutboxCommand,
   type OutboxCommand,
 } from '../stores/outbox-model';
+import { draftScopeChannelId } from '../stores/draft-scope';
 import { getDesktopBridge, getDesktopSecret, setDesktopSecret } from './desktop.service';
 
 const DB_NAME = 'alparts-local-state';
@@ -381,18 +382,19 @@ async function decryptPayload(
   return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(plaintext));
 }
 
-export async function saveLocalDraft(channelId: string, content: string): Promise<void> {
+/** The record keeps its channel so revocation can find post drafts too. */
+export async function saveLocalDraft(scopeId: string, content: string): Promise<void> {
   const context = currentContext();
-  const encrypted = await encryptPayload('draft', context, channelId, { version: FORMAT_VERSION, content });
-  const existing = await getRecord<EncryptedRecord>(DRAFT_STORE, recordId(context.userId, channelId));
+  const encrypted = await encryptPayload('draft', context, scopeId, { version: FORMAT_VERSION, content });
+  const existing = await getRecord<EncryptedRecord>(DRAFT_STORE, recordId(context.userId, scopeId));
   const now = new Date().toISOString();
   const record: EncryptedRecord = {
-    id: recordId(context.userId, channelId),
+    id: recordId(context.userId, scopeId),
     version: FORMAT_VERSION,
     purpose: 'draft',
     ownerId: context.userId,
     deviceId: context.deviceId,
-    channelId,
+    channelId: draftScopeChannelId(scopeId),
     createdAt: existing?.createdAt || now,
     updatedAt: now,
     ...encrypted,
@@ -400,16 +402,16 @@ export async function saveLocalDraft(channelId: string, content: string): Promis
   await putRecord(DRAFT_STORE, record);
 }
 
-export async function loadLocalDraft(channelId: string): Promise<string | null> {
+export async function loadLocalDraft(scopeId: string): Promise<string | null> {
   const context = currentContext();
-  const id = recordId(context.userId, channelId);
+  const id = recordId(context.userId, scopeId);
   const value = await getRecord<unknown>(DRAFT_STORE, id);
   if (!value) return null;
   try {
     if (!isEncryptedRecord(value)) throw new Error('Invalid encrypted draft record');
     const record = value;
-    if (record.purpose !== 'draft' || record.channelId !== channelId) throw new Error('Invalid draft metadata');
-    const payload = await decryptPayload(record, context, channelId) as Partial<DraftPayload>;
+    if (record.purpose !== 'draft' || record.channelId !== draftScopeChannelId(scopeId)) throw new Error('Invalid draft metadata');
+    const payload = await decryptPayload(record, context, scopeId) as Partial<DraftPayload>;
     if (payload.version !== FORMAT_VERSION || typeof payload.content !== 'string') throw new Error('Invalid draft payload');
     return payload.content;
   } catch {
@@ -418,9 +420,25 @@ export async function loadLocalDraft(channelId: string): Promise<string | null> 
   }
 }
 
-export async function deleteLocalDraft(channelId: string): Promise<void> {
+export async function deleteLocalDraft(scopeId: string): Promise<void> {
   const context = currentContext();
-  await deleteRecord(DRAFT_STORE, recordId(context.userId, channelId));
+  await deleteRecord(DRAFT_STORE, recordId(context.userId, scopeId));
+}
+
+/** Remove the channel's draft and every post draft inside it. */
+export async function deleteLocalDraftsForChannel(channelId: string): Promise<void> {
+  const context = currentContext();
+  const prefix = `${recordId(context.userId, channelId)}:`;
+  const db = await openLocalDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(DRAFT_STORE, 'readwrite');
+    const store = tx.objectStore(DRAFT_STORE);
+    store.delete(recordId(context.userId, channelId));
+    store.delete(IDBKeyRange.bound(prefix, `${prefix}\uffff`));
+    tx.oncomplete = () => { db.close(); resolve(); };
+    tx.onerror = () => { db.close(); reject(tx.error); };
+    tx.onabort = () => { db.close(); reject(tx.error); };
+  });
 }
 
 export async function saveOutboxCommand(

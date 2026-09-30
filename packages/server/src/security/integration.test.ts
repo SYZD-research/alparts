@@ -3240,6 +3240,13 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
       method: 'PUT', cookie: owner.cookie,
       body: { allowMask: 0, denyMask: Permissions.CREATE_POSTS, expectedRevision: 0, expectedAuthorizationRevision: denyPostsPreview.authorizationRevision },
     })).status, 200);
+    const deniedViewer = await json<{ viewer: { canCreatePosts: boolean; canReply: boolean; canManage: boolean } }>(
+      await request(`/api/channels/${forum.id}/forum/posts`, { cookie: member.cookie }),
+    );
+    assert.deepEqual(
+      [deniedViewer.viewer.canCreatePosts, deniedViewer.viewer.canReply, deniedViewer.viewer.canManage],
+      [false, true, false],
+    );
     const deniedPost = asMember({ type: 'message', refMessageId: null, postId: null, plaintext: 'denied\npost' });
     assert.equal((await request(`/api/channels/${forum.id}/forum/posts`, {
       method: 'POST', cookie: member.cookie, body: deniedPost.body,

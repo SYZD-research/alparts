@@ -5,8 +5,14 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 export function parseAttentionNotification(value: unknown): WsAttentionNotification | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const candidate = value as Record<string, unknown>;
-  const keys = Object.keys(candidate).sort();
-  if (keys.join(',') !== 'channelId,kind,notificationId,workspaceId') return null;
+  const keys = Object.keys(candidate).sort().join(',');
+  const hasPost = keys === 'channelId,kind,notificationId,postId,workspaceId';
+  if (keys !== 'channelId,kind,notificationId,workspaceId' && !hasPost) return null;
+  // Forum notifications also name the post, so it can be opened directly.
+  if (hasPost && (
+    typeof candidate.postId !== 'string' || !UUID.test(candidate.postId)
+    || (candidate.kind !== 'mention' && candidate.kind !== 'reply')
+  )) return null;
   if (
     typeof candidate.notificationId !== 'string' || !UUID.test(candidate.notificationId)
     || typeof candidate.workspaceId !== 'string' || !UUID.test(candidate.workspaceId)

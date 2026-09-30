@@ -17,4 +17,11 @@ describe('attention notification model', () => {
     const restarted = { ...notification, kind: 'channel-restarted' as const };
     expect(parseAttentionNotification(restarted)).toEqual(restarted);
   });
+
+  it('accepts a forum post reference only on mention and reply notifications', () => {
+    const forum = { ...notification, postId: '00000000-0000-4000-8000-000000000004' };
+    expect(parseAttentionNotification(forum)).toEqual(forum);
+    expect(parseAttentionNotification({ ...forum, postId: 'not-a-post' })).toBeNull();
+    expect(parseAttentionNotification({ ...forum, kind: 'channel-restarted' })).toBeNull();
+  });
 });
