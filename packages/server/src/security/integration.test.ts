@@ -3304,6 +3304,59 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
     const stored = await db.query.forumPosts.findFirst({ where: eq(forumPostTable.messageId, postId) });
     assert.ok(stored?.deletedAt);
 
+    // A privacy change that commits while a forum request waits for the
+    // workspace lock is the state that request must be judged against. The
+    // holder makes the change the way updateChannel does (workspace row FOR
+    // UPDATE, then the channel and its private members) and commits only once
+    // the request is observed waiting, so the race is exercised every time.
+    const lockHolder = new pg.Client({ connectionString: process.env.DATABASE_URL });
+    const observer = new pg.Client({ connectionString: process.env.DATABASE_URL });
+    await lockHolder.connect();
+    await observer.connect();
+    try {
+      const raceAgainstPrivacyChange = async (send: () => Promise<Response>) => {
+        await lockHolder.query('begin');
+        try {
+          await lockHolder.query('select id from workspaces where id = $1 for update', [workspace.id]);
+          await lockHolder.query('update channels set is_private = true where id = $1', [forum.id]);
+          await lockHolder.query('insert into channel_members (channel_id, user_id) values ($1, $2)', [forum.id, owner.user.id]);
+          const pending = send();
+          let waiting = false;
+          for (let attempt = 0; attempt < 100 && !waiting; attempt += 1) {
+            const { rows } = await observer.query<{ waiting: number }>(`
+              select count(*)::int as waiting from pg_stat_activity
+              where datname = current_database() and wait_event_type = 'Lock' and pid <> $1
+            `, [(lockHolder as unknown as { processID: number }).processID]);
+            waiting = rows[0]!.waiting > 0;
+            if (!waiting) await delay(20);
+          }
+          assert.equal(waiting, true, 'the forum request never waited for the workspace lock');
+          await lockHolder.query('commit');
+          return await pending;
+        } catch (error) {
+          await lockHolder.query('rollback').catch(() => undefined);
+          throw error;
+        }
+      };
+      const restorePublicForum = async () => {
+        await lockHolder.query('update channels set is_private = false where id = $1', [forum.id]);
+        await lockHolder.query('delete from channel_members where channel_id = $1', [forum.id]);
+      };
+
+      const listed = await raceAgainstPrivacyChange(() => request(`/api/channels/${forum.id}/forum/posts`, { cookie: member.cookie }));
+      assert.equal(listed.status, 404);
+      assert.equal((await request(`/api/channels/${forum.id}/forum/posts`, { cookie: owner.cookie })).status, 200);
+      await restorePublicForum();
+      assert.equal((await request(`/api/forum/posts/${secondPostId}`, { cookie: member.cookie })).status, 200);
+
+      const opened = await raceAgainstPrivacyChange(() => request(`/api/forum/posts/${secondPostId}`, { cookie: member.cookie }));
+      assert.equal(opened.status, 404);
+      await restorePublicForum();
+    } finally {
+      await lockHolder.end();
+      await observer.end();
+    }
+
     const forumAudit = await db.select({ action: auditLogs.action, details: auditLogs.details })
       .from(auditLogs)
       .where(sql`${auditLogs.details}->>'workspaceId' = ${workspace.id}`);
