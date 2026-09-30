@@ -54,6 +54,7 @@ PERM = {
     'KICK_MEMBERS': 1 << 9, 'BAN_MEMBERS': 1 << 10, 'MANAGE_WORKSPACE': 1 << 11,
     'MANAGE_ROLES': 1 << 12, 'VIEW_AUDIT_LOG': 1 << 13, 'ATTACH_FILES': 1 << 14,
     'MANAGE_WEBHOOKS': 1 << 15, 'MANAGE_BOTS': 1 << 16, 'CONNECT_VOICE': 1 << 17,
+    'CREATE_POSTS': 1 << 18,
 }
 ALL_PERMS = 0
 for v in PERM.values():
@@ -61,7 +62,8 @@ for v in PERM.values():
 # CHANNEL_SCOPED_PERMISSION_MASK (authorization.service.ts:26-35)
 CHANNEL_SCOPED = (PERM['VIEW_CHANNELS'] | PERM['SEND_MESSAGES'] | PERM['EDIT_MESSAGES']
                   | PERM['DELETE_MESSAGES'] | PERM['ADD_REACTIONS'] | PERM['MENTION_EVERYONE']
-                  | PERM['PIN_MESSAGES'] | PERM['ATTACH_FILES'] | PERM['CONNECT_VOICE'])
+                  | PERM['PIN_MESSAGES'] | PERM['ATTACH_FILES'] | PERM['CONNECT_VOICE']
+                  | PERM['CREATE_POSTS'])
 VIEW = BitVecVal(PERM['VIEW_CHANNELS'], 32)
 
 

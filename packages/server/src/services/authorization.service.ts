@@ -32,7 +32,8 @@ export const CHANNEL_SCOPED_PERMISSION_MASK =
   | Permissions.MENTION_EVERYONE
   | Permissions.PIN_MESSAGES
   | Permissions.ATTACH_FILES
-  | Permissions.CONNECT_VOICE;
+  | Permissions.CONNECT_VOICE
+  | Permissions.CREATE_POSTS;
 
 export interface RolePermissionOverrideValue {
   roleId: string;
