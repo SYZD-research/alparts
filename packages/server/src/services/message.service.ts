@@ -281,15 +281,17 @@ export async function editMessage(messageId: string, authorId: string, input: Cr
       'edit',
       messageId,
     );
+    // Forum writes lock the post row before any message row (see deleteMessage).
+    const post = authorization.channelType === 'forum'
+      ? await lockForumPost(transaction, location.postId ?? location.id, location.channelId, 'share')
+      : null;
     const original = await lockActiveBaseMessage(transaction, messageId, 'share');
     if (original.channelId !== location.channelId || original.authorId !== authorId || original.type !== 'message') {
       throw new Error('NOT_AUTHORIZED');
     }
     if (authorization.channelType === 'forum') {
-      const postId = original.postId ?? original.id;
-      if (input.postId !== postId) throw new Error('INVALID_REFERENCE');
-      const post = await lockForumPost(transaction, postId, original.channelId, 'share');
-      if (!post || post.deletedAt) throw new Error('MESSAGE_NOT_FOUND');
+      if (!post || input.postId !== (original.postId ?? original.id) || post.messageId !== input.postId) throw new Error('INVALID_REFERENCE');
+      if (post.deletedAt) throw new Error('MESSAGE_NOT_FOUND');
     }
     const stored = await insertCryptoEvent(transaction, original.channelId, authorId, input, 'edit', messageId);
     return { ...stored, workspaceId: authorization.workspaceId };
@@ -319,13 +321,20 @@ export async function deleteMessage(messageId: string, userId: string, input: Cr
       'delete',
       messageId,
     );
+    // Take the post row before the message row, the same order a reply uses
+    // (post, then the quoted message), so the two can never deadlock.
+    const lockedPost = authorization.channelType === 'forum'
+      ? await lockForumPost(transaction, location.postId ?? location.id, location.channelId, 'update')
+      : null;
     const original = await lockBaseMessage(transaction, messageId, 'update');
     if (original.channelId !== location.channelId || original.type !== 'message') throw new Error('MESSAGE_NOT_FOUND');
     if (original.authorId !== userId && (authorization.permissions & Permissions.MANAGE_CHANNELS) !== Permissions.MANAGE_CHANNELS) {
       throw new Error('NOT_AUTHORIZED');
     }
     const forumPostId = authorization.channelType === 'forum' ? original.postId ?? original.id : null;
-    if (forumPostId && deleteInput.postId !== forumPostId) throw new Error('INVALID_REFERENCE');
+    if (forumPostId && (deleteInput.postId !== forumPostId || lockedPost?.messageId !== forumPostId)) {
+      throw new Error('INVALID_REFERENCE');
+    }
     const priorDelete = await findDeleteEvent(transaction, messageId);
     if (priorDelete) {
       const expectedKey = scopedIdempotencyKey(userId, deleteInput.idempotencyKey);
@@ -335,8 +344,6 @@ export async function deleteMessage(messageId: string, userId: string, input: Cr
     let forumPost: ForumPostBroadcastState | null = null;
     let forumPostRemoved = false;
     if (forumPostId) {
-      const post = await lockForumPost(transaction, forumPostId, original.channelId, 'update');
-      if (!post) throw new Error('MESSAGE_NOT_FOUND');
       if (storedEvent.isNewEvent) {
         if (original.id === forumPostId) {
           await transaction.update(forumPosts).set({ deletedAt: new Date(storedEvent.event.createdAt) })
