@@ -81,6 +81,21 @@ DMs are represented by a channel plus conversation/member rows but cannot be man
 | `GET /api/workspaces/:wid/channel-state`, `PATCH /api/channels/:id/preferences` | bounded channel preferences/read/unread state |
 | `POST /api/messages/:id/bookmark`, `GET /api/bookmarks` | idempotent bookmark toggle and bounded bulk-authorized list |
 
+## Forums
+
+A forum is a channel of type `forum`. Posts and replies are messages in that channel, encrypted with its channel key. Every forum event uses the v4 signed envelope, which adds `postId` (null only for the message that starts a post) to the v3 fields; the server requires v4 in forums and rejects it elsewhere. Starting a post needs `CREATE_POSTS`; replying needs `SEND_MESSAGES`. Titles are part of the encrypted text; tag names are plaintext, like channel names.
+
+| Paths | Responsibility |
+| --- | --- |
+| `GET/POST /api/channels/:id/forum/posts` | page posts (pinned first, then `sort=activity\|created`, optional `tagId`) with the viewer's capabilities; start a signed post with up to 5 tags |
+| `POST /api/channels/:id/messages` with `postId`; `PUT/DELETE /api/messages/:id` with `postId` | reply to, edit or delete within a post; a reply may quote only the post or a reply in it; locked posts accept replies from channel managers only |
+| `GET /api/forum/posts/:postId`, `GET /api/forum/posts/:postId/messages` | one post summary; its events newest first |
+| `POST /api/forum/posts/:postId/read` | record the server's activity time as read for the viewer |
+| `PUT /api/forum/posts/:postId/lock` / `resolved` / `tags` | lock (managers); resolved and tags (author or managers); audited |
+| `GET/POST /api/channels/:id/forum/tags`, `PATCH/DELETE /api/forum/tags/:tagId` | list; manager-only create/rename/delete (20 per forum, 20 characters, channel-name text rules) |
+
+Anything the caller cannot see answers 404. Pinning applies to whole posts only.
+
 ## Channel keys
 
 | Paths | Responsibility |
@@ -116,7 +131,7 @@ Message create/edit/delete/replay, reaction/pin, channel preference and bookmark
 
 ## WebSocket events
 
-Client-to-server admission includes `channel:join`, `channel:leave`, `message:send/edit/delete`, `presence:update`, `typing:start/stop`, and `voice:join/leave/state/signal`. Server-to-client delivery includes durable message events, authorization/channel/key change events, presence/typing changes, voice participant/state/signal events, `member:profile-updated`, `workspace:profile-flags-changed`, `attention:new` (including `profile-appeal` to workspace managers) and `operation:error`.
+Client-to-server admission includes `channel:join`, `channel:leave`, `message:send/edit/delete`, `presence:update`, `typing:start/stop`, and `voice:join/leave/state/signal`. Server-to-client delivery includes durable message events, authorization/channel/key change events, presence/typing changes, voice participant/state/signal events, `member:profile-updated`, `workspace:profile-flags-changed`, `attention:new` (including `profile-appeal` to workspace managers; forum mentions and replies name the post), `forum:post-updated`, `forum:post-removed`, `forum:tags-updated`, `forum:post-read` (to the reader's own sessions) and `operation:error`. `message:send` accepts `postId` for forum replies; posts are started over HTTP.
 
 Socket handshake is source/global bounded before token DB work, then binds a live session and active device. Joins and server-driven grants are reauthorized under workspace locks. Presence/typing/voice state is ephemeral; durable messages remain in PostgreSQL. Voice signaling is exact-schema/device-signed/sequence-checked by recipients, while audio is peer-to-peer DTLS-SRTP and never passes through the application server.
 
