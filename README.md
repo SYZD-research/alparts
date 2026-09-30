@@ -115,6 +115,12 @@ WebとAPIは実行中のターミナルで`Ctrl+C`を押すと停止します。
 
 再開は`./dev.sh`です。停止時にデータ用のボリュームは削除されません。生成された`.env`と`.local/audit-checkpoint.json`も保持してください。
 
+2026-09-30より前に作った開発環境では、`./dev.sh`が「監査記録の移行が済んでいません」と表示して停止します。[監査 head 移行手順](docs/OPERATIONS.md)を確認してから、次のコマンドを一度だけ実行してください。移行後はそのまま起動します。
+
+```bash
+./dev.sh audit-head-init
+```
+
 ## サーバーの運用
 
 Alpartsのサーバーは、**1つのアプリケーションプロセス、PostgreSQL 16、MinIOなどのS3互換ストレージ**で構成します。Webクライアントの配信もサーバーに含まれます。コンテナー向けの[Dockerfile](Dockerfile)・[Compose構成](compose.production.yml)と、Linux向けの[systemdユニット](deploy/alparts.service)を用意しています。
