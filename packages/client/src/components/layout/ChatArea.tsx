@@ -219,7 +219,7 @@ export function ChatArea({ visible = true }: { visible?: boolean }) {
       ) : (
         <>
           {channel?.type === 'forum'
-            ? <ForumView channelId={activeChannelId} sendDisabled={Boolean(channelKeyPending)} />
+            ? <ForumView channelId={activeChannelId} sendDisabled={Boolean(channelKeyPending)} visible={visible} />
             : <MessageList channelId={activeChannelId} visible={visible} />}
           {channelKeyPending && (
             <div role="status" className="mx-4 mb-2 flex items-center justify-between gap-3 rounded border border-discord-yellow/40 bg-discord-yellow/10 px-3 py-2 text-sm text-discord-yellow">

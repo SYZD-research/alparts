@@ -14,6 +14,8 @@ import { useWorkspaceStore } from '../../stores/workspace.store';
 import { useAuthStore } from '../../stores/auth.store';
 import { useUiStore } from '../../stores/ui.store';
 import { useAttachmentStore } from '../../stores/attachment.store';
+import { useUserStateStore } from '../../stores/user-state.store';
+import { latestReadableMessageId } from '../../stores/user-state-model';
 import { isForumPostUnread, type ForumPostBroadcastState } from '../../stores/forum-model';
 import { forumPostBodyLimit } from '../../services/forum-post-model';
 import { extractMentionedUserIds } from '../../services/mention-model';
@@ -21,17 +23,19 @@ import { ATTACHMENT_MAX_COUNT_PER_MESSAGE } from '../../services/attachment-cryp
 import { ApiError } from '../../services/api';
 import { Dialog } from '../ui/Dialog';
 import { ForumPostView } from './ForumPostView';
-import { forumPostDisplay, formatForumTime } from './forum-display';
+import { FORUM_UNREADABLE_TITLE, forumPostDisplay, forumPostPreview, formatForumTime } from './forum-display';
 
 interface Props {
   channelId: string;
   sendDisabled: boolean;
+  visible?: boolean;
 }
 
 const EMPTY_MESSAGES: Message[] = [];
 
-export function ForumView({ channelId, sendDisabled }: Props) {
+export function ForumView({ channelId, sendDisabled, visible = true }: Props) {
   const forum = useForumStore((state) => state.channels[channelId]);
+  useMarkForumChannelRead(channelId, visible);
   const loadPosts = useForumStore((state) => state.loadPosts);
   const loadTags = useForumStore((state) => state.loadTags);
   const authorizationRefreshVersion = useUiStore((state) => state.authorizationRefreshVersion);
@@ -81,6 +85,37 @@ export function ForumView({ channelId, sendDisabled }: Props) {
       )}
     </div>
   );
+}
+
+/**
+ * Looking at a forum clears the channel's unread count in the sidebar, like
+ * reading a chat does. Each post keeps its own new-reply marker.
+ */
+function useMarkForumChannelRead(channelId: string, visible: boolean) {
+  const messages = useMessageStore((state) => state.messagesByChannel[channelId] || EMPTY_MESSAGES);
+  const activeWorkspaceId = useWorkspaceStore((state) => state.activeWorkspaceId);
+  const lastReadMessageId = useUserStateStore((state) => activeWorkspaceId
+    ? state.channelStatesByWorkspace[activeWorkspaceId]?.[channelId]?.lastReadMessageId || null
+    : null);
+  const channelStateReady = useUserStateStore((state) => Boolean(
+    activeWorkspaceId && state.channelStatesByWorkspace[activeWorkspaceId]?.[channelId],
+  ));
+  const markRead = useUserStateStore((state) => state.markRead);
+  const latest = useMemo(() => latestReadableMessageId(messages), [messages]);
+
+  useEffect(() => {
+    if (!visible || !channelStateReady || !latest || latest === lastReadMessageId) return;
+    const mark = () => {
+      if (document.visibilityState === 'visible' && document.hasFocus()) void markRead(channelId, latest);
+    };
+    mark();
+    window.addEventListener('focus', mark);
+    document.addEventListener('visibilitychange', mark);
+    return () => {
+      window.removeEventListener('focus', mark);
+      document.removeEventListener('visibilitychange', mark);
+    };
+  }, [channelId, channelStateReady, lastReadMessageId, latest, markRead, visible]);
 }
 
 function ForumPostList({ channelId, view, onCreate, onManageTags }: {
@@ -224,7 +259,9 @@ function ForumPostRow({ state, display, tags, authorName, unread, onOpen }: {
 }) {
   const title = display.status === 'ready'
     ? display.title
-    : display.status === 'loading' ? '読み込み中…' : 'この投稿を表示できません';
+    : display.status === 'loading'
+      ? '読み込み中…'
+      : display.status === 'unreadable' ? FORUM_UNREADABLE_TITLE : 'この投稿を表示できません';
   return (
     <button
       type="button"
@@ -239,7 +276,7 @@ function ForumPostRow({ state, display, tags, authorName, unread, onOpen }: {
       </div>
       <p className={`mt-1 break-words text-base ${unread ? 'font-bold text-white' : 'font-medium text-discord-text'}`}>{title}</p>
       {display.status === 'ready' && display.body && (
-        <p className="mt-1 line-clamp-2 whitespace-pre-wrap break-words text-sm text-discord-muted">{display.body}</p>
+        <p className="mt-1 line-clamp-2 break-words text-sm text-discord-muted">{forumPostPreview(display.body)}</p>
       )}
       <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-discord-muted">
         <span>{authorName}</span>
