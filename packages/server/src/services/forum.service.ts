@@ -334,11 +334,17 @@ async function authorizeForumChannel(
   channelId: string,
   userId: string,
 ): Promise<{ channel: ForumChannel; authorization: ChannelAuthorization }> {
+  const location = await store.query.channels.findFirst({
+    columns: { workspaceId: true },
+    where: eq(channels.id, channelId),
+  });
+  if (!location) throw new Error('CHANNEL_NOT_FOUND');
+  // Membership, role, override and channel changes (privacy, category) take
+  // UPDATE on the workspace row. Read the channel only after SHARE is held, so
+  // the decision uses the committed row it stays valid against until commit.
+  await lockWorkspaceForAuthorization(store, location.workspaceId, 'share');
   const channel = await store.query.channels.findFirst({ where: eq(channels.id, channelId) });
-  if (!channel) throw new Error('CHANNEL_NOT_FOUND');
-  // Membership, role and override changes take UPDATE on the workspace row;
-  // holding SHARE keeps this decision valid until the transaction ends.
-  await lockWorkspaceForAuthorization(store, channel.workspaceId, 'share');
+  if (!channel || channel.workspaceId !== location.workspaceId) throw new Error('CHANNEL_NOT_FOUND');
   const authorization = await getChannelAuthorizationFromStore(store, userId, channel);
   if (!isVisibleChannelAuthorization(authorization) || channel.type !== 'forum') throw new Error('CHANNEL_NOT_FOUND');
   return { channel, authorization };
