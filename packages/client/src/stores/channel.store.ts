@@ -14,7 +14,7 @@ interface ChannelState {
   createChannel: (workspaceId: string, name: string, options?: {
     categoryId?: string;
     isPrivate?: boolean;
-    type?: 'text' | 'announcement' | 'voice';
+    type?: 'text' | 'announcement' | 'voice' | 'forum';
   }) => Promise<void>;
   removeChannel: (channelId: string, workspaceId?: string) => void;
   reset: () => void;

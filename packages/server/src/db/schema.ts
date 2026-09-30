@@ -309,8 +309,8 @@ export const categoryRolePermissionOverrides = pgTable('category_role_permission
   }),
   roleIdx: index('category_role_permission_overrides_role_idx').on(t.workspaceId, t.roleId),
   targetIdx: index('category_role_permission_overrides_category_idx').on(t.categoryId),
-  allowMaskCheck: check('category_role_permission_overrides_allow_mask_check', sql`${t.allowMask} >= 0 and (${t.allowMask} & ${sql.raw('-147584')}) = 0`),
-  denyMaskCheck: check('category_role_permission_overrides_deny_mask_check', sql`${t.denyMask} >= 0 and (${t.denyMask} & ${sql.raw('-147584')}) = 0`),
+  allowMaskCheck: check('category_role_permission_overrides_allow_mask_check', sql`${t.allowMask} >= 0 and (${t.allowMask} & ${sql.raw('-409728')}) = 0`),
+  denyMaskCheck: check('category_role_permission_overrides_deny_mask_check', sql`${t.denyMask} >= 0 and (${t.denyMask} & ${sql.raw('-409728')}) = 0`),
   revisionCheck: check('category_role_permission_overrides_revision_check', sql`${t.revision} >= 1`),
 }));
 
@@ -336,8 +336,8 @@ export const channelRolePermissionOverrides = pgTable('channel_role_permission_o
   }),
   roleIdx: index('channel_role_permission_overrides_role_idx').on(t.workspaceId, t.roleId),
   targetIdx: index('channel_role_permission_overrides_channel_idx').on(t.channelId),
-  allowMaskCheck: check('channel_role_permission_overrides_allow_mask_check', sql`${t.allowMask} >= 0 and (${t.allowMask} & ${sql.raw('-147584')}) = 0`),
-  denyMaskCheck: check('channel_role_permission_overrides_deny_mask_check', sql`${t.denyMask} >= 0 and (${t.denyMask} & ${sql.raw('-147584')}) = 0`),
+  allowMaskCheck: check('channel_role_permission_overrides_allow_mask_check', sql`${t.allowMask} >= 0 and (${t.allowMask} & ${sql.raw('-409728')}) = 0`),
+  denyMaskCheck: check('channel_role_permission_overrides_deny_mask_check', sql`${t.denyMask} >= 0 and (${t.denyMask} & ${sql.raw('-409728')}) = 0`),
   revisionCheck: check('channel_role_permission_overrides_revision_check', sql`${t.revision} >= 1`),
 }));
 
@@ -465,11 +465,20 @@ export const messages = pgTable('messages', {
   type: text('type').notNull().default('message'),
   reactionAction: text('reaction_action'),
   refMessageId: uuid('ref_message_id'),
+  // Forum channels only: the post this event belongs to. It is part of the
+  // signed v4 envelope, so the server can index by it but not rewrite it.
+  postId: uuid('post_id'),
   idempotencyKey: text('idempotency_key'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   uniqueChannelIdempotency: unique().on(t.channelId, t.idempotencyKey),
+  postFk: foreignKey({
+    name: 'messages_post_id_fk',
+    columns: [t.postId],
+    foreignColumns: [t.id],
+  }),
   channelCreatedIdx: index('messages_channel_created_idx').on(t.channelId, t.createdAt, t.id),
+  postCreatedIdx: index('messages_post_created_idx').on(t.postId, t.createdAt, t.id).where(sql`${t.postId} is not null`),
   referenceTypeIdx: index('messages_reference_type_idx').on(t.refMessageId, t.type),
   authorIdIdx: index('messages_author_id_idx').on(t.authorId),
   reactionActionCheck: check('messages_reaction_action_check', sql`${t.reactionAction} is null or ${t.reactionAction} in ('add', 'remove')`),
@@ -532,6 +541,82 @@ export const messageBookmarks = pgTable('message_bookmarks', {
   messageIdIdx: index('message_bookmarks_message_id_idx').on(t.messageId),
   userCreatedIdx: index('message_bookmarks_user_created_idx').on(t.userId, t.createdAt, t.messageId),
 }));
+
+// === Forum ===
+
+// One row per post (the message that started it). Sorting and moderation
+// state live here so listing never needs to scan or decrypt message history.
+export const forumPosts = pgTable('forum_posts', {
+  messageId: uuid('message_id').primaryKey().references(() => messages.id),
+  channelId: uuid('channel_id').notNull().references(() => channels.id),
+  authorId: uuid('author_id').notNull().references(() => users.id),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull(),
+  lastActivityAt: timestamp('last_activity_at', { withTimezone: true }).notNull(),
+  replyCount: integer('reply_count').notNull().default(0),
+  lockedAt: timestamp('locked_at', { withTimezone: true }),
+  lockedBy: uuid('locked_by').references(() => users.id),
+  resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+  resolvedBy: uuid('resolved_by').references(() => users.id),
+  deletedAt: timestamp('deleted_at', { withTimezone: true }),
+}, (t) => [
+  unique('forum_posts_message_channel_unique').on(t.messageId, t.channelId),
+  index('forum_posts_channel_activity_idx')
+    .on(t.channelId, t.lastActivityAt.desc(), t.messageId.desc())
+    .where(sql`${t.deletedAt} is null`),
+  index('forum_posts_channel_created_idx')
+    .on(t.channelId, t.createdAt.desc(), t.messageId.desc())
+    .where(sql`${t.deletedAt} is null`),
+  index('forum_posts_author_idx').on(t.authorId),
+  check('forum_posts_reply_count_check', sql`${t.replyCount} >= 0`),
+  check('forum_posts_activity_check', sql`${t.lastActivityAt} >= ${t.createdAt}`),
+  check('forum_posts_locked_pair_check', sql`(${t.lockedAt} is null) = (${t.lockedBy} is null)`),
+  check('forum_posts_resolved_pair_check', sql`(${t.resolvedAt} is null) = (${t.resolvedBy} is null)`),
+]);
+
+// Tag names are administrator-defined labels, visible to the server like
+// channel names. They belong to the forum channel and go with it.
+export const forumTags = pgTable('forum_tags', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  channelId: uuid('channel_id').notNull().references(() => channels.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(),
+  position: integer('position').notNull().default(0),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => [
+  unique('forum_tags_channel_name_unique').on(t.channelId, t.name),
+  unique('forum_tags_channel_id_unique').on(t.channelId, t.id),
+  index('forum_tags_channel_position_idx').on(t.channelId, t.position),
+  check('forum_tags_name_check', sql`char_length(${t.name}) between 1 and 20 and ${t.name} = btrim(${t.name})`),
+  check('forum_tags_position_check', sql`${t.position} between 0 and 1000000`),
+]);
+
+// Both composite keys pin the tag and the post to the same channel.
+export const forumPostTags = pgTable('forum_post_tags', {
+  postId: uuid('post_id').notNull(),
+  channelId: uuid('channel_id').notNull(),
+  tagId: uuid('tag_id').notNull(),
+}, (t) => [
+  primaryKey({ name: 'forum_post_tags_pk', columns: [t.postId, t.tagId] }),
+  foreignKey({
+    name: 'forum_post_tags_post_fk',
+    columns: [t.postId, t.channelId],
+    foreignColumns: [forumPosts.messageId, forumPosts.channelId],
+  }).onDelete('cascade'),
+  foreignKey({
+    name: 'forum_post_tags_tag_fk',
+    columns: [t.channelId, t.tagId],
+    foreignColumns: [forumTags.channelId, forumTags.id],
+  }).onDelete('cascade'),
+  index('forum_post_tags_tag_idx').on(t.channelId, t.tagId),
+]);
+
+export const forumPostReads = pgTable('forum_post_reads', {
+  userId: uuid('user_id').notNull().references(() => users.id),
+  postId: uuid('post_id').notNull().references(() => forumPosts.messageId, { onDelete: 'cascade' }),
+  lastReadActivityAt: timestamp('last_read_activity_at', { withTimezone: true }).notNull(),
+}, (t) => [
+  primaryKey({ name: 'forum_post_reads_pk', columns: [t.userId, t.postId] }),
+  index('forum_post_reads_post_idx').on(t.postId),
+]);
 
 // === DM ===
 

@@ -9,6 +9,10 @@ import type {
   ChannelPreference,
   ChannelReadState,
   Device,
+  ForumPostState,
+  ForumPostSummary,
+  ForumTag,
+  ForumViewerCapabilities,
   Message,
   MessageBookmark,
   NotificationLevel,
@@ -860,7 +864,7 @@ class ApiService {
 
   async createChannel(workspaceId: string, name: string, options?: {
     categoryId?: string;
-    type?: 'text' | 'announcement' | 'voice';
+    type?: 'text' | 'announcement' | 'voice' | 'forum';
     isPrivate?: boolean;
     topic?: string;
     position?: number;
@@ -985,6 +989,7 @@ class ApiService {
     broadcastMention: boolean;
     mentionedUserIds?: string[];
     refMessageId?: string;
+    postId?: string;
   }) {
     return this.request<Message>(`/channels/${channelId}/messages`, {
       method: 'POST',
@@ -1000,6 +1005,7 @@ class ApiService {
     idempotencyKey: string;
     signature: string;
     broadcastMention: boolean;
+    postId?: string;
   }) {
     return this.request<Message>(`/messages/${messageId}`, {
       method: 'PUT',
@@ -1012,8 +1018,97 @@ class ApiService {
     keyVersion: number;
     idempotencyKey: string;
     signature: string;
+    postId?: string;
   }) {
     return this.request<{ messageId: string; channelId: string; event?: Message }>(`/messages/${messageId}`, { method: 'DELETE', body: JSON.stringify(data) });
+  }
+
+  // Forum
+  async getForumPosts(channelId: string, options: { sort?: 'activity' | 'created'; tagId?: string; cursor?: string } = {}) {
+    const params = new URLSearchParams();
+    if (options.sort) params.set('sort', options.sort);
+    if (options.tagId) params.set('tagId', options.tagId);
+    if (options.cursor) params.set('cursor', options.cursor);
+    const query = params.toString();
+    return this.request<{ data: ForumPostSummary[]; hasMore: boolean; cursor: string | null; viewer: ForumViewerCapabilities }>(
+      `/channels/${channelId}/forum/posts${query ? `?${query}` : ''}`,
+    );
+  }
+
+  async createForumPost(channelId: string, data: {
+    encryptedContent: string;
+    contentNonce: string;
+    deviceId: string;
+    keyVersion: number;
+    idempotencyKey: string;
+    signature: string;
+    broadcastMention: boolean;
+    mentionedUserIds?: string[];
+    tagIds?: string[];
+  }) {
+    return this.request<{ message: Message; state: Omit<ForumPostState, 'unread'> }>(`/channels/${channelId}/forum/posts`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async getForumPost(postId: string) {
+    return this.request<ForumPostSummary>(`/forum/posts/${postId}`);
+  }
+
+  async getForumPostMessages(postId: string, cursor?: string) {
+    const params = cursor ? `?cursor=${encodeURIComponent(cursor)}` : '';
+    return this.request<{ data: Message[]; hasMore: boolean; cursor: string | null }>(`/forum/posts/${postId}/messages${params}`);
+  }
+
+  async markForumPostRead(postId: string) {
+    return this.request<{ channelId: string; postId: string; lastReadActivityAt: string }>(`/forum/posts/${postId}/read`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+  }
+
+  async setForumPostLocked(postId: string, locked: boolean) {
+    return this.request<Omit<ForumPostState, 'unread'>>(`/forum/posts/${postId}/lock`, {
+      method: 'PUT',
+      body: JSON.stringify({ locked }),
+    });
+  }
+
+  async setForumPostResolved(postId: string, resolved: boolean) {
+    return this.request<Omit<ForumPostState, 'unread'>>(`/forum/posts/${postId}/resolved`, {
+      method: 'PUT',
+      body: JSON.stringify({ resolved }),
+    });
+  }
+
+  async setForumPostTags(postId: string, tagIds: string[]) {
+    return this.request<Omit<ForumPostState, 'unread'>>(`/forum/posts/${postId}/tags`, {
+      method: 'PUT',
+      body: JSON.stringify({ tagIds }),
+    });
+  }
+
+  async getForumTags(channelId: string) {
+    return this.request<ForumTag[]>(`/channels/${channelId}/forum/tags`);
+  }
+
+  async createForumTag(channelId: string, name: string) {
+    return this.request<ForumTag>(`/channels/${channelId}/forum/tags`, {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    });
+  }
+
+  async updateForumTag(tagId: string, updates: { name?: string; position?: number }) {
+    return this.request<ForumTag>(`/forum/tags/${tagId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(updates),
+    });
+  }
+
+  async deleteForumTag(tagId: string) {
+    return this.request<SuccessResponse>(`/forum/tags/${tagId}`, { method: 'DELETE' });
   }
 
   async toggleReaction(messageId: string, emoji: string) {

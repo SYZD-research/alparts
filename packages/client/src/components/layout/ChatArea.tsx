@@ -13,6 +13,7 @@ import { useUiStore } from '../../stores/ui.store';
 import { ApiError } from '../../services/api';
 import { CHANNEL_HISTORY_UNAVAILABLE } from '../../services/crypto.service';
 import { Dialog } from '../ui/Dialog';
+import { ForumView } from '../forum/ForumView';
 
 export function ChatArea({ visible = true }: { visible?: boolean }) {
   const activeChannelId = useChannelStore((state) => state.activeChannelId);
@@ -154,7 +155,7 @@ export function ChatArea({ visible = true }: { visible?: boolean }) {
       </Dialog>
       {/* Channel header */}
       <div className="chat-header h-12 shrink-0 px-4 flex items-center border-b border-discord-sidebar shadow-sm">
-        <span className="text-discord-muted mr-2">{dmConversation ? '@' : '#'}</span>
+        <span className="text-discord-muted mr-2" aria-hidden="true">{dmConversation ? '@' : channel?.type === 'forum' ? '💬' : '#'}</span>
         <h3 className="truncate font-bold text-white">
           {dmConversation && currentUserId ? directMessageTitle(dmConversation, currentUserId) : channel?.name || 'チャンネル'}
         </h3>
@@ -217,7 +218,9 @@ export function ChatArea({ visible = true }: { visible?: boolean }) {
         </div>
       ) : (
         <>
-          <MessageList channelId={activeChannelId} visible={visible} />
+          {channel?.type === 'forum'
+            ? <ForumView channelId={activeChannelId} sendDisabled={Boolean(channelKeyPending)} visible={visible} />
+            : <MessageList channelId={activeChannelId} visible={visible} />}
           {channelKeyPending && (
             <div role="status" className="mx-4 mb-2 flex items-center justify-between gap-3 rounded border border-discord-yellow/40 bg-discord-yellow/10 px-3 py-2 text-sm text-discord-yellow">
               <span>メッセージを送信できるよう準備しています。しばらくお待ちください。</span>
@@ -254,10 +257,14 @@ export function ChatArea({ visible = true }: { visible?: boolean }) {
               </button>
             </div>
           )}
-          <div aria-live="polite" className="min-h-5 px-5 text-xs text-discord-muted">
-            {typingNames.length > 0 ? `${typingNames.slice(0, 3).join('、')} が入力中…` : ''}
-          </div>
-          <MessageInput channelId={activeChannelId} sendDisabled={Boolean(channelKeyPending)} />
+          {channel?.type !== 'forum' && (
+            <>
+              <div aria-live="polite" className="min-h-5 px-5 text-xs text-discord-muted">
+                {typingNames.length > 0 ? `${typingNames.slice(0, 3).join('、')} が入力中…` : ''}
+              </div>
+              <MessageInput channelId={activeChannelId} sendDisabled={Boolean(channelKeyPending)} />
+            </>
+          )}
         </>
       )}
     </div>

@@ -141,6 +141,13 @@
       "when": 1791068400000,
       "tag": "0019_profiles",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1791154800000,
+      "tag": "0020_forum",
+      "breakpoints": true
     }
   ]
 }
