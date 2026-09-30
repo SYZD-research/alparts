@@ -88,7 +88,7 @@ export async function createChannel(
   actorId?: string,
 ) {
   if (!actorId) throw new Error('CHANNEL_ACTOR_REQUIRED');
-  if (!['text', 'announcement', 'voice'].includes(type)) throw new Error('INVALID_CHANNEL_TYPE');
+  if (!['text', 'announcement', 'voice', 'forum'].includes(type)) throw new Error('INVALID_CHANNEL_TYPE');
   const channel = await auditedTransaction(async (transaction) => {
     await lockWorkspaceForMutation(transaction, workspaceId);
     await assertWorkspaceChannelManager(transaction, workspaceId, actorId);

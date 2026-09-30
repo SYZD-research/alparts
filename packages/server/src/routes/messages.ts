@@ -29,10 +29,14 @@ const cryptoFields = {
   idempotencyKey: z.string().uuid(),
   signature,
 };
+// Forum channels: the post a reply, edit or delete belongs to (signed in v4).
+// Posts themselves are started through the forum routes.
+const postId = z.string().uuid().optional();
 const createMessageSchema = z.object({
   encryptedContent,
   contentNonce: nonce,
   refMessageId: z.string().uuid().optional(),
+  postId,
   broadcastMention: z.boolean(),
   mentionedUserIds: z.array(z.string().uuid())
     .max(MAX_DIRECT_MENTION_RECIPIENTS_PER_MESSAGE)
@@ -44,9 +48,10 @@ const editMessageSchema = z.object({
   encryptedContent,
   contentNonce: nonce,
   broadcastMention: z.boolean(),
+  postId,
   ...cryptoFields,
 }).strict();
-const deleteMessageSchema = z.object(cryptoFields).strict();
+const deleteMessageSchema = z.object({ ...cryptoFields, postId }).strict();
 const reactionSchema = z.object({ emoji: z.string().min(1).max(10) }).strict();
 const readSchema = z.object({ messageId: z.string().uuid() }).strict();
 const paginationSchema = z.object({
@@ -80,11 +85,16 @@ router.post('/channels/:id/messages', authMiddleware, requireChannelPermission(P
       idempotencyKey: body.idempotencyKey,
       signature: body.signature,
       broadcastMention: body.broadcastMention,
+      postId: body.postId,
     }, body.refMessageId, body.mentionedUserIds);
     const io = getSocketServer(req);
-    if (io && result.isNewEvent) broadcastMessageCreated(io, result.event, result.attentionRecipients);
+    if (io && result.isNewEvent) broadcastMessageCreated(io, result.event, result.attentionRecipients, result.forumPost);
     res.status(201).json(result.event);
   } catch (error: any) {
+    if (error.message === 'FORUM_POST_LOCKED') {
+      res.status(409).json({ error: 'FORUM_POST_LOCKED', message: 'This post is locked', statusCode: 409 });
+      return;
+    }
     if (error.message === 'IDEMPOTENCY_CONFLICT') {
       res.status(409).json({ error: 'IDEMPOTENCY_CONFLICT', message: 'Idempotency key was already used', statusCode: 409 });
       return;
@@ -142,7 +152,7 @@ router.delete('/messages/:id', authMiddleware, requireMessagePermission(Permissi
     });
     const payload = { messageId: result.messageId, channelId: result.channelId, event: result.event };
     const io = getSocketServer(req);
-    if (io && result.isNewEvent) broadcastMessageDeleted(io, payload);
+    if (io && result.isNewEvent) broadcastMessageDeleted(io, payload, result);
     res.json(payload);
   } catch (error: any) {
     if (error.message === 'MESSAGE_NOT_FOUND') {

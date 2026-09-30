@@ -4,9 +4,14 @@ import {
   MAX_DIRECT_MENTION_RECIPIENTS_PER_MESSAGE,
   MAX_MESSAGE_LENGTH,
   Permissions,
+  type ForumTag,
   type WsAttentionNotification,
+  type WsForumPostRemoved,
+  type WsForumPostUpdated,
+  type WsForumTagsUpdated,
 } from '@alparts/shared';
 import * as messageService from '../services/message.service.js';
+import type { ForumPostBroadcastState } from '../services/forum-state.js';
 import { logError } from '../security/logger.js';
 import { authorizeSocketChannel, consumeSocketRate, type AuthenticatedSocket } from './security.js';
 
@@ -20,11 +25,14 @@ const cryptoFields = {
 };
 const encryptedContent = z.string().min(24).max(ciphertextMax).regex(/^[A-Za-z0-9+/]+={0,2}$/);
 const contentNonce = z.string().length(16).regex(/^[A-Za-z0-9+/]+$/);
+// Forum replies only; posts are started over HTTP with their tags.
+const postId = z.string().uuid().optional();
 const sendSchema = z.object({
   channelId: z.string().uuid(),
   encryptedContent,
   contentNonce,
   refMessageId: z.string().uuid().optional(),
+  postId,
   broadcastMention: z.boolean(),
   mentionedUserIds: z.array(uuid)
     .max(MAX_DIRECT_MENTION_RECIPIENTS_PER_MESSAGE)
@@ -38,11 +46,13 @@ const editSchema = z.object({
   encryptedContent,
   contentNonce,
   broadcastMention: z.boolean(),
+  postId,
   ...cryptoFields,
 }).strict();
 const deleteSchema = z.object({
   messageId: z.string().uuid(),
   channelId: z.string().uuid(),
+  postId,
   ...cryptoFields,
 }).strict();
 
@@ -57,24 +67,45 @@ export function broadcastMessageCreated(
   io: SocketServer,
   message: MessageEvent,
   attentionRecipients: StoredMessageResult['attentionRecipients'] = [],
+  forumPost: ForumPostBroadcastState | null = null,
 ) {
   io.to(`channel:${message.channelId}`).emit('message:new', { message });
+  if (forumPost) broadcastForumPostUpdated(io, forumPost);
   for (const recipient of attentionRecipients) {
     io.to(`user:${recipient.userId}`).emit('attention:new', {
       notificationId: message.id,
       workspaceId: recipient.workspaceId,
       channelId: message.channelId,
+      ...(forumPost ? { postId: forumPost.postId } : {}),
       kind: recipient.kind,
     } satisfies WsAttentionNotification);
   }
+}
+
+export function broadcastForumPostUpdated(io: SocketServer, state: ForumPostBroadcastState) {
+  io.to(`channel:${state.channelId}`).emit('forum:post-updated', { channelId: state.channelId, state } satisfies WsForumPostUpdated);
+}
+
+export function broadcastForumPostRemoved(io: SocketServer, channelId: string, postId: string) {
+  io.to(`channel:${channelId}`).emit('forum:post-removed', { channelId, postId } satisfies WsForumPostRemoved);
+}
+
+export function broadcastForumTagsUpdated(io: SocketServer, channelId: string, tags: ForumTag[]) {
+  io.to(`channel:${channelId}`).emit('forum:tags-updated', { channelId, tags } satisfies WsForumTagsUpdated);
 }
 
 export function broadcastMessageEdited(io: SocketServer, message: MessageEvent) {
   io.to(`channel:${message.channelId}`).emit('message:edited', { message });
 }
 
-export function broadcastMessageDeleted(io: SocketServer, payload: MessageDeletedPayload) {
+export function broadcastMessageDeleted(
+  io: SocketServer,
+  payload: MessageDeletedPayload,
+  forum?: Pick<MessageDeletedResult, 'forumPostId' | 'forumPost' | 'forumPostRemoved'>,
+) {
   io.to(`channel:${payload.channelId}`).emit('message:deleted', payload);
+  if (forum?.forumPostRemoved && forum.forumPostId) broadcastForumPostRemoved(io, payload.channelId, forum.forumPostId);
+  if (forum?.forumPost) broadcastForumPostUpdated(io, forum.forumPost);
 }
 
 export function broadcastReactionUpdated(io: SocketServer, payload: ReactionUpdatedPayload) {
@@ -99,7 +130,7 @@ export function handleMessageEvents(io: SocketServer, socket: AuthenticatedSocke
         value.refMessageId,
         value.mentionedUserIds,
       );
-      if (result.isNewEvent) broadcastMessageCreated(io, result.event, result.attentionRecipients);
+      if (result.isNewEvent) broadcastMessageCreated(io, result.event, result.attentionRecipients, result.forumPost);
     } catch (error) {
       logError('websocket.message_send', error);
       socket.emit('operation:error', { code: 'MESSAGE_REJECTED' });
@@ -137,7 +168,7 @@ export function handleMessageEvents(io: SocketServer, socket: AuthenticatedSocke
           messageId: result.messageId,
           channelId: result.channelId,
           event: result.event,
-        });
+        }, result);
       }
     } catch (error) {
       logError('websocket.message_delete', error);
