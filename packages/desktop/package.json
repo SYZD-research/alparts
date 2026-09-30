@@ -31,7 +31,7 @@
     "electron": "44.1.0",
     "electron-builder": "26.15.7",
     "esbuild": "0.28.2",
-    "tsx": "4.20.5",
+    "tsx": "4.23.15",
     "typescript": "5.9.2"
   },
   "build": {
