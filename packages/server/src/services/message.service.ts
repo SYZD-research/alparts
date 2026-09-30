@@ -13,6 +13,8 @@ import {
   channelKeyEpochs,
   channels,
   devices,
+  forumPostReads,
+  forumPosts,
   messagePins,
   messageReactions,
   messages,
@@ -35,6 +37,12 @@ import {
   MAX_REACTIONS_PER_USER_PER_MESSAGE,
 } from '../security/limits.js';
 import { hasRevokedEpochRecipient } from './key-epoch-state.js';
+import {
+  addForumPostTags,
+  loadForumPostStates,
+  lockForumPost,
+  type ForumPostBroadcastState,
+} from './forum-state.js';
 
 interface CryptoEventInput {
   deviceId: string;
@@ -44,6 +52,11 @@ interface CryptoEventInput {
   idempotencyKey: string;
   signature: string;
   broadcastMention: boolean;
+  /**
+   * Forum channels only (required there, rejected elsewhere). Null starts a
+   * new post; otherwise the post this event belongs to.
+   */
+  postId?: string | null;
 }
 
 interface ReactionRow {
@@ -87,72 +100,75 @@ export async function getChannelMessages(
         : eq(messages.channelId, channelId),
       orderBy: [desc(messages.createdAt), desc(messages.id)],
       limit: limit + 1,
-      with: {
-        author: {
-          columns: {
-            id: true,
-            displayName: true,
-            avatarUrl: true,
-            status: true,
-            createdAt: true,
-          },
-        },
-      },
+      with: { author: { columns: messageAuthorColumns } },
     });
     const hasMore = results.length > limit;
     const data = results.slice(0, limit);
-    const baseMessageIds = data
-      .filter((message) => message.type === 'message')
-      .map((message) => message.id);
-    const [pins, reactionRows] =
-      baseMessageIds.length > 0
-        ? await Promise.all([
-            tx.query.messagePins.findMany({
-              columns: { messageId: true },
-              where: inArray(messagePins.messageId, baseMessageIds),
-            }),
-            tx.query.messageReactions.findMany({
-              columns: {
-                messageId: true,
-                emoji: true,
-                userId: true,
-              },
-              where: inArray(messageReactions.messageId, baseMessageIds),
-              limit: baseMessageIds.length * MAX_REACTIONS_PER_MESSAGE + 1,
-            }),
-          ])
-        : [[], []];
-    if (reactionRows.length > baseMessageIds.length * MAX_REACTIONS_PER_MESSAGE) {
-      throw new Error('REACTION_INVARIANT_EXCEEDED');
-    }
-    const pinnedMessageIds = new Set(pins.map((pin) => pin.messageId));
-    const attachmentsByMessage = await getAttachmentsForMessages(
-      baseMessageIds,
-      tx as unknown as typeof db,
-    );
-    const reactionsByMessage = new Map<string, ReactionRow[]>();
-    for (const reaction of reactionRows) {
-      const grouped = reactionsByMessage.get(reaction.messageId) || [];
-      grouped.push(reaction);
-      reactionsByMessage.set(reaction.messageId, grouped);
-    }
     return {
-      data: data.map((message) => ({
-        ...formatMessage(
-          message,
-          message.type === 'message'
-            ? {
-                isPinned: pinnedMessageIds.has(message.id),
-                reactions: summarizeReactions(reactionsByMessage.get(message.id) || []),
-              }
-            : undefined,
-        ),
-        attachments: message.type === 'message' ? attachmentsByMessage.get(message.id) || [] : [],
-      })),
+      data: await hydrateMessageEvents(tx, data),
       hasMore,
       cursor: hasMore ? data[data.length - 1]?.id : null,
     };
   });
+}
+
+export const messageAuthorColumns = {
+  id: true,
+  displayName: true,
+  avatarUrl: true,
+  status: true,
+  createdAt: true,
+} as const;
+
+/** Attach pins, reactions and attachments to stored events (with author) for the wire. */
+export async function hydrateMessageEvents(tx: any, data: any[]) {
+  const baseMessageIds = data
+    .filter((message) => message.type === 'message')
+    .map((message) => message.id);
+  const [pins, reactionRows] =
+    baseMessageIds.length > 0
+      ? await Promise.all([
+          tx.query.messagePins.findMany({
+            columns: { messageId: true },
+            where: inArray(messagePins.messageId, baseMessageIds),
+          }),
+          tx.query.messageReactions.findMany({
+            columns: {
+              messageId: true,
+              emoji: true,
+              userId: true,
+            },
+            where: inArray(messageReactions.messageId, baseMessageIds),
+            limit: baseMessageIds.length * MAX_REACTIONS_PER_MESSAGE + 1,
+          }),
+        ])
+      : [[], []];
+  if (reactionRows.length > baseMessageIds.length * MAX_REACTIONS_PER_MESSAGE) {
+    throw new Error('REACTION_INVARIANT_EXCEEDED');
+  }
+  const pinnedMessageIds = new Set(pins.map((pin: { messageId: string }) => pin.messageId));
+  const attachmentsByMessage = await getAttachmentsForMessages(
+    baseMessageIds,
+    tx as unknown as typeof db,
+  );
+  const reactionsByMessage = new Map<string, ReactionRow[]>();
+  for (const reaction of reactionRows as ReactionRow[]) {
+    const grouped = reactionsByMessage.get(reaction.messageId) || [];
+    grouped.push(reaction);
+    reactionsByMessage.set(reaction.messageId, grouped);
+  }
+  return data.map((message) => ({
+    ...formatMessage(
+      message,
+      message.type === 'message'
+        ? {
+            isPinned: pinnedMessageIds.has(message.id),
+            reactions: summarizeReactions(reactionsByMessage.get(message.id) || []),
+          }
+        : undefined,
+    ),
+    attachments: message.type === 'message' ? attachmentsByMessage.get(message.id) || [] : [],
+  }));
 }
 
 export async function createMessage(
@@ -161,21 +177,61 @@ export async function createMessage(
   input: CryptoEventInput,
   refMessageId?: string,
   mentionedUserIds: string[] = [],
+  options: { tagIds?: string[] } = {},
 ) {
+  const creatingPost = input.postId === null;
   return auditedTransaction(async (transaction) => {
     const authorization = await lockAndAuthorizeCryptoWrite(
       transaction,
       channelId,
       authorId,
       input,
-      Permissions.SEND_MESSAGES,
+      creatingPost ? Permissions.CREATE_POSTS : Permissions.SEND_MESSAGES,
       'message',
       refMessageId,
     );
+    const isForum = authorization.channelType === 'forum';
+    if (!isForum && options.tagIds?.length) throw new Error('INVALID_REFERENCE');
+    if (creatingPost && refMessageId) throw new Error('INVALID_REFERENCE');
+    const post = isForum && !creatingPost
+      ? await lockOpenForumPost(transaction, input.postId!, channelId, authorization.permissions)
+      : null;
     const reference = refMessageId
       ? await assertReferenceInChannel(transaction, refMessageId, channelId)
       : null;
+    // A reply may quote the post itself or any reply inside the same post.
+    if (post && reference && reference.id !== post.messageId && reference.postId !== post.messageId) {
+      throw new Error('INVALID_REFERENCE');
+    }
     const stored = await insertCryptoEvent(transaction, channelId, authorId, input, 'message', refMessageId);
+    const forumPostId: string | null = isForum ? (creatingPost ? stored.event.id : post!.messageId) : null;
+    if (forumPostId) {
+      if (stored.isNewEvent) {
+        const at = new Date(stored.event.createdAt);
+        if (creatingPost) {
+          await transaction.insert(forumPosts).values({
+            messageId: forumPostId,
+            channelId,
+            authorId,
+            createdAt: at,
+            lastActivityAt: at,
+          });
+          await addForumPostTags(transaction, channelId, forumPostId, options.tagIds ?? []);
+        } else {
+          await transaction.update(forumPosts).set({
+            lastActivityAt: sql`greatest(${forumPosts.lastActivityAt}, ${at})`,
+            replyCount: sql`${forumPosts.replyCount} + 1`,
+          }).where(eq(forumPosts.messageId, forumPostId));
+        }
+        // Writing to a post means its author has seen it up to this point.
+        await transaction.insert(forumPostReads)
+          .values({ userId: authorId, postId: forumPostId, lastReadActivityAt: at })
+          .onConflictDoUpdate({
+            target: [forumPostReads.userId, forumPostReads.postId],
+            set: { lastReadActivityAt: sql`greatest(${forumPostReads.lastReadActivityAt}, ${at})` },
+          });
+      }
+    }
     const attentionRecipients = stored.isNewEvent
       ? await resolveAttentionRecipients(
         transaction,
@@ -184,19 +240,31 @@ export async function createMessage(
         authorId,
         input.broadcastMention,
         mentionedUserIds,
-        reference?.authorId,
+        // In a forum, a reply without a quote is a reply to the post.
+        reference?.authorId ?? post?.authorId,
       )
       : [];
-    return { ...stored, workspaceId: authorization.workspaceId, attentionRecipients };
+    const forumPost = forumPostId
+      ? (await loadForumPostStates(transaction, [forumPostId]))[0] ?? null
+      : null;
+    return {
+      ...stored,
+      workspaceId: authorization.workspaceId,
+      attentionRecipients,
+      forumPost,
+    };
   }, (result) => ({
     actorId: authorId,
-    action: result.isNewEvent ? 'message.create' : 'message.create.replay',
+    action: result.isNewEvent
+      ? (creatingPost ? 'forum.post.create' : 'message.create')
+      : (creatingPost ? 'forum.post.create.replay' : 'message.create.replay'),
     targetType: 'message',
     targetId: result.event.id,
     details: {
       workspaceId: result.workspaceId,
       channelId,
       reply: Boolean(refMessageId),
+      ...(result.forumPost ? { postId: result.forumPost.postId } : {}),
     },
   }));
 }
@@ -216,6 +284,12 @@ export async function editMessage(messageId: string, authorId: string, input: Cr
     const original = await lockActiveBaseMessage(transaction, messageId, 'share');
     if (original.channelId !== location.channelId || original.authorId !== authorId || original.type !== 'message') {
       throw new Error('NOT_AUTHORIZED');
+    }
+    if (authorization.channelType === 'forum') {
+      const postId = original.postId ?? original.id;
+      if (input.postId !== postId) throw new Error('INVALID_REFERENCE');
+      const post = await lockForumPost(transaction, postId, original.channelId, 'share');
+      if (!post || post.deletedAt) throw new Error('MESSAGE_NOT_FOUND');
     }
     const stored = await insertCryptoEvent(transaction, original.channelId, authorId, input, 'edit', messageId);
     return { ...stored, workspaceId: authorization.workspaceId };
@@ -250,18 +324,40 @@ export async function deleteMessage(messageId: string, userId: string, input: Cr
     if (original.authorId !== userId && (authorization.permissions & Permissions.MANAGE_CHANNELS) !== Permissions.MANAGE_CHANNELS) {
       throw new Error('NOT_AUTHORIZED');
     }
+    const forumPostId = authorization.channelType === 'forum' ? original.postId ?? original.id : null;
+    if (forumPostId && deleteInput.postId !== forumPostId) throw new Error('INVALID_REFERENCE');
     const priorDelete = await findDeleteEvent(transaction, messageId);
     if (priorDelete) {
       const expectedKey = scopedIdempotencyKey(userId, deleteInput.idempotencyKey);
       if (priorDelete.idempotencyKey !== expectedKey) throw new Error('MESSAGE_NOT_FOUND');
     }
     const storedEvent = await insertCryptoEvent(transaction, original.channelId, userId, deleteInput, 'delete', messageId);
+    let forumPost: ForumPostBroadcastState | null = null;
+    let forumPostRemoved = false;
+    if (forumPostId) {
+      const post = await lockForumPost(transaction, forumPostId, original.channelId, 'update');
+      if (!post) throw new Error('MESSAGE_NOT_FOUND');
+      if (storedEvent.isNewEvent) {
+        if (original.id === forumPostId) {
+          await transaction.update(forumPosts).set({ deletedAt: new Date(storedEvent.event.createdAt) })
+            .where(and(eq(forumPosts.messageId, forumPostId), isNull(forumPosts.deletedAt)));
+        } else {
+          await transaction.update(forumPosts).set({ replyCount: sql`greatest(${forumPosts.replyCount} - 1, 0)` })
+            .where(eq(forumPosts.messageId, forumPostId));
+        }
+      }
+      forumPostRemoved = original.id === forumPostId;
+      if (!forumPostRemoved) forumPost = (await loadForumPostStates(transaction, [forumPostId]))[0] ?? null;
+    }
     return {
       messageId,
       channelId: original.channelId,
       workspaceId: authorization.workspaceId,
       event: storedEvent.event,
       isNewEvent: storedEvent.isNewEvent,
+      forumPostId,
+      forumPost,
+      forumPostRemoved,
     };
   }, (result) => ({
     actorId: userId,
@@ -351,12 +447,14 @@ export async function toggleReaction(messageId: string, userId: string, emoji: s
 
 export async function pinMessage(messageId: string, userId: string) {
   const committed = await auditedTransaction(async (transaction) => {
-    const { original, workspaceId } = await lockAndAuthorizeMessageMutation(
+    const { original, workspaceId, channelType } = await lockAndAuthorizeMessageMutation(
       transaction,
       messageId,
       userId,
       Permissions.PIN_MESSAGES,
     );
+    // In a forum, pinning keeps a whole post at the top of the list.
+    if (channelType === 'forum' && original.postId !== null) throw new Error('NOT_AUTHORIZED');
     await transaction.execute(
       sql`select pg_advisory_xact_lock(hashtext(${`pins:${original.channelId}`})::bigint)`,
     );
@@ -479,6 +577,7 @@ async function insertCryptoEvent(
     broadcastMention: input.broadcastMention,
     type,
     refMessageId: refMessageId || null,
+    postId: input.postId ?? null,
     idempotencyKey: storedIdempotencyKey,
     createdAt,
   }).onConflictDoNothing().returning();
@@ -508,7 +607,8 @@ function sameCryptoEvent(
     && event.signature === input.signature
     && event.broadcastMention === input.broadcastMention
     && event.type === type
-    && event.refMessageId === (refMessageId || null);
+    && event.refMessageId === (refMessageId || null)
+    && event.postId === (input.postId ?? null);
 }
 
 async function lockAndAuthorizeCryptoWrite(
@@ -544,6 +644,10 @@ async function lockAndAuthorizeCryptoWrite(
   });
   if (!channel || channel.workspaceId !== channelLocation.workspaceId) throw new Error('CHANNEL_NOT_FOUND');
   if (channel.type === 'voice') throw new Error('CHANNEL_NOT_FOUND');
+  // Forum events must name their post (v4); no other channel may carry one.
+  const isForum = channel.type === 'forum';
+  if (isForum !== (input.postId !== undefined)) throw new Error('INVALID_REFERENCE');
+  if (input.postId === null && type !== 'message') throw new Error('INVALID_REFERENCE');
   const authorization = await getChannelAuthorizationFromStore(store, userId, channel);
   if (!isVisibleChannelAuthorization(authorization)) throw new Error('CHANNEL_NOT_FOUND');
   if ((authorization.permissions & permission) !== permission) throw new Error('NOT_AUTHORIZED');
@@ -591,12 +695,26 @@ async function lockAndAuthorizeCryptoWrite(
     idempotencyKey: input.idempotencyKey,
     refMessageId: refMessageId || null,
     broadcastMention: input.broadcastMention,
+    ...(isForum ? { postId: input.postId } : {}),
     type,
   };
   if (!verifyMessageEnvelopeSignature(device.identityKey, envelope, input.signature)) {
     throw new Error('INVALID_SIGNATURE');
   }
-  return authorization;
+  return { ...authorization, channelType: channel.type as string };
+}
+
+/**
+ * Lock a post for a new reply. Locked posts accept replies only from members
+ * who can manage the channel, so moderators can still explain the lock.
+ */
+async function lockOpenForumPost(store: any, postId: string, channelId: string, permissions: number) {
+  const post = await lockForumPost(store, postId, channelId, 'update');
+  if (!post || post.deletedAt) throw new Error('INVALID_REFERENCE');
+  if (post.lockedAt && (permissions & Permissions.MANAGE_CHANNELS) !== Permissions.MANAGE_CHANNELS) {
+    throw new Error('FORUM_POST_LOCKED');
+  }
+  return post;
 }
 
 async function assertReferenceInChannel(store: any, messageId: string, channelId: string) {
@@ -695,7 +813,7 @@ async function lockAndAuthorizeMessageMutation(
   const authorization = await getChannelAuthorizationFromStore(store, userId, channel);
   if (!isVisibleChannelAuthorization(authorization)) throw new Error('MESSAGE_NOT_FOUND');
   if ((authorization.permissions & permission) !== permission) throw new Error('NOT_AUTHORIZED');
-  return { original, workspaceId: channelLocation.workspaceId };
+  return { original, workspaceId: channelLocation.workspaceId, channelType: channel.type as string };
 }
 
 async function getUserForMessage(userId: string, store: any = db) {
@@ -743,6 +861,7 @@ function formatMessage(message: any, state?: { reactions: ReturnType<typeof summ
     type: message.type,
     reactionAction: message.reactionAction ?? null,
     refMessageId: message.refMessageId,
+    postId: message.postId ?? null,
     reactions: state?.reactions || [],
     isPinned: state?.isPinned || false,
     idempotencyKey,

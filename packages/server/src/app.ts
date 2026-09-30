@@ -17,6 +17,7 @@ import { sensitiveActionBoundary } from './middleware/step-up.js';
 import workspaceRoutes from './routes/workspaces.js';
 import channelRoutes from './routes/channels.js';
 import messageRoutes from './routes/messages.js';
+import forumRoutes from './routes/forum.js';
 import deviceRoutes from './routes/devices.js';
 import fileRoutes from './routes/files.js';
 import keyRoutes from './routes/keys.js';
@@ -231,6 +232,7 @@ export function createApp() {
   app.use('/api/workspaces', workspaceRoutes);
   app.use('/api', channelRoutes);
   app.use('/api', messageRoutes);
+  app.use('/api', forumRoutes);
   app.use('/api/devices', deviceRoutes);
   app.use('/api/files', fileRoutes);
   app.use('/api', keyRoutes);

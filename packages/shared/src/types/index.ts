@@ -220,9 +220,10 @@ export interface ForumPostSummary {
   state: ForumPostState;
 }
 
+/** Broadcast to every viewer; each client keeps its own unread flag. */
 export interface WsForumPostUpdated {
   channelId: string;
-  state: ForumPostState;
+  state: Omit<ForumPostState, 'unread'>;
 }
 
 export interface WsForumPostRemoved {
