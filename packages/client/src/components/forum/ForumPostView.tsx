@@ -15,7 +15,7 @@ import { UserAvatar } from '../user/UserAvatar';
 import { isPictureHidden } from '../../stores/profile-visibility';
 import { Dialog } from '../ui/Dialog';
 import { TagPicker } from './ForumView';
-import { forumPostDisplay, formatForumTime } from './forum-display';
+import { FORUM_UNREADABLE_DETAIL, forumPostDisplay, formatForumTime } from './forum-display';
 
 interface Props {
   channelId: string;
@@ -249,7 +249,11 @@ export function ForumPostView({ channelId, postId, sendDisabled }: Props) {
               </>
             )
           ) : (
-            <p className="mt-2 text-discord-muted">{display.status === 'loading' ? '読み込み中…' : 'この投稿を表示できません'}</p>
+            <p className="mt-2 text-discord-muted">
+              {display.status === 'loading'
+                ? '読み込み中…'
+                : display.status === 'unreadable' ? FORUM_UNREADABLE_DETAIL : 'この投稿は安全性を確認できないため表示できません。'}
+            </p>
           )}
         </article>
 
