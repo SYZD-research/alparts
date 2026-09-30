@@ -139,6 +139,66 @@ describe('signed message envelopes', () => {
     }
   });
 
+  it('keeps the forum (v4) serialization vector stable and binds the post', () => {
+    const keys = fixture();
+    const base = {
+      type: 'message' as const,
+      channelId: '00000000-0000-4000-8000-000000000001',
+      authorId: '00000000-0000-4000-8000-000000000004',
+      deviceId: '00000000-0000-4000-8000-000000000002',
+      encryptedContent: 'Y2lwaGVydGV4dA==',
+      contentNonce: 'AAAAAAAAAAAAAAAA',
+      keyVersion: 7,
+      idempotencyKey: '00000000-0000-4000-8000-000000000003',
+      refMessageId: null,
+      broadcastMention: false,
+    };
+    const post: SignedMessageEnvelope = { ...base, postId: null };
+    const reply: SignedMessageEnvelope = { ...base, postId: '00000000-0000-4000-8000-000000000005' };
+    assert.equal(
+      serializeMessageAad(post),
+      '[4,"message","00000000-0000-4000-8000-000000000001","00000000-0000-4000-8000-000000000004","00000000-0000-4000-8000-000000000002",7,"00000000-0000-4000-8000-000000000003",null,null,false]',
+    );
+    assert.equal(
+      serializeMessageEnvelope(reply),
+      '[4,"message","00000000-0000-4000-8000-000000000001","00000000-0000-4000-8000-000000000004","00000000-0000-4000-8000-000000000002",7,"00000000-0000-4000-8000-000000000003",null,"00000000-0000-4000-8000-000000000005",false,"AAAAAAAAAAAAAAAA","Y2lwaGVydGV4dA=="]',
+    );
+    // v3 and v4 never share a representation, so a signature cannot be
+    // replayed across channel types.
+    assert.notEqual(serializeMessageEnvelope(base), serializeMessageEnvelope(post));
+    assert.notEqual(serializeMessageAad(base), serializeMessageAad(post));
+
+    const signature = sign('sha256', Buffer.from(serializeMessageEnvelope(reply)), {
+      key: keys.signingPrivateKey,
+      dsaEncoding: 'ieee-p1363',
+    }).toString('base64');
+    assert.equal(verifyMessageEnvelopeSignature(keys.identityKey, reply, signature), true);
+    for (const tampered of [
+      { ...reply, postId: '00000000-0000-4000-8000-000000000006' },
+      { ...reply, postId: null },
+      { ...reply, postId: undefined },
+    ]) {
+      assert.equal(verifyMessageEnvelopeSignature(keys.identityKey, tampered, signature), false);
+    }
+  });
+
+  it('rejects forum envelopes without an explicit mention flag or post for mutations', () => {
+    const base = {
+      channelId: '00000000-0000-4000-8000-000000000001',
+      authorId: '00000000-0000-4000-8000-000000000004',
+      deviceId: '00000000-0000-4000-8000-000000000002',
+      encryptedContent: '',
+      contentNonce: '',
+      keyVersion: 1,
+      idempotencyKey: '00000000-0000-4000-8000-000000000003',
+      refMessageId: '00000000-0000-4000-8000-000000000005',
+    };
+    assert.throws(() => serializeMessageEnvelope({ ...base, type: 'edit', broadcastMention: false, postId: null }), /INVALID_FORUM_ENVELOPE/);
+    assert.throws(() => serializeMessageEnvelope({ ...base, type: 'delete', broadcastMention: false, postId: null }), /INVALID_FORUM_ENVELOPE/);
+    assert.throws(() => serializeMessageAad({ ...base, type: 'message', broadcastMention: null, postId: null }), /INVALID_FORUM_ENVELOPE/);
+    assert.equal(verifyMessageEnvelopeSignature(fixture().identityKey, { ...base, type: 'edit', broadcastMention: false, postId: null }, 'A'.repeat(86) + '=='), false);
+  });
+
   it('rejects malformed public-key bundles', () => {
     assert.throws(() => parseDevicePublicBundle(JSON.stringify({ version: 1 })));
     const weakEncryption = generateKeyPairSync('rsa', { modulusLength: 1024, publicExponent: 0x10001 });

@@ -17,6 +17,8 @@ export const Permissions = {
   MANAGE_WEBHOOKS: 1 << 15,
   MANAGE_BOTS: 1 << 16,
   CONNECT_VOICE: 1 << 17,
+  /** Start a new post in a forum channel. Replying to a post uses SEND_MESSAGES. */
+  CREATE_POSTS: 1 << 18,
 } as const;
 
 export type Permission = keyof typeof Permissions;
@@ -31,6 +33,7 @@ export const DefaultRoles = {
   Member:
     Permissions.CONNECT_VOICE |
     Permissions.SEND_MESSAGES |
+    Permissions.CREATE_POSTS |
     Permissions.EDIT_MESSAGES |
     Permissions.DELETE_MESSAGES |
     Permissions.ADD_REACTIONS |
@@ -39,9 +42,11 @@ export const DefaultRoles = {
     Permissions.ATTACH_FILES,
   Guest:
     Permissions.SEND_MESSAGES |
+    Permissions.CREATE_POSTS |
     Permissions.VIEW_CHANNELS,
   Integration:
     Permissions.SEND_MESSAGES |
+    Permissions.CREATE_POSTS |
     Permissions.VIEW_CHANNELS |
     Permissions.ATTACH_FILES,
 } as const;
@@ -51,6 +56,7 @@ export const ChannelType = {
   DM: 'dm',
   ANNOUNCEMENT: 'announcement',
   VOICE: 'voice',
+  FORUM: 'forum',
 } as const;
 
 export const MessageType = {
@@ -73,3 +79,9 @@ export const MAX_PADDED_MESSAGE_BYTES = 16_384;
 export const MAX_DIRECT_MENTION_RECIPIENTS_PER_MESSAGE = 50;
 export const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB
 export const MESSAGES_PER_PAGE = 50;
+
+export const MAX_FORUM_POST_TITLE_LENGTH = 100;
+export const FORUM_POSTS_PER_PAGE = 25;
+export const MAX_FORUM_TAGS_PER_CHANNEL = 20;
+export const MAX_FORUM_TAGS_PER_POST = 5;
+export const MAX_FORUM_TAG_NAME_LENGTH = 20;
