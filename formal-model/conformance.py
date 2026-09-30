@@ -15,7 +15,7 @@ from harness import HarnessError, require_rows, run_harness
 
 
 def random_mask(rng: random.Random, universe: int, density: float) -> int:
-    return sum(bit for bit in (1 << i for i in range(18)) if universe & bit and rng.random() < density)
+    return sum(bit for bit in (1 << i for i in range(19)) if universe & bit and rng.random() < density)
 
 
 def random_workspace(rng: random.Random) -> Workspace:

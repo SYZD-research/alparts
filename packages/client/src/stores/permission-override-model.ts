@@ -11,6 +11,7 @@ export type OverridePermissionState = 'inherit' | 'allow' | 'deny' | 'conflict';
 export const channelScopedPermissions: Array<{ name: Permission; value: number }> = [
   { name: 'VIEW_CHANNELS', value: Permissions.VIEW_CHANNELS },
   { name: 'CONNECT_VOICE', value: Permissions.CONNECT_VOICE },
+  { name: 'CREATE_POSTS', value: Permissions.CREATE_POSTS },
   { name: 'SEND_MESSAGES', value: Permissions.SEND_MESSAGES },
   { name: 'EDIT_MESSAGES', value: Permissions.EDIT_MESSAGES },
   { name: 'DELETE_MESSAGES', value: Permissions.DELETE_MESSAGES },
