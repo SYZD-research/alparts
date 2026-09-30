@@ -95,6 +95,16 @@ function nextListVersion(channelId: string): number {
   return version;
 }
 
+/** Only summaries of this channel whose events are this post's own are used. */
+function summariesFor(channelId: string, summaries: ForumPostSummary[]): ForumPostSummary[] {
+  return summaries.filter((summary) => (
+    summary.state.channelId === channelId
+    && summary.root.id === summary.state.postId
+    && summary.root.channelId === channelId
+    && (!summary.latestEdit || (summary.latestEdit.channelId === channelId && summary.latestEdit.refMessageId === summary.root.id))
+  ));
+}
+
 /** Hand post events to the message store, which verifies and decrypts them. */
 function ingestSummaries(channelId: string, summaries: ForumPostSummary[]): void {
   const events = summaries.flatMap((summary) => [summary.root, ...(summary.latestEdit ? [summary.latestEdit] : [])]);
@@ -139,8 +149,9 @@ export const useForumStore = create<ForumState>((set, get) => {
       const { sort, tagId } = view(channelId);
       update(channelId, () => ({ loading: true, error: null }));
       try {
-        const result = await api.getForumPosts(channelId, { sort, ...(tagId ? { tagId } : {}) });
+        const response = await api.getForumPosts(channelId, { sort, ...(tagId ? { tagId } : {}) });
         if (generation !== forumGeneration || listVersions.get(channelId) !== version) return;
+        const result = { ...response, data: summariesFor(channelId, response.data) };
         ingestSummaries(channelId, result.data);
         update(channelId, (current) => ({
           postIds: result.data.map((summary) => summary.state.postId),
@@ -168,12 +179,13 @@ export const useForumStore = create<ForumState>((set, get) => {
       const version = listVersions.get(channelId);
       update(channelId, () => ({ loadingMore: true }));
       try {
-        const result = await api.getForumPosts(channelId, {
+        const response = await api.getForumPosts(channelId, {
           sort: current.sort,
           ...(current.tagId ? { tagId: current.tagId } : {}),
           cursor: current.cursor,
         });
         if (generation !== forumGeneration || listVersions.get(channelId) !== version) return;
+        const result = { ...response, data: summariesFor(channelId, response.data) };
         ingestSummaries(channelId, result.data);
         update(channelId, (latest) => ({
           postIds: [...latest.postIds, ...result.data.map((summary) => summary.state.postId).filter((id) => !latest.postIds.includes(id))],
@@ -222,7 +234,7 @@ export const useForumStore = create<ForumState>((set, get) => {
         if (!view(channelId).states[postId]) {
           const summary = await api.getForumPost(postId);
           if (generation !== forumGeneration) return;
-          if (summary.state.channelId !== channelId || summary.root.id !== postId) throw new Error('POST_MISMATCH');
+          if (summary.state.postId !== postId || summariesFor(channelId, [summary]).length !== 1) throw new Error('POST_MISMATCH');
           ingestSummaries(channelId, [summary]);
           applyState(channelId, stripUnread(summary.state));
         }

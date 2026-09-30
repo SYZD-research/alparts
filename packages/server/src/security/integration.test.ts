@@ -3263,6 +3263,28 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
       method: 'PUT', cookie: outsider.cookie, body: { locked: false },
     })).status, 404);
 
+    // A quote-reply racing the deletion of the quoted reply must resolve to
+    // one order or the other, never a lock cycle.
+    for (let round = 0; round < 5; round += 1) {
+      const target = asOwner({ type: 'message', refMessageId: null, postId, plaintext: `race target ${round}` });
+      const targetEvent = await json<{ id: string }>(await request(`/api/channels/${forum.id}/messages`, {
+        method: 'POST', cookie: owner.cookie, body: target.body,
+      }));
+      const quote = asOwner({ type: 'message', refMessageId: targetEvent.id, postId, plaintext: `race quote ${round}` });
+      const removal = asOwner({ type: 'delete', refMessageId: targetEvent.id, postId, plaintext: '' });
+      const [quoted, removed] = await Promise.all([
+        request(`/api/channels/${forum.id}/messages`, {
+          method: 'POST', cookie: owner.cookie, body: { ...quote.body, refMessageId: targetEvent.id },
+        }),
+        request(`/api/messages/${targetEvent.id}`, {
+          method: 'DELETE', cookie: owner.cookie,
+          body: { deviceId: ownerDevice.id, keyVersion: 1, idempotencyKey: removal.envelope.idempotencyKey, signature: removal.body.signature, postId },
+        }),
+      ]);
+      assert.ok([201, 400].includes(quoted.status), `quote status ${quoted.status}`);
+      assert.equal(removed.status, 200);
+    }
+
     // Deleting the post removes it from the list and closes it for replies.
     const deletion = asMember({ type: 'delete', refMessageId: postId, postId, plaintext: '' });
     const deleted = await request(`/api/messages/${postId}`, {
