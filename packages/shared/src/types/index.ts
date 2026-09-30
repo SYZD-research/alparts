@@ -103,12 +103,14 @@ export interface CategoryCreateRequest {
 
 // === Channel ===
 
+export type ChannelKind = 'text' | 'dm' | 'announcement' | 'voice' | 'forum';
+
 export interface Channel {
   id: string;
   workspaceId: string;
   categoryId: string | null;
   name: string;
-  type: 'text' | 'dm' | 'announcement' | 'voice';
+  type: ChannelKind;
   isPrivate: boolean;
   keyRotationRequired?: boolean;
   topic: string | null;
@@ -121,7 +123,7 @@ export interface Channel {
 export interface ChannelCreateRequest {
   name: string;
   categoryId?: string;
-  type?: 'text' | 'dm' | 'announcement' | 'voice';
+  type?: Exclude<ChannelKind, 'dm'>;
   isPrivate?: boolean;
   topic?: string;
   position?: number;
@@ -152,6 +154,11 @@ export interface Message {
   broadcastMention?: boolean | null;
   type: 'message' | 'edit' | 'delete' | 'reaction' | 'system';
   refMessageId: string | null;
+  /**
+   * Forum channels only: the post this event belongs to, authenticated by the
+   * v4 envelope. Null on the event that starts a post and outside forums.
+   */
+  postId?: string | null;
   refMessage?: Message;
   reactions: Reaction[];
   isPinned: boolean;
@@ -176,6 +183,56 @@ export interface MessageCreateRequest {
 export interface MessageUpdateRequest {
   encryptedContent: string;
   contentNonce: string;
+}
+
+// === Forum ===
+
+/** Administrator-defined label. Names are shared like channel names, not encrypted. */
+export interface ForumTag {
+  id: string;
+  channelId: string;
+  name: string;
+  position: number;
+}
+
+export interface ForumPostState {
+  postId: string;
+  channelId: string;
+  authorId: string;
+  createdAt: string;
+  lastActivityAt: string;
+  replyCount: number;
+  locked: boolean;
+  resolved: boolean;
+  tagIds: string[];
+  isPinned: boolean;
+  /** New replies since this viewer last opened the post. */
+  unread: boolean;
+}
+
+/**
+ * A post as listed: the event that started it, its most recent edit (if any)
+ * so the current title can be shown, and server-maintained state.
+ */
+export interface ForumPostSummary {
+  root: Message;
+  latestEdit: Message | null;
+  state: ForumPostState;
+}
+
+export interface WsForumPostUpdated {
+  channelId: string;
+  state: ForumPostState;
+}
+
+export interface WsForumPostRemoved {
+  channelId: string;
+  postId: string;
+}
+
+export interface WsForumTagsUpdated {
+  channelId: string;
+  tags: ForumTag[];
 }
 
 // === Reaction ===
@@ -361,6 +418,8 @@ export interface WsAttentionNotification {
   workspaceId: string;
   /** null only for 'profile-appeal', which concerns a member rather than a channel. */
   channelId: string | null;
+  /** Forum channels: the post the notification belongs to. */
+  postId?: string | null;
   kind: AttentionNotificationKind;
 }
 

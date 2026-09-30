@@ -4,6 +4,7 @@ import { isStaleAuthorizationPreviewError } from '../services/role-authorization
 
 const permissionLabels: Record<Permission, string> = {
   SEND_MESSAGES: 'メッセージを送信',
+  CREATE_POSTS: 'フォーラムに投稿を作成',
   EDIT_MESSAGES: 'メッセージを編集',
   DELETE_MESSAGES: 'メッセージを削除',
   ADD_REACTIONS: 'リアクションを追加',

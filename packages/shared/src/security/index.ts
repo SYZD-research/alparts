@@ -1,4 +1,6 @@
 export const MESSAGE_CRYPTO_VERSION = 3;
+/** Forum-channel events: v3 plus the authenticated post the event belongs to. */
+export const FORUM_MESSAGE_CRYPTO_VERSION = 4;
 const LEGACY_MESSAGE_CRYPTO_VERSION = 2;
 
 export const ATTACHMENT_CRYPTO_VERSION = 2;
@@ -103,11 +105,34 @@ export interface SignedMessageEnvelope {
   refMessageId?: string | null;
   /** Null/undefined is reserved for legacy v2 rows. New envelopes carry true or false. */
   broadcastMention?: boolean | null;
+  /**
+   * Present (string or null) exactly for events in forum channels. Null marks
+   * the event that starts a post; every other forum event names its post.
+   * Undefined keeps the v2/v3 layout used by every other channel type.
+   */
+  postId?: string | null;
   type: 'message' | 'edit' | 'delete';
 }
 
 /** A deterministic, protocol-versioned byte representation for message signatures. */
 export function serializeMessageEnvelope(envelope: SignedMessageEnvelope): string {
+  if (envelope.postId !== undefined) {
+    assertForumEnvelope(envelope);
+    return JSON.stringify([
+      FORUM_MESSAGE_CRYPTO_VERSION,
+      envelope.type,
+      envelope.channelId,
+      envelope.authorId,
+      envelope.deviceId,
+      envelope.keyVersion,
+      envelope.idempotencyKey,
+      envelope.refMessageId ?? null,
+      envelope.postId,
+      envelope.broadcastMention,
+      envelope.contentNonce,
+      envelope.encryptedContent,
+    ]);
+  }
   if (envelope.broadcastMention === null || envelope.broadcastMention === undefined) {
     return JSON.stringify([
       LEGACY_MESSAGE_CRYPTO_VERSION,
@@ -139,8 +164,23 @@ export function serializeMessageEnvelope(envelope: SignedMessageEnvelope): strin
 
 export function serializeMessageAad(envelope: Pick<
   SignedMessageEnvelope,
-  'type' | 'channelId' | 'authorId' | 'deviceId' | 'keyVersion' | 'idempotencyKey' | 'refMessageId' | 'broadcastMention'
+  'type' | 'channelId' | 'authorId' | 'deviceId' | 'keyVersion' | 'idempotencyKey' | 'refMessageId' | 'broadcastMention' | 'postId'
 >): string {
+  if (envelope.postId !== undefined) {
+    assertForumEnvelope(envelope);
+    return JSON.stringify([
+      FORUM_MESSAGE_CRYPTO_VERSION,
+      envelope.type,
+      envelope.channelId,
+      envelope.authorId,
+      envelope.deviceId,
+      envelope.keyVersion,
+      envelope.idempotencyKey,
+      envelope.refMessageId ?? null,
+      envelope.postId,
+      envelope.broadcastMention,
+    ]);
+  }
   if (envelope.broadcastMention === null || envelope.broadcastMention === undefined) {
     return JSON.stringify([
       LEGACY_MESSAGE_CRYPTO_VERSION,
@@ -164,6 +204,17 @@ export function serializeMessageAad(envelope: Pick<
     envelope.refMessageId ?? null,
     envelope.broadcastMention,
   ]);
+}
+
+/**
+ * A forum envelope has no legacy form: the mention flag is always explicit,
+ * and only the message that starts a post may omit its post.
+ */
+function assertForumEnvelope(envelope: Pick<SignedMessageEnvelope, 'type' | 'broadcastMention' | 'postId'>): void {
+  if (typeof envelope.broadcastMention !== 'boolean') throw new Error('INVALID_FORUM_ENVELOPE');
+  if (envelope.postId === null ? envelope.type !== 'message' : typeof envelope.postId !== 'string') {
+    throw new Error('INVALID_FORUM_ENVELOPE');
+  }
 }
 
 /**
