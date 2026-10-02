@@ -1,49 +1,57 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { MemberProfile } from '@alparts/shared';
 import { api } from '../../services/api';
 import { useUiStore } from '../../stores/ui.store';
 import { useWorkspaceStore } from '../../stores/workspace.store';
 import { Dialog } from '../ui/Dialog';
 import { UserAvatar } from '../user/UserAvatar';
-import { profileErrorMessage } from './profile-model';
+import { profileErrorMessage, profileForTarget, profileTargetKey } from './profile-model';
 
 export function MemberProfileDialog() {
   const target = useUiStore((state) => state.profileTarget);
   const close = useUiStore((state) => state.closeMemberProfile);
   const loadMembers = useWorkspaceStore((state) => state.loadMembers);
-  const [profile, setProfile] = useState<MemberProfile | null>(null);
+  const [loaded, setLoaded] = useState<{ key: string; profile: MemberProfile } | null>(null);
   // Confirmation is remembered only while this profile stays open.
   const [revealed, setRevealed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const targetKey = target ? profileTargetKey(target) : null;
+  const currentKey = useRef(targetKey);
+  currentKey.current = targetKey;
+  const profile = profileForTarget(loaded, target);
 
   const load = useCallback(async () => {
     if (!target) return;
+    const key = profileTargetKey(target);
     try {
-      setProfile(await api.getMemberProfile(target.workspaceId, target.userId));
+      const result = await api.getMemberProfile(target.workspaceId, target.userId);
+      if (currentKey.current === key) setLoaded({ key, profile: result });
     } catch (caught) {
-      setError(profileErrorMessage(caught));
+      if (currentKey.current === key) setError(profileErrorMessage(caught));
     }
   }, [target]);
 
   useEffect(() => {
-    setProfile(null);
+    setLoaded(null);
     setRevealed(false);
     setError(null);
+    setBusy(false);
     void load();
   }, [load]);
 
   const act = async (operation: () => Promise<unknown>) => {
     if (!target) return;
+    const key = profileTargetKey(target);
     setBusy(true);
     setError(null);
     try {
       await operation();
       await Promise.all([load(), loadMembers(target.workspaceId)]);
     } catch (caught) {
-      setError(profileErrorMessage(caught));
+      if (currentKey.current === key) setError(profileErrorMessage(caught));
     } finally {
-      setBusy(false);
+      if (currentKey.current === key) setBusy(false);
     }
   };
 
