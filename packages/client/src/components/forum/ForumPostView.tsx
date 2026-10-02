@@ -36,7 +36,7 @@ export function ForumPostView({ channelId, postId, sendDisabled }: Props) {
   const baseRoot = useMessageStore((state) => state.eventsByChannel[channelId]?.find((event) => event.id === postId && event.type === 'message'));
   const editMessage = useMessageStore((state) => state.editMessage);
   const deleteMessage = useMessageStore((state) => state.deleteMessage);
-  const pinMessage = useMessageStore((state) => state.pinMessage);
+  const setPinned = useForumStore((state) => state.setPinned);
   const toggleReaction = useMessageStore((state) => state.toggleReaction);
   const members = useWorkspaceStore((state) => state.members);
   const warnedUsers = useWorkspaceStore((state) => state.warnedUsers);
@@ -89,6 +89,18 @@ export function ForumPostView({ channelId, postId, sendDisabled }: Props) {
     }
   };
 
+  if (view?.activePostFailed && display.status !== 'ready') {
+    return (
+      <div role="alert" className="flex flex-1 flex-col items-center justify-center gap-3 px-8 text-center text-discord-muted">
+        <p>投稿を読み込めませんでした。</p>
+        <div className="flex gap-2">
+          <button type="button" onClick={() => void openPost(channelId, postId)} className="rounded bg-discord-hover px-3 py-2 text-sm text-discord-text hover:text-white">再試行</button>
+          <button type="button" onClick={back} className="rounded px-3 py-2 text-sm text-discord-muted hover:bg-discord-hover">投稿一覧へ戻る</button>
+        </div>
+      </div>
+    );
+  }
+
   if (view?.activePostGone || display.status === 'deleted') {
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-3 px-8 text-center text-discord-muted">
@@ -124,7 +136,7 @@ export function ForumPostView({ channelId, postId, sendDisabled }: Props) {
             <button
               type="button"
               disabled={busy}
-              onClick={() => void act(() => pinMessage(postId, channelId), 'ピン留めを変更できませんでした。')}
+              onClick={() => void act(() => setPinned(channelId, postId, !state.isPinned), 'ピン留めを変更できませんでした。')}
               className="h-9 rounded px-2 text-sm text-discord-muted hover:bg-discord-hover hover:text-white disabled:opacity-50"
             >
               {state.isPinned ? 'ピンを外す' : 'ピン留め'}
@@ -257,6 +269,13 @@ export function ForumPostView({ channelId, postId, sendDisabled }: Props) {
           )}
         </article>
 
+        {view?.activePostFailed && (
+          <div role="alert" className="mt-2 flex items-center justify-between gap-3 rounded bg-discord-red/15 px-3 py-2 text-sm text-discord-red">
+            <span>返信を読み込めませんでした。</span>
+            <button type="button" onClick={() => void openPost(channelId, postId)} className="underline">再試行</button>
+          </div>
+        )}
+
         {actionError && (
           <div role="alert" className="mt-2 flex items-center justify-between gap-3 rounded bg-discord-red/15 px-3 py-2 text-sm text-discord-red">
             <span>{actionError}</span>
@@ -299,7 +318,8 @@ export function ForumPostView({ channelId, postId, sendDisabled }: Props) {
       </div>
 
       {canReply ? (
-        <MessageInput channelId={channelId} postId={postId} sendDisabled={sendDisabled} placeholder="返信を送信" />
+        // Keyed by post so files and pasted text chosen in one post never reach another.
+        <MessageInput key={postId} channelId={channelId} postId={postId} sendDisabled={sendDisabled} placeholder="返信を送信" />
       ) : (
         <p role="status" className="border-t border-discord-sidebar px-4 py-3 text-sm text-discord-muted">
           {locked ? 'この投稿はロックされているため、返信できません。' : 'このフォーラムに返信する権限がありません。'}

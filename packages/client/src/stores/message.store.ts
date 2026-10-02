@@ -103,6 +103,41 @@ const keyReconciliationPromises = new Map<string, Promise<boolean>>();
 const channelEpochs = new Map<string, number>();
 const residentChannelOrder = new Map<string, true>();
 const messageDecryptWorkers = new CoalescedChannelWorker(MAX_RESIDENT_MESSAGE_CHANNELS);
+const forumRetention = new Map<string, ForumRetention>();
+
+/** Forum posts that must stay in memory even when older than the channel window. */
+export interface ForumRetention {
+  /** Posts in the list: their first message and its edits or deletion. */
+  rootIds: ReadonlySet<string>;
+  /** The open post: every event in it. */
+  activePostId: string | null;
+}
+
+export function setForumRetention(channelId: string, retention: ForumRetention | null): void {
+  if (retention) forumRetention.set(channelId, retention);
+  else forumRetention.delete(channelId);
+}
+
+function isRetainedForumEvent(retention: ForumRetention, event: Message): boolean {
+  if (retention.rootIds.has(event.id)) return true;
+  if (!event.postId) return false;
+  if (event.postId === retention.activePostId) return true;
+  return retention.rootIds.has(event.postId)
+    && event.refMessageId === event.postId
+    && (event.type === 'edit' || event.type === 'delete');
+}
+
+/** Keep a channel's newest events, plus older ones of forum posts still on screen. */
+function boundedChannelEvents(channelId: string, ordered: Message[]): Message[] {
+  if (ordered.length <= MAX_RESIDENT_MESSAGE_EVENTS_PER_CHANNEL) return ordered;
+  const recent = ordered.slice(-MAX_RESIDENT_MESSAGE_EVENTS_PER_CHANNEL);
+  const retention = forumRetention.get(channelId);
+  if (!retention) return mergeMessageEvents(recent);
+  const older = ordered.slice(0, -MAX_RESIDENT_MESSAGE_EVENTS_PER_CHANNEL)
+    .filter((event) => isRetainedForumEvent(retention, event));
+  return mergeMessageEvents(older, recent);
+}
+
 
 function cryptoVerificationState(message: Message): boolean | undefined {
   return getMessageCryptoVerificationState(message);
@@ -127,9 +162,7 @@ function isMessageContextCurrent(channelId: string, generation: number, channelE
 }
 
 function channelUpdate(state: MessageState, channelId: string, events: Message[]) {
-  const ordered = mergeMessageEvents(events);
-  const merged = ordered.length > MAX_RESIDENT_MESSAGE_EVENTS_PER_CHANNEL
-    ? mergeMessageEvents(ordered.slice(-MAX_RESIDENT_MESSAGE_EVENTS_PER_CHANNEL)) : ordered;
+  const merged = boundedChannelEvents(channelId, mergeMessageEvents(events));
   const envelopeConflict = merged.some(hasAuthenticatedEnvelopeConflict);
   residentChannelOrder.delete(channelId);
   residentChannelOrder.set(channelId, true);
@@ -972,6 +1005,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     initialLoadPromises.delete(channelId);
     keyReconciliationPromises.delete(channelId);
     residentChannelOrder.delete(channelId);
+    forumRetention.delete(channelId);
     messageDecryptWorkers.cancel(channelId);
     set((state) => {
       const eventsByChannel = withoutChannel(state.eventsByChannel, channelId);
@@ -1002,6 +1036,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     keyReconciliationPromises.clear();
     channelEpochs.clear();
     residentChannelOrder.clear();
+    forumRetention.clear();
     messageDecryptWorkers.reset();
     set({
       eventsByChannel: {},
