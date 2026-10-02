@@ -17,30 +17,13 @@ services:
     security_opt:
       - no-new-privileges:true
 
-  minio:
-    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+  # SeaweedFS (Apache-2.0) serves the S3 API; MinIO's images are no longer
+  # published. The MINIO_* variable names are kept because the server's S3
+  # client reads them.
+  object-storage:
+    image: chrislusf/seaweedfs:4.47@sha256:ce9e796f1fe6f06968f4c04bdaf8f678dad9c8acdfef3d244133d71bfa6bf882
     ports:
-      - "127.0.0.1:${MINIO_PORT:-9000}:9000"
-      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
-    environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER must be set}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD must be set}
-    volumes:
-      - minio_data:/data
-    command: server /data --console-address ":9001"
-    healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
-      interval: 5s
-      timeout: 5s
-      retries: 12
-    security_opt:
-      - no-new-privileges:true
-
-  minio-init:
-    image: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
-    depends_on:
-      minio:
-        condition: service_healthy
+      - "127.0.0.1:${MINIO_PORT:-9000}:8333"
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER must be set}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD must be set}
@@ -48,51 +31,46 @@ services:
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:?MINIO_SECRET_KEY must be set}
       MINIO_BUCKET: ${MINIO_BUCKET:-alparts}
       AUDIT_HEAD_BUCKET: ${AUDIT_HEAD_BUCKET:-alparts-audit}
+    volumes:
+      - object_storage_data:/data
+    # The administrator credentials create the buckets; the application gets
+    # an identity limited to its two buckets.
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
-        attempt=0
-        until mc alias set local http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}" >/dev/null 2>&1; do
-          attempt=$$((attempt + 1))
-          [ "$${attempt}" -lt 60 ] || { echo "MinIO authentication timed out" >&2; exit 1; }
-          sleep 1
-        done
-        mc mb --ignore-existing "local/$${MINIO_BUCKET}"
-        mc mb --ignore-existing "local/$${AUDIT_HEAD_BUCKET}"
-        cat > /tmp/alparts-app-policy.json <<EOF
+        set -eu
+        umask 077
+        cat > /tmp/s3.json <<EOF
         {
-          "Version": "2012-10-17",
-          "Statement": [
+          "identities": [
             {
-              "Effect": "Allow",
-              "Action": ["s3:GetBucketLocation", "s3:ListBucket", "s3:ListBucketMultipartUploads"],
-              "Resource": ["arn:aws:s3:::$${MINIO_BUCKET}"]
+              "name": "admin",
+              "credentials": [{ "accessKey": "$${MINIO_ROOT_USER}", "secretKey": "$${MINIO_ROOT_PASSWORD}" }],
+              "actions": ["Admin", "Read", "List", "Tagging", "Write"]
             },
             {
-              "Effect": "Allow",
-              "Action": ["s3:AbortMultipartUpload", "s3:DeleteObject", "s3:GetObject", "s3:ListMultipartUploadParts", "s3:PutObject"],
-              "Resource": ["arn:aws:s3:::$${MINIO_BUCKET}/*"]
-            },
-            {
-              "Effect": "Allow",
-              "Action": ["s3:GetBucketLocation", "s3:ListBucket"],
-              "Resource": ["arn:aws:s3:::$${AUDIT_HEAD_BUCKET}"]
-            },
-            {
-              "Effect": "Allow",
-              "Action": ["s3:GetObject", "s3:PutObject"],
-              "Resource": ["arn:aws:s3:::$${AUDIT_HEAD_BUCKET}/*"]
+              "name": "alparts-app",
+              "credentials": [{ "accessKey": "$${MINIO_ACCESS_KEY}", "secretKey": "$${MINIO_SECRET_KEY}" }],
+              "actions": [
+                "Read:$${MINIO_BUCKET}", "Write:$${MINIO_BUCKET}", "List:$${MINIO_BUCKET}",
+                "Read:$${AUDIT_HEAD_BUCKET}", "Write:$${AUDIT_HEAD_BUCKET}", "List:$${AUDIT_HEAD_BUCKET}"
+              ]
             }
           ]
         }
         EOF
-        mc admin user info local "$${MINIO_ACCESS_KEY}" >/dev/null 2>&1 || mc admin user add local "$${MINIO_ACCESS_KEY}" "$${MINIO_SECRET_KEY}"
-        mc admin policy create local alparts-app /tmp/alparts-app-policy.json
-        mc admin policy detach local readwrite --user "$${MINIO_ACCESS_KEY}" >/dev/null 2>&1 || true
-        mc admin policy attach local alparts-app --user "$${MINIO_ACCESS_KEY}"
+        chown seaweed:seaweed /tmp/s3.json
+        exec /entrypoint.sh mini -dir=/data -s3.config=/tmp/s3.json \
+          -bucket="$${MINIO_BUCKET},$${AUDIT_HEAD_BUCKET}" \
+          -master.telemetry=false -admin.ui=false -webdav=false -s3.port.iceberg=0 -s3.port.lance=0
+    healthcheck:
+      test: ["CMD-SHELL", "echo s3.bucket.list | weed shell 2>/dev/null | grep -qE \"^[[:space:]]+$${AUDIT_HEAD_BUCKET}[[:space:]]\""]
+      interval: 5s
+      timeout: 10s
+      retries: 24
     security_opt:
       - no-new-privileges:true
 
 volumes:
   postgres_data:
-  minio_data:
+  object_storage_data:

@@ -171,13 +171,13 @@ postgres_password_ok() {
 }
 
 start_deps() {
-  info "Postgres / MinIO を起動します"
-  compose up -d --remove-orphans postgres minio
+  info "Postgres / オブジェクトストレージを起動します"
+  compose up -d --remove-orphans postgres object-storage
   info "Postgres の起動を待機中"
   wait_for_postgres
-  info "MinIO の最小権限アプリユーザーを準備します"
-  if ! compose run --rm minio-init >/dev/null; then
-    die "MinIO の認証情報を確認できませんでした。既存データを保持したまま停止します"
+  info "オブジェクトストレージの起動を待機中"
+  if ! compose up -d --wait object-storage >/dev/null; then
+    die "オブジェクトストレージが起動しませんでした (docker compose logs object-storage で確認してください)"
   fi
 }
 
@@ -203,7 +203,7 @@ else
   # 保存先を追記した回だけでなく、移行が済むまで毎回止める。
   # 起動時に head を自動作成しないのは意図した動作 (docs/OPERATIONS.md)。
   head_status="$(pnpm --filter @alparts/server --silent exec tsx src/scripts/audit-head-status.ts)" \
-    || die "監査記録の状態を確認できませんでした (MinIO の起動状態を確認してください)"
+    || die "監査記録の状態を確認できませんでした (オブジェクトストレージの起動状態を確認してください)"
   if [ "${head_status}" = "pending" ]; then
     [ "${head_added}" = 1 ] && info "監査記録の保存先を .env に追加しました"
     if [ "${1:-}" != "audit-head-init" ]; then
