@@ -380,6 +380,8 @@ export function useSocketEvents() {
         if (disposed || useChannelStore.getState().activeChannelId !== channelId) return;
         if (!error && result?.ok) {
           void loadMessages(channelId);
+          // A forum on screen missed live updates while disconnected.
+          void useForumStore.getState().refreshChannel(channelId);
         } else if (socket.connected) {
           void loadMessages(channelId);
           rejoinTimer = setTimeout(() => rejoinActiveChannel(attempt + 1), Math.min(30_000, 500 * 2 ** Math.min(attempt, 6)));

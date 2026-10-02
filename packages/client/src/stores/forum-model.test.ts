@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { compareForumPosts, isForumPostUnread, placeForumPost, type ForumPostBroadcastState } from './forum-model';
+import { compareForumPosts, isForumPostUnread, isInForumPost, placeForumPost, type ForumPostBroadcastState } from './forum-model';
 
 function post(postId: string, overrides: Partial<ForumPostBroadcastState> = {}): ForumPostBroadcastState {
   return {
@@ -47,5 +47,18 @@ describe('forum list model', () => {
     expect(isForumPostUnread(state, undefined, 'author')).toBe(false);
     expect(isForumPostUnread(state, '2026-10-01T00:00:00.000Z', 'me')).toBe(true);
     expect(isForumPostUnread(state, '2026-10-02T00:00:00.000Z', 'me')).toBe(false);
+  });
+});
+
+describe('reply and edit targets in a forum post (SQ-15)', () => {
+  it('applies only to the post itself and its replies', () => {
+    expect(isInForumPost({ id: 'post-a', postId: null }, 'post-a')).toBe(true);
+    expect(isInForumPost({ id: 'reply', postId: 'post-a' }, 'post-a')).toBe(true);
+    expect(isInForumPost({ id: 'reply', postId: 'post-a' }, 'post-b')).toBe(false);
+    expect(isInForumPost({ id: 'post-a', postId: null }, 'post-b')).toBe(false);
+  });
+
+  it('applies to any message outside a forum', () => {
+    expect(isInForumPost({ id: 'message' }, undefined)).toBe(true);
   });
 });
