@@ -1,0 +1,14 @@
+# Queries excluded because their findings do not apply to this codebase.
+# Every other security-extended query still fails the job.
+query-filters:
+  # Every HTTP request passes the in-process limiter that packages/server/src/app.ts
+  # mounts before any route (middleware/rate-limit.ts); sensitive routes add
+  # their own stricter budgets. CodeQL recognizes only third-party limiter
+  # packages, so it reports every route of this custom middleware.
+  - exclude:
+      id: js/missing-rate-limiting
+  # The only message handler is the login-challenge dedicated worker, which
+  # receives messages solely from the page that created it; there is no
+  # cross-origin sender to check.
+  - exclude:
+      id: js/missing-origin-check

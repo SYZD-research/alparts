@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { generateKeyPairSync, sign, webcrypto } from 'node:crypto';
+import { generateKeyPairSync, randomBytes, sign, webcrypto } from 'node:crypto';
 import { describe, it } from 'node:test';
 import {
   ATTACHMENT_CHUNK_AAD_FORMAT,
@@ -201,13 +201,20 @@ describe('signed message envelopes', () => {
 
   it('rejects malformed public-key bundles', () => {
     assert.throws(() => parseDevicePublicBundle(JSON.stringify({ version: 1 })));
-    const weakEncryption = generateKeyPairSync('rsa', { modulusLength: 1024, publicExponent: 0x10001 });
+    // Only the public key's size matters here, so build RSA public keys
+    // directly rather than generating a weak key pair.
     const signing = generateKeyPairSync('ec', { namedCurve: 'P-256' });
-    const encryptionKey = weakEncryption.publicKey.export({ format: 'jwk' });
     const signingKey = signing.publicKey.export({ format: 'jwk' });
-    encryptionKey.alg = 'RSA-OAEP-256';
     signingKey.alg = 'ES256';
-    assert.throws(() => parseDevicePublicBundle(JSON.stringify({ version: 1, encryptionKey, signingKey })));
+    const bundleWithModulus = (bytes: number) => {
+      const modulus = randomBytes(bytes);
+      modulus[0]! |= 0x80;
+      modulus[bytes - 1]! |= 1;
+      const encryptionKey = { kty: 'RSA', n: modulus.toString('base64url'), e: 'AQAB', alg: 'RSA-OAEP-256' };
+      return JSON.stringify({ version: 1, encryptionKey, signingKey });
+    };
+    assert.doesNotThrow(() => parseDevicePublicBundle(bundleWithModulus(256)));
+    assert.throws(() => parseDevicePublicBundle(bundleWithModulus(128)));
 
     const valid = fixture();
     const bundle = JSON.parse(valid.identityKey);

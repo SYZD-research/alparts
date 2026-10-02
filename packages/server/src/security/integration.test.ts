@@ -3119,6 +3119,9 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
       method: 'POST', cookie: member.cookie, body: { ...post.body, tagIds: [tag.id] },
     });
     assert.equal(postResponse.status, 201, await postResponse.clone().text());
+    // Routes without a budget of their own are still under the global request
+    // limiter (CodeQL cannot see this custom middleware).
+    assert.equal(postResponse.headers.get('ratelimit-limit'), '300');
     const created = await json<{ message: { id: string; postId: string | null; createdAt: string }; state: { tagIds: string[]; replyCount: number } }>(postResponse);
     const postId = created.message.id;
     assert.equal(created.message.postId, null);
