@@ -1,4 +1,5 @@
 import { MAX_DIRECT_MENTION_RECIPIENTS_PER_MESSAGE } from '@alparts/shared';
+import { parseSealedMessage, type SealedMessage } from './sealed-message';
 
 export interface OutboxCommand {
   version: 1;
@@ -10,6 +11,11 @@ export interface OutboxCommand {
   postId?: string;
   mentionedUserIds?: string[];
   createdAt: string;
+  /**
+   * The signed request, saved before it is first sent. Every later attempt,
+   * including after a restart, sends exactly this request.
+   */
+  sealed?: SealedMessage;
 }
 
 export const MAX_OUTBOX_COMMANDS_PER_DEVICE = 100;
@@ -81,7 +87,14 @@ export function parseOutboxCommand(value: unknown): OutboxCommand | null {
       || new Set(candidate.mentionedUserIds).size !== candidate.mentionedUserIds.length
     ))
   ) return null;
-  return candidate as OutboxCommand;
+  if (candidate.sealed === undefined) return candidate as OutboxCommand;
+  const sealed = parseSealedMessage(candidate.sealed, {
+    channelId: candidate.channelId,
+    idempotencyKey: candidate.idempotencyKey,
+    ...(candidate.refMessageId ? { refMessageId: candidate.refMessageId } : {}),
+    ...(candidate.postId ? { postId: candidate.postId } : {}),
+  });
+  return sealed ? { ...candidate, sealed } as OutboxCommand : null;
 }
 
 export function outboxItemFromCommand(command: OutboxCommand): OutboxItem {
