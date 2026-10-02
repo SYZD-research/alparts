@@ -30,6 +30,8 @@ let workspaceListGeneration = 0;
 let workspaceSelectionGeneration = 0;
 let listLoading = false;
 let selectionLoading = false;
+/** Only the latest member list request may write the list and its warnings. */
+let membersRequest = 0;
 
 export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   workspaces: [],
@@ -70,6 +72,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       && currentChannels.channels.length > 0
     ) return;
     const generation = ++workspaceSelectionGeneration;
+    const memberRequest = ++membersRequest;
     selectionLoading = true;
     useMessageStore.getState().reset();
     useChannelStore.getState().reset();
@@ -84,7 +87,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       if (generation !== workspaceSelectionGeneration || get().activeWorkspaceId !== id) return;
 
       selectionLoading = false;
-      set({ categories, members, isLoading: listLoading });
+      set({ categories, ...(memberRequest === membersRequest ? { members } : {}), isLoading: listLoading });
       const firstChannel = channels?.find((channel) => channel.type !== 'voice') ?? null;
       useChannelStore.getState().setActiveChannel(firstChannel?.id ?? null);
     } catch (error) {
@@ -114,11 +117,13 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
   loadMembers: async (workspaceId) => {
     const generation = workspaceSelectionGeneration;
+    const request = ++membersRequest;
     try {
       const [members, warned] = await Promise.all([
         api.getWorkspaceMembers(workspaceId),
         api.getWarnedUsers(workspaceId).catch(() => null),
       ]);
+      if (request !== membersRequest) return;
       if (generation === workspaceSelectionGeneration && get().activeWorkspaceId === workspaceId) {
         set({ members, warnedUsers: warned ? { ids: new Set(warned.userIds), complete: warned.complete } : null });
         // The list carries each member's current presence; events keep it fresh afterwards.
@@ -127,7 +132,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         );
       }
     } catch (error) {
-      if (generation === workspaceSelectionGeneration && get().activeWorkspaceId === workspaceId) {
+      if (request === membersRequest && generation === workspaceSelectionGeneration && get().activeWorkspaceId === workspaceId) {
         set({ error: error instanceof Error ? error.message : 'メンバーを読み込めませんでした' });
       }
     }

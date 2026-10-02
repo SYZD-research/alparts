@@ -137,13 +137,21 @@ export async function getForumPostMessages(
   });
 }
 
-export async function markForumPostRead(postId: string, userId: string) {
+/**
+ * `shownActivityAt` is the latest activity the client had shown when it marked
+ * the post read; replies that arrived after that stay unread. Only the
+ * server's own activity times are recorded: the client's value can lower the
+ * mark, never raise it past the post's actual activity.
+ */
+export async function markForumPostRead(postId: string, userId: string, shownActivityAt?: Date) {
   return auditGuardedTransaction(async (tx) => {
     const { post } = await authorizeForumPost(tx, postId, userId);
     if (post.deletedAt) throw new Error('FORUM_POST_NOT_FOUND');
-    // The server's own activity time is recorded, never a client clock.
+    const lastReadActivityAt = shownActivityAt && shownActivityAt < post.lastActivityAt
+      ? shownActivityAt
+      : post.lastActivityAt;
     const [read] = await tx.insert(forumPostReads)
-      .values({ userId, postId, lastReadActivityAt: post.lastActivityAt })
+      .values({ userId, postId, lastReadActivityAt })
       .onConflictDoUpdate({
         target: [forumPostReads.userId, forumPostReads.postId],
         set: { lastReadActivityAt: sql`greatest(${forumPostReads.lastReadActivityAt}, excluded.last_read_activity_at)` },

@@ -31,7 +31,8 @@ const localState = vi.hoisted(() => {
 });
 
 const messageState = vi.hoisted(() => ({
-  sendMessage: vi.fn(),
+  sealMessage: vi.fn(),
+  sendSealedMessage: vi.fn(),
 }));
 
 vi.mock('../services/local-state.service', () => ({
@@ -46,10 +47,12 @@ vi.mock('../services/local-state.service', () => ({
 
 vi.mock('./message.store', () => ({
   useMessageStore: {
-    getState: () => ({ sendMessage: messageState.sendMessage }),
+    getState: () => ({ sealMessage: messageState.sealMessage, sendSealedMessage: messageState.sendSealedMessage }),
   },
 }));
 
+import { ApiError } from '../services/api';
+import type { SealedMessage } from './sealed-message';
 import { useOutboxStore } from './outbox.store';
 
 const channelId = '33333333-3333-4333-8333-333333333333';
@@ -65,7 +68,10 @@ beforeEach(() => {
   localState.loadCommand.mockReset().mockImplementation(async () => null);
   localState.deleteCommand.mockReset().mockImplementation(async () => undefined);
   localState.deleteChannel.mockReset().mockImplementation(async () => undefined);
-  messageState.sendMessage.mockReset().mockImplementation(async () => undefined);
+  messageState.sealMessage.mockReset().mockImplementation(async (sealedChannelId: string, content: string, options: { idempotencyKey: string }) => (
+    sealedFor(sealedChannelId, options.idempotencyKey, content)
+  ));
+  messageState.sendSealedMessage.mockReset().mockImplementation(async () => undefined);
 });
 
 afterEach(() => {
@@ -80,14 +86,14 @@ describe('outbox principal and persistence lifecycle', () => {
     });
     localState.loadCommand.mockImplementation(async (_context, id: string) => persisted.get(id));
     const first = promiseWithResolvers<void>();
-    messageState.sendMessage.mockImplementationOnce(() => first.promise);
+    messageState.sendSealedMessage.mockImplementationOnce(() => first.promise);
     await useOutboxStore.getState().enqueue(channelId, 'first');
-    await vi.waitFor(() => expect(messageState.sendMessage).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(messageState.sendSealedMessage).toHaveBeenCalledTimes(1));
     await useOutboxStore.getState().enqueue(channelId, 'second');
-    expect(messageState.sendMessage).toHaveBeenCalledTimes(1);
+    expect(messageState.sendSealedMessage).toHaveBeenCalledTimes(1);
     first.resolve();
     await vi.waitFor(() => expect(localState.deleteCommand).toHaveBeenCalledTimes(2));
-    expect(messageState.sendMessage.mock.calls.map((args) => args[1])).toEqual(['first', 'second']);
+    expect(messageState.sendSealedMessage.mock.calls.map((args) => args[1])).toEqual(['first', 'second']);
   });
 
   it('keeps a failed head ahead of later messages while other channels progress', async () => {
@@ -100,12 +106,12 @@ describe('outbox principal and persistence lifecycle', () => {
     await useOutboxStore.getState().enqueue(channelId, 'first');
     await useOutboxStore.getState().enqueue(channelId, 'second');
     await useOutboxStore.getState().enqueue('55555555-5555-4555-8555-555555555555', 'other');
-    messageState.sendMessage.mockRejectedValueOnce(new Error('temporary network failure'));
+    messageState.sendSealedMessage.mockRejectedValueOnce(new Error('temporary network failure'));
     vi.stubGlobal('navigator', { onLine: true });
     await useOutboxStore.getState().flushAll();
-    expect(messageState.sendMessage.mock.calls.map((args) => args[1])).toEqual(['first', 'other']);
+    expect(messageState.sendSealedMessage.mock.calls.map((args) => args[1])).toEqual(['first', 'other']);
     await useOutboxStore.getState().flushAll();
-    expect(messageState.sendMessage.mock.calls.map((args) => args[1])).toEqual(['first', 'other', 'first', 'second']);
+    expect(messageState.sendSealedMessage.mock.calls.map((args) => args[1])).toEqual(['first', 'other', 'first', 'second']);
   });
 
   it('rejects a new command before persistence when the bounded outbox is full', async () => {
@@ -171,7 +177,7 @@ describe('outbox principal and persistence lifecycle', () => {
     load.resolve(command);
     await flushing;
 
-    expect(messageState.sendMessage).not.toHaveBeenCalled();
+    expect(messageState.sendSealedMessage).not.toHaveBeenCalled();
     expect(localState.deleteCommand).not.toHaveBeenCalled();
     expect(useOutboxStore.getState().items).toEqual({});
   });
@@ -197,16 +203,87 @@ describe('outbox principal and persistence lifecycle', () => {
       expect.any(Function),
     );
     expect(localState.loadCommand).toHaveBeenCalledWith(localState.accountA, idempotencyKey);
-    expect(messageState.sendMessage).toHaveBeenCalledWith(
+    expect(messageState.sealMessage).toHaveBeenCalledWith(
       channelId,
       'ordinary message',
-      undefined,
-      idempotencyKey,
+      expect.objectContaining({ idempotencyKey }),
+    );
+    expect(messageState.sendSealedMessage).toHaveBeenCalledWith(
+      channelId,
+      'ordinary message',
+      sealedFor(channelId, idempotencyKey, 'ordinary message'),
     );
     expect(localState.deleteCommand).toHaveBeenCalledWith(localState.accountA, idempotencyKey);
     expect(useOutboxStore.getState().items[idempotencyKey]).toBeUndefined();
   });
 });
+
+describe('a send whose response was lost (SQ-23)', () => {
+  it('repeats the same signed request after a restart and then leaves the queue', async () => {
+    const persisted = new Map<string, OutboxCommand>();
+    localState.saveCommand.mockImplementation(async (_context, command: OutboxCommand) => {
+      persisted.set(command.idempotencyKey, structuredClone(command));
+    });
+    localState.loadCommand.mockImplementation(async (_context, id: string) => persisted.get(id) ?? null);
+    localState.loadCommands.mockImplementation(async () => [...persisted.values()]);
+    localState.deleteCommand.mockImplementation(async (_context, id: string) => { persisted.delete(id); });
+    // The server stored the message, but the response never arrived.
+    messageState.sendSealedMessage.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+
+    const idempotencyKey = await useOutboxStore.getState().enqueue(channelId, 'once only');
+    await vi.waitFor(() => expect(messageState.sendSealedMessage).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(useOutboxStore.getState().items[idempotencyKey]?.status).toBe('failed'));
+    const firstRequest = messageState.sendSealedMessage.mock.calls[0]![2] as SealedMessage;
+    expect(persisted.get(idempotencyKey)?.sealed).toEqual(firstRequest);
+
+    // Restart: memory is gone, the encrypted local copy remains.
+    useOutboxStore.getState().reset();
+    await useOutboxStore.getState().flushAll();
+
+    expect(messageState.sealMessage).toHaveBeenCalledTimes(1);
+    expect(messageState.sendSealedMessage).toHaveBeenCalledTimes(2);
+    expect(messageState.sendSealedMessage.mock.calls[1]![2]).toEqual(firstRequest);
+    expect(useOutboxStore.getState().items).toEqual({});
+    expect(persisted.size).toBe(0);
+  });
+
+  it('treats an earlier stored attempt of the same message as delivered', async () => {
+    let persisted: OutboxCommand | null = null;
+    localState.saveCommand.mockImplementation(async (_context, command: OutboxCommand) => { persisted = command; });
+    localState.loadCommand.mockImplementation(async () => persisted);
+    messageState.sendSealedMessage.mockRejectedValueOnce(new ApiError('conflict', 409, 'IDEMPOTENCY_CONFLICT'));
+
+    const idempotencyKey = await useOutboxStore.getState().enqueue(channelId, 'sent before');
+    await vi.waitFor(() => expect(localState.deleteCommand).toHaveBeenCalledWith(localState.accountA, idempotencyKey));
+    expect(useOutboxStore.getState().items[idempotencyKey]).toBeUndefined();
+  });
+});
+
+function sealedFor(sealedChannelId: string, idempotencyKey: string, content: string): SealedMessage {
+  return {
+    envelope: {
+      type: 'message',
+      channelId: sealedChannelId,
+      authorId: localState.accountA.userId,
+      deviceId: localState.accountA.deviceId,
+      encryptedContent: `sealed:${content}`,
+      contentNonce: 'nonce',
+      keyVersion: 1,
+      idempotencyKey,
+      refMessageId: null,
+      broadcastMention: false,
+    },
+    request: {
+      encryptedContent: `sealed:${content}`,
+      contentNonce: 'nonce',
+      deviceId: localState.accountA.deviceId,
+      keyVersion: 1,
+      idempotencyKey,
+      signature: 'signature',
+      broadcastMention: false,
+    },
+  };
+}
 
 function fixedCommand(content: string): OutboxCommand {
   return createOutboxCommand(

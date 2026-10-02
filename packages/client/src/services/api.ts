@@ -1061,10 +1061,11 @@ class ApiService {
     return this.request<{ data: Message[]; hasMore: boolean; cursor: string | null }>(`/forum/posts/${postId}/messages${params}`);
   }
 
-  async markForumPostRead(postId: string) {
+  /** `shownActivityAt`: the latest activity of the post that was shown to the viewer. */
+  async markForumPostRead(postId: string, shownActivityAt: string) {
     return this.request<{ channelId: string; postId: string; lastReadActivityAt: string }>(`/forum/posts/${postId}/read`, {
       method: 'POST',
-      body: JSON.stringify({}),
+      body: JSON.stringify({ shownActivityAt }),
     });
   }
 
@@ -1129,6 +1130,20 @@ class ApiService {
     return this.request<{ messageId: string; channelId: string; userId: string; pinned: boolean }>(`/messages/${messageId}/pin`, {
       method: 'POST',
       body: JSON.stringify({}),
+    });
+  }
+
+  /** Sets (rather than toggles) a forum post's pin, so repeating it is harmless. */
+  async setForumPostPinned(postId: string, pinned: boolean) {
+    return this.request<{
+      messageId: string;
+      channelId: string;
+      userId: string;
+      pinned: boolean;
+      forumPost?: Omit<ForumPostState, 'unread'>;
+    }>(`/messages/${postId}/pin`, {
+      method: 'POST',
+      body: JSON.stringify({ pinned }),
     });
   }
 

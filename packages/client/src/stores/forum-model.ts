@@ -12,6 +12,14 @@ export function compareForumPosts(sort: ForumSort, left: ForumPostBroadcastState
   return left.postId < right.postId ? 1 : left.postId > right.postId ? -1 : 0;
 }
 
+/**
+ * Whether a message belongs to the given forum post (the post itself or a
+ * reply in it). Outside a forum (`postId` undefined) every message does.
+ */
+export function isInForumPost(message: { id: string; postId?: string | null }, postId: string | undefined): boolean {
+  return postId === undefined || (message.postId ?? message.id) === postId;
+}
+
 export function matchesForumFilter(state: ForumPostBroadcastState, tagId: string | null): boolean {
   return !tagId || state.tagIds.includes(tagId);
 }

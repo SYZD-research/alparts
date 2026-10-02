@@ -14,3 +14,11 @@ regexes = ['''(integration|supply|ci-only)-[a-z0-9-]*-at-least-32-bytes''']
 [[allowlists]]
 description = "Test sentinels and documentation"
 paths = ['''^scripts/tests/''', '''^docs/''', '''^audit-alparts/findings/''']
+
+# Formal-model result files record a SHA-256 digest per source file. Only a
+# bare 64-digit hex digest in those files is allowed.
+[[allowlists]]
+description = "Source file digests in formal-model results"
+condition = "AND"
+paths = ['''^formal-model/[a-z-]+-results\.json$''']
+regexes = ['''^[0-9a-f]{64}$''']

@@ -59,3 +59,28 @@ describe('outbox command', () => {
     expect(retried.error).toBeNull();
   });
 });
+
+describe('stored signed request (SQ-23)', () => {
+  const command = createOutboxCommand({ channelId: 'channel-1', content: 'hello' }, () => 'key-1', () => '2026-01-01T00:00:00.000Z');
+  const sealed = {
+    envelope: {
+      type: 'message', channelId: 'channel-1', authorId: 'user', deviceId: 'device', encryptedContent: 'ciphertext',
+      contentNonce: 'nonce', keyVersion: 2, idempotencyKey: 'key-1', refMessageId: null, broadcastMention: false,
+    },
+    request: {
+      encryptedContent: 'ciphertext', contentNonce: 'nonce', deviceId: 'device', keyVersion: 2,
+      idempotencyKey: 'key-1', signature: 'signature', broadcastMention: false,
+    },
+  };
+
+  it('keeps a request that matches its command', () => {
+    expect(parseOutboxCommand(JSON.parse(JSON.stringify({ ...command, sealed })))?.sealed).toEqual(sealed);
+  });
+
+  it('rejects a request made for another message or altered after signing', () => {
+    expect(parseOutboxCommand({ ...command, sealed: { ...sealed, envelope: { ...sealed.envelope, idempotencyKey: 'key-2' } } })).toBeNull();
+    expect(parseOutboxCommand({ ...command, sealed: { ...sealed, envelope: { ...sealed.envelope, channelId: 'channel-2' } } })).toBeNull();
+    expect(parseOutboxCommand({ ...command, sealed: { ...sealed, request: { ...sealed.request, encryptedContent: 'other' } } })).toBeNull();
+    expect(parseOutboxCommand({ ...command, sealed: { ...sealed, request: { ...sealed.request, postId: 'post' } } })).toBeNull();
+  });
+});

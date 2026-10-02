@@ -61,8 +61,11 @@ export class RuntimeLease {
       return operation();
     });
   }
+  /** Release the lease on shutdown. Releasing it is not a loss, so the
+   * lost-lease listeners (which force the process to exit with failure) are
+   * not run. */
   async close() {
-    this.invalidate();
+    this.valid = false;
     await this.client.end();
   }
 }

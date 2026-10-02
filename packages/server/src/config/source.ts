@@ -1,4 +1,4 @@
-import { readFileSync, statSync } from 'node:fs';
+import { closeSync, fstatSync, openSync, readFileSync } from 'node:fs';
 
 /** Read one bounded direct or file-backed value without logging its contents. */
 export function readConfiguredValue(
@@ -14,14 +14,21 @@ export function readConfiguredValue(
     return direct || undefined;
   }
   if (Buffer.byteLength(file, 'utf8') > 4_096) throw new Error(`${name}_FILE path is too long`);
-  const metadata = statSync(file);
-  if (!metadata.isFile() || metadata.size > 64 * 1024) {
-    throw new Error(`${name}_FILE must be a regular file no larger than 64 KiB`);
+  // Check and read the same open file, so it cannot be swapped in between.
+  const descriptor = openSync(file, 'r');
+  let loaded: string;
+  try {
+    const metadata = fstatSync(descriptor);
+    if (!metadata.isFile() || metadata.size > 64 * 1024) {
+      throw new Error(`${name}_FILE must be a regular file no larger than 64 KiB`);
+    }
+    if (isProduction && (metadata.mode & 0o022) !== 0) {
+      throw new Error(`${name}_FILE must not be writable by group or other in production`);
+    }
+    loaded = readFileSync(descriptor, { encoding: 'utf8' }).trim();
+  } finally {
+    closeSync(descriptor);
   }
-  if (isProduction && (metadata.mode & 0o022) !== 0) {
-    throw new Error(`${name}_FILE must not be writable by group or other in production`);
-  }
-  const loaded = readFileSync(file, { encoding: 'utf8' }).trim();
   if (Buffer.byteLength(loaded, 'utf8') > 64 * 1024) throw new Error(`${name}_FILE is too large`);
   return loaded || undefined;
 }

@@ -1,6 +1,6 @@
 import { withRuntimeFence } from '../security/runtime-lease.js';
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
-import { open, readFile, rename, stat, unlink } from 'node:fs/promises';
+import { open, rename, unlink } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { and, asc, desc, eq, gt, or, sql } from 'drizzle-orm';
 import { config } from '../config/index.js';
@@ -715,17 +715,25 @@ async function readDurableAuditHead(allowMissing = false): Promise<AuditCheckpoi
 async function readAuditCheckpoint(allowMissingHead = false): Promise<AuditCheckpoint | null> {
   const path = config.audit.checkpointPath;
   if (!path) return null;
-  let metadata;
+  // Check and read the same open file, so it cannot be swapped in between.
+  let handle;
   try {
-    metadata = await stat(path);
+    handle = await open(path, 'r');
   } catch (error: any) {
     if (error?.code === 'ENOENT') return null;
     throw error;
   }
-  if (!metadata.isFile() || metadata.size > 16 * 1024) {
-    throw new AuditCheckpointIntegrityError('Invalid audit checkpoint file');
+  let serialized: string;
+  try {
+    const metadata = await handle.stat();
+    if (!metadata.isFile() || metadata.size > 16 * 1024) {
+      throw new AuditCheckpointIntegrityError('Invalid audit checkpoint file');
+    }
+    serialized = await handle.readFile('utf8');
+  } finally {
+    await handle.close();
   }
-  const parsed = parseCheckpoint(await readFile(path, 'utf8'));
+  const parsed = parseCheckpoint(serialized);
   assertNotOlder(parsed, lastAcceptedCheckpoint);
   durableAuditHead = await readDurableAuditHead(allowMissingHead);
   assertNotOlder(parsed, durableAuditHead);

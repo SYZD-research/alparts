@@ -51,6 +51,7 @@ const postMessagesSchema = z.object({
   cursor: uuid.optional(),
   limit: z.coerce.number().int().min(1).max(100).default(MESSAGES_PER_PAGE),
 }).strict();
+const readSchema = z.object({ shownActivityAt: z.string().datetime().optional() }).strict();
 const lockSchema = z.object({ locked: z.boolean() }).strict();
 const resolvedSchema = z.object({ resolved: z.boolean() }).strict();
 const postTagsSchema = z.object({ tagIds }).strict();
@@ -116,7 +117,12 @@ router.get('/forum/posts/:postId/messages', authMiddleware, async (req: AuthRequ
 
 router.post('/forum/posts/:postId/read', authMiddleware, async (req: AuthRequest, res) => {
   try {
-    const read = await forumService.markForumPostRead(uuid.parse(req.params.postId), req.userId!);
+    const body = readSchema.parse(req.body ?? {});
+    const read = await forumService.markForumPostRead(
+      uuid.parse(req.params.postId),
+      req.userId!,
+      body.shownActivityAt ? new Date(body.shownActivityAt) : undefined,
+    );
     getSocketServer(req)?.to(`user:${req.userId}`).emit('forum:post-read', read);
     res.json(read);
   } catch (error) {

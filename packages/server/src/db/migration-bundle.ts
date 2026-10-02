@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { closeSync, existsSync, fstatSync, openSync, readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 const MAX_MIGRATIONS = 1_024;
@@ -19,11 +19,17 @@ interface JournalEntry {
 }
 
 function readBoundedText(path: string, maximumBytes: number): string {
-  const metadata = statSync(path);
-  if (!metadata.isFile() || metadata.size > maximumBytes) {
-    throw new Error('MIGRATION_BUNDLE_INVALID');
+  // Check and read the same open file, so it cannot be swapped in between.
+  const descriptor = openSync(path, 'r');
+  try {
+    const metadata = fstatSync(descriptor);
+    if (!metadata.isFile() || metadata.size > maximumBytes) {
+      throw new Error('MIGRATION_BUNDLE_INVALID');
+    }
+    return readFileSync(descriptor, 'utf8');
+  } finally {
+    closeSync(descriptor);
   }
-  return readFileSync(path, 'utf8');
 }
 
 export function resolveMigrationsFolder(): string {
