@@ -42,15 +42,15 @@ DATABASE_URL=postgresql://alparts:${db_pass}@localhost:5433/alparts
 BIND_HOST=127.0.0.1
 DB_SSL=false
 
-MINIO_ROOT_USER=$(rand_hex 12)
-MINIO_ROOT_PASSWORD=$(rand_hex 32)
-MINIO_ACCESS_KEY=$(rand_hex 8)
-MINIO_SECRET_KEY=$(rand_hex 24)
-MINIO_ENDPOINT=localhost
-MINIO_PORT=9000
-MINIO_USE_SSL=false
-MINIO_BUCKET=alparts
-MINIO_REQUEST_TIMEOUT_MS=10000
+S3_ADMIN_ACCESS_KEY=$(rand_hex 12)
+S3_ADMIN_SECRET_KEY=$(rand_hex 32)
+S3_ACCESS_KEY=$(rand_hex 8)
+S3_SECRET_KEY=$(rand_hex 24)
+S3_ENDPOINT=localhost
+S3_PORT=9000
+S3_USE_SSL=false
+S3_BUCKET=alparts
+S3_REQUEST_TIMEOUT_MS=10000
 
 PASSWORD_PEPPER=$(rand_hex 48)
 JWT_SECRET=$(rand_hex 48)
@@ -77,7 +77,7 @@ fi
 is_supported_env_key() {
   case "$1" in
     POSTGRES_USER|POSTGRES_PASSWORD|POSTGRES_DB|POSTGRES_PORT|DATABASE_URL|DB_SSL|DB_POOL_MAX|DB_CONNECT_TIMEOUT_MS|DB_STATEMENT_TIMEOUT_MS|\
-    MINIO_ROOT_USER|MINIO_ROOT_PASSWORD|MINIO_ACCESS_KEY|MINIO_SECRET_KEY|MINIO_ENDPOINT|MINIO_PORT|MINIO_CONSOLE_PORT|MINIO_USE_SSL|MINIO_BUCKET|MINIO_REQUEST_TIMEOUT_MS|\
+    S3_ADMIN_ACCESS_KEY|S3_ADMIN_SECRET_KEY|S3_ACCESS_KEY|S3_SECRET_KEY|S3_ENDPOINT|S3_PORT|S3_USE_SSL|S3_REGION|S3_BUCKET|S3_REQUEST_TIMEOUT_MS|\
     STORAGE_QUOTA_BYTES_PER_USER|STORAGE_QUOTA_BYTES_PER_WORKSPACE|STORAGE_QUOTA_BYTES_PER_CHANNEL|\
     JWT_SECRET|JWT_ISSUER|JWT_AUDIENCE|JWT_EXPIRES_IN_SECONDS|COOKIE_SECURE|\
     PASSWORD_PEPPER|PASSWORD_PEPPER_PREVIOUS|WEBAUTHN_RP_ID|WEBAUTHN_ORIGINS|AUDIT_INTEGRITY_KEY|AUDIT_CHECKPOINT_PATH|AUDIT_CHECKPOINT_REQUIRED|\
@@ -92,6 +92,19 @@ is_supported_env_key() {
     *) return 1 ;;
   esac
 }
+
+# Object storage settings were renamed from MINIO_* to S3_*, and the server
+# no longer reads the old names. Rename them in this local .env once.
+if grep -q '^MINIO_' .env; then
+  info ".env のストレージ設定の名前を新しい名前 (S3_*) に変更します"
+  renamed_env="$(mktemp .env.XXXXXX)"
+  sed -e 's/^MINIO_ROOT_USER=/S3_ADMIN_ACCESS_KEY=/' \
+    -e 's/^MINIO_ROOT_PASSWORD=/S3_ADMIN_SECRET_KEY=/' \
+    -e '/^MINIO_CONSOLE_PORT=/d' \
+    -e 's/^MINIO_/S3_/' .env > "$renamed_env"
+  chmod 600 "$renamed_env"
+  mv "$renamed_env" .env
+fi
 
 # Treat .env as data, not shell source. This intentionally supports the simple
 # KEY=value form generated above and rejects syntax that could execute code.
@@ -139,7 +152,7 @@ if [ -z "${AUDIT_CHECKPOINT_PATH:-}" ]; then
   checkpoint_added=1
 fi
 
-: "${AUDIT_HEAD_BUCKET:=${MINIO_BUCKET:-alparts}-audit}"
+: "${AUDIT_HEAD_BUCKET:=${S3_BUCKET:-alparts}-audit}"
 export AUDIT_HEAD_BUCKET
 if [ -z "${AUDIT_HEAD_OBJECT_KEY:-}" ]; then
   AUDIT_HEAD_OBJECT_KEY="$(rand_hex 16)"

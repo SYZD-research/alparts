@@ -12,7 +12,7 @@ bucket=$3
 : "${OBJECT_STORAGE_ACCESS_KEY:?}"
 : "${OBJECT_STORAGE_SECRET_KEY:?}"
 
-# SeaweedFS 4.47 (Apache-2.0). MinIO's images are no longer published.
+# SeaweedFS 4.47 (Apache-2.0).
 image='chrislusf/seaweedfs:4.47@sha256:ce9e796f1fe6f06968f4c04bdaf8f678dad9c8acdfef3d244133d71bfa6bf882'
 
 config=$(mktemp)
