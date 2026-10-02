@@ -4,9 +4,9 @@ Last verified: 2026-08-30
 
 ## Current recovery posture
 
-The repository can create an encrypted, checksummed snapshot of a quiesced PostgreSQL database plus the latest encrypted MinIO object bytes, then restore and compare it only in narrowly named, empty, unprivileged disposable targets. A systemd timer can automate local creation and bounded retention.
+The repository can create an encrypted, checksummed snapshot of a quiesced PostgreSQL database plus the latest encrypted object bytes from the object store, then restore and compare it only in narrowly named, empty, unprivileged disposable targets. A systemd timer can automate local creation and bounded retention.
 
-This is a recovery building block, not automatic DR. The repository does not provide PostgreSQL PITR/WAL archive, MinIO version replication/object lock, automatic off-host/off-region copy, DNS failover, spare-host provisioning, or recovery of browser private keys. The current application topology is single-process and single-region.
+This is a recovery building block, not automatic DR. The repository does not provide PostgreSQL PITR/WAL archive, object-store version replication/object lock, automatic off-host/off-region copy, DNS failover, spare-host provisioning, or recovery of browser private keys. The current application topology is single-process and single-region.
 
 ## Recovery objectives
 

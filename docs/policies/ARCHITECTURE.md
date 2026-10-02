@@ -25,7 +25,7 @@ Reverse proxy / TLS boundary -> Node.js Express + Socket.IO (one process)
                                   ├─ in-process realtime and work bulkheads
                                   ├─ PostgreSQL: identity, authz, ciphertext metadata,
                                   │  messages, upload state, audit HMAC chain
-                                  ├─ MinIO/S3: encrypted attachment chunks
+                                  ├─ S3 (SeaweedFS): encrypted attachment chunks
                                   └─ external checkpoint file: audit tail witness
 
 Operator plane
@@ -58,14 +58,14 @@ The browser-to-application connection must be TLS-protected outside local develo
 
 ### Persistence
 
-`packages/server/src/db` and migrations own the relational model, unique/FK constraints, indexes, statement/connect timeouts, and pool bounds. PostgreSQL is the source of truth for authorization, idempotency, state machines, and audit order. MinIO stores only encrypted attachment chunks and is not a source of authorization truth.
+`packages/server/src/db` and migrations own the relational model, unique/FK constraints, indexes, statement/connect timeouts, and pool bounds. PostgreSQL is the source of truth for authorization, idempotency, state machines, and audit order. The S3-compatible object store stores only encrypted attachment chunks and is not a source of authorization truth.
 
 ### Cross-store attachment workflow
 
-PostgreSQL and MinIO do not share a transaction. Uploads therefore use a restart-safe reservation/chunk/finalize state machine:
+PostgreSQL and the object store do not share a transaction. Uploads therefore use a restart-safe reservation/chunk/finalize state machine:
 
 1. reserve and authorize in PostgreSQL;
-2. write a bounded encrypted chunk to MinIO outside a DB transaction;
+2. write a bounded encrypted chunk to the object store outside a DB transaction;
 3. re-lock, re-authorize, stat the object, and record chunk metadata;
 4. finalize only after the fixed chunk manifest is complete;
 5. clean expired reservations and orphan objects conservatively.
@@ -103,7 +103,7 @@ Quota checks execute under the same logical lock as insertion. Migration `0013_b
 
 - Liveness answers only whether the process can execute.
 - Startup reports whether the process is still accepting startup responsibility.
-- Startup and readiness compare every applied migration timestamp/hash with the exact bundled migration journal and the bounded expected PostgreSQL 16 `public` catalog fingerprint, then check PostgreSQL, MinIO, and the audit checkpoint; persistent schema/image drift or drain fails closed. The database must be dedicated to Alparts; this does not validate row contents, database roles/grants, objects outside `public`, or physical durability.
+- Startup and readiness compare every applied migration timestamp/hash with the exact bundled migration journal and the bounded expected PostgreSQL 16 `public` catalog fingerprint, then check PostgreSQL, the object store, and the audit checkpoint; persistent schema/image drift or drain fails closed. The database must be dedicated to Alparts; this does not validate row contents, database roles/grants, objects outside `public`, or physical durability.
 - A dependency outage removes readiness but does not deliberately crash the process.
 - SIGTERM/SIGINT stops admission, disconnects realtime clients, stops the cleanup scheduler, drains HTTP for a bounded period, flushes audit state, closes DB connections, and exits.
 - Uncaught exceptions and unhandled rejections trigger the same bounded shutdown and a non-zero exit so a supervisor can restart the service.
