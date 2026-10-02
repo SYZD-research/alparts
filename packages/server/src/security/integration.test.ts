@@ -3119,7 +3119,7 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
       method: 'POST', cookie: member.cookie, body: { ...post.body, tagIds: [tag.id] },
     });
     assert.equal(postResponse.status, 201, await postResponse.clone().text());
-    const created = await json<{ message: { id: string; postId: string | null }; state: { tagIds: string[]; replyCount: number } }>(postResponse);
+    const created = await json<{ message: { id: string; postId: string | null; createdAt: string }; state: { tagIds: string[]; replyCount: number } }>(postResponse);
     const postId = created.message.id;
     assert.equal(created.message.postId, null);
     assert.deepEqual(created.state.tagIds, [tag.id]);
@@ -3146,10 +3146,20 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
       method: 'POST', cookie: owner.cookie, body: reply.body,
     });
     assert.equal(replyResponse.status, 201);
-    const replyEvent = await json<{ id: string; postId: string }>(replyResponse);
+    const replyEvent = await json<{ id: string; postId: string; createdAt: string }>(replyResponse);
     assert.equal(replyEvent.postId, postId);
     // Only the post itself can be pinned in a forum.
     assert.equal((await request(`/api/messages/${replyEvent.id}/pin`, { method: 'POST', cookie: owner.cookie })).status, 403);
+    // A requested pin state is set, not toggled, so repeating a request whose
+    // response was lost changes nothing; the response carries the list state.
+    for (const pinned of [true, true, false, false]) {
+      const pinResponse = await request(`/api/messages/${postId}/pin`, { method: 'POST', cookie: owner.cookie, body: { pinned } });
+      assert.equal(pinResponse.status, 200);
+      const pinResult = await json<{ pinned: boolean; forumPost?: { postId: string; isPinned: boolean } }>(pinResponse);
+      assert.equal(pinResult.pinned, pinned);
+      assert.deepEqual([pinResult.forumPost?.postId, pinResult.forumPost?.isPinned], [postId, pinned]);
+    }
+    assert.equal((await request(`/api/messages/${postId}/pin`, { method: 'POST', cookie: owner.cookie, body: { pinned: 'yes' } })).status, 400);
 
     // A forum event outside a forum, and a missing post inside one, fail closed.
     const general = (await json<Array<{ id: string; type: string }>>(
@@ -3189,6 +3199,19 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
       await request(`/api/channels/${forum.id}/forum/posts?limit=1&cursor=${paged.cursor}`, { cookie: owner.cookie }),
     );
     assert.deepEqual(new Set([...paged.data, ...nextPage.data].map((entry) => entry.state.postId)), new Set([postId, secondPostId]));
+    // A read mark covers only the activity the viewer was shown: a reply that
+    // arrived after the post was displayed stays unread.
+    const shownBeforeReply = await request(`/api/forum/posts/${postId}/read`, {
+      method: 'POST', cookie: member.cookie, body: { shownActivityAt: created.message.createdAt },
+    });
+    assert.equal(shownBeforeReply.status, 200);
+    assert.equal((await json<{ lastReadActivityAt: string }>(shownBeforeReply)).lastReadActivityAt, created.message.createdAt);
+    assert.equal((await json<{ state: { unread: boolean } }>(await request(`/api/forum/posts/${postId}`, { cookie: member.cookie }))).state.unread, true);
+    // A time past the post's activity is never recorded.
+    const shownFuture = await request(`/api/forum/posts/${postId}/read`, {
+      method: 'POST', cookie: member.cookie, body: { shownActivityAt: '2999-01-01T00:00:00.000Z' },
+    });
+    assert.equal((await json<{ lastReadActivityAt: string }>(shownFuture)).lastReadActivityAt, replyEvent.createdAt);
     assert.equal((await request(`/api/forum/posts/${postId}/read`, { method: 'POST', cookie: member.cookie, body: {} })).status, 200);
     const afterRead = await json<{ state: { unread: boolean } }>(await request(`/api/forum/posts/${postId}`, { cookie: member.cookie }));
     assert.equal(afterRead.state.unread, false);
