@@ -95,6 +95,11 @@ interface UploadRuntime {
 
 interface AttachmentState {
   tasks: Record<string, AttachmentUploadTask>;
+  /**
+   * Throws at once, registering nothing, when the files cannot be queued (for
+   * example offline or at the local upload limit). Otherwise returns a promise
+   * that settles when the queued uploads have run.
+   */
   startUploads: (message: Message, files: File[]) => Promise<void>;
   retryUpload: (taskId: string) => void;
   resumeFailedUploads: () => void;
@@ -436,8 +441,8 @@ async function runUpload(taskId: string): Promise<void> {
 export const useAttachmentStore = create<AttachmentState>((set, get) => ({
   tasks: {},
 
-  startUploads: async (message, files) => {
-    if (files.length === 0) return;
+  startUploads: (message, files) => {
+    if (files.length === 0) return Promise.resolve();
     if (files.length > ATTACHMENT_MAX_COUNT_PER_MESSAGE) {
       throw new Error(`1件のメッセージに添付できるファイルは${ATTACHMENT_MAX_COUNT_PER_MESSAGE}件までです`);
     }
@@ -484,7 +489,9 @@ export const useAttachmentStore = create<AttachmentState>((set, get) => ({
 
     // Sequential processing bounds plaintext/ciphertext memory to one 5MiB
     // chunk pair even when a message contains several files.
-    for (const taskId of taskIds) await runUpload(taskId);
+    return (async () => {
+      for (const taskId of taskIds) await runUpload(taskId);
+    })();
   },
 
   retryUpload: (taskId) => {
@@ -513,11 +520,19 @@ export const useAttachmentStore = create<AttachmentState>((set, get) => ({
   cancelUpload: (taskId) => {
     const runtime = runtimes.get(taskId);
     if (!runtime) return;
+    const finalizing = get().tasks[taskId]?.status === 'finalizing';
+    const prepared = runtime.prepared;
     runtime.cancelled = true;
-    cancelKnownReservation(runtime);
     if (runtime.controller) runtime.controller.abort();
     runtimes.delete(taskId);
-    updateTask(taskId, { status: 'cancelled', error: 'アップロードをキャンセルしました' });
+    if (!finalizing || !prepared) {
+      cancelKnownReservation(runtime);
+      updateTask(taskId, { status: 'cancelled', error: 'アップロードをキャンセルしました' });
+      return;
+    }
+    // The server may already have accepted the file. Report what it decided
+    // instead of assuming the cancellation won.
+    void settleFinalizingCancellation(taskId, runtime, prepared);
   },
 
   dismissUpload: (taskId) => {
@@ -562,6 +577,49 @@ export const useAttachmentStore = create<AttachmentState>((set, get) => ({
     set({ tasks: {} });
   },
 }));
+
+async function settleFinalizingCancellation(taskId: string, runtime: UploadRuntime, prepared: PreparedUpload): Promise<void> {
+  const generation = attachmentGeneration;
+  let cancelled = false;
+  try {
+    await api.cancelAttachmentUpload(prepared.reservation.uploadId);
+    cancelled = true;
+  } catch {
+    // Already completed, or unknown: look for the file below.
+  }
+  let attachment: Attachment | null = null;
+  if (!cancelled) {
+    try {
+      attachment = await recoverCompletedAttachment(runtime, prepared);
+      if (attachment) await verifyAttachmentMetadata(runtime.message, attachment);
+    } catch {
+      attachment = null;
+    }
+  }
+  if (generation !== attachmentGeneration) return;
+  if (!attachment) {
+    updateTask(taskId, { status: 'cancelled', error: 'アップロードをキャンセルしました' });
+    return;
+  }
+  useMessageStore.getState().applyAttachment(runtime.message.channelId, attachment);
+  updateTask(taskId, {
+    status: 'completed',
+    progress: 100,
+    uploadedChunks: prepared.chunkCount,
+    error: null,
+    attachmentId: attachment.id,
+  });
+}
+
+/** What the viewer can do with an upload in each state. */
+export function attachmentTaskActions(status: AttachmentUploadStatus): { cancel: boolean; resume: boolean; dismiss: boolean } {
+  return {
+    cancel: status === 'preparing' || status === 'uploading' || status === 'finalizing',
+    // A cancelled upload has released its file; only a failed one can resume.
+    resume: status === 'failed',
+    dismiss: status === 'completed' || status === 'failed' || status === 'cancelled',
+  };
+}
 
 function pruneTerminalTaskHistory(
   tasks: Record<string, AttachmentUploadTask>,
