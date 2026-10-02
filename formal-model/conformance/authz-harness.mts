@@ -5,8 +5,8 @@ import { readFileSync } from 'node:fs';
 
 process.env.NODE_ENV = 'test';
 process.env.DATABASE_URL ||= 'postgres://test:test@127.0.0.1:5432/alparts_test';
-process.env.MINIO_ACCESS_KEY ||= 'test-access-key';
-process.env.MINIO_SECRET_KEY ||= 'test-secret-key';
+process.env.S3_ACCESS_KEY ||= 'test-access-key';
+process.env.S3_SECRET_KEY ||= 'test-secret-key';
 process.env.JWT_SECRET ||= 'formal-model-conformance-jwt-secret-32-bytes';
 process.env.PASSWORD_PEPPER ||= 'formal-model-conformance-pepper-32-bytes';
 process.env.AUDIT_INTEGRITY_KEY ||= 'formal-model-conformance-audit-key-32-bytes';

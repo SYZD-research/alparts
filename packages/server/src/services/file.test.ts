@@ -1,11 +1,10 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import type * as http from 'node:http';
 import { describe, it } from 'node:test';
 
 process.env.DATABASE_URL ||= 'postgres://test:test@127.0.0.1:5432/alparts_test';
-process.env.MINIO_ACCESS_KEY ||= 'test-access-key';
-process.env.MINIO_SECRET_KEY ||= 'test-secret-key';
+process.env.S3_ACCESS_KEY ||= 'test-access-key';
+process.env.S3_SECRET_KEY ||= 'test-secret-key';
 process.env.AUDIT_INTEGRITY_KEY ||= 'test-audit-integrity-key-at-least-32-bytes';
 process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
 process.env.JWT_SECRET ||= 'test-jwt-secret-key-at-least-32-bytes';
@@ -119,28 +118,24 @@ describe('fixed attachment chunk contract', () => {
     assert.equal(service.isDangerousAttachmentMime('image/png'), false);
   });
 
-  it('applies the object-storage timeout before headers and to response-stream inactivity', async () => {
+  it('bounds every object-storage request by an absolute deadline', async () => {
     const service = await import('./object-storage.js');
-    const firstRequest = new FakeRequest();
-    const transport = service.createTimeoutTransport({
-      request: (() => firstRequest as unknown as http.ClientRequest) as typeof http.request,
-    }, 1_000);
-    transport.request({});
-    assert.equal(firstRequest.timeoutMs, 1_000);
-    firstRequest.timeoutCallback?.();
-    assert.equal(firstRequest.destroyedWith?.message, 'OBJECT_STORAGE_TIMEOUT');
+    const expired = service.objectStorageDeadlineSignal(Date.now() - 1);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(expired.aborted, true);
+    assert.equal((expired.reason as Error).message, 'OBJECT_STORAGE_TIMEOUT');
 
-    const secondRequest = new FakeRequest();
-    const streamTransport = service.createTimeoutTransport({
-      request: (() => secondRequest as unknown as http.ClientRequest) as typeof http.request,
-    }, 2_000);
-    streamTransport.request({});
-    const response = new FakeResponse();
-    secondRequest.emit('response', response);
-    assert.equal(secondRequest.timeoutMs, 0);
-    assert.equal(response.timeoutMs, 2_000);
-    response.timeoutCallback?.();
-    assert.equal(response.destroyedWith?.message, 'OBJECT_STORAGE_TIMEOUT');
+    const pending = service.objectStorageDeadlineSignal(Date.now() + 30);
+    assert.equal(pending.aborted, false);
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    assert.equal(pending.aborted, true);
+  });
+
+  it('addresses the object store by scheme, host and port', async () => {
+    const service = await import('./object-storage.js');
+    assert.equal(service.objectStorageEndpoint('objects.example.test', 443, true), 'https://objects.example.test:443');
+    assert.equal(service.objectStorageEndpoint('127.0.0.1', 9000, false), 'http://127.0.0.1:9000');
+    assert.equal(service.objectStorageEndpoint('::1', 9000, false), 'http://[::1]:9000');
   });
 
   it('serializes remote phases for one upload without blocking a different upload', async () => {
@@ -303,43 +298,6 @@ class FakeListingStream extends EventEmitter {
 
   destroy(error?: Error) {
     this.destroyedWith = error;
-    return this;
-  }
-}
-
-class FakeRequest extends EventEmitter {
-  timeoutMs = -1;
-  timeoutCallback: (() => void) | undefined;
-  destroyedWith: Error | undefined;
-
-  setTimeout(timeoutMs: number, callback?: () => void) {
-    this.timeoutMs = timeoutMs;
-    this.timeoutCallback = callback;
-    return this;
-  }
-
-  destroy(error?: Error) {
-    this.destroyedWith = error;
-    if (error) this.emit('error', error);
-    return this;
-  }
-}
-
-class FakeResponse extends EventEmitter {
-  timeoutMs = -1;
-  timeoutCallback: (() => void) | undefined;
-  destroyedWith: Error | undefined;
-
-  setTimeout(timeoutMs: number, callback?: () => void) {
-    this.timeoutMs = timeoutMs;
-    this.timeoutCallback = callback;
-    return this;
-  }
-
-  destroy(error?: Error) {
-    this.destroyedWith = error;
-    if (error) this.emit('error', error);
-    this.emit('close');
     return this;
   }
 }
