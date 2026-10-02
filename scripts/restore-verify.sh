@@ -9,7 +9,8 @@ source "$SCRIPT_DIR/lib/backup-common.sh"
 show_help() {
   cat <<'HELP'
 Decrypt and restore an Alparts Phase 1 backup into an empty, disposable
-verification database and an empty, disposable verification MinIO bucket.
+verification database and an empty, disposable verification bucket on an
+S3-compatible object store (for example SeaweedFS).
 The restored row counts, database/object references, object count, and every
 object checksum are then compared with the encrypted backup manifest.
 
@@ -19,12 +20,15 @@ Usage:
 Required settings (a *_FILE alternative is accepted for values marked secret):
   VERIFY_DATABASE_SERVICE_FILE Private libpq service file for the empty target
   VERIFY_DATABASE_SERVICE      Service section name in that file
-  VERIFY_MINIO_URL             Verification URL (HTTPS, or HTTP on loopback only)
-  VERIFY_MINIO_ACCESS_KEY      Verification access key (secret)
-  VERIFY_MINIO_SECRET_KEY      Verification secret key (secret)
-  VERIFY_MINIO_BUCKET          Existing, empty verification bucket
+  VERIFY_S3_URL                Verification URL (HTTPS, or HTTP on loopback only)
+  VERIFY_S3_ACCESS_KEY         Verification access key (secret)
+  VERIFY_S3_SECRET_KEY         Verification secret key (secret)
+  VERIFY_S3_BUCKET             Existing, empty verification bucket
   RESTORE_AGE_IDENTITY_FILE    Readable age identity file
   ALPARTS_RESTORE_ACK          Must be exactly RESTORE_TO_EMPTY_DISPOSABLE_TARGETS
+
+Optional:
+  VERIFY_S3_REGION             Signing region (default us-east-1)
 
 Optional resource limits (positive integers):
   RESTORE_MAX_BYTES            Encrypted and decrypted archive bytes (default 1 TiB)
@@ -55,10 +59,11 @@ fi
 BACKUP_FILE="$1"
 [[ -f "$BACKUP_FILE" && -r "$BACKUP_FILE" ]] || backup_die 'Backup file must be a readable regular file'
 
-for dependency in age awk chmod cmp cut find grep jq mc mkdir mktemp pg_restore psql rm sed sha256sum sort stat tar uniq wc; do
+for dependency in age awk chmod cmp cut find grep jq mkdir mktemp pg_restore psql rclone rm sed sha256sum sort stat tar uniq wc; do
   require_command "$dependency"
 done
 
+reject_legacy_storage_settings
 [[ "${ALPARTS_RESTORE_ACK-}" == 'RESTORE_TO_EMPTY_DISPOSABLE_TARGETS' ]] \
   || backup_die 'Set ALPARTS_RESTORE_ACK=RESTORE_TO_EMPTY_DISPOSABLE_TARGETS after reviewing the targets'
 
@@ -67,17 +72,19 @@ done
 [[ -n "${VERIFY_DATABASE_SERVICE-}" ]] \
   || backup_die 'Missing required setting: VERIFY_DATABASE_SERVICE'
 export -n VERIFY_DATABASE_SERVICE 2>/dev/null || true
-load_required_value VERIFY_MINIO_URL
-load_required_value VERIFY_MINIO_ACCESS_KEY
-load_required_value VERIFY_MINIO_SECRET_KEY
-load_required_value VERIFY_MINIO_BUCKET
+load_required_value VERIFY_S3_URL
+load_required_value VERIFY_S3_ACCESS_KEY
+load_required_value VERIFY_S3_SECRET_KEY
+load_required_value VERIFY_S3_BUCKET
+VERIFY_S3_REGION="${VERIFY_S3_REGION:-us-east-1}"
+export -n VERIFY_S3_REGION 2>/dev/null || true
 [[ -n "${RESTORE_AGE_IDENTITY_FILE-}" ]] \
   || backup_die 'Missing required setting: RESTORE_AGE_IDENTITY_FILE'
 
-validate_minio_url "$VERIFY_MINIO_URL"
+validate_s3_url "$VERIFY_S3_URL"
 validate_postgres_service "$VERIFY_DATABASE_SERVICE_FILE" "$VERIFY_DATABASE_SERVICE"
 export -n VERIFY_DATABASE_SERVICE_FILE 2>/dev/null || true
-validate_restore_bucket_name "$VERIFY_MINIO_BUCKET"
+validate_restore_bucket_name "$VERIFY_S3_BUCKET"
 [[ -f "$RESTORE_AGE_IDENTITY_FILE" && -r "$RESTORE_AGE_IDENTITY_FILE" ]] \
   || backup_die 'RESTORE_AGE_IDENTITY_FILE must be a readable regular file'
 validate_private_file "$RESTORE_AGE_IDENTITY_FILE" RESTORE_AGE_IDENTITY_FILE
@@ -115,7 +122,7 @@ STAGING_DIR="$(mktemp -d "${TMPDIR:-/tmp}/alparts-restore-verify.XXXXXXXX")"
 chmod 700 -- "$STAGING_DIR"
 ARCHIVE_FILE="$STAGING_DIR/backup.tar"
 PAYLOAD_DIR="$STAGING_DIR/payload"
-MC_CONFIG_DIR="$STAGING_DIR/mc"
+STORAGE_CONFIG="$STAGING_DIR/rclone.conf"
 mkdir -p -- "$PAYLOAD_DIR"
 
 backup_log 'Decrypting backup into protected temporary storage'
@@ -163,7 +170,7 @@ validate_object_references_file "$PAYLOAD_DIR/object-references.tsv"
 jq -e '
   .formatVersion == 1 and
   (.runId | type == "string" and test("^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}$")) and
-  (.source.minioBucket | type == "string") and
+  ((.source.bucket // .source.minioBucket) | type == "string") and
   (.database.format == "postgresql-custom") and
   (.database.sha256 | test("^[a-f0-9]{64}$")) and
   (.database.tableCount | type == "number" and . >= 0 and floor == .) and
@@ -173,9 +180,10 @@ jq -e '
   (.objects.inventorySha256 | test("^[a-f0-9]{64}$"))
 ' "$PAYLOAD_DIR/manifest.json" >/dev/null || backup_die 'Backup manifest is malformed or unsupported'
 
-source_bucket="$(jq -r '.source.minioBucket' "$PAYLOAD_DIR/manifest.json")"
+# Backups made before the move to S3_* names record the bucket as minioBucket.
+source_bucket="$(jq -r '.source.bucket // .source.minioBucket' "$PAYLOAD_DIR/manifest.json")"
 validate_bucket_name "$source_bucket"
-[[ "$VERIFY_MINIO_BUCKET" != "$source_bucket" ]] \
+[[ "$VERIFY_S3_BUCKET" != "$source_bucket" ]] \
   || backup_die 'Verification bucket must not have the source bucket name'
 
 checksum_entries="$(validate_checksum_file "$PAYLOAD_DIR")"
@@ -244,10 +252,11 @@ SELECT
 [[ "$existing_user_objects" == '0' ]] \
   || backup_die 'Verification database contains user schemas or objects; no restore was attempted'
 
-configure_mc_alias "$MC_CONFIG_DIR" verify "$VERIFY_MINIO_URL" "$VERIFY_MINIO_ACCESS_KEY" "$VERIFY_MINIO_SECRET_KEY"
-mc_with_config "$MC_CONFIG_DIR" stat "verify/$VERIFY_MINIO_BUCKET" >/dev/null
+configure_s3_remote "$STORAGE_CONFIG" verify "$VERIFY_S3_URL" "$VERIFY_S3_ACCESS_KEY" "$VERIFY_S3_SECRET_KEY" "$VERIFY_S3_REGION"
+rclone_with_config "$STORAGE_CONFIG" lsjson --stat "verify:$VERIFY_S3_BUCKET" >/dev/null \
+  || backup_die 'Verification bucket is not reachable; verify the URL, credentials and bucket'
 TARGET_LISTING="$STAGING_DIR/target-before.tsv"
-write_mc_object_listing "$MC_CONFIG_DIR" "verify/$VERIFY_MINIO_BUCKET" "$TARGET_LISTING"
+write_object_listing "$STORAGE_CONFIG" "verify:$VERIFY_S3_BUCKET" "$TARGET_LISTING"
 [[ ! -s "$TARGET_LISTING" ]] \
   || backup_die 'Verification bucket is not empty; no restore was attempted'
 
@@ -267,23 +276,23 @@ cmp --silent "$PAYLOAD_DIR/object-references.tsv" "$RESTORED_REFERENCES" \
 
 # Recheck immediately before upload. Exclusive access to this validation-only
 # bucket is an explicit operator precondition; the script never deletes objects.
-write_mc_object_listing "$MC_CONFIG_DIR" "verify/$VERIFY_MINIO_BUCKET" "$TARGET_LISTING"
+write_object_listing "$STORAGE_CONFIG" "verify:$VERIFY_S3_BUCKET" "$TARGET_LISTING"
 [[ ! -s "$TARGET_LISTING" ]] \
   || backup_die 'Verification bucket changed during restore; object restore was refused'
 
 backup_log "Restoring ${actual_object_count} encrypted object(s) into the disposable bucket"
 if (( actual_object_count > 0 )); then
-  mc_with_config "$MC_CONFIG_DIR" mirror "$PAYLOAD_DIR/objects" "verify/$VERIFY_MINIO_BUCKET" >/dev/null
+  rclone_with_config "$STORAGE_CONFIG" copy "$PAYLOAD_DIR/objects" "verify:$VERIFY_S3_BUCKET" >/dev/null
 fi
-write_mc_object_listing "$MC_CONFIG_DIR" "verify/$VERIFY_MINIO_BUCKET" "$STAGING_DIR/target-after.tsv"
+write_object_listing "$STORAGE_CONFIG" "verify:$VERIFY_S3_BUCKET" "$STAGING_DIR/target-after.tsv"
 cut -f 1,2 "$PAYLOAD_DIR/object-inventory.tsv" > "$STAGING_DIR/expected-target-listing.tsv"
 cmp --silent "$STAGING_DIR/expected-target-listing.tsv" "$STAGING_DIR/target-after.tsv" \
-  || backup_die 'Restored MinIO object keys or sizes differ from the backup inventory'
+  || backup_die 'Restored object keys or sizes differ from the backup inventory'
 
 VERIFICATION_OBJECTS="$STAGING_DIR/downloaded-objects"
 mkdir -p -- "$VERIFICATION_OBJECTS"
 if (( actual_object_count > 0 )); then
-  mc_with_config "$MC_CONFIG_DIR" mirror "verify/$VERIFY_MINIO_BUCKET" "$VERIFICATION_OBJECTS" >/dev/null
+  rclone_with_config "$STORAGE_CONFIG" copy "verify:$VERIFY_S3_BUCKET" "$VERIFICATION_OBJECTS" >/dev/null
 fi
 validate_object_tree "$VERIFICATION_OBJECTS"
 write_object_inventory "$VERIFICATION_OBJECTS" "$STAGING_DIR/restored-object-inventory.tsv"
