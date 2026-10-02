@@ -452,7 +452,11 @@ export async function toggleReaction(messageId: string, userId: string, emoji: s
   return committed.response;
 }
 
-export async function pinMessage(messageId: string, userId: string) {
+/**
+ * Without `pinned` the pin is toggled. With it the pin is set to that value,
+ * so repeating a request whose response was lost changes nothing.
+ */
+export async function pinMessage(messageId: string, userId: string, pinned?: boolean) {
   const committed = await auditedTransaction(async (transaction) => {
     const { original, workspaceId, channelType } = await lockAndAuthorizeMessageMutation(
       transaction,
@@ -468,27 +472,33 @@ export async function pinMessage(messageId: string, userId: string) {
     const existing = await transaction.query.messagePins.findFirst({
       where: and(eq(messagePins.messageId, messageId), eq(messagePins.channelId, original.channelId)),
     });
-    if (existing) {
+    const next = pinned ?? !existing;
+    const changed = Boolean(existing) !== next;
+    if (changed && existing) {
       await transaction.delete(messagePins).where(and(
         eq(messagePins.messageId, messageId),
         eq(messagePins.channelId, original.channelId),
       ));
-      return {
-        workspaceId,
-        response: { messageId, channelId: original.channelId, userId, pinned: false },
-      };
+    } else if (changed) {
+      const currentPins = await transaction.query.messagePins.findMany({
+        columns: { messageId: true },
+        where: eq(messagePins.channelId, original.channelId),
+        limit: MAX_PINS_PER_CHANNEL + 1,
+      });
+      if (currentPins.length >= MAX_PINS_PER_CHANNEL) throw new Error('PIN_LIMIT_REACHED');
+      await transaction.insert(messagePins)
+        .values({ channelId: original.channelId, messageId, pinnedBy: userId });
     }
-    const currentPins = await transaction.query.messagePins.findMany({
-      columns: { messageId: true },
-      where: eq(messagePins.channelId, original.channelId),
-      limit: MAX_PINS_PER_CHANNEL + 1,
-    });
-    if (currentPins.length >= MAX_PINS_PER_CHANNEL) throw new Error('PIN_LIMIT_REACHED');
-    await transaction.insert(messagePins)
-      .values({ channelId: original.channelId, messageId, pinnedBy: userId });
+    // A pinned forum post moves in every viewer's list. Its new state is read
+    // in the same transaction, so a committed pin always comes with it.
+    const forumPost: ForumPostBroadcastState | null = channelType === 'forum'
+      ? (await loadForumPostStates(transaction, [messageId]))[0] ?? null
+      : null;
     return {
       workspaceId,
-      response: { messageId, channelId: original.channelId, userId, pinned: true },
+      changed,
+      forumPost,
+      response: { messageId, channelId: original.channelId, userId, pinned: next },
     };
   }, (result) => ({
     actorId: userId,
@@ -498,9 +508,10 @@ export async function pinMessage(messageId: string, userId: string) {
     details: {
       workspaceId: result.workspaceId,
       channelId: result.response.channelId,
+      ...(result.changed ? {} : { changed: false }),
     },
   }));
-  return committed.response;
+  return { ...committed.response, forumPost: committed.forumPost };
 }
 
 export async function getPinnedMessages(channelId: string) {

@@ -61,7 +61,7 @@ type MessageEvent = StoredMessageResult['event'];
 type MessageDeletedResult = Awaited<ReturnType<typeof messageService.deleteMessage>>;
 export type MessageDeletedPayload = Pick<MessageDeletedResult, 'messageId' | 'channelId' | 'event'>;
 export type ReactionUpdatedPayload = Awaited<ReturnType<typeof messageService.toggleReaction>>;
-export type PinUpdatedPayload = Awaited<ReturnType<typeof messageService.pinMessage>>;
+export type PinUpdatedPayload = Omit<Awaited<ReturnType<typeof messageService.pinMessage>>, 'forumPost'>;
 
 export function broadcastMessageCreated(
   io: SocketServer,

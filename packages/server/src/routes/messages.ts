@@ -18,8 +18,7 @@ import {
   broadcastPinUpdated,
   broadcastReactionUpdated,
 } from '../websocket/message.handler.js';
-import { db } from '../db/index.js';
-import { loadForumPostStates } from '../services/forum-state.js';
+import { logError } from '../security/logger.js';
 
 const router = Router();
 const ciphertextMax = Math.ceil((MAX_PADDED_MESSAGE_BYTES + 16) / 3) * 4;
@@ -206,17 +205,29 @@ router.post('/messages/:id/reactions', authMiddleware, requireMessagePermission(
   }
 });
 
+const pinSchema = z.object({ pinned: z.boolean().optional() }).strict();
+
 router.post('/messages/:id/pin', authMiddleware, requireMessagePermission(Permissions.PIN_MESSAGES, 'id'), async (req: AuthRequest, res) => {
+  const body = pinSchema.safeParse(req.body ?? {});
+  if (!body.success) {
+    res.status(400).json({ error: 'VALIDATION', message: 'Invalid pin request', statusCode: 400 });
+    return;
+  }
   try {
-    const result = await messageService.pinMessage(req.params.id, req.userId!);
+    const { forumPost, ...result } = await messageService.pinMessage(req.params.id, req.userId!, body.data.pinned);
+    // The pin is committed; notifying other viewers is best effort and must
+    // not turn the response into a failure.
     const io = getSocketServer(req);
     if (io) {
-      broadcastPinUpdated(io, result);
-      // Pinned forum posts move to the top of every viewer's list.
-      const [forumPost] = await loadForumPostStates(db, [result.messageId]);
-      if (forumPost) broadcastForumPostUpdated(io, forumPost);
+      try {
+        broadcastPinUpdated(io, result);
+        // Pinned forum posts move to the top of every viewer's list.
+        if (forumPost) broadcastForumPostUpdated(io, forumPost);
+      } catch (error) {
+        logError('message.pin.broadcast_failed', error);
+      }
     }
-    res.json(result);
+    res.json(forumPost ? { ...result, forumPost } : result);
   } catch (error: any) {
     if (error.message === 'MESSAGE_NOT_FOUND') {
       res.status(404).json({ error: 'NOT_FOUND', message: 'Message not found', statusCode: 404 });
