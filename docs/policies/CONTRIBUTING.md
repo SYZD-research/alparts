@@ -4,8 +4,8 @@
 
 - Node.js 24 or newer
 - pnpm exactly as declared by root `packageManager`
-- Docker/Compose for disposable PostgreSQL and MinIO integration
-- GNU shell tools plus PostgreSQL client, MinIO `mc`, `age` and `jq` for backup/restore work
+- Docker/Compose for disposable PostgreSQL and SeaweedFS integration (`scripts/ci/start-object-storage.sh`)
+- GNU shell tools plus PostgreSQL client, `rclone`, `age` and `jq` for backup/restore work
 
 Install with `pnpm install --frozen-lockfile`. Do not regenerate the lockfile incidentally or add unpinned CI actions.
 
@@ -45,7 +45,7 @@ git diff --check
 bash -n scripts/*.sh scripts/lib/*.sh scripts/tests/*.sh
 ```
 
-Run `pnpm --filter @alparts/server test:integration` only against a uniquely named, empty, disposable PostgreSQL database and MinIO bucket after applying all migrations. Never point tests at production-like names or credentials.
+Run `pnpm --filter @alparts/server test:integration` only against a uniquely named, empty, disposable PostgreSQL database and object-store bucket after applying all migrations. Never point tests at production-like names or credentials.
 
 ## Database migrations
 

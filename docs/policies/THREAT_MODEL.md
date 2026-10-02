@@ -13,7 +13,7 @@ Canonical/current threat model: [`docs/security/THREAT_MODEL.md`](../security/TH
 - device private key、channel key、attachment file key、local-state key
 - password、session cookie、invitation token、device enrollment data
 - workspace/private-channel membership、device directory、presence、routing metadata
-- PostgreSQL row、MinIO object、audit chain、audit integrity key、external checkpoint
+- PostgreSQL row、オブジェクトストレージのobject、audit chain、audit integrity key、external checkpoint
 - encrypted backup artifact、age identity、deployment credential、configuration
 - source、dependency、build/release artifact
 
@@ -22,7 +22,7 @@ Canonical/current threat model: [`docs/security/THREAT_MODEL.md`](../security/TH
 - 未認証Internet client、別workspaceの認証user
 - malicious/removed workspace member、盗まれたsessionを持つ攻撃者
 - compromised browser profile、改ざんされたdesktop配布物、またはclient JavaScriptを実行できる攻撃者
-- PostgreSQL、MinIO、backup storage、application hostのoperatorまたは侵害者
+- PostgreSQL、オブジェクトストレージ、backup storage、application hostのoperatorまたは侵害者
 - malicious dependency/build/release actor
 - malicious call participant、STUN/TURNまたはsignaling operator
 - 誤設定や誤操作を行う正規operator
@@ -33,11 +33,11 @@ Canonical/current threat model: [`docs/security/THREAT_MODEL.md`](../security/TH
 1a. **Desktop host:** rendererは署名対象の同梱UIだけを読み込み、sandbox/context isolation下で狭いIPCを使う。Private materialはOS保護領域でwrapするが、実行中rendererまたは改ざん済み配布物は正規操作としてkeyを利用できる。IPC、package署名、OS account、endpoint integrityは独立した境界である。
 2. **Browser ↔ ingress:** TLSはreverse proxy/deployment edgeの責任である。TLSの内側でも、すべてのREST/WebSocket actionにlive sessionとresource authorizationが必要である。
 3. **Application process:** serverはrouting、membership、device、object metadataを扱い、availabilityとkey directory提示を制御する。Message plaintextを保持しないことはmetadata confidentiality、availability、rollback resistanceを意味しない。
-4. **PostgreSQL / MinIO:** message confidentialityについてuntrusted storeとして扱う。Remote接続はauthenticated TLSとleast-privilege credentialを必要とする。Attachmentはclient crypto unit vectorと隔離PostgreSQL/MinIOのprotocol-level resume/download SHAを組み合わせて検証するが、store自体はupload byteが正しいplaintextから生成されたことを証明できない。
+4. **PostgreSQL / オブジェクトストレージ:** message confidentialityについてuntrusted storeとして扱う。Remote接続はauthenticated TLSとleast-privilege credentialを必要とする。Attachmentはclient crypto unit vectorと隔離PostgreSQL/オブジェクトストレージのprotocol-level resume/download SHAを組み合わせて検証するが、store自体はupload byteが正しいplaintextから生成されたことを証明できない。
 5. **Workspace / channel:** workspace membershipがpublic channelの最低境界で、private channelはexplicit membershipを追加要求する。Role/overrideと暗号group membershipの不一致時は安全側へ停止しなければならない。
 6. **Device enrollment / key distribution:** sessionはactive deviceへbindingする。新しいidentityの登録はsession-bound challengeへのdevice署名とcurrent passwordを要求し、既存identityへのbindingはそのdevice署名を要求する。新端末によるpending recipient変化は最大50 workspaceを安定順にlockし、各最大300 channel内でset-based reconciliationする。Wrapped channel keyはauthorized userのactive deviceだけへ配布する。透明性logと既存端末approvalがないため、server提示directory自体は独立検証できない。
 7. **Audit checkpoint:** PostgreSQL chainとcheckpointが別のfailure/authority domainにある場合だけ末尾切断への独立証拠になる。同一operatorが両方をwrite/deleteできる配置は独立境界ではない。
-8. **Backup / restore:** published artifactはage recipientへ暗号化されるが、audit key、deployment credential、browser device keyは別資産である。PostgreSQL credentialはprivate libpq service file、MinIO credentialはstdin importされた一時configに留める。Restoreは明示した空の使い捨てDB/bucketだけを対象にする。Recipient encryptionは作成者のauthenticityを証明しない。
+8. **Backup / restore:** published artifactはage recipientへ暗号化されるが、audit key、deployment credential、browser device keyは別資産である。PostgreSQL credentialはprivate libpq service file、オブジェクトストレージのcredentialはstaging配下のmode `0600`一時configに留める。Restoreは明示した空の使い捨てDB/bucketだけを対象にする。Recipient encryptionは作成者のauthenticityを証明しない。
 9. **WebRTC peer / ICE:** 音声本文はparticipant browser間のDTLS-SRTPでpairwiseに暗号化する。Application serverは署名付きSDP/ICEだけを中継し、設定されたSTUN/TURNはnetwork traversalまたは暗号化packet relayを行う。正規peerは受信音声と相手のICE由来network metadataを観測でき、compromised endpointは当然plaintextへ到達する。
 
 ## 実装・検証済みの不変条件

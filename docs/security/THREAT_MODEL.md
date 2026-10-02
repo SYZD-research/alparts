@@ -27,7 +27,7 @@ See [account/group security](ACCOUNT_AND_GROUP_SECURITY.md) for the updated devi
 - workspace membership, role/override/private-channel policy and tenant metadata;
 - server-readable profile data (display name, bio, avatar PNG) and per-workspace profile warnings;
 - encrypted message events, attachment chunks, signatures, commitments and key-epoch state;
-- PostgreSQL integrity/availability, MinIO ciphertext objects and storage credentials;
+- PostgreSQL integrity/availability, object-store ciphertext objects and storage credentials;
 - audit HMAC chain, integrity key, external checkpoint and independently retained evidence;
 - encrypted backup artifacts, age identity, deployment credentials/config and recovery inventory;
 - source, lockfile, CI credentials, OCI/release artifact, served Web bundle, packaged desktop bundle and update channel;
@@ -55,7 +55,7 @@ See [account/group security](ACCOUNT_AND_GROUP_SECURITY.md) for the updated devi
 6. **Realtime rooms.** Socket identity/workspace/channel/voice registry state is a separate ephemeral capability, rechecked against current DB authorization and revisions.
 7. **Client cryptography ↔ routing server.** Server routes ciphertext/signed metadata and supplies device directory. Clients verify exact bindings, but no independent key-transparency witness detects a malicious server split view.
 8. **Application ↔ PostgreSQL.** PostgreSQL is authoritative for identity, authorization, idempotency, state machines and audit order. Least privilege, private routing and verified TLS are deployment controls.
-9. **Application ↔ object store.** MinIO holds untrusted ciphertext bytes. Object keys/listings/streams are bounded and checked; PostgreSQL remains authorization truth.
+9. **Application ↔ object store.** The S3-compatible object store holds untrusted ciphertext bytes. Object keys/listings/streams are bounded and checked; PostgreSQL remains authorization truth.
 10. **Audit DB ↔ checkpoint.** Independent truncation evidence exists only if checkpoint write/delete authority is separated from DB authority. The current process-local admission supports one app process.
 11. **Backup/restore.** Source read identities, encrypted artifact, offline age identity and empty unprivileged target are separate authorities. Recipient encryption does not authenticate who created an artifact.
 12. **Build/deploy.** The lockfile and pinned CI actions cross into OCI, Web, and desktop artifacts that can access endpoint plaintext. CI scanning and Electron fuse checks reduce but do not eliminate supply-chain compromise; signed releases/provenance are absent.
@@ -88,7 +88,7 @@ See [account/group security](ACCOUNT_AND_GROUP_SECURITY.md) for the updated devi
 - Many public login/registration requests force password work. A fixed two-Worker pool keeps bcrypt off the event loop, the shared gate sheds work before unbounded queueing, malformed/excess-cost stored hashes fail before bcrypt, a 30-second watchdog terminates stuck work, public invite rejection happens before hashing, and current-password KDF is completed before transactional locks.
 - A workspace manager creates 65 or more legitimate pending public-channel epochs containing an ordinary member, then that member needs a replacement device. Cleanup is partitioned by the member's bounded workspace set and each workspace's durable channel ceiling, so no account-global 64-row cap can permanently deny enrollment.
 - An operator drops a foreign key or index but leaves the migration journal intact. Startup/readiness hash a bounded PostgreSQL 16 catalog snapshot and fail closed; this does not detect corrupt row data, privilege drift, or a malicious DBA who restores catalog state between probes.
-- A malicious/compromised MinIO returns an endless or foreign-prefix listing. Exact key grammar, aggregate key bytes/count and absolute deadline abort before unbounded materialization.
+- A malicious/compromised object store returns an endless or foreign-prefix listing. Exact key grammar, aggregate key bytes/count and absolute deadline abort before unbounded materialization.
 - The audit checkpoint filesystem fails after the DB transaction commits. The committed result remains truthful; readiness and subsequent audited or guarded authoritative mutations fail closed. Restart can advance from an intact descendant chain, but no crash-proof external WORM receipt exists. Presence and `lastActiveAt` may still be omitted/updated briefly because they are advisory and cannot grant access.
 - A repository reader uses a previously tracked development password. The file is now untracked/ignored and CI scans current tracked files, but every external retained account must still be rotated/deleted and Git history treated as exposed.
 - A role/private-channel change races a room join or viewer-notification calculation. Workspace locks and revision rechecks prevent stale grants; bulk snapshots are loaded under the same lock.

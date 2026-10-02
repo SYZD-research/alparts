@@ -5,7 +5,7 @@
 
 ## Context
 
-Membership, role, key, message and audit changes must remain consistent under concurrency. Holding a DB lock while performing remote object I/O causes pool starvation and cascading failure. PostgreSQL and MinIO cannot commit atomically.
+Membership, role, key, message and audit changes must remain consistent under concurrency. Holding a DB lock while performing remote object I/O causes pool starvation and cascading failure. PostgreSQL and the object store cannot commit atomically.
 
 ## Decision
 

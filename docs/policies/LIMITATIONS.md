@@ -5,7 +5,7 @@
 > **現在の境界**
 >
 > - Client: Web、およびWindows・Linux・macOS desktop（React/TypeScript + Electron）
-> - Server: Linux上のsingle-node / single-process Node.js + PostgreSQL + MinIO
+> - Server: Linux上のsingle-node / single-process Node.js + PostgreSQL + S3互換オブジェクトストレージ（推奨はSeaweedFS）
 > - Crypto: MLS-based group per application epoch + separate encrypted archive keys
 > - Product: text-centered + 最大8人P2P音声のsmall-team prototype
 
@@ -24,7 +24,7 @@
 - channel別draftと未送信outboxは暗号化してIndexedDBへ保存される。同じidempotency keyと同一署名済みrequestで、上限付きexponential backoff+jitterによりonline復帰時に再送し、queued/sending/failedを区別する。Outboxはactive deviceごとに100件を上限とする。
 - 検索UIは、このbrowser tabがすでに読み込み、復号してmemoryへ保持しているmessageだけを検索する。検索語はHTTP/WebSocketへ送信しない。
 - auditはcanonical HMAC chain、state変更と同一transactionのappend、起動時検証、監査閲覧の自己監査、HMAC付きcheckpointを備える。Required modeの初期checkpointは明示operator commandでのみprovisionする。通常append/checkpoint更新は外部anchorからDB tailまでの連続性を同じlock内で検証し、欠落・rollback・tail切断時は起動/readiness/writeをfail closedにする。
-- Migration前backup gateは、PostgreSQL custom-format dumpとMinIOの最新objectを一つのmanifest/checksumへまとめ、age recipientへ暗号化する。空の隔離DB/bucketだけを対象にrestore/count/reference/object SHAを検証する。Single-host用のdaily systemd schedule、non-overlap/restart trap、安全なlocal retentionもある。
+- Migration前backup gateは、PostgreSQL custom-format dumpとオブジェクトストレージの最新objectを一つのmanifest/checksumへまとめ、age recipientへ暗号化する。空の隔離DB/bucketだけを対象にrestore/count/reference/object SHAを検証する。Single-host用のdaily systemd schedule、non-overlap/restart trap、安全なlocal retentionもある。
 
 上記は対応するunit/integrationまたは隔離実動試験がある機能境界の説明であり、正式要件ID全体の適合宣言ではない。
 
@@ -109,12 +109,12 @@
 
 - 2026-08-27に一意な使い捨てPostgreSQL 16/MinIO環境でbackup→非特権の空DB/空bucketへのrestore roundtripを実施し、run `20260827T051348Z-e8e85d921692` の25 table、2 object、134 bytesについてmanifest/checksum/count/reference/redownload SHA一致を確認した。PostgreSQL credentialはmode `0600`のlibpq service file、MinIO credentialはstdin経由の一時configで渡し、child argv/environmentへsecretを継承しない。
 - 2026-08-30のcurrent-tree再検証では、run `20260830T094605Z-3e2bb09737cb` が現行29-table schemaと128-byte object 1件をage artifactへ保存し、非特権の空DB/空bucketで`VERIFIED`となった。欠落参照objectと不正なtarget名は復元前にfail closedとなった。
-- Script/systemdはapplication stop/start、daily schedule、local retention、dump/encryption/整合性検証を自動化する。Artifactのoff-host/off-region搬送、scheduled restore、migration、failed restore cleanup、full application recoveryは自動化しない。PostgreSQLとMinIOに共通transactionはないため、backup中は全writerを停止しなければならない。
+- Script/systemdはapplication stop/start、daily schedule、local retention、dump/encryption/整合性検証を自動化する。Artifactのoff-host/off-region搬送、scheduled restore、migration、failed restore cleanup、full application recoveryは自動化しない。PostgreSQLとオブジェクトストレージに共通transactionはないため、backup中は全writerを停止しなければならない。
 - Restoreはextract前にarchive entry数、単一fileとaggregateのexpanded bytes、entry type/path、compact sparse表現を検査する。既定1 TiBはprotocol ceilingにすぎず、operatorはstaging filesystemのquotaと安全な空き容量以下へ設定する必要がある。
-- PITR/WAL archive、MinIO version history、WORM/object lock、off-site replication、自動週次restore、RTO/RPO、failover、四半期DRはない。成功したroundtripはDB rowと最新ciphertext objectをその隔離先へ再現できたことだけを示す。
+- PITR/WAL archive、object version history、WORM/object lock、off-site replication、自動週次restore、RTO/RPO、failover、四半期DRはない。成功したroundtripはDB rowと最新ciphertext objectをその隔離先へ再現できたことだけを示す。
 - Single process/single DBであり、HA、broker、DB failover、rolling update、single-nodeからclusterへの移行実証はない。
 - Startup/readinessはbundled migration journalに加えてPostgreSQL 16の`public` catalog（relation/column/constraint/index/trigger/policy/function/type/view）を最大4,096 descriptorでexact fingerprint照合する。Dedicated Alparts databaseを要求し、永続的なcovered schema driftはfail closedになるが、row corruption、role/grant drift、`public`外object、physical durability、probe間だけ変更する悪性DBAを検出する仕組みではない。PostgreSQL major upgradeにはreview済みmigration/restore rehearsal/fingerprint更新が必要である。
-- Object-storage requestには既定10秒・最大60秒のheader/stream inactivity timeoutと、単一node内のactive/pending work上限がある。Remote I/OはDB transaction外で行い、DB commit後のobject orphanはcleanupで回収するが、PostgreSQLとMinIOの分散transactionは提供しない。Download開始後に権限が失効しても、すでに送信開始したciphertext streamを遠隔回収することはできない。
+- Object-storage requestには既定10秒・最大60秒のheader/stream inactivity timeoutと、単一node内のactive/pending work上限がある。Remote I/OはDB transaction外で行い、DB commit後のobject orphanはcleanupで回収するが、PostgreSQLとオブジェクトストレージの分散transactionは提供しない。Download開始後に権限が失効しても、すでに送信開始したciphertext streamを遠隔回収することはできない。
 - WebSocketのrate/socket budgetとroom-join serialization、attachment upload serialization、object-storage gateはいずれもprocess-localである。起動時のPostgreSQL session lockで同一DBへの二重起動を拒否し、所有権を失うと受付を停止する。監査commitからcheckpoint保存まで別lockを保持し、次のprocessは終了を待つ。`DB_POOL_MAX >= 2`と専用接続1本が必要。transaction-pooling proxyは未対応。複数instance化する前に共有coordinationへ置換しなければならない。
 - 追加のdurable上限は、1 channel 1,000 pin、1 message 20 distinct emoji・1 user/message 20 reaction・合計1,000 reaction、pending upload 16/user・200/workspaceである。Audited/guarded authoritative commitは共通でprocess内active 1・waiting 64・待機30秒、upload operationは4/upload・64/processに制限する。これは単一processで意図したcorrectness bottleneckであり、大規模write throughputの実測はない。これらは保持期間やarchive workflowの代替ではない。
 - Message履歴とaudit履歴そのものには自動retentionがない。Unread集計はDB上でexact countを行い、audit起動検証は1,000行ずつ走査するため、長期大規模運用のlatency/起動時間は未計測である。停止したkey rotationが長期間蓄積する環境を含むsoak/capacity試験とlifecycle設計は残る。
@@ -145,6 +145,6 @@
 
 ## N/A
 
-`NET-03` のservice間mTLSは、現在のapplicationが単一processでservice間network boundaryを持たないためN/Aである。PostgreSQL/MinIOへのremote接続はこのN/Aに含まれず、authenticated TLSとleast-privilege credentialが必要である。将来processを分割した場合はmTLS/service identity設計を再開する。
+`NET-03` のservice間mTLSは、現在のapplicationが単一processでservice間network boundaryを持たないためN/Aである。PostgreSQL/オブジェクトストレージへのremote接続はこのN/Aに含まれず、authenticated TLSとleast-privilege credentialが必要である。将来processを分割した場合はmTLS/service identity設計を再開する。
 
 詳細な依存順と完了条件は `IMPLEMENTATION_TODO.md`、canonical trust boundaryは `docs/security/THREAT_MODEL.md`、監査履歴とDeep Scan修正結果は `SECURITY_AUDIT.md`、残存riskは `docs/RISK_REGISTER.md`、backup操作は `docs/BACKUP.md` を参照する。
