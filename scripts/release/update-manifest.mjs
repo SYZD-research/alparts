@@ -1,6 +1,7 @@
 import { createHash, createPrivateKey, createPublicKey, sign, verify } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { lstat, readFile, writeFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { lstat, open, writeFile } from 'node:fs/promises';
 import { basename, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -76,17 +77,29 @@ export async function verifyArtifacts(manifest, directory) {
     assert(actual.size === artifact.size && actual.sha256 === artifact.sha256, `Artifact integrity failed: ${artifact.name}`);
   }
 }
+// Check and read the same open file, so it cannot be swapped in between.
+async function readCheckedFile(filename, check, flags = constants.O_RDONLY) {
+  const handle = await open(filename, flags);
+  try {
+    check(await handle.stat());
+    return await handle.readFile();
+  } finally {
+    await handle.close();
+  }
+}
 async function readDocument(filename) {
-  assert((await lstat(filename)).size <= MAX_DOCUMENT, 'Document too large');
-  return JSON.parse(await readFile(filename, 'utf8'));
+  const contents = await readCheckedFile(filename, (metadata) => assert(metadata.size <= MAX_DOCUMENT, 'Document too large'));
+  return JSON.parse(contents.toString('utf8'));
 }
 async function main(args) {
   const [operation, ...files] = args;
   if (operation === 'sign' && files.length === 4) {
     const [manifestFile, keyFile, keyId, output] = files;
-    const metadata = await lstat(keyFile);
-    assert(metadata.isFile() && !metadata.isSymbolicLink() && (metadata.mode & 0o077) === 0, 'Signing key must be a private regular file');
-    const signed = signManifest(await readDocument(manifestFile), await readFile(keyFile), keyId);
+    // O_NOFOLLOW refuses a symbolic link, as the lstat check did.
+    const key = await readCheckedFile(keyFile, (metadata) => (
+      assert(metadata.isFile() && (metadata.mode & 0o077) === 0, 'Signing key must be a private regular file')
+    ), constants.O_RDONLY | constants.O_NOFOLLOW);
+    const signed = signManifest(await readDocument(manifestFile), key, keyId);
     await writeFile(output, `${JSON.stringify(signed, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
   } else if (operation === 'verify' && files.length === 5) {
     const [manifestFile, trustFile, directory, channel, sequence] = files;
