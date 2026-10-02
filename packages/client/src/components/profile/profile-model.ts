@@ -1,3 +1,4 @@
+import type { MemberProfile } from '@alparts/shared';
 import { ApiError } from '../../services/api';
 import { AvatarImageError } from '../../services/avatar-image';
 
@@ -29,4 +30,26 @@ export function profileErrorMessage(error: unknown): string {
     return error.message;
   }
   return '保存できませんでした。もう一度お試しください。';
+}
+
+export interface ProfileTarget {
+  workspaceId: string;
+  userId: string;
+}
+
+export function profileTargetKey(target: ProfileTarget): string {
+  return `${target.workspaceId}:${target.userId}`;
+}
+
+/**
+ * A loaded profile is shown only for the member it was requested for, so a
+ * slow response for a previous member never appears (or is acted on) as the
+ * current one.
+ */
+export function profileForTarget(
+  loaded: { key: string; profile: MemberProfile } | null,
+  target: ProfileTarget | null,
+): MemberProfile | null {
+  if (!loaded || !target || loaded.key !== profileTargetKey(target) || loaded.profile.userId !== target.userId) return null;
+  return loaded.profile;
 }

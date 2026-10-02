@@ -75,7 +75,7 @@ Alpartsは、チャンネルでのチャット、ダイレクトメッセージ�
 ./dev.sh
 ```
 
-初回は開発用の認証情報を生成して`.env`に保存し、PostgreSQLとMinIOの起動、依存パッケージのインストール、データベースの移行、監査チェックポイントの初期化を行ってから、WebとAPIを起動します。Dockerの操作には`sudo docker compose`を使用します。
+初回は開発用の認証情報を生成して`.env`に保存し、PostgreSQLとS3互換ストレージ（SeaweedFS）の起動、依存パッケージのインストール、データベースの移行、監査チェックポイントの初期化を行ってから、WebとAPIを起動します。Dockerの操作には`sudo docker compose`を使用します。
 
 | 接続先 | URL |
 | --- | --- |
@@ -113,7 +113,7 @@ pnpm android:build
 
 ### 停止と再開
 
-WebとAPIは実行中のターミナルで`Ctrl+C`を押すと停止します。PostgreSQLとMinIOも停止するには次を実行します。
+WebとAPIは実行中のターミナルで`Ctrl+C`を押すと停止します。PostgreSQLとストレージも停止するには次を実行します。
 
 ```bash
 ./dev.sh down
@@ -131,7 +131,7 @@ WebとAPIは実行中のターミナルで`Ctrl+C`を押すと停止します。
 
 Alpartsのサーバーは、**1つのアプリケーションプロセス、PostgreSQL 16、MinIOなどのS3互換ストレージ**で構成します。Webクライアントの配信もサーバーに含まれます。コンテナー向けの[Dockerfile](Dockerfile)・[Compose構成](compose.production.yml)と、Linux向けの[systemdユニット](deploy/alparts.service)を用意しています。
 
-`docker-compose.yml`はローカル開発用のPostgreSQL・MinIOを起動します。`compose.production.yml`ではアプリケーションと移行処理を定義しており、データベース・ストレージ・HTTPSのリバースプロキシは別途用意します。
+`docker-compose.yml`はローカル開発用のPostgreSQLとS3互換ストレージ（SeaweedFS）を起動します。`compose.production.yml`ではアプリケーションと移行処理を定義しており、データベース・ストレージ・HTTPSのリバースプロキシは別途用意します。
 
 - **接続と認証情報** — 公開するWeb/APIにはHTTPSを使い、`CORS_ORIGINS`に実際の接続元を設定します。認証情報は保護されたファイルから`*_FILE`で渡せます。設定項目は[環境変数の例](.env.example)を参照してください。
 - **音声通話** — 初期状態では外部の通話中継サービスを使いません。異なるネットワーク間での接続には、運用者が管理するSTUN/TURNを`VOICE_ICE_SERVERS_JSON`に設定します。TURNには参加者へ渡してよい短命の認証情報を使います。
@@ -182,7 +182,7 @@ pnpm audit --prod --audit-level moderate
 git diff --check
 ```
 
-データベースとストレージを使う結合テストは、通常の`pnpm test`とは別に実行します。[CIの構成](.github/workflows/ci.yml)に従って、使い捨てのPostgreSQL・MinIOと環境変数を用意してください。
+データベースとストレージを使う結合テストは、通常の`pnpm test`とは別に実行します。[CIの構成](.github/workflows/ci.yml)に従って、使い捨てのPostgreSQL・S3互換ストレージと環境変数を用意してください。ストレージは`scripts/ci/start-object-storage.sh`で起動できます。
 
 ```bash
 pnpm --filter @alparts/server test:integration

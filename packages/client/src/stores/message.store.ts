@@ -35,6 +35,7 @@ import {
   type ProjectedMessage,
 } from './message-projector';
 import { useChannelStore } from './channel.store';
+import type { SealedMessage } from './sealed-message';
 import { encodeForumPostContent } from '../services/forum-post-model';
 import type { ForumPostState } from '@alparts/shared';
 
@@ -72,6 +73,14 @@ interface MessageState {
     mentionedUserIds?: string[],
     postId?: string,
   ) => Promise<Message>;
+  /** Encrypt and sign a message without sending it. */
+  sealMessage: (
+    channelId: string,
+    content: string,
+    options?: { refMessageId?: string; idempotencyKey?: string; allowEmpty?: boolean; mentionedUserIds?: string[]; postId?: string },
+  ) => Promise<SealedMessage>;
+  /** Send (or send again) a sealed message exactly as it was sealed. */
+  sendSealedMessage: (channelId: string, content: string, sealed: SealedMessage) => Promise<Message>;
   createForumPost: (
     channelId: string,
     post: { title: string; body: string; tagIds: string[]; mentionedUserIds: string[] },
@@ -103,6 +112,40 @@ const keyReconciliationPromises = new Map<string, Promise<boolean>>();
 const channelEpochs = new Map<string, number>();
 const residentChannelOrder = new Map<string, true>();
 const messageDecryptWorkers = new CoalescedChannelWorker(MAX_RESIDENT_MESSAGE_CHANNELS);
+const forumRetention = new Map<string, ForumRetention>();
+
+/** Forum posts that must stay in memory even when older than the channel window. */
+export interface ForumRetention {
+  /** Posts in the list: their first message and its edits or deletion. */
+  rootIds: ReadonlySet<string>;
+  /** The open post: every event in it. */
+  activePostId: string | null;
+}
+
+export function setForumRetention(channelId: string, retention: ForumRetention | null): void {
+  if (retention) forumRetention.set(channelId, retention);
+  else forumRetention.delete(channelId);
+}
+
+function isRetainedForumEvent(retention: ForumRetention, event: Message): boolean {
+  if (retention.rootIds.has(event.id)) return true;
+  if (!event.postId) return false;
+  if (event.postId === retention.activePostId) return true;
+  return retention.rootIds.has(event.postId)
+    && event.refMessageId === event.postId
+    && (event.type === 'edit' || event.type === 'delete');
+}
+
+/** Keep a channel's newest events, plus older ones of forum posts still on screen. */
+function boundedChannelEvents(channelId: string, ordered: Message[]): Message[] {
+  if (ordered.length <= MAX_RESIDENT_MESSAGE_EVENTS_PER_CHANNEL) return ordered;
+  const recent = ordered.slice(-MAX_RESIDENT_MESSAGE_EVENTS_PER_CHANNEL);
+  const retention = forumRetention.get(channelId);
+  if (!retention) return mergeMessageEvents(recent);
+  const older = ordered.slice(0, -MAX_RESIDENT_MESSAGE_EVENTS_PER_CHANNEL)
+    .filter((event) => isRetainedForumEvent(retention, event));
+  return mergeMessageEvents(older, recent);
+}
 
 function cryptoVerificationState(message: Message): boolean | undefined {
   return getMessageCryptoVerificationState(message);
@@ -127,9 +170,7 @@ function isMessageContextCurrent(channelId: string, generation: number, channelE
 }
 
 function channelUpdate(state: MessageState, channelId: string, events: Message[]) {
-  const ordered = mergeMessageEvents(events);
-  const merged = ordered.length > MAX_RESIDENT_MESSAGE_EVENTS_PER_CHANNEL
-    ? mergeMessageEvents(ordered.slice(-MAX_RESIDENT_MESSAGE_EVENTS_PER_CHANNEL)) : ordered;
+  const merged = boundedChannelEvents(channelId, mergeMessageEvents(events));
   const envelopeConflict = merged.some(hasAuthenticatedEnvelopeConflict);
   residentChannelOrder.delete(channelId);
   residentChannelOrder.set(channelId, true);
@@ -478,35 +519,57 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     const generation = messageStoreGeneration;
     const channelEpoch = currentChannelEpoch(channelId);
     set((state) => ({ operationErrors: { ...state.operationErrors, [channelId]: null } }));
+    let sealed: SealedMessage;
     try {
-      if ((!content && !allowEmpty) || content.length > MAX_MESSAGE_LENGTH || new TextEncoder().encode(content).length > MAX_MESSAGE_LENGTH * 4) {
-        throw new Error('Message is too long');
+      sealed = await get().sealMessage(channelId, content, {
+        refMessageId,
+        idempotencyKey: fixedIdempotencyKey,
+        allowEmpty,
+        mentionedUserIds,
+        postId,
+      });
+      if (!isMessageContextCurrent(channelId, generation, channelEpoch)) throw new Error('チャンネルの認可が変更されたため送信を中止しました');
+    } catch (error) {
+      if (isMessageContextCurrent(channelId, generation, channelEpoch)) {
+        set((state) => ({ operationErrors: { ...state.operationErrors, [channelId]: errorMessage(error, 'メッセージを送信できませんでした') } }));
       }
-      // New posts go through createForumPost; everything else in a forum is a reply.
-      const forum = isForumChannel(channelId);
-      if (forum !== Boolean(postId)) throw new Error('メッセージを送信できませんでした');
-      const device = getActiveDevice();
-      const channelKey = await ensureChannelKey(channelId);
-      const idempotencyKey = fixedIdempotencyKey || crypto.randomUUID();
-      const broadcastMention = containsBroadcastMention(content);
-      const unsigned = {
-        type: 'message' as const,
-        channelId,
-        authorId: device.userId,
-        deviceId: device.deviceId,
-        keyVersion: channelKey.version,
-        idempotencyKey,
-        refMessageId: refMessageId ?? null,
-        broadcastMention,
-        ...(forum ? { postId: postId! } : {}),
-      };
-      const encrypted = await encryptMessage(content, channelKey.key, unsigned);
-      const envelope: SignedMessageEnvelope = { ...unsigned, encryptedContent: encrypted.encrypted, contentNonce: encrypted.nonce };
-      const signature = await signMessageEnvelope(envelope);
-      const notificationRecipientIds = [...new Set(mentionedUserIds)]
-        .sort()
-        .slice(0, MAX_DIRECT_MENTION_RECIPIENTS_PER_MESSAGE);
-      const request = {
+      throw error;
+    }
+    return get().sendSealedMessage(channelId, content, sealed);
+  },
+
+  sealMessage: async (channelId, content, options = {}) => {
+    const { refMessageId, allowEmpty = false, mentionedUserIds = [], postId } = options;
+    if ((!content && !allowEmpty) || content.length > MAX_MESSAGE_LENGTH || new TextEncoder().encode(content).length > MAX_MESSAGE_LENGTH * 4) {
+      throw new Error('Message is too long');
+    }
+    // New posts go through createForumPost; everything else in a forum is a reply.
+    const forum = isForumChannel(channelId);
+    if (forum !== Boolean(postId)) throw new Error('メッセージを送信できませんでした');
+    const device = getActiveDevice();
+    const channelKey = await ensureChannelKey(channelId);
+    const idempotencyKey = options.idempotencyKey || crypto.randomUUID();
+    const broadcastMention = containsBroadcastMention(content);
+    const unsigned = {
+      type: 'message' as const,
+      channelId,
+      authorId: device.userId,
+      deviceId: device.deviceId,
+      keyVersion: channelKey.version,
+      idempotencyKey,
+      refMessageId: refMessageId ?? null,
+      broadcastMention,
+      ...(forum ? { postId: postId! } : {}),
+    };
+    const encrypted = await encryptMessage(content, channelKey.key, unsigned);
+    const envelope: SignedMessageEnvelope = { ...unsigned, encryptedContent: encrypted.encrypted, contentNonce: encrypted.nonce };
+    const signature = await signMessageEnvelope(envelope);
+    const notificationRecipientIds = [...new Set(mentionedUserIds)]
+      .sort()
+      .slice(0, MAX_DIRECT_MENTION_RECIPIENTS_PER_MESSAGE);
+    return {
+      envelope,
+      request: {
         encryptedContent: envelope.encryptedContent,
         contentNonce: envelope.contentNonce,
         deviceId: envelope.deviceId,
@@ -515,14 +578,23 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         signature,
         broadcastMention,
         ...(notificationRecipientIds.length ? { mentionedUserIds: notificationRecipientIds } : {}),
-        refMessageId: refMessageId || undefined,
+        ...(refMessageId ? { refMessageId } : {}),
         ...(forum ? { postId } : {}),
-      };
+      },
+    };
+  },
+
+  sendSealedMessage: async (channelId, content, sealed) => {
+    const generation = messageStoreGeneration;
+    const channelEpoch = currentChannelEpoch(channelId);
+    set((state) => ({ operationErrors: { ...state.operationErrors, [channelId]: null } }));
+    try {
+      if (sealed.envelope.channelId !== channelId) throw new Error('メッセージを送信できませんでした');
       // Network retries reuse the exact authenticated envelope. Re-encrypting
       // under the same idempotency key would correctly be rejected as a
       // different event if the first response was lost.
       const message = await retrySameEncryptedEnvelope(
-        request,
+        sealed.request,
         (fixedRequest) => api.sendMessage(channelId, fixedRequest),
         generation,
         channelId,
@@ -530,7 +602,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       );
       if (!isMessageContextCurrent(channelId, generation, channelEpoch)) throw new Error('チャンネルの認可が変更されたため送信結果を破棄しました');
       const decryptedMessage = {
-        ...requireLocallySignedMessageResponse(message, envelope, signature),
+        ...requireLocallySignedMessageResponse(message, sealed.envelope, sealed.request.signature),
         content,
       } as Message;
       get().addMessage(channelId, decryptedMessage);
@@ -972,6 +1044,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     initialLoadPromises.delete(channelId);
     keyReconciliationPromises.delete(channelId);
     residentChannelOrder.delete(channelId);
+    forumRetention.delete(channelId);
     messageDecryptWorkers.cancel(channelId);
     set((state) => {
       const eventsByChannel = withoutChannel(state.eventsByChannel, channelId);
@@ -1002,6 +1075,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     keyReconciliationPromises.clear();
     channelEpochs.clear();
     residentChannelOrder.clear();
+    forumRetention.clear();
     messageDecryptWorkers.reset();
     set({
       eventsByChannel: {},

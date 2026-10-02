@@ -2,7 +2,9 @@ import { useState, useRef, useCallback, useEffect, useLayoutEffect, useMemo } fr
 import { useMessageStore } from '../../stores/message.store';
 import { forumPostDraftScope, useDraftStore } from '../../stores/draft.store';
 import { useOutboxStore } from '../../stores/outbox.store';
-import { useAttachmentStore } from '../../stores/attachment.store';
+import { attachmentTaskActions, useAttachmentStore } from '../../stores/attachment.store';
+import { isInForumPost } from '../../stores/forum-model';
+import { sendWithAttachments, type HeldAttachments } from '../../services/attachment-send-model';
 import { useWorkspaceStore } from '../../stores/workspace.store';
 import { usePresenceStore } from '../../stores/presence.store';
 import { memberStatus } from '../../stores/presence-model';
@@ -51,6 +53,8 @@ export function MessageInput({ channelId, sendDisabled = false, postId, placehol
   const [editContent, setEditContent] = useState('');
   const [isSending, setIsSending] = useState(false);
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  // Files whose message was already sent but whose upload could not start.
+  const [heldAttachments, setHeldAttachments] = useState<HeldAttachments | null>(null);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [pendingPaste, setPendingPaste] = useState<PendingPaste | null>(null);
   const [pasteError, setPasteError] = useState<string | null>(null);
@@ -62,8 +66,12 @@ export function MessageInput({ channelId, sendDisabled = false, postId, placehol
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const editMessage = useMessageStore((state) => state.editMessage);
   const sendMessage = useMessageStore((state) => state.sendMessage);
-  const replyTarget = useMessageStore((state) => state.replyTargets[channelId]);
-  const editTarget = useMessageStore((state) => state.editTargets[channelId]);
+  // Reply and edit targets are kept per channel; in a forum only those in
+  // this post apply here.
+  const storedReplyTarget = useMessageStore((state) => state.replyTargets[channelId]);
+  const storedEditTarget = useMessageStore((state) => state.editTargets[channelId]);
+  const replyTarget = storedReplyTarget && isInForumPost(storedReplyTarget, postId) ? storedReplyTarget : null;
+  const editTarget = storedEditTarget && isInForumPost(storedEditTarget, postId) ? storedEditTarget : null;
   const setReplyTarget = useMessageStore((state) => state.setReplyTarget);
   const setEditTarget = useMessageStore((state) => state.setEditTarget);
   const draft = useDraftStore((state) => state.drafts[draftScope] || '');
@@ -123,7 +131,12 @@ export function MessageInput({ channelId, sendDisabled = false, postId, placehol
   }, [channelId, replyTarget?.id, editTarget?.id]);
 
   useEffect(() => {
+    if (selectedFiles.length === 0) setHeldAttachments(null);
+  }, [selectedFiles]);
+
+  useEffect(() => {
     setSelectedFiles([]);
+    setHeldAttachments(null);
     setAttachmentError(null);
     setPendingPaste(null);
     setPasteError(null);
@@ -206,18 +219,31 @@ export function MessageInput({ channelId, sendDisabled = false, postId, placehol
         setEditTarget(channelId, null);
       } else if (selectedFiles.length > 0) {
         if (!isOnline) throw new Error('添付ファイルはオンライン時のみ送信できます');
-        const message = await sendMessage(channelId, content.trim(), replyTarget?.id, undefined, true, mentionedUserIds, postId);
-        const files = selectedFiles;
+        const sentBefore = heldAttachments !== null;
         // Register upload runtimes immediately after the durable base message.
         // Draft persistence must not delay or accidentally suppress the file
         // transfer path.
-        void startUploads(message, files).catch(() => {
+        const result = await sendWithAttachments(
+          heldAttachments,
+          selectedFiles,
+          () => sendMessage(channelId, content.trim(), replyTarget?.id, undefined, true, mentionedUserIds, postId),
+          startUploads,
+        );
+        if (result.status === 'held') {
+          setHeldAttachments(result.held);
           setAttachmentError('ファイルを送信できませんでした。もう一度お試しください');
-        });
-        setSelectedFiles([]);
-        if (fileInputRef.current) fileInputRef.current.value = '';
-        await clearDraft(draftScope);
-        setReplyTarget(channelId, null);
+        } else {
+          setHeldAttachments(null);
+          void result.uploads.catch(() => {
+            setAttachmentError('ファイルを送信できませんでした。もう一度お試しください');
+          });
+          setSelectedFiles([]);
+          if (fileInputRef.current) fileInputRef.current.value = '';
+        }
+        if (!sentBefore) {
+          await clearDraft(draftScope);
+          setReplyTarget(channelId, null);
+        }
       } else {
         await enqueue(channelId, content.trim(), replyTarget?.id, mentionedUserIds, postId);
         await clearDraft(draftScope);
@@ -545,15 +571,15 @@ export function MessageInput({ channelId, sendDisabled = false, postId, placehol
                   {task.fileName} — {attachmentTaskLabel(task.status)}
                 </span>
                 <div className="flex shrink-0 gap-2">
-                  {(task.status === 'preparing' || task.status === 'uploading' || task.status === 'finalizing') && (
+                  {attachmentTaskActions(task.status).cancel && (
                     <button type="button" onClick={() => cancelUpload(task.id)} className="underline">取消</button>
                   )}
-                  {(task.status === 'failed' || task.status === 'cancelled') && (
+                  {attachmentTaskActions(task.status).resume && (
                     <button type="button" onClick={() => retryUpload(task.id)} disabled={!isOnline} className="underline disabled:opacity-50">
                       再開
                     </button>
                   )}
-                  {(task.status === 'completed' || task.status === 'failed' || task.status === 'cancelled') && (
+                  {attachmentTaskActions(task.status).dismiss && (
                     <button type="button" onClick={() => dismissUpload(task.id)} className="underline">閉じる</button>
                   )}
                 </div>
@@ -724,7 +750,7 @@ export function MessageInput({ channelId, sendDisabled = false, postId, placehol
             disabled={isSending || sendDisabled || (!content.trim() && selectedFiles.length === 0)}
             className="shrink-0 rounded bg-discord-accent px-4 py-2 font-medium text-white hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40"
           >
-            {isSending ? '送信中…' : sendDisabled ? '準備中…' : editTarget ? '変更を保存' : selectedFiles.length > 0 ? '画像・ファイルを送信' : '送信'}
+            {isSending ? '送信中…' : sendDisabled ? '準備中…' : editTarget ? '変更を保存' : heldAttachments ? '画像・ファイルを再送信' : selectedFiles.length > 0 ? '画像・ファイルを送信' : '送信'}
           </button>
         </div>
       </form>

@@ -21,6 +21,7 @@ import { forumPostBodyLimit } from '../../services/forum-post-model';
 import { extractMentionedUserIds } from '../../services/mention-model';
 import { ATTACHMENT_MAX_COUNT_PER_MESSAGE } from '../../services/attachment-crypto.service';
 import { ApiError } from '../../services/api';
+import { sendWithAttachments, type HeldAttachments } from '../../services/attachment-send-model';
 import { Dialog } from '../ui/Dialog';
 import { ForumPostView } from './ForumPostView';
 import { FORUM_UNREADABLE_TITLE, forumPostDisplay, forumPostPreview, formatForumTime } from './forum-display';
@@ -65,8 +66,10 @@ export function ForumView({ channelId, sendDisabled, visible = true }: Props) {
           onManageTags={() => setTagManagerOpen(true)}
         />
       )}
+      {/* Keyed by forum so a draft or a pending deletion never carries over to another forum. */}
       {view && (
         <ForumPostComposer
+          key={channelId}
           open={composerOpen}
           channelId={channelId}
           tags={view.tags}
@@ -77,6 +80,7 @@ export function ForumView({ channelId, sendDisabled, visible = true }: Props) {
       )}
       {view && (
         <ForumTagManager
+          key={channelId}
           open={tagManagerOpen}
           channelId={channelId}
           tags={view.tags}
@@ -350,6 +354,8 @@ function ForumPostComposer({ open, channelId, tags, canAttach, sendDisabled, onC
   const [body, setBody] = useState('');
   const [tagIds, setTagIds] = useState<string[]>([]);
   const [files, setFiles] = useState<File[]>([]);
+  // A post that was created while its files could not be queued yet.
+  const [held, setHeld] = useState<HeldAttachments | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -360,6 +366,18 @@ function ForumPostComposer({ open, channelId, tags, canAttach, sendDisabled, onC
 
   const close = () => {
     if (submitting) return;
+    if (held) {
+      // The post exists already; leaving shows it without the files.
+      const postId = held.message.id;
+      setHeld(null);
+      setTitle('');
+      setBody('');
+      setTagIds([]);
+      setFiles([]);
+      onClose();
+      void openPost(channelId, postId);
+      return;
+    }
     onClose();
   };
 
@@ -377,10 +395,21 @@ function ForumPostComposer({ open, channelId, tags, canAttach, sendDisabled, onC
         userId: member.userId,
         displayName: member.user.displayName,
       })));
-      const message = await createPost(channelId, { title, body, tagIds, mentionedUserIds });
+      const create = () => createPost(channelId, { title, body, tagIds, mentionedUserIds });
+      let message: Message;
       if (files.length > 0) {
-        void startUploads(message, files).catch(() => undefined);
+        const result = await sendWithAttachments(held, files, create, startUploads);
+        if (result.status === 'held') {
+          setHeld(result.held);
+          setError('投稿は作成しましたが、ファイルを送信できませんでした。もう一度お試しください。');
+          return;
+        }
+        void result.uploads.catch(() => undefined);
+        message = result.message;
+      } else {
+        message = held?.message ?? await create();
       }
+      setHeld(null);
       setTitle('');
       setBody('');
       setTagIds([]);
@@ -418,6 +447,7 @@ function ForumPostComposer({ open, channelId, tags, canAttach, sendDisabled, onC
           <span className="mb-1 block text-sm font-medium text-discord-text">タイトル</span>
           <input
             value={title}
+            disabled={held !== null}
             maxLength={MAX_FORUM_POST_TITLE_LENGTH}
             onChange={(event) => setTitle(event.target.value)}
             className="h-10 w-full rounded bg-discord-input px-3 text-discord-text"
@@ -429,6 +459,7 @@ function ForumPostComposer({ open, channelId, tags, canAttach, sendDisabled, onC
           <span className="mb-1 block text-sm font-medium text-discord-text">本文</span>
           <textarea
             value={body}
+            disabled={held !== null}
             maxLength={forumPostBodyLimit(title)}
             onChange={(event) => setBody(event.target.value)}
             rows={8}
@@ -469,7 +500,7 @@ function ForumPostComposer({ open, channelId, tags, canAttach, sendDisabled, onC
             キャンセル
           </button>
           <button type="submit" disabled={submitting || sendDisabled || !title.trim()} className="rounded bg-discord-accent px-3 py-2 text-sm font-medium text-white disabled:opacity-50">
-            {submitting ? '投稿中…' : '投稿する'}
+            {submitting ? '投稿中…' : held ? 'ファイルを再送信' : '投稿する'}
           </button>
         </div>
       </form>

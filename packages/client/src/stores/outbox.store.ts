@@ -10,6 +10,7 @@ import {
   saveOutboxCommand,
   type OutboxStorageContext,
 } from '../services/local-state.service';
+import { ApiError } from '../services/api';
 import { useMessageStore } from './message.store';
 import {
   createOutboxCommand,
@@ -197,32 +198,43 @@ export const useOutboxStore = create<OutboxState>((set, get) => ({
         return;
       }
       if (!isOutboxLifecycleCurrent(lifecycle)) return;
-      if (command.postId) {
-        await useMessageStore.getState().sendMessage(
-          command.channelId,
-          command.content,
-          command.refMessageId,
-          command.idempotencyKey,
-          false,
-          command.mentionedUserIds ?? [],
-          command.postId,
-        );
-      } else if (command.mentionedUserIds?.length) {
-        await useMessageStore.getState().sendMessage(
-          command.channelId,
-          command.content,
-          command.refMessageId,
-          command.idempotencyKey,
-          false,
-          command.mentionedUserIds,
-        );
-      } else {
-        await useMessageStore.getState().sendMessage(
-          command.channelId,
-          command.content,
-          command.refMessageId,
-          command.idempotencyKey,
-        );
+      let sealed = command.sealed;
+      if (!sealed) {
+        sealed = await useMessageStore.getState().sealMessage(command.channelId, command.content, {
+          refMessageId: command.refMessageId,
+          idempotencyKey: command.idempotencyKey,
+          mentionedUserIds: command.mentionedUserIds ?? [],
+          postId: command.postId,
+        });
+        if (!isOutboxLifecycleCurrent(lifecycle)) return;
+        // Saved before the first attempt: if its response is lost, a later
+        // retry (even after a restart) repeats the very same signed request.
+        const sealedCommand = { ...command, sealed };
+        await queuePersistence(lifecycle.context, command.channelId, () => saveOutboxCommand(
+          lifecycle.context,
+          sealedCommand,
+          () => isOutboxLifecycleCurrent(lifecycle),
+        ));
+        if (!isOutboxLifecycleCurrent(lifecycle)) return;
+      }
+      try {
+        await useMessageStore.getState().sendSealedMessage(command.channelId, command.content, sealed);
+      } catch (error) {
+        // The key is this device's own; a conflict means an earlier attempt
+        // of this message was stored, so it has been delivered.
+        if (!(error instanceof ApiError && error.code === 'IDEMPOTENCY_CONFLICT')) {
+          if (error instanceof ApiError && error.status === 400 && isOutboxLifecycleCurrent(lifecycle)) {
+            // Refused as sent (for example after a key change): seal it
+            // afresh on the next retry.
+            const { sealed: _refused, ...unsealed } = command;
+            await queuePersistence(lifecycle.context, command.channelId, () => saveOutboxCommand(
+              lifecycle.context,
+              unsealed,
+              () => isOutboxLifecycleCurrent(lifecycle),
+            )).catch(() => undefined);
+          }
+          throw error;
+        }
       }
       if (!isOutboxLifecycleCurrent(lifecycle)) return;
       await queuePersistence(lifecycle.context, command.channelId, async () => {

@@ -90,11 +90,11 @@ A forum is a channel of type `forum`. Posts and replies are messages in that cha
 | `GET/POST /api/channels/:id/forum/posts` | page posts (pinned first, then `sort=activity\|created`, optional `tagId`) with the viewer's capabilities; start a signed post with up to 5 tags |
 | `POST /api/channels/:id/messages` with `postId`; `PUT/DELETE /api/messages/:id` with `postId` | reply to, edit or delete within a post; a reply may quote only the post or a reply in it; locked posts accept replies from channel managers only |
 | `GET /api/forum/posts/:postId`, `GET /api/forum/posts/:postId/messages` | one post summary; its events newest first |
-| `POST /api/forum/posts/:postId/read` | record the server's activity time as read for the viewer |
+| `POST /api/forum/posts/:postId/read` | record the viewer's read position: the post's server activity time, or the earlier `shownActivityAt` the client actually displayed (later replies stay unread) |
 | `PUT /api/forum/posts/:postId/lock` / `resolved` / `tags` | lock (managers); resolved and tags (author or managers); audited |
 | `GET/POST /api/channels/:id/forum/tags`, `PATCH/DELETE /api/forum/tags/:tagId` | list; manager-only create/rename/delete (20 per forum, 20 characters, channel-name text rules) |
 
-Anything the caller cannot see answers 404. Pinning applies to whole posts only.
+Anything the caller cannot see answers 404. Pinning applies to whole posts only. `POST /api/messages/:id/pin` toggles without a body; with `{ "pinned": true|false }` it sets that state, so a retried request is harmless. For a forum post the response also carries `forumPost`, the post's new list state, read in the same transaction as the pin; notifying other viewers happens after commit and never changes the response.
 
 ## Channel keys
 

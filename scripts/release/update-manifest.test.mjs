@@ -37,3 +37,23 @@ test('checks every artifact byte after signature verification', async () => {
     await assert.rejects(verifyArtifacts(value, directory), /integrity/);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
+test('signs only with a private regular key file, never through a link', async () => {
+  const { execFile } = await import('node:child_process');
+  const { promisify } = await import('node:util');
+  const { symlink, chmod } = await import('node:fs/promises');
+  const run = (args) => promisify(execFile)(process.execPath, [new URL('./update-manifest.mjs', import.meta.url).pathname, ...args]);
+  const directory = await mkdtemp(join(tmpdir(), 'alparts-update-sign-'));
+  try {
+    const manifestFile = join(directory, 'manifest.json');
+    const keyFile = join(directory, 'release.pem');
+    await writeFile(manifestFile, JSON.stringify(manifest));
+    await writeFile(keyFile, privatePem, { mode: 0o600 });
+    await run(['sign', manifestFile, keyFile, 'release', join(directory, 'signed.json')]);
+    await symlink(keyFile, join(directory, 'link.pem'));
+    await assert.rejects(run(['sign', manifestFile, join(directory, 'link.pem'), 'release', join(directory, 'via-link.json')]));
+    await chmod(keyFile, 0o644);
+    await assert.rejects(run(['sign', manifestFile, keyFile, 'release', join(directory, 'readable.json')]), /private regular file/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

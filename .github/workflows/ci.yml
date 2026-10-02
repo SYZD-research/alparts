@@ -94,16 +94,10 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Start disposable object storage
-        run: >-
-          docker run --detach --name alparts-ci-minio --publish 127.0.0.1:9000:9000
-          --env MINIO_ROOT_USER=integration-access-key
-          --env MINIO_ROOT_PASSWORD=integration-secret-key-at-least-32-bytes
-          quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e server /data
-      - name: Provision disposable object bucket
-        run: >-
-          docker run --rm --network host --entrypoint sh
-          quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
-          -c 'until mc alias set local http://127.0.0.1:9000 integration-access-key integration-secret-key-at-least-32-bytes; do sleep 1; done; mc mb --ignore-existing local/alparts'
+        run: bash scripts/ci/start-object-storage.sh alparts-ci-s3 9000 alparts
+        env:
+          OBJECT_STORAGE_ACCESS_KEY: integration-access-key
+          OBJECT_STORAGE_SECRET_KEY: integration-secret-key-at-least-32-bytes
       - name: Build and replay image-compatible migrations on disposable database
         run: |
           printf -v DATABASE_URL '%s://%s:%s@%s:%s/%s' \
@@ -190,16 +184,10 @@ jobs:
           ignore-unfixed: true
           exit-code: "1"
       - name: Start disposable object storage for final OCI smoke
-        run: >-
-          docker run --detach --name alparts-ci-supply-minio --publish 127.0.0.1:9000:9000
-          --env MINIO_ROOT_USER=supply-access-key
-          --env MINIO_ROOT_PASSWORD=supply-secret-key-at-least-32-bytes
-          quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e server /data
-      - name: Provision final OCI smoke bucket
-        run: >-
-          docker run --rm --network host --entrypoint sh
-          quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
-          -c 'until mc alias set local http://127.0.0.1:9000 supply-access-key supply-secret-key-at-least-32-bytes; do sleep 1; done; mc mb --ignore-existing local/alparts-supply'
+        run: bash scripts/ci/start-object-storage.sh alparts-ci-supply-s3 9000 alparts-supply
+        env:
+          OBJECT_STORAGE_ACCESS_KEY: supply-access-key
+          OBJECT_STORAGE_SECRET_KEY: supply-secret-key-at-least-32-bytes
       - name: Exercise final OCI schema gate, migrations, and startup
         env:
           IMAGE_REF: alparts-ci:${{ github.sha }}
@@ -219,7 +207,7 @@ jobs:
           container_name=alparts-ci-oci-smoke
           cleanup() {
             docker rm --force "$container_name" >/dev/null 2>&1 || true
-            docker rm --force alparts-ci-supply-minio >/dev/null 2>&1 || true
+            docker rm --force alparts-ci-supply-s3 >/dev/null 2>&1 || true
           }
           trap cleanup EXIT
 
