@@ -40,7 +40,7 @@ const enabled = process.env.RUN_INTEGRATION === '1';
 const fixtureKeys = new Map<string, ReturnType<typeof deviceFixture>>();
 const joinedMlsKeys = new Map<string, Map<string, Buffer>>();
 
-describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
+describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }, () => {
   let baseUrl = '';
   let httpServer: import('node:http').Server;
   let verifyAuditChain: typeof import('../middleware/audit.js').verifyAuditChain;
@@ -2095,11 +2095,11 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
       method: 'PUT', cookie: alice.cookie, body: Buffer.alloc(17, 0x7f),
     });
     assert.equal(orphanChunkUpload.status, 201);
-    const [{ db: integrationDb }, schema, drizzle, Minio, fileService] = await Promise.all([
+    const [{ db: integrationDb }, schema, drizzle, S3, fileService] = await Promise.all([
       import('../db/index.js'),
       import('../db/schema.js'),
       import('drizzle-orm'),
-      import('minio'),
+      import('@aws-sdk/client-s3'),
       import('../services/file.service.js'),
     ]);
     const attachmentOnlyKeys = deviceFixture();
@@ -2159,16 +2159,16 @@ describe('security boundaries (PostgreSQL + MinIO)', { skip: !enabled }, () => {
     assert.equal(await integrationDb.query.attachmentUploadChunks.findFirst({
       where: drizzle.eq(schema.attachmentUploadChunks.uploadId, orphanReservation.uploadId),
     }), undefined);
-    const storageClient = new Minio.Client({
-      endPoint: process.env.MINIO_ENDPOINT || 'localhost',
-      port: Number(process.env.MINIO_PORT || 9000),
-      useSSL: process.env.MINIO_USE_SSL === 'true',
-      accessKey: process.env.MINIO_ACCESS_KEY!,
-      secretKey: process.env.MINIO_SECRET_KEY!,
+    // An independent client confirms the object is gone from the store itself.
+    const storageClient = new S3.S3Client({
+      endpoint: `${process.env.S3_USE_SSL === 'true' ? 'https' : 'http'}://${process.env.S3_ENDPOINT || 'localhost'}:${Number(process.env.S3_PORT || 9000)}`,
+      region: process.env.S3_REGION || 'us-east-1',
+      forcePathStyle: true,
+      credentials: { accessKeyId: process.env.S3_ACCESS_KEY!, secretAccessKey: process.env.S3_SECRET_KEY! },
     });
     await assert.rejects(
-      storageClient.statObject(process.env.MINIO_BUCKET || 'alparts', orphanChunkRow.storageKey),
-      (error: any) => error?.code === 'NotFound' || error?.code === 'NoSuchKey',
+      storageClient.send(new S3.HeadObjectCommand({ Bucket: process.env.S3_BUCKET || 'alparts', Key: orphanChunkRow.storageKey })),
+      (error: any) => error?.name === 'NotFound' || error?.$metadata?.httpStatusCode === 404,
     );
 
     const cancellableUploadId = randomUUID();

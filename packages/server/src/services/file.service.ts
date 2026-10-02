@@ -305,7 +305,7 @@ export async function cancelUpload(uploadId: string, userId: string) {
     if (location.upload.uploaderId !== userId) throw new Error('UPLOAD_NOT_FOUND');
     if (location.upload.completedAt) throw new Error('UPLOAD_ALREADY_COMPLETED');
 
-    // MinIO is outside every database transaction. The per-upload operation
+    // The object store is outside every database transaction. The per-upload operation
     // lock preserves single-node ordering; the commit below re-locks and checks
     // the reservation before deleting the row and appending its audit record.
     await assertAuditWriteAvailable();
@@ -631,7 +631,7 @@ export async function getAuthorizedAttachmentChunk(
       stream.once('close', release);
       stream.once('error', release);
       // Authorization is snapshot semantics at request acceptance. No database
-      // connection or workspace lock is held while MinIO or the client is slow.
+      // connection or workspace lock is held while the object store or the client is slow.
       return { stream, sizeBytes: stat.size };
     } catch (error) {
       if (isObjectStorageTimeout(error) || (error instanceof Error && error.message === 'OBJECT_STORAGE_BUSY')) throw error;
@@ -1004,7 +1004,7 @@ const uploadOperationStates = new Map<string, UploadOperationState>();
 let outstandingUploadOperations = 0;
 
 /**
- * The supported deployment is one application node. Serialize every MinIO
+ * The supported deployment is one application node. Serialize every object-store
  * phase for a reservation without retaining a database connection, then let
  * each short database phase re-lock and re-authorize its own state transition.
  */

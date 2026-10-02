@@ -398,7 +398,7 @@ describe('account security end to end', { skip: !enabled }, () => {
     } finally {
       await migrationClient.end();
     }
-    assert.ok(process.env.MINIO_ACCESS_KEY && process.env.MINIO_SECRET_KEY,
+    assert.ok(process.env.S3_ACCESS_KEY && process.env.S3_SECRET_KEY,
       'Account integration tests require a disposable object store for the durable audit head');
     process.env.AUDIT_INTEGRITY_KEY = 'account-security-test-audit-key-32-bytes';
 process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';

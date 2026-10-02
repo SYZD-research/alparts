@@ -17,10 +17,10 @@ function productionEnvironment(overrides: NodeJS.ProcessEnv = {}): NodeJS.Proces
     NODE_ENV: 'production',
     DATABASE_URL: syntheticDatabaseUrl('db.example.test'),
     DB_SSL: 'true',
-    MINIO_ENDPOINT: 'objects.example.test',
-    MINIO_USE_SSL: 'true',
-    MINIO_ACCESS_KEY: 'synthetic-access-key',
-    MINIO_SECRET_KEY: strong,
+    S3_ENDPOINT: 'objects.example.test',
+    S3_USE_SSL: 'true',
+    S3_ACCESS_KEY: 'synthetic-access-key',
+    S3_SECRET_KEY: strong,
     JWT_SECRET: strong,
     AUDIT_INTEGRITY_KEY: strong,
     PASSWORD_PEPPER: strong,
@@ -80,8 +80,8 @@ describe('production startup configuration', () => {
     const result = loadConfiguration(productionEnvironment({
       DATABASE_URL: syntheticDatabaseUrl('127.0.0.1:5432'),
       DB_SSL: 'false',
-      MINIO_ENDPOINT: '127.0.0.1',
-      MINIO_USE_SSL: 'false',
+      S3_ENDPOINT: '127.0.0.1',
+      S3_USE_SSL: 'false',
       ALLOW_INSECURE_LOOPBACK_DEPENDENCIES: 'true',
     }));
     assert.equal(result.status, 0, result.stderr);
@@ -97,10 +97,17 @@ describe('production startup configuration', () => {
     assert.match(short.stderr, /METRICS_TOKEN must contain at least 32 bytes/);
   });
 
-  it('rejects weak object-storage secrets in production', () => {
-    const result = loadConfiguration(productionEnvironment({ MINIO_SECRET_KEY: 'short' }));
+  it('refuses to start while renamed object-storage settings remain', () => {
+    const result = loadConfiguration(productionEnvironment({ MINIO_ENDPOINT: 'objects.example.test', MINIO_SECRET_KEY_FILE: '/run/secrets/x' }));
     assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /MINIO_SECRET_KEY must contain at least 32 bytes/);
+    assert.match(result.stderr, /now named S3_\*.*Rename: MINIO_ENDPOINT, MINIO_SECRET_KEY_FILE/);
+    assert.equal(loadConfiguration(productionEnvironment()).stdout, 'loaded');
+  });
+
+  it('rejects weak object-storage secrets in production', () => {
+    const result = loadConfiguration(productionEnvironment({ S3_SECRET_KEY: 'short' }));
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /S3_SECRET_KEY must contain at least 32 bytes/);
   });
 
   it('rejects group-writable secret files and ambiguous direct/file values', () => {
