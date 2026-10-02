@@ -79,21 +79,30 @@ validate_private_file() {
     || backup_die "${setting_name} must not be readable or writable by group/other"
 }
 
-validate_minio_url() {
+validate_s3_url() {
   local url="$1"
   local authority
 
   [[ "$url" == http://* || "$url" == https://* ]] \
-    || backup_die 'MinIO URL must begin with http:// or https://'
+    || backup_die 'Object storage URL must begin with http:// or https://'
   [[ "$url" != *[$'\t\r\n ']* && "$url" != *@* && "$url" != *\?* && "$url" != *\#* ]] \
-    || backup_die 'MinIO URL must not contain credentials, whitespace, a query, or a fragment'
+    || backup_die 'Object storage URL must not contain credentials, whitespace, a query, or a fragment'
   authority="${url#*://}"
   [[ -n "$authority" && "$authority" != */* ]] \
-    || backup_die 'MinIO URL must contain only a scheme and authority (no path)'
+    || backup_die 'Object storage URL must contain only a scheme and authority (no path)'
   if [[ "$url" == http://* ]]; then
     [[ "$authority" =~ ^(localhost|127\.0\.0\.1)(:[0-9]+)?$ || "$authority" =~ ^\[::1\](:[0-9]+)?$ ]] \
-      || backup_die 'Plain HTTP MinIO URLs are permitted only for a loopback endpoint'
+      || backup_die 'Plain HTTP object storage URLs are permitted only for a loopback endpoint'
   fi
+}
+
+# Object storage settings were renamed from MINIO_* to S3_*; refuse the old
+# names instead of silently ignoring them.
+reject_legacy_storage_settings() {
+  local legacy
+  legacy="$(compgen -e | grep -E '^(VERIFY_)?MINIO_' | LC_ALL=C sort | tr '\n' ' ')" || true
+  [[ -z "$legacy" ]] \
+    || backup_die "Object storage settings are now named S3_* (VERIFY_S3_* for verification). Rename: ${legacy% }"
 }
 
 validate_postgres_service() {
@@ -112,11 +121,11 @@ validate_postgres_service() {
 validate_bucket_name() {
   local bucket="$1"
   [[ ${#bucket} -ge 3 && ${#bucket} -le 63 ]] \
-    || backup_die 'MinIO bucket name must contain 3 to 63 characters'
+    || backup_die 'Bucket name must contain 3 to 63 characters'
   [[ "$bucket" =~ ^[a-z0-9][a-z0-9.-]*[a-z0-9]$ ]] \
-    || backup_die 'MinIO bucket name must use lower-case DNS-safe characters'
+    || backup_die 'Bucket name must use lower-case DNS-safe characters'
   [[ "$bucket" != *..* && "$bucket" != *.-* && "$bucket" != *-.* ]] \
-    || backup_die 'MinIO bucket name contains an unsafe dot sequence'
+    || backup_die 'Bucket name contains an unsafe dot sequence'
 }
 
 validate_restore_database_name() {
@@ -137,55 +146,55 @@ validate_restore_bucket_name() {
   [[ "$bucket" != 'alparts' ]] || backup_die 'The default alparts bucket is never a restore target'
 }
 
-configure_mc_alias() {
-  local config_dir="$1"
-  local alias_name="$2"
+# Add one S3 remote to a private rclone configuration file. printf is a shell
+# builtin, so the credentials reach neither argv nor a child environment; the
+# file lives in the 0700 staging directory and is removed with it.
+configure_s3_remote() {
+  local config_file="$1"
+  local remote_name="$2"
   local endpoint="$3"
   local access_key="$4"
   local secret_key="$5"
+  local region="$6"
 
-  [[ "$alias_name" =~ ^[A-Za-z][A-Za-z0-9_-]*$ ]] \
-    || backup_die 'MinIO alias name is malformed'
-  mkdir -p -- "$config_dir"
-  chmod 700 -- "$config_dir"
-  # Keep credentials out of both argv and the child environment. NUL-delimited
-  # stdin preserves punctuation and newlines without shell interpolation; jq
-  # converts that one private stream into mc's import format.
-  if ! printf '%s\0%s\0%s' "$endpoint" "$access_key" "$secret_key" \
-    | run_without_operator_secrets jq -Rsc '
-      split("\u0000")
-      | if length == 3 then {
-          url: .[0],
-          accessKey: .[1],
-          secretKey: .[2],
-          api: "s3v4",
-          path: "auto"
-        } else error("invalid MinIO credential stream") end
-    ' \
-    | run_without_operator_secrets mc --config-dir "$config_dir" alias import "$alias_name" >/dev/null 2>&1; then
-    backup_die 'MinIO alias setup failed; verify the endpoint and credentials'
-  fi
+  [[ "$remote_name" =~ ^[A-Za-z][A-Za-z0-9_-]*$ ]] \
+    || backup_die 'Object storage remote name is malformed'
+  [[ "$region" =~ ^[a-z0-9-]{1,32}$ ]] \
+    || backup_die 'Object storage region must contain 1-32 lower-case letters, digits, or hyphens'
+  local credential
+  for credential in "$access_key" "$secret_key"; do
+    # One line per value, without surrounding blanks the file format would trim.
+    [[ -n "$credential" && "$credential" != *[$'\r\n']* && "$credential" =~ ^[^[:space:]](.*[^[:space:]])?$ ]] \
+      || backup_die 'Object storage credentials must be single-line values without surrounding whitespace'
+  done
+  ( umask 077
+    printf '[%s]\ntype = s3\nprovider = Other\nenv_auth = false\naccess_key_id = %s\nsecret_access_key = %s\nendpoint = %s\nregion = %s\nforce_path_style = true\nno_check_bucket = true\n\n' \
+      "$remote_name" "$access_key" "$secret_key" "$endpoint" "$region" >> "$config_file" )
+  chmod 600 -- "$config_file"
 }
 
-mc_with_config() {
-  local config_dir="$1"
+rclone_with_config() {
+  local config_file="$1"
   shift
-  run_without_operator_secrets mc --config-dir "$config_dir" "$@"
+  run_without_operator_secrets rclone --config "$config_file" --ask-password=false "$@"
 }
 
 run_without_operator_secrets() {
   (
     unset DATABASE_URL DATABASE_URL_FILE VERIFY_DATABASE_URL VERIFY_DATABASE_URL_FILE
-    unset MINIO_ACCESS_KEY MINIO_ACCESS_KEY_FILE MINIO_SECRET_KEY MINIO_SECRET_KEY_FILE
-    unset VERIFY_MINIO_ACCESS_KEY VERIFY_MINIO_ACCESS_KEY_FILE
-    unset VERIFY_MINIO_SECRET_KEY VERIFY_MINIO_SECRET_KEY_FILE
+    unset S3_ACCESS_KEY S3_ACCESS_KEY_FILE S3_SECRET_KEY S3_SECRET_KEY_FILE
+    unset VERIFY_S3_ACCESS_KEY VERIFY_S3_ACCESS_KEY_FILE
+    unset VERIFY_S3_SECRET_KEY VERIFY_S3_SECRET_KEY_FILE
+    # Only the private configuration file may configure the storage client.
+    local name
+    for name in $(compgen -e | grep -E '^(RCLONE_|AWS_)'); do unset "$name"; done
     unset PGDATABASE PGHOST PGHOSTADDR PGPORT PGUSER PGPASSWORD PGPASSFILE PGSERVICE PGSERVICEFILE
     # Application secrets may share the operator environment; children never need them.
     unset JWT_SECRET JWT_SECRET_FILE PASSWORD_PEPPER PASSWORD_PEPPER_FILE
     unset PASSWORD_PEPPER_PREVIOUS PASSWORD_PEPPER_PREVIOUS_FILE
     unset AUDIT_INTEGRITY_KEY AUDIT_INTEGRITY_KEY_FILE
     unset REGISTRATION_INVITE_SECRET REGISTRATION_INVITE_SECRET_FILE
-    unset METRICS_TOKEN METRICS_TOKEN_FILE MINIO_ROOT_USER MINIO_ROOT_PASSWORD
+    unset METRICS_TOKEN METRICS_TOKEN_FILE S3_ADMIN_ACCESS_KEY S3_ADMIN_SECRET_KEY
     unset RESTORE_AGE_IDENTITY_FILE DATABASE_SERVICE_FILE
     exec "$@"
   )
@@ -202,9 +211,12 @@ postgres_with_service() {
   # mechanism instead of attempting to parse libpq URIs in shell.
   (
     unset DATABASE_URL DATABASE_URL_FILE VERIFY_DATABASE_URL VERIFY_DATABASE_URL_FILE
-    unset MINIO_ACCESS_KEY MINIO_ACCESS_KEY_FILE MINIO_SECRET_KEY MINIO_SECRET_KEY_FILE
-    unset VERIFY_MINIO_ACCESS_KEY VERIFY_MINIO_ACCESS_KEY_FILE
-    unset VERIFY_MINIO_SECRET_KEY VERIFY_MINIO_SECRET_KEY_FILE
+    unset S3_ACCESS_KEY S3_ACCESS_KEY_FILE S3_SECRET_KEY S3_SECRET_KEY_FILE
+    unset VERIFY_S3_ACCESS_KEY VERIFY_S3_ACCESS_KEY_FILE
+    unset VERIFY_S3_SECRET_KEY VERIFY_S3_SECRET_KEY_FILE
+    # Only the private configuration file may configure the storage client.
+    local name
+    for name in $(compgen -e | grep -E '^(RCLONE_|AWS_)'); do unset "$name"; done
     unset PGDATABASE PGHOST PGHOSTADDR PGPORT PGUSER PGPASSWORD PGPASSFILE PGSERVICE PGSERVICEFILE
     export PGSERVICEFILE="$service_file" PGSERVICE="$service_name"
     exec "$@"
@@ -359,18 +371,18 @@ validate_restore_archive() {
     || backup_die 'Backup archive uses sparse or unsupported compact file metadata'
 }
 
-write_mc_object_listing() {
-  local config_dir="$1"
+write_object_listing() {
+  local config_file="$1"
   local target="$2"
   local output_file="$3"
-  local raw_file="${output_file}.jsonl"
+  local raw_file="${output_file}.json"
 
-  mc_with_config "$config_dir" ls --recursive --json "$target" > "$raw_file"
+  rclone_with_config "$config_file" lsjson --recursive --files-only --fast-list \
+    --no-mimetype --no-modtime "$target" > "$raw_file"
   jq -r '
-    if .status != "success" then error("MinIO listing reported an error")
-    elif .type == "file" then [.key, (.size | tostring)] | @tsv
-    elif .type == "folder" then error("MinIO listing contains a folder marker")
-    else error("MinIO listing returned an unsupported entry type")
+    if type != "array" then error("Object storage listing is malformed")
+    else .[] | if .IsDir then error("Object storage listing contains a folder entry")
+      else [.Path, (.Size | tostring)] | @tsv end
     end
   ' "$raw_file" | LC_ALL=C sort > "$output_file"
 
@@ -378,10 +390,10 @@ write_mc_object_listing() {
     NF != 2 || $1 !~ /^[A-Za-z0-9][A-Za-z0-9._\/-]*$/ ||
       $1 ~ /(^|\/)\.\.?($|\/)/ || $2 !~ /^[0-9]+$/ { exit 1 }
   ' "$output_file"; then
-    backup_die 'MinIO returned an unsafe object key or malformed size'
+    backup_die 'Object storage returned an unsafe object key or malformed size'
   fi
   [[ "$(cut -f 1 "$output_file" | LC_ALL=C sort | uniq -d | wc -l)" -eq 0 ]] \
-    || backup_die 'MinIO listing contains duplicate object keys'
+    || backup_die 'Object storage listing contains duplicate object keys'
 }
 
 psql_scalar() {

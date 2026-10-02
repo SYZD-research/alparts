@@ -51,7 +51,7 @@ REAL_JQ="$(command -v jq)"
 FAKE_BIN="$TEST_TMP/fake-bin"
 CAPTURE_DIR="$TEST_TMP/capture"
 mkdir -p -- "$FAKE_BIN" "$CAPTURE_DIR"
-for command_name in jq mc psql pg_dump pg_restore; do
+for command_name in jq rclone psql pg_dump pg_restore; do
   ln -s -- "$SCRIPT_DIR/fixtures/capture-command.sh" "$FAKE_BIN/$command_name"
 done
 export BACKUP_TEST_CAPTURE_DIR="$CAPTURE_DIR"
@@ -80,33 +80,40 @@ for command_name in psql pg_dump pg_restore; do
 done
 unset DATABASE_URL PGPASSWORD
 
-MC_ACCESS_SENTINEL='MC_ACCESS_ARG_SENTINEL_31c2'
-MC_SECRET_SENTINEL='MC_SECRET_ARG_SENTINEL_a804'
-export MINIO_ACCESS_KEY="$MC_ACCESS_SENTINEL"
-export MINIO_SECRET_KEY="$MC_SECRET_SENTINEL"
-MC_CONFIG_DIR="$TEST_TMP/mc-config"
-configure_mc_alias "$MC_CONFIG_DIR" source 'https://minio.invalid' \
-  "$MC_ACCESS_SENTINEL" "$MC_SECRET_SENTINEL"
-assert_file_excludes "$CAPTURE_DIR/jq.argv" "$MC_ACCESS_SENTINEL"
-assert_file_excludes "$CAPTURE_DIR/jq.argv" "$MC_SECRET_SENTINEL"
-assert_file_excludes "$CAPTURE_DIR/mc.argv" "$MC_ACCESS_SENTINEL"
-assert_file_excludes "$CAPTURE_DIR/mc.argv" "$MC_SECRET_SENTINEL"
-assert_file_excludes "$CAPTURE_DIR/jq.env" "$MC_ACCESS_SENTINEL"
-assert_file_excludes "$CAPTURE_DIR/jq.env" "$MC_SECRET_SENTINEL"
-assert_file_excludes "$CAPTURE_DIR/mc.env" "$MC_ACCESS_SENTINEL"
-assert_file_excludes "$CAPTURE_DIR/mc.env" "$MC_SECRET_SENTINEL"
-unset MINIO_ACCESS_KEY MINIO_SECRET_KEY
-[[ "$(stat -c '%a' -- "$MC_CONFIG_DIR")" == '700' ]] \
-  || fail 'MinIO config directory is not mode 0700'
-BACKUP_TEST_EXPECT_ACCESS="$MC_ACCESS_SENTINEL" \
-BACKUP_TEST_EXPECT_SECRET="$MC_SECRET_SENTINEL" \
-  "$REAL_JQ" -e '
-    .url == "https://minio.invalid" and
-    .accessKey == env.BACKUP_TEST_EXPECT_ACCESS and
-    .secretKey == env.BACKUP_TEST_EXPECT_SECRET and
-    .api == "s3v4" and .path == "auto"
-  ' "$CAPTURE_DIR/mc.stdin" >/dev/null \
-  || fail 'MinIO stdin import payload is malformed'
+S3_ACCESS_SENTINEL='S3_ACCESS_ARG_SENTINEL_31c2'
+S3_SECRET_SENTINEL='S3_SECRET_ARG_SENTINEL_a804'
+export S3_ACCESS_KEY="$S3_ACCESS_SENTINEL"
+export S3_SECRET_KEY="$S3_SECRET_SENTINEL"
+# Ambient storage-client settings must not redirect or authenticate the copy.
+export RCLONE_CONFIG_SOURCE_ENDPOINT='https://redirect.invalid'
+export AWS_ACCESS_KEY_ID='AMBIENT_AWS_SENTINEL'
+STORAGE_CONFIG="$TEST_TMP/staging/rclone.conf"
+mkdir -p -- "$TEST_TMP/staging"
+configure_s3_remote "$STORAGE_CONFIG" source 'https://objects.invalid' \
+  "$S3_ACCESS_SENTINEL" "$S3_SECRET_SENTINEL" us-east-1
+rclone_with_config "$STORAGE_CONFIG" lsjson --stat source:alparts
+assert_file_excludes "$CAPTURE_DIR/rclone.argv" "$S3_ACCESS_SENTINEL"
+assert_file_excludes "$CAPTURE_DIR/rclone.argv" "$S3_SECRET_SENTINEL"
+assert_file_excludes "$CAPTURE_DIR/rclone.env" "$S3_ACCESS_SENTINEL"
+assert_file_excludes "$CAPTURE_DIR/rclone.env" "$S3_SECRET_SENTINEL"
+assert_file_excludes "$CAPTURE_DIR/rclone.env" 'redirect.invalid'
+assert_file_excludes "$CAPTURE_DIR/rclone.env" 'AMBIENT_AWS_SENTINEL'
+unset S3_ACCESS_KEY S3_SECRET_KEY RCLONE_CONFIG_SOURCE_ENDPOINT AWS_ACCESS_KEY_ID
+[[ "$(stat -c '%a' -- "$STORAGE_CONFIG")" == '600' ]] \
+  || fail 'object storage configuration is not mode 0600'
+grep -Fx -- "access_key_id = ${S3_ACCESS_SENTINEL}" "$STORAGE_CONFIG" >/dev/null \
+  && grep -Fx -- "secret_access_key = ${S3_SECRET_SENTINEL}" "$STORAGE_CONFIG" >/dev/null \
+  && grep -Fx -- 'endpoint = https://objects.invalid' "$STORAGE_CONFIG" >/dev/null \
+  && grep -Fx -- 'env_auth = false' "$STORAGE_CONFIG" >/dev/null \
+  || fail 'object storage configuration is malformed'
+expect_failure 'single-line values' "$TEST_TMP/credential-newline.err" \
+  configure_s3_remote "$TEST_TMP/staging/injected.conf" source 'https://objects.invalid' \
+  $'key\n[other]' secret us-east-1
+[[ ! -e "$TEST_TMP/staging/injected.conf" ]] \
+  || fail 'a credential containing a line break reached the configuration file'
+expect_failure 'now named S3_' "$TEST_TMP/legacy-settings.err" \
+  bash -c 'export MINIO_URL=https://objects.invalid; source "$1"; reject_legacy_storage_settings' _ \
+  "$REPOSITORY_ROOT/scripts/lib/backup-common.sh"
 
 ORDINARY_SOURCE="$TEST_TMP/ordinary-source"
 ORDINARY_EXTRACT="$TEST_TMP/ordinary-extract"
