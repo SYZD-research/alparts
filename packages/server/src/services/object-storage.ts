@@ -177,7 +177,7 @@ export async function writeStoredAuditHead(serialized: string): Promise<void> {
     Bucket: config.audit.headBucket,
     Key: config.audit.headObjectKey!,
     Body: body,
-    ContentLength: body.length,
+    ContentLength: body.byteLength,
     ContentType: 'application/json',
     CacheControl: 'no-store',
   }), options), deadline), deadline);
@@ -200,7 +200,7 @@ export function putStoredObject(storageKey: string, body: Buffer): Promise<{ eta
       Bucket: config.s3.bucket,
       Key: storageKey,
       Body: body,
-      ContentLength: body.length,
+      ContentLength: body.byteLength,
       ContentType: 'application/octet-stream',
       CacheControl: 'no-store',
     }), options), deadline);
