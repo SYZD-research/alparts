@@ -201,6 +201,10 @@ pnpm --filter @alparts/server test:account-security
 
 ## ライセンス
 
-Copyright (c) 2026 SYZD Research. All rights reserved.
+Copyright (C) 2026 SYZD Research
 
-利用・複製・改変・再配布などには、法令で認められる場合を除き、SYZD Researchの事前の書面による許可が必要です。詳しくは[LICENSE](LICENSE)を参照してください。
+このプログラムはフリーソフトウェアです。[GNU Affero General Public License version 3](LICENSE)（AGPL-3.0-only）の条件のもとで、再配布や改変ができます。
+
+このプログラムは有用であることを願って配布していますが、**いかなる保証もありません**。商品性や特定目的への適合性の黙示の保証もありません。詳しくは [LICENSE](LICENSE) を参照してください。
+
+改変したものを配布する場合だけでなく、改変したものをネットワーク越しに利用者へ提供する場合（サーバーとして運用する場合など）も、その利用者に同じライセンスで対応するソースコードを提供する必要があります。第三者のコンポーネントには、それぞれのライセンスが適用されます。

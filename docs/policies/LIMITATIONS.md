@@ -121,7 +121,7 @@
 
 ### 配布、data governance、UX assurance
 
-- Repository/package metadataは現在 `UNLICENSED` であり、project codeの利用・改変・再配布を許諾していない。Production依存のlicense inventoryは取得済みだが、権利者によるproject license選定と法務確認が終わるまで `DEP-08` / `OSS-02` を満たさない。
+- Project codeはAGPL-3.0-only（package metadataも同じ）で公開している。配布される依存（server・client・desktopのElectron・AndroidのAndroidX）はすべてAGPL-3.0と両立するlicense（MIT・ISC・BSD・Apache-2.0・BlueOak-1.0.0・0BSD）であることを確認した。配布物へのthird-party noticeの同梱が終わるまで `DEP-08` / `OSS-02` を満たさない。
 - OCI/systemd/production Compose、pinned CI、SBOM生成、dependency/secret/CodeQL/Trivy gateはあるが、SLSA provenance、release signing、downgrade prevention、signed updater、multi-architecture release pipelineはない。
 - Retention policy engine、server/client cache lifecycle、user data export、organization export、二者承認、legal holdはない。
 - Restricted / Embargoed profileは実装されていない。Web禁止、参加後のみの履歴、外部user approval、閾値recovery、通知本文制限などをpolicyとして強制できない。
