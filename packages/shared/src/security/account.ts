@@ -90,3 +90,18 @@ export function isSensitiveAction(method: string, path: string): boolean {
       !path.endsWith('/preview'))
   );
 }
+
+/**
+ * Like isSensitiveAction, but also for requests that are sensitive because of
+ * what they change. Making a private channel public (or moving a channel to
+ * a category with different permissions) lets new members read what follows,
+ * so it needs the same proof as adding members. The field's presence decides,
+ * so a client sends it only when it changes.
+ */
+export function isSensitiveRequest(method: string, path: string, body: unknown): boolean {
+  if (isSensitiveAction(method, path)) return true;
+  const normalizedPath = path.toLowerCase().replace(/\/+$/, '');
+  if (method.toUpperCase() !== 'PUT' || !/^\/api\/channels\/[^/]+$/.test(normalizedPath)) return false;
+  return body !== null && typeof body === 'object' && !Array.isArray(body)
+    && ['isPrivate', 'categoryId'].some((field) => Object.prototype.hasOwnProperty.call(body, field));
+}
