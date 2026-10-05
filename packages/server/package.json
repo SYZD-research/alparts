@@ -2,7 +2,7 @@
   "name": "@alparts/server",
   "version": "0.1.0",
   "private": true,
-  "license": "UNLICENSED",
+  "license": "SEE LICENSE IN LICENSE",
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",

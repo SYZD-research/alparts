@@ -11,7 +11,7 @@
     "node": ">=24.8.0",
     "pnpm": ">=11.21.0"
   },
-  "license": "UNLICENSED",
+  "license": "SEE LICENSE IN LICENSE",
   "overrides": {
     "esbuild": "^0.28.2"
   },

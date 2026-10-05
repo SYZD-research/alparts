@@ -20,7 +20,7 @@
 | ID | 依存 | 状態 | 実装内容 / 残作業 | 受入条件 |
 | --- | --- | --- | --- | --- |
 | DOC-01 | なし | 完了 | Prototype境界、正式版blocker、安全上の制限を本表、`README.md`、`LIMITATIONS.md`、`THREAT_MODEL.md`へ反映 | 文書間で「正式仕様全体が完成」と読める矛盾がなく、相対linkが解決する |
-| LIC-01 | DOC-01 | 延期 | Repository/package metadataは誤配布を避けるため `UNLICENSED` とする。production依存のlicense inventoryは取得済みだが、project自体へのlicense grantは権利者判断待ち | 権利者がOSI承認または同等のlicenseを選定し、著作権表示・third-party notice・配布条件を法務確認してrepositoryへ追加する |
+| LIC-01 | DOC-01 | 一部完了 | 権利者が閲覧のみを許可するlicense（SYZD Research View-Only License）を選定し、`LICENSE` とpackage metadata（`SEE LICENSE IN LICENSE`）へ反映した。production依存のlicense inventoryは取得済み | license本文とthird-party notice・配布条件の法務確認 |
 | RUN-01 | DOC-01 | 完了 | shared build、本番server起動、non-root OCI image、systemd hardening、`*_FILE` secret、startup/liveness/readiness、graceful drain | typecheck/buildとserver試験に加え、設定不足時のfail-fastおよび各probeを確認 |
 | SEC-01 | RUN-01 | 完了 | DB-backed session、HttpOnly cookie、REST/WebSocketのworkspace/channel/private-channel認可、入力制限、rate limit、外部画像の自動取得防止 | server security/unit/integration試験でBOLA、room join、logout/失効、cross-channel参照を拒否 |
 | KEY-01 | SEC-01 | 完了 | non-extractable device key、session-bound enrollment proof/current-password step-up、frozen recipient snapshotを持つ二段階`pending→active` channel epoch、全required exact-delivery ack、immutable per-distributor candidate、署名abort、単調version、失効・離脱時のrekey待ち、鍵不在時の平文fallback禁止 | 自己ack、DM proposer、divergent/overwrite candidate、ack前write、abort/retry、device/session競合と正規全員ack activationを自動試験で確認。新しいMLS epoch/端末承認への拡張は下記SEC-ACCOUNT-01参照 |

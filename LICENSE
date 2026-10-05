@@ -1,16 +1,73 @@
+SYZD Research View-Only License
+
 Copyright (c) 2026 SYZD Research. All rights reserved.
 
-This software and its associated documentation (the "Software") are
-proprietary to SYZD Research. No permission is granted to use, copy, modify,
-publish, distribute, sublicense, or sell the Software, in whole or in part,
-without the prior written permission of SYZD Research, except as permitted
-by applicable law.
+This software, its source code and its associated documentation (the
+"Software") are made publicly available for viewing only. SYZD Research
+("Licensor") grants you the limited permission set out below; every right
+not expressly granted is reserved.
 
-Third-party components remain subject to their respective licenses.
+1. Permitted: viewing
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
-SYZD RESEARCH BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
-IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
-CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+   You may access and read the Software for reference, study and review,
+   including security review by reading it. You may make copies only to the
+   extent strictly necessary to view it, such as copies kept by a browser
+   or a local clone used solely for reading.
+
+2. Not permitted
+
+   Without Licensor's prior written permission, you may not, in whole or in
+   part:
+
+   a. run, execute, build, compile, install, host or deploy the Software,
+      or offer it to others as a service;
+   b. modify the Software or create derivative works based on it;
+   c. copy, publish, distribute, sublicense, sell, rent or otherwise make
+      the Software available to others, except as stated in section 3;
+   d. use the Software, or any part of it, for any commercial purpose;
+   e. use the Software, or any part of it, to train, fine-tune or evaluate
+      machine-learning or artificial-intelligence models, or include it in
+      a dataset for such purposes;
+   f. remove or alter any copyright, license or other notice in it.
+
+3. Platform features
+
+   Where the Software is hosted on GitHub, nothing in this license limits
+   the rights that GitHub's Terms of Service give other users to view and
+   fork the repository on GitHub. A fork remains subject to this license and
+   may be used only as section 1 allows.
+
+4. Contributions
+
+   Licensor does not accept contributions unless it has agreed in writing
+   on the terms under which they are made.
+
+5. No other rights
+
+   This license grants no patent rights and no rights to use the names,
+   logos or trademarks of Licensor or of the Software.
+
+6. Termination
+
+   If you breach this license, your permission under it ends automatically
+   and immediately.
+
+7. Third-party components
+
+   Components of the Software that come from third parties remain subject
+   to their own licenses, which this license does not change.
+
+8. Disclaimer of warranty and limitation of liability
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+   OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+   MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
+   NO EVENT SHALL SYZD RESEARCH BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+   FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+   DEALINGS IN THE SOFTWARE.
+
+Nothing in this license limits any use that applicable law permits
+regardless of this license.
+
+For any other use, contact SYZD Research for written permission.
