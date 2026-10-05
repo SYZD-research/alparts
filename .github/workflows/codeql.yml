@@ -31,13 +31,6 @@ jobs:
           # and fail the job on findings instead of leaving them in the log.
           upload: never
           output: codeql-results
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
-        if: always()
-        with:
-          name: codeql-sarif
-          path: codeql-results
-          if-no-files-found: warn
-          retention-days: 30
       - name: Fail on CodeQL findings
         run: |
           set -euo pipefail
@@ -47,3 +40,13 @@ jobs:
             echo "CodeQL reported $count finding(s)." >&2
             exit 1
           fi
+      # Kept for inspection only; the step above decides the result, so a full
+      # artifact store must not fail (or skip) the findings check.
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        if: always()
+        continue-on-error: true
+        with:
+          name: codeql-sarif
+          path: codeql-results
+          if-no-files-found: warn
+          retention-days: 7
