@@ -95,15 +95,34 @@ is_supported_env_key() {
 
 # Object storage settings were renamed from MINIO_* to S3_*, and the server
 # no longer reads the old names. Rename them in this local .env once.
+legacy_storage_name() {
+  case "$1" in
+    MINIO_ROOT_USER) printf 'S3_ADMIN_ACCESS_KEY' ;;
+    MINIO_ROOT_PASSWORD) printf 'S3_ADMIN_SECRET_KEY' ;;
+    MINIO_CONSOLE_PORT) ;;
+    MINIO_*) printf 'S3_%s' "${1#MINIO_}" ;;
+  esac
+}
 if grep -q '^MINIO_' .env; then
+  # Rewrite the file .env resolves to, in place: a linked .env stays linked and
+  # keeps its owner, ACLs and labels.
+  env_target="$(readlink -f .env)"
+  while IFS='=' read -r legacy_key _; do
+    new_key="$(legacy_storage_name "$legacy_key")"
+    if [ -n "$new_key" ] && grep -q "^${new_key}=" "$env_target"; then
+      die ".env に ${legacy_key} と ${new_key} の両方があります。どちらを使うか決めて、古い方の行を削除してください"
+    fi
+  done < <(grep '^MINIO_' "$env_target")
   info ".env のストレージ設定の名前を新しい名前 (S3_*) に変更します"
-  renamed_env="$(mktemp .env.XXXXXX)"
+  renamed_env="$(mktemp "${env_target}.XXXXXX")"
+  trap 'rm -f -- "$renamed_env"' EXIT
   sed -e 's/^MINIO_ROOT_USER=/S3_ADMIN_ACCESS_KEY=/' \
     -e 's/^MINIO_ROOT_PASSWORD=/S3_ADMIN_SECRET_KEY=/' \
     -e '/^MINIO_CONSOLE_PORT=/d' \
-    -e 's/^MINIO_/S3_/' .env > "$renamed_env"
-  chmod 600 "$renamed_env"
-  mv "$renamed_env" .env
+    -e 's/^MINIO_/S3_/' "$env_target" > "$renamed_env"
+  cat -- "$renamed_env" > "$env_target"
+  rm -f -- "$renamed_env"
+  trap - EXIT
 fi
 
 # Treat .env as data, not shell source. This intentionally supports the simple
