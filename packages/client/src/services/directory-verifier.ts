@@ -199,3 +199,20 @@ export async function verifyDirectoryEntries(
   }
   return state;
 }
+
+/**
+ * What a device must be for its signature to count.
+ * - `approved`: approved at some point. Past messages and attachments keep
+ *   verifying after the device is revoked; a self-registered device that no
+ *   approved device (or recovery) ever approved never qualifies.
+ * - `active`: approved now and not revoked. New keys and call signaling.
+ */
+export type DeviceTrustPolicy = 'approved' | 'active';
+
+export function deviceMeetsPolicy(
+  recorded: { approved: boolean; revoked: boolean; approvedSequence: number | null },
+  policy: DeviceTrustPolicy,
+): boolean {
+  const everApproved = recorded.approved || recorded.approvedSequence !== null;
+  return policy === 'active' ? recorded.approved && !recorded.revoked : everApproved;
+}

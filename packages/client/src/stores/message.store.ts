@@ -912,7 +912,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         )))];
         const directory = requestedDeviceIds.length === 0
           ? []
-          : await api.getChannelDeviceDirectory(channelId, requestedDeviceIds, signal);
+          : await api.getChannelDeviceDirectory(channelId, requestedDeviceIds, 'approved', signal);
         const identities = new Map(directory.map((device) => [
           device.deviceId,
           { userId: device.userId, identityKey: device.identityKey },
