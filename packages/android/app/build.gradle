@@ -93,8 +93,11 @@ tasks.register('runtimeInventory') {
             def purl = "pkg:maven/${id.group}/${id.name}@${id.version}"
             [type: 'library', 'bom-ref': purl, group: id.group, name: id.name, version: id.version, purl: purl]
         }.unique { it.purl }.sort { it.purl }
+        def json = groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(components)) + '\n'
         def output = layout.buildDirectory.file('reports/runtime-components.json').get().asFile
         output.parentFile.mkdirs()
-        output.text = groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(components)) + '\n'
+        output.text = json
+        // Committed snapshot consumed by scripts/release/third-party-notices.mjs.
+        rootProject.file('runtime-components.json').text = json
     }
 }

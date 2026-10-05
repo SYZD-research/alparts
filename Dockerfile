@@ -37,6 +37,7 @@ COPY --from=build /app/packages/shared/dist packages/shared/dist
 COPY --from=build /app/packages/server/dist packages/server/dist
 COPY --from=build /app/packages/server/src/db/migrations packages/server/migrations
 COPY --from=build /app/packages/client/dist packages/client/dist
+COPY --from=build /app/packages/client/dist/THIRD_PARTY_NOTICES.txt /app/THIRD_PARTY_NOTICES.txt
 
 USER node
 EXPOSE 3000

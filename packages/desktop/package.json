@@ -73,6 +73,10 @@
       {
         "from": "build/icon.png",
         "to": "desktop-icon.png"
+      },
+      {
+        "from": "../client/dist/THIRD_PARTY_NOTICES.txt",
+        "to": "THIRD_PARTY_NOTICES.txt"
       }
     ],
     "afterPack": "scripts/after-pack.cjs",
