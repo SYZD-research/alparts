@@ -115,6 +115,29 @@ expect_failure 'now named S3_' "$TEST_TMP/legacy-settings.err" \
   bash -c 'export MINIO_URL=https://objects.invalid; source "$1"; reject_legacy_storage_settings' _ \
   "$REPOSITORY_ROOT/scripts/lib/backup-common.sh"
 
+# Listings: prefixes implied by objects are fine; a folder entry with nothing
+# beneath it (a folder-marker object) is refused, including in an otherwise
+# empty restore target.
+LISTING_FIXTURE="$TEST_TMP/listing.json"
+export BACKUP_TEST_RCLONE_STDOUT="$LISTING_FIXTURE"
+printf '%s' '[{"Path":"attachments","IsDir":true,"Size":-1},{"Path":"attachments/v1","IsDir":true,"Size":-1},{"Path":"attachments/v1/a/000000","IsDir":false,"Size":7}]' > "$LISTING_FIXTURE"
+write_object_listing "$STORAGE_CONFIG" source:alparts "$TEST_TMP/listing.tsv"
+[[ "$(cat -- "$TEST_TMP/listing.tsv")" == $'attachments/v1/a/000000\t7' ]] \
+  || fail 'object listing did not keep exactly the stored object'
+printf '%s' '[]' > "$LISTING_FIXTURE"
+write_object_listing "$STORAGE_CONFIG" verify:alparts-verify-x "$TEST_TMP/empty.tsv"
+[[ ! -s "$TEST_TMP/empty.tsv" ]] || fail 'an empty bucket was listed as non-empty'
+printf '%s' '[{"Path":"marker","IsDir":true,"Size":-1}]' > "$LISTING_FIXTURE"
+expect_failure 'folder entry' "$TEST_TMP/marker-only.err" \
+  write_object_listing "$STORAGE_CONFIG" verify:alparts-verify-x "$TEST_TMP/marker-only.tsv"
+printf '%s' '[{"Path":"attachments","IsDir":true,"Size":-1},{"Path":"attachments/empty","IsDir":true,"Size":-1},{"Path":"attachments/v1/a/000000","IsDir":false,"Size":7}]' > "$LISTING_FIXTURE"
+expect_failure 'folder entry' "$TEST_TMP/marker-beside.err" \
+  write_object_listing "$STORAGE_CONFIG" source:alparts "$TEST_TMP/marker-beside.tsv"
+printf '%s' '[{"Path":"attachments/v1/a//000000","IsDir":false,"Size":7}]' > "$LISTING_FIXTURE"
+expect_failure 'unsafe object key' "$TEST_TMP/double-slash.err" \
+  write_object_listing "$STORAGE_CONFIG" source:alparts "$TEST_TMP/double-slash.tsv"
+unset BACKUP_TEST_RCLONE_STDOUT
+
 ORDINARY_SOURCE="$TEST_TMP/ordinary-source"
 ORDINARY_EXTRACT="$TEST_TMP/ordinary-extract"
 mkdir -p -- "$ORDINARY_SOURCE/objects" "$ORDINARY_EXTRACT"

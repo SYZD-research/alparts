@@ -63,7 +63,7 @@ Provision a new empty database and a new empty bucket on an isolated verificatio
 
 Use a dedicated target database owner with no superuser, `CREATEROLE`, `CREATEDB`, replication, `BYPASSRLS`, server-file, or server-program privilege. The script rejects a role that has or can assume those privileges. Give the verification object-store identity access only to the named disposable bucket.
 
-Names containing `prod`, `production`, `live`, or `primary` are rejected. The default `alparts` bucket and a target bucket whose name equals the source bucket are also rejected. A matching name is not sufficient: the script also queries PostgreSQL for non-system schemas and objects and recursively lists the bucket, and refuses either target unless it is empty. Folder-marker objects (keys ending in `/`) are not part of the application's key grammar; they are neither listed nor copied.
+Names containing `prod`, `production`, `live`, or `primary` are rejected. The default `alparts` bucket and a target bucket whose name equals the source bucket are also rejected. A matching name is not sufficient: the script also queries PostgreSQL for non-system schemas and objects and recursively lists the bucket, and refuses either target unless it is empty. Folder-marker objects (keys ending in `/`) are not part of the application's key grammar; a source or target that contains one is refused, so a bucket holding only markers is never taken for an empty one.
 
 Backups created with the earlier MinIO-based scripts remain restorable; their manifest records the source bucket under its earlier field name.
 
