@@ -21,7 +21,7 @@ import { and, eq, inArray, sql } from 'drizzle-orm';
 import pg from 'pg';
 import {
   Permissions,
-  canonicalActionBody, isSensitiveAction, serializeDeviceDecision, serializeGroupKeyPackage, serializeMlsEpoch, type MlsEpoch, type GroupKeyPackage,
+  canonicalActionBody, isSensitiveRequest, serializeDeviceDecision, serializeGroupKeyPackage, serializeMlsEpoch, type MlsEpoch, type GroupKeyPackage,
   serializeAttachmentEnvelope,
   serializeChannelKeyAcknowledgement,
   serializeChannelKeyEpochAbort,
@@ -3713,7 +3713,7 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
         options = {...options,body:{head,signature}};
       }
     }
-    if(options.cookie && credentials.has(options.cookie) && isSensitiveAction(options.method ?? 'GET',path.split('?')[0])) {
+    if(options.cookie && credentials.has(options.cookie) && isSensitiveRequest(options.method ?? 'GET',path.split('?')[0],options.body)) {
       const purpose = `${options.method} ${path.split('?')[0]} ${createHash('sha256').update(canonicalActionBody(options.body)).digest('base64url')}`;
       const optionsResponse = await request('/api/auth/step-up/options',{method:'POST',cookie:options.cookie,body:{purpose}});
       if(optionsResponse.status===200) {
