@@ -27,8 +27,8 @@
   },
   "dependencies": {
     "@alparts/shared": "workspace:*",
-    "@aws-sdk/client-s3": "^3.1140.0",
-    "@noble/curves": "2.0.1",
+    "@aws-sdk/client-s3": "^3.1145.0",
+    "@noble/curves": "2.4.0",
     "@noble/hashes": "2.4.0",
     "@simplewebauthn/server": "14.0.2",
     "@smithy/node-http-handler": "^4.12.1",
@@ -38,8 +38,8 @@
     "express": "^5.2.1",
     "helmet": "^7.1.0",
     "jsonwebtoken": "^9.0.2",
-    "pg": "^8.13.0",
-    "socket.io": "^4.8.0",
+    "pg": "^8.23.1",
+    "socket.io": "^4.8.4",
     "ts-mls": "1.6.4",
     "zod": "^3.23.8"
   },
@@ -50,7 +50,7 @@
     "@types/node": "^26.2.0",
     "@types/pg": "^8.23.1",
     "drizzle-kit": "^0.31.11",
-    "socket.io-client": "^4.8.3",
+    "socket.io-client": "^4.8.4",
     "tsx": "^4.23.15",
     "typescript": "^5.6.0"
   }
