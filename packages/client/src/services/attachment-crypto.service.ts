@@ -488,7 +488,7 @@ async function getDeviceDirectory(
   if (inFlight) return inFlight;
   if (directoryPromises.size >= DIRECTORY_CACHE_LIMIT) throw new Error('DEVICE_DIRECTORY_CAPACITY');
   const generation = directoryCacheGeneration;
-  const request = api.getChannelDeviceDirectory(channelId, [deviceId]).then((entries) => {
+  const request = api.getChannelDeviceDirectory(channelId, [deviceId], 'approved').then((entries) => {
     const entry = entries.find((candidate) => candidate.deviceId === deviceId) ?? null;
     if (generation === directoryCacheGeneration) {
       directoryCache.delete(cacheKey);

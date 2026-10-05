@@ -1264,7 +1264,16 @@ class ApiService {
     return this.request<ChannelKeyRecipientState>(`/channels/${channelId}/key-recipients`);
   }
 
-  async getChannelDeviceDirectory(channelId: string, deviceIds: readonly string[], signal?: AbortSignal) {
+  /**
+   * `approved` (past messages and attachments) or `active` (key distributors
+   * and call signaling); see deviceMeetsPolicy.
+   */
+  async getChannelDeviceDirectory(
+    channelId: string,
+    deviceIds: readonly string[],
+    policy: 'approved' | 'active',
+    signal?: AbortSignal,
+  ) {
     const uniqueIds = [...new Set(deviceIds)];
     if (uniqueIds.length < 1 || uniqueIds.length > 64 || uniqueIds.length !== deviceIds.length) {
       throw new Error('Invalid bounded device-directory request');
@@ -1273,7 +1282,7 @@ class ApiService {
       `/channels/${channelId}/device-directory?ids=${encodeURIComponent(uniqueIds.join(','))}`,
       { signal },
     );
-    await (await import('./directory.service')).verifyDirectoryDevices(channelId, result, false);
+    await (await import('./directory.service')).verifyDirectoryDevices(channelId, result, policy);
     return result;
   }
 
