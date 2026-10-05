@@ -1,5 +1,5 @@
 // Real-service checks for assumptions omitted by the bounded Python models.
-// Requires a disposable PostgreSQL administrator URL and a disposable MinIO bucket.
+// Requires a disposable PostgreSQL administrator URL and a disposable S3-compatible bucket.
 // Creates and drops its OWN uniquely named database. Does not alter the input database.
 // Exit 1 means a claimed property has a counterexample; fixtures/setup errors exit 2.
 import assert from 'node:assert/strict';
@@ -459,9 +459,15 @@ try {
     return JSON.parse(restarted.stdout.trim());
   }
   const { config } = await import('../../packages/server/src/config/index.ts');
-  const { Client } = require('minio');
-  const objectAdmin = new Client({ endPoint: config.minio.endPoint, port: config.minio.port,
-    useSSL: config.minio.useSSL, accessKey: config.minio.accessKey, secretKey: config.minio.secretKey });
+  const { S3Client, DeleteObjectCommand } = require('@aws-sdk/client-s3');
+  const objectClient = new S3Client({
+    endpoint: storage.objectStorageEndpoint(config.s3.endpoint, config.s3.port, config.s3.useSSL),
+    region: config.s3.region, forcePathStyle: true, maxAttempts: 1,
+    credentials: { accessKeyId: config.s3.accessKey, secretAccessKey: config.s3.secretKey },
+  });
+  const objectAdmin = {
+    removeObject: (bucket: string, key: string) => objectClient.send(new DeleteObjectCommand({ Bucket: bucket, Key: key })),
+  };
   await check('M5c-concurrent-checks', 'Concurrent readiness/full verification and appends never report a false rollback', async () => {
     for (let batch = 0; batch < 3; batch++) {
       await Promise.all(Array.from({ length: 4 }, async (_, i) => {
@@ -481,7 +487,7 @@ try {
       let injected = false;
       http.request = function(...args) {
         const outgoing = original.apply(this, args);
-        if (outgoing.method === 'PUT' && outgoing.path === ${JSON.stringify('/' + config.audit.headBucket + '/' + config.audit.headObjectKey)}) {
+        if (outgoing.method === 'PUT' && outgoing.path.split('?')[0] === ${JSON.stringify('/' + config.audit.headBucket + '/' + config.audit.headObjectKey)}) {
           injected = true;
           queueMicrotask(() => outgoing.destroy(new Error('INJECTED_AUDIT_HEAD_WRITE_FAILURE')));
         }

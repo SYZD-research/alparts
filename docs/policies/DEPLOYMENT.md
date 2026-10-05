@@ -6,7 +6,7 @@ Last verified: 2026-08-30
 
 | Mode | Status | Intended use |
 | --- | --- | --- |
-| Development | implemented | loopback-only local iteration with disposable Docker PostgreSQL/MinIO |
+| Development | implemented | loopback-only local iteration with disposable Docker PostgreSQL/SeaweedFS |
 | Single-host production pilot | implemented template, deployment acceptance required | one Node process under systemd or hardened Compose, durable external/local PostgreSQL and S3-compatible storage |
 | Clustered production | unsupported | design target only; do not start multiple app replicas against one deployment |
 | Multi-region production | unsupported | design target only; no leader fencing/conflict/failover model |
@@ -32,9 +32,9 @@ Before any production start or update:
 1. identify the exact Git revision, immutable OCI digest, Node/pnpm versions, and migration set;
 2. review [limitations](./LIMITATIONS.md) and [open risks](../RISK_REGISTER.md) for the data classification;
 3. generate unique secrets outside the repository and provide them through protected files/provider mounts;
-4. verify a dedicated PostgreSQL 16 database/`public` schema, PostgreSQL/MinIO endpoint identity, TLS trust, least-privilege roles, storage durability and capacity;
+4. verify a dedicated PostgreSQL 16 database/`public` schema, PostgreSQL/object-store endpoint identity, TLS trust, least-privilege roles, storage durability and capacity;
 5. build, lint, typecheck, test, scan secrets/dependencies, and build the exact image;
-6. apply every migration to a fresh disposable DB and run the PostgreSQL+MinIO integration suite;
+6. apply every migration to a fresh disposable DB and run the PostgreSQL+object-store integration suite;
 7. for an existing deployment, stop/drain writes, create and independently restore-verify a pre-migration encrypted backup;
 8. apply migrations with a separate deployment identity while the application is stopped;
 9. prove that the database's applied migration timestamps/hashes and bounded PostgreSQL 16 catalog fingerprint exactly match the running image;
@@ -43,6 +43,35 @@ Before any production start or update:
 12. retain the previous immutable image and a documented forward/restore rollback decision.
 
 Never reinitialize a missing audit checkpoint merely to make readiness green. Never apply a destructive migration without a verified backup and a separately rehearsed recovery.
+
+## Object storage
+
+Attachments, avatars and the durable audit head live in an S3-compatible object store. The recommended store is [SeaweedFS](https://github.com/seaweedfs/seaweedfs) (Apache-2.0); development and CI run SeaweedFS 4.47 pinned by digest (`docker-compose.yml`, `scripts/ci/start-object-storage.sh`). The server reaches any store through the AWS SDK for JavaScript v3 using path-style requests:
+
+| Setting | Meaning |
+|---|---|
+| `S3_ENDPOINT`, `S3_PORT`, `S3_USE_SSL` | Endpoint host, port and TLS (TLS is required in production except for an acknowledged loopback endpoint) |
+| `S3_ACCESS_KEY`, `S3_SECRET_KEY` (or `*_FILE`) | The application's own identity |
+| `S3_BUCKET`, `AUDIT_HEAD_BUCKET` | Object bucket and the separate audit-head bucket (default `${S3_BUCKET}-audit`) |
+| `S3_REGION` | Signing region (default `us-east-1`) |
+| `S3_REQUEST_TIMEOUT_MS` | Absolute deadline for each request (default 10 s, at most 60 s) |
+
+The former `MINIO_*` names are refused at startup, and by the backup scripts, with a message listing what to rename.
+
+For a production SeaweedFS:
+
+- run the pinned image on a dedicated, persistent volume; plan capacity and, where needed, SeaweedFS replication. A single volume is not redundant; the encrypted backups are the recovery path;
+- expose only the S3 API to the application host, over TLS (SeaweedFS `-s3.port.https` with `-s3.cert.file`/`-s3.key.file`, or a TLS proxy on the same host). Disable telemetry (`-master.telemetry=false`) and keep the admin UI, master, volume and filer ports off the network;
+- define identities in the `-s3.config` file: an administrator that creates the buckets and is never given to the application; the application with `Read`, `Write` and `List` on `S3_BUCKET` and `AUDIT_HEAD_BUCKET`; a backup identity with `Read` and `List` on `S3_BUCKET` only; and a separate identity for each disposable verification bucket. SeaweedFS grants per bucket, and `Write` includes deletion, so the application can also delete the audit head; treat the store's administrators and the application host as able to roll it back, as described in [operations](../OPERATIONS.md);
+- create both buckets before the first start (for example `-bucket=alparts,alparts-audit`). The application never creates the audit-head bucket during normal start.
+
+### Moving an existing MinIO deployment
+
+1. Stop application writes and take a backup with the scripts of the release you are leaving, then restore-verify it.
+2. Create both buckets and the identities above on SeaweedFS.
+3. With the application still stopped, copy every object of `S3_BUCKET` and of the audit-head bucket, keeping the keys (for example `rclone copy old:alparts new:alparts` and the same for `alparts-audit`), then compare object counts and sizes on both sides. Without the audit head the server refuses to start until it is deliberately re-provisioned, so copy it rather than recreating it.
+4. Rename every `MINIO_*` setting to `S3_*` in the environment, the Compose secrets (`s3_access_key`, `s3_secret_key`) and the systemd credentials, and point `S3_ENDPOINT` at SeaweedFS. Backup jobs use `S3_URL`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_BUCKET`, and `rclone` instead of `mc`.
+5. Start the application and confirm readiness and an attachment download before re-enabling writes.
 
 ## Development
 
@@ -77,7 +106,7 @@ sudo systemd-analyze verify /etc/systemd/system/alparts.service \
 sudo systemctl daemon-reload
 ```
 
-The example app uses a dynamic nonroot UID, read-only filesystem protections, no capabilities, finite memory/tasks/fds, restart backoff, and loopback bind. Its explicit insecure-dependency acknowledgement is valid only when PostgreSQL/MinIO endpoints are truly loopback or unix-socket local; remote endpoints must use verified TLS and remove that acknowledgement.
+The example app uses a dynamic nonroot UID, read-only filesystem protections, no capabilities, finite memory/tasks/fds, restart backoff, and loopback bind. Its explicit insecure-dependency acknowledgement is valid only when PostgreSQL/object-store endpoints are truly loopback or unix-socket local; remote endpoints must use verified TLS and remove that acknowledgement.
 
 Provision the initial audit checkpoint while the app is stopped and with production credentials:
 
@@ -94,7 +123,7 @@ curl --fail http://127.0.0.1:3000/health/ready
 sudo systemctl enable --now alparts-backup.timer
 ```
 
-Backups deliberately stop the application to make PostgreSQL+MinIO consistent. The wrapper locks against overlap, refuses to touch an already inactive service, restarts through a trap, and prunes only exact encrypted artifact names with an acknowledgement. Removing `Requires=alparts.service` from the backup unit is intentional: stopping the app must not stop the backup job that initiated the quiesce window.
+Backups deliberately stop the application to make PostgreSQL and the object store consistent. The wrapper locks against overlap, refuses to touch an already inactive service, restarts through a trap, and prunes only exact encrypted artifact names with an acknowledgement. Removing `Requires=alparts.service` from the backup unit is intentional: stopping the app must not stop the backup job that initiated the quiesce window.
 
 ## Single-host production with Compose
 
@@ -139,4 +168,4 @@ Multi-region operation additionally requires a declared consistency model, a sin
 
 ## Air-gapped and edge
 
-Pre-stage the exact OCI image or pnpm store, PostgreSQL/MinIO packages, CA roots, `age`, `mc`, pg tools, SBOM, checksums and operator documentation. Disable network-dependent package installation during deployment. Provide a trusted local time source, offline certificate renewal plan, removable-media backup export with two-person handling, and a tested clean-room restore. Do not weaken auth/TLS/audit because the network is isolated.
+Pre-stage the exact OCI image or pnpm store, PostgreSQL/SeaweedFS packages, CA roots, `age`, `rclone`, pg tools, SBOM, checksums and operator documentation. Disable network-dependent package installation during deployment. Provide a trusted local time source, offline certificate renewal plan, removable-media backup export with two-person handling, and a tested clean-room restore. Do not weaken auth/TLS/audit because the network is isolated.

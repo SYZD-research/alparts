@@ -8,12 +8,12 @@ User=root
 Group=root
 EnvironmentFile=-/etc/alparts/backup.env
 LoadCredential=database_service:/etc/alparts/credentials/backup_pg_service.conf
-LoadCredential=minio_access_key:/etc/alparts/credentials/minio_access_key
-LoadCredential=minio_secret_key:/etc/alparts/credentials/minio_secret_key
+LoadCredential=s3_access_key:/etc/alparts/credentials/s3_access_key
+LoadCredential=s3_secret_key:/etc/alparts/credentials/s3_secret_key
 LoadCredential=backup_age_recipient:/etc/alparts/credentials/backup_age_recipient
 Environment=DATABASE_SERVICE_FILE=%d/database_service
-Environment=MINIO_ACCESS_KEY_FILE=%d/minio_access_key
-Environment=MINIO_SECRET_KEY_FILE=%d/minio_secret_key
+Environment=S3_ACCESS_KEY_FILE=%d/s3_access_key
+Environment=S3_SECRET_KEY_FILE=%d/s3_secret_key
 Environment=BACKUP_AGE_RECIPIENT_FILE=%d/backup_age_recipient
 Environment=BACKUP_OUTPUT_DIR=/var/lib/alparts-backups
 Environment=BACKUP_RETENTION_ENABLED=true

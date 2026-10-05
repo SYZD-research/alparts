@@ -5,7 +5,6 @@ RUN apk add --no-cache 'libcrypto3=3.5.9-r0' 'libssl3=3.5.9-r0'
 RUN corepack enable
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
-COPY patches ./patches
 COPY packages/shared/package.json packages/shared/package.json
 COPY packages/server/package.json packages/server/package.json
 COPY packages/client/package.json packages/client/package.json
@@ -24,7 +23,6 @@ RUN corepack enable
 RUN mkdir -p /var/lib/alparts-audit && chown node:node /var/lib/alparts-audit
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-COPY patches ./patches
 COPY packages/shared/package.json packages/shared/package.json
 COPY packages/server/package.json packages/server/package.json
 RUN pnpm install --prod --frozen-lockfile --ignore-scripts --filter @alparts/server... \

@@ -129,7 +129,7 @@ WebとAPIは実行中のターミナルで`Ctrl+C`を押すと停止します。
 
 ## サーバーの運用
 
-Alpartsのサーバーは、**1つのアプリケーションプロセス、PostgreSQL 16、MinIOなどのS3互換ストレージ**で構成します。Webクライアントの配信もサーバーに含まれます。コンテナー向けの[Dockerfile](Dockerfile)・[Compose構成](compose.production.yml)と、Linux向けの[systemdユニット](deploy/alparts.service)を用意しています。
+Alpartsのサーバーは、**1つのアプリケーションプロセス、PostgreSQL 16、S3互換オブジェクトストレージ（推奨はSeaweedFS）**で構成します。Webクライアントの配信もサーバーに含まれます。コンテナー向けの[Dockerfile](Dockerfile)・[Compose構成](compose.production.yml)と、Linux向けの[systemdユニット](deploy/alparts.service)を用意しています。
 
 `docker-compose.yml`はローカル開発用のPostgreSQLとS3互換ストレージ（SeaweedFS）を起動します。`compose.production.yml`ではアプリケーションと移行処理を定義しており、データベース・ストレージ・HTTPSのリバースプロキシは別途用意します。
 

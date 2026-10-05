@@ -13,7 +13,7 @@ Alparts currently provides a bounded, restart-safe single-process service model.
 - PostgreSQL is the durable authority for idempotency and state machines. Process memory is used only for bounded admission, ephemeral realtime state, and scheduling.
 - Authorization failures are fail-closed. Dependency failures degrade affected functions or readiness; they never enable bypass access.
 - Shutdown stops admission before draining and closing dependencies. Fatal process errors exit non-zero after a bounded drain so the supervisor can restart.
-- PostgreSQL/MinIO backup consistency requires a quiesced write window because the two stores have no common transaction.
+- PostgreSQL/object-store backup consistency requires a quiesced write window because the two stores have no common transaction.
 
 ## Retry and timeout policy
 
