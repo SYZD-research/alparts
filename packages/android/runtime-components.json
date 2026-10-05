@@ -1,0 +1,98 @@
+[
+    {
+        "type": "library",
+        "bom-ref": "pkg:maven/androidx.annotation/annotation-experimental@1.4.1",
+        "group": "androidx.annotation",
+        "name": "annotation-experimental",
+        "version": "1.4.1",
+        "purl": "pkg:maven/androidx.annotation/annotation-experimental@1.4.1"
+    },
+    {
+        "type": "library",
+        "bom-ref": "pkg:maven/androidx.annotation/annotation-jvm@1.8.1",
+        "group": "androidx.annotation",
+        "name": "annotation-jvm",
+        "version": "1.8.1",
+        "purl": "pkg:maven/androidx.annotation/annotation-jvm@1.8.1"
+    },
+    {
+        "type": "library",
+        "bom-ref": "pkg:maven/androidx.arch.core/core-common@2.0.0",
+        "group": "androidx.arch.core",
+        "name": "core-common",
+        "version": "2.0.0",
+        "purl": "pkg:maven/androidx.arch.core/core-common@2.0.0"
+    },
+    {
+        "type": "library",
+        "bom-ref": "pkg:maven/androidx.collection/collection@1.0.0",
+        "group": "androidx.collection",
+        "name": "collection",
+        "version": "1.0.0",
+        "purl": "pkg:maven/androidx.collection/collection@1.0.0"
+    },
+    {
+        "type": "library",
+        "bom-ref": "pkg:maven/androidx.core/core@1.1.0",
+        "group": "androidx.core",
+        "name": "core",
+        "version": "1.1.0",
+        "purl": "pkg:maven/androidx.core/core@1.1.0"
+    },
+    {
+        "type": "library",
+        "bom-ref": "pkg:maven/androidx.lifecycle/lifecycle-common@2.0.0",
+        "group": "androidx.lifecycle",
+        "name": "lifecycle-common",
+        "version": "2.0.0",
+        "purl": "pkg:maven/androidx.lifecycle/lifecycle-common@2.0.0"
+    },
+    {
+        "type": "library",
+        "bom-ref": "pkg:maven/androidx.lifecycle/lifecycle-runtime@2.0.0",
+        "group": "androidx.lifecycle",
+        "name": "lifecycle-runtime",
+        "version": "2.0.0",
+        "purl": "pkg:maven/androidx.lifecycle/lifecycle-runtime@2.0.0"
+    },
+    {
+        "type": "library",
+        "bom-ref": "pkg:maven/androidx.versionedparcelable/versionedparcelable@1.1.0",
+        "group": "androidx.versionedparcelable",
+        "name": "versionedparcelable",
+        "version": "1.1.0",
+        "purl": "pkg:maven/androidx.versionedparcelable/versionedparcelable@1.1.0"
+    },
+    {
+        "type": "library",
+        "bom-ref": "pkg:maven/androidx.webkit/webkit@1.12.1",
+        "group": "androidx.webkit",
+        "name": "webkit",
+        "version": "1.12.1",
+        "purl": "pkg:maven/androidx.webkit/webkit@1.12.1"
+    },
+    {
+        "type": "library",
+        "bom-ref": "pkg:maven/org.jetbrains.kotlin/kotlin-stdlib-common@1.7.10",
+        "group": "org.jetbrains.kotlin",
+        "name": "kotlin-stdlib-common",
+        "version": "1.7.10",
+        "purl": "pkg:maven/org.jetbrains.kotlin/kotlin-stdlib-common@1.7.10"
+    },
+    {
+        "type": "library",
+        "bom-ref": "pkg:maven/org.jetbrains.kotlin/kotlin-stdlib@1.7.10",
+        "group": "org.jetbrains.kotlin",
+        "name": "kotlin-stdlib",
+        "version": "1.7.10",
+        "purl": "pkg:maven/org.jetbrains.kotlin/kotlin-stdlib@1.7.10"
+    },
+    {
+        "type": "library",
+        "bom-ref": "pkg:maven/org.jetbrains/annotations@13.0",
+        "group": "org.jetbrains",
+        "name": "annotations",
+        "version": "13.0",
+        "purl": "pkg:maven/org.jetbrains/annotations@13.0"
+    }
+]

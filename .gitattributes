@@ -4,6 +4,10 @@
 *.apk binary
 *.keystore binary
 
+# Upstream license texts are reproduced verbatim, trailing spaces included.
+packages/client/public/THIRD_PARTY_NOTICES.txt -whitespace
+scripts/release/license-texts/*.txt -whitespace
+
 # Keep development-only material out of `git archive` release tarballs.
 .github/ export-ignore
 .gitleaks.toml export-ignore
