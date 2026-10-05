@@ -377,18 +377,30 @@ write_object_listing() {
   local output_file="$3"
   local raw_file="${output_file}.json"
 
-  rclone_with_config "$config_file" lsjson --recursive --files-only --fast-list \
-    --no-mimetype --no-modtime "$target" > "$raw_file"
+  # Directories are listed too: every one must be a prefix of a listed object.
+  # Any other directory is a folder-marker object, which is never part of the
+  # application's key grammar and is refused rather than silently skipped (so
+  # a target holding only markers is not mistaken for an empty one).
+  rclone_with_config "$config_file" lsjson --recursive --fast-list \
+    --no-mimetype --no-modtime "$target" > "$raw_file" \
+    || backup_die 'Object storage listing failed'
+  # Fail here explicitly; a pipeline failure must not depend on the caller's set -e.
   jq -r '
-    if type != "array" then error("Object storage listing is malformed")
-    else .[] | if .IsDir then error("Object storage listing contains a folder entry")
-      else [.Path, (.Size | tostring)] | @tsv end
-    end
-  ' "$raw_file" | LC_ALL=C sort > "$output_file"
+    def prefixes: split("/") as $parts | range(1; $parts | length) | $parts[:.] | join("/");
+    if type != "array" then error("Object storage listing is malformed") else . end
+    | map(select(.IsDir | not)) as $files
+    | (reduce ($files[].Path | prefixes) as $prefix ({}; .[$prefix] = true)) as $implied
+    | if any(.[]; .IsDir and ($implied[.Path] | not))
+      then error("Object storage listing contains a folder entry")
+      else $files[] | [.Path, (.Size | tostring)] | @tsv
+      end
+  ' "$raw_file" > "${output_file}.unsorted" \
+    || backup_die 'Object storage listing contains a folder entry or is malformed'
+  LC_ALL=C sort "${output_file}.unsorted" > "$output_file"
 
   if [[ -s "$output_file" ]] && ! awk -F '\t' '
     NF != 2 || $1 !~ /^[A-Za-z0-9][A-Za-z0-9._\/-]*$/ ||
-      $1 ~ /(^|\/)\.\.?($|\/)/ || $2 !~ /^[0-9]+$/ { exit 1 }
+      $1 ~ /(^|\/)\.\.?($|\/)/ || $1 ~ /\/\/|\/$/ || $2 !~ /^[0-9]+$/ { exit 1 }
   ' "$output_file"; then
     backup_die 'Object storage returned an unsafe object key or malformed size'
   fi
