@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import * as http from 'node:http';
 import * as https from 'node:https';
 import { Readable } from 'node:stream';
@@ -54,6 +55,8 @@ const s3Client = new S3Client({
   requestHandler: new NodeHttpHandler({
     connectionTimeout: config.s3.requestTimeoutMs,
     requestTimeout: config.s3.requestTimeoutMs,
+    // Without this the SDK only logs an idle request instead of failing it.
+    throwOnRequestTimeout: true,
     httpAgent: new http.Agent({ keepAlive: true, maxSockets: MAX_CONCURRENT_OBJECT_STORAGE_OPERATIONS }),
     httpsAgent: new https.Agent({ keepAlive: true, maxSockets: MAX_CONCURRENT_OBJECT_STORAGE_OPERATIONS }),
   }),
@@ -71,6 +74,21 @@ async function send<T>(
     if (abortSignal.aborted) throw new Error('OBJECT_STORAGE_TIMEOUT');
     throw error;
   }
+}
+
+/**
+ * The store checks the bytes it received against this digest, so a body
+ * damaged on the way is refused instead of being stored and acknowledged.
+ */
+function bodyDigests(body: Buffer): { base64: string; hex: string } {
+  const digest = createHash('md5').update(body).digest();
+  return { base64: digest.toString('base64'), hex: digest.toString('hex') };
+}
+
+/** A plain-upload ETag is the body's MD5; one that differs means other bytes were stored. */
+function assertStoredDigest(etag: string | undefined, expectedHex: string): void {
+  const normalized = (etag ?? '').replace(/^"|"$/g, '').trim().toLowerCase();
+  if (/^[0-9a-f]{32}$/.test(normalized) && normalized !== expectedHex) throw new Error('OBJECT_STORAGE_INTEGRITY');
 }
 
 function isNotFound(error: unknown): boolean {
@@ -172,15 +190,20 @@ export async function readStoredAuditHead(): Promise<string | null> {
 export async function writeStoredAuditHead(serialized: string): Promise<void> {
   if (!config.audit.headObjectKey) throw new Error('AUDIT_HEAD_REQUIRED');
   const body = Buffer.from(serialized);
+  const digests = bodyDigests(body);
   const deadline = createObjectStorageDeadline();
-  await withObjectStorageDeadline(() => send((options) => s3Client.send(new PutObjectCommand({
-    Bucket: config.audit.headBucket,
-    Key: config.audit.headObjectKey!,
-    Body: body,
-    ContentLength: body.byteLength,
-    ContentType: 'application/json',
-    CacheControl: 'no-store',
-  }), options), deadline), deadline);
+  await withObjectStorageDeadline(async () => {
+    const result = await send((options) => s3Client.send(new PutObjectCommand({
+      Bucket: config.audit.headBucket,
+      Key: config.audit.headObjectKey!,
+      Body: body,
+      ContentLength: body.byteLength,
+      ContentMD5: digests.base64,
+      ContentType: 'application/json',
+      CacheControl: 'no-store',
+    }), options), deadline);
+    assertStoredDigest(result.ETag, digests.hex);
+  }, deadline);
 }
 
 export function statStoredObject(storageKey: string, deadline = createObjectStorageDeadline()): Promise<{ size: number; etag: string }> {
@@ -194,6 +217,7 @@ export function statStoredObject(storageKey: string, deadline = createObjectStor
 }
 
 export function putStoredObject(storageKey: string, body: Buffer): Promise<{ etag: string }> {
+  const digests = bodyDigests(body);
   const deadline = createObjectStorageDeadline();
   return withObjectStorageDeadline(async () => {
     const result = await send((options) => s3Client.send(new PutObjectCommand({
@@ -201,9 +225,11 @@ export function putStoredObject(storageKey: string, body: Buffer): Promise<{ eta
       Key: storageKey,
       Body: body,
       ContentLength: body.byteLength,
+      ContentMD5: digests.base64,
       ContentType: 'application/octet-stream',
       CacheControl: 'no-store',
     }), options), deadline);
+    assertStoredDigest(result.ETag, digests.hex);
     return { etag: result.ETag ?? '' };
   }, deadline);
 }
@@ -375,5 +401,10 @@ function listObjectNames(prefix: string, deadline: number): Promise<string[]> {
       for (const object of page.Contents ?? []) yield { name: object.Key };
     }
   })());
-  return collectBoundedObjectNames(names, undefined, deadline, prefix);
+  // The request abort and the collector's own deadline fire together; either
+  // way the caller sees one storage timeout.
+  return collectBoundedObjectNames(names, undefined, deadline, prefix).catch((error: unknown) => {
+    if (abortSignal.aborted) throw new Error('OBJECT_STORAGE_TIMEOUT');
+    throw error;
+  });
 }

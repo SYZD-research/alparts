@@ -269,6 +269,7 @@ function sendFileError(error: unknown, res: Response): boolean {
     || code === 'UPLOAD_OPERATION_BUSY'
     || code === 'OBJECT_STORAGE_LIST_LIMIT'
     || code === 'OBJECT_STORAGE_LIST_INVALID_KEY'
+    || code === 'OBJECT_STORAGE_INTEGRITY'
   ) {
     res.setHeader('Retry-After', '5');
     res.status(503).json({
@@ -277,7 +278,9 @@ function sendFileError(error: unknown, res: Response): boolean {
         ? 'Object storage request timed out'
         : code === 'OBJECT_STORAGE_BUSY' || code === 'UPLOAD_OPERATION_BUSY'
           ? 'Object storage is at its concurrency limit'
-          : 'Object storage returned an unsafe or excessive listing',
+          : code === 'OBJECT_STORAGE_INTEGRITY'
+            ? 'Object storage stored different bytes than were sent'
+            : 'Object storage returned an unsafe or excessive listing',
       statusCode: 503,
     });
     return true;
