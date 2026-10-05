@@ -307,9 +307,12 @@ jobs:
           format: cyclonedx-json
           output-file: alparts-sbom.cdx.json
           upload-artifact: false
+      # The SBOM is generated (and fails the job) above; keeping a copy is
+      # best effort so a full artifact store cannot fail the checks.
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        continue-on-error: true
         with:
           name: alparts-sbom
           path: alparts-sbom.cdx.json
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 7

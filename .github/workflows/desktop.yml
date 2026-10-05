@@ -73,7 +73,17 @@ jobs:
           fi
           echo "ALPARTS_TRANSPORT_PINS_FILE=$pins_file" >> "$GITHUB_ENV"
       - run: pnpm --filter @alparts/desktop run dist:${{ matrix.target }}
+      # Pull requests still build every package; only manual runs keep them,
+      # since each run's packages exceed the repository's artifact storage.
+      - name: Confirm the packages were built
+        shell: bash
+        run: |
+          shopt -s nullglob
+          packages=(packages/desktop/release/*.{AppImage,deb,exe,dmg,zip})
+          (( ${#packages[@]} > 0 )) || { echo 'No desktop package was produced' >&2; exit 1; }
+          ls -l "${packages[@]}"
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        if: github.event_name == 'workflow_dispatch'
         with:
           name: alparts-${{ matrix.target }}-unsigned
           path: |
