@@ -11,8 +11,8 @@ case "$command_name" in
   jq)
     exec "${BACKUP_TEST_REAL_JQ:?BACKUP_TEST_REAL_JQ is required}" "$@"
     ;;
-  mc)
-    import_payload="$(</dev/stdin)"
-    printf '%s' "$import_payload" > "$capture_dir/mc.stdin"
+  rclone)
+    # A test may supply what the store lists.
+    if [[ -n "${BACKUP_TEST_RCLONE_STDOUT-}" ]]; then cat -- "$BACKUP_TEST_RCLONE_STDOUT"; fi
     ;;
 esac

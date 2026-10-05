@@ -66,7 +66,7 @@ Last verified: 2026-09-04. This inventory covers first-party source, build, test
 - **Purpose/responsibility:** exact-origin browser boundary, authentication, RBAC adapters, schema validation, bounded body/rate admission, status/error mapping, static production SPA.
 - **Non-responsibility:** TLS termination, long-lived business invariants, distributed throttling.
 - **Input/output:** JSON REST, cookies or explicit bearer tokens; JSON/errors, ciphertext streams, health and optional metrics.
-- **Dependencies/persistence:** Express/Helmet/CORS; delegates all durable work to services/PostgreSQL/MinIO.
+- **Dependencies/persistence:** Express/Helmet/CORS; delegates all durable work to services/PostgreSQL/the S3-compatible object store.
 - **Security boundary:** no public admin bypass; protected resources require live DB-backed session and current membership/permission. Production defaults secure cookies, CSP/HSTS, and exact HTTPS origins.
 - **Failure/retry/idempotency:** 512 KiB default JSON ceiling (2 MiB for bounded group proposals), request/header/server timeouts, bounded admission; stable 4xx/503 responses. Mutation idempotency is service-specific.
 - **Scaling/availability:** one process only because rate and other admission state is local.
@@ -124,13 +124,13 @@ Last verified: 2026-09-04. This inventory covers first-party source, build, test
 
 - **Location:** file routes, `file.service.ts`, `object-storage.ts`, `attachment-contract.ts`, client attachment services/store.
 - **Purpose/responsibility:** bounded reservations, fixed 5 MiB encrypted chunks, resume/finalize/cancel/download, storage reconciliation.
-- **Non-responsibility:** plaintext inspection, malware disarm, atomic PostgreSQL+MinIO commit, secure erasure from all replicas.
+- **Non-responsibility:** plaintext inspection, malware disarm, atomic PostgreSQL+object-store commit, secure erasure from all replicas.
 - **Input/output:** inert ciphertext/octet streams and signed manifests; authorized ciphertext chunks.
-- **Dependencies/persistence:** MinIO/S3 object bytes; PostgreSQL upload/chunk/attachment metadata.
+- **Dependencies/persistence:** S3-compatible object bytes (SeaweedFS recommended) through the AWS SDK for JavaScript v3; PostgreSQL upload/chunk/attachment metadata.
 - **Security boundary:** opaque strict object keys, prefix grammar, key/count/byte bounds, active-content download defenses, reauthorization around remote operations.
 - **Failure/retry/idempotency:** header/inactivity/absolute listing deadlines; bounded active/pending gates; at most 16 pending reservations/user, 200/workspace, 4 outstanding operations/upload and 64/process; idempotent chunk state and conservative orphan cleanup. Reservation/cancel/finalize are audited; provisional chunk registration and cleanup use common fail-closed admission. External writes receive a preflight but remain compensating-state operations. No unbounded retries.
 - **Scaling/availability:** bounded per-user/global downloads and remote work; the official client admits 16 active attachment runtimes and retains at most 64 task records. Object-store outage fails readiness and attachment operations, while already loaded text may remain usable.
-- **Operate/test:** alert on storage-limit/timeout errors, run cleanup, reconcile only scoped prefixes; unit fault tests and PostgreSQL/MinIO integration.
+- **Operate/test:** alert on storage-limit/timeout errors, run cleanup, reconcile only scoped prefixes; unit fault tests and PostgreSQL/SeaweedFS integration.
 
 ### PostgreSQL and migrations
 
@@ -186,7 +186,7 @@ Last verified: 2026-09-04. This inventory covers first-party source, build, test
 - **Purpose/responsibility:** immutable build inputs, nonroot/read-only runtime patterns, CI gates, supervised restart, encrypted quiesced backups, retention safety, isolated restore verification.
 - **Non-responsibility:** issuing TLS certificates, provisioning cloud infrastructure, automatic database/object-store HA, release signing currently, off-host transfer currently.
 - **Input/output:** source/lockfile/config/secrets; OCI image, CI reports/SBOM, encrypted `.tar.age` backup and verification result.
-- **Dependencies/persistence:** Node/pnpm, Docker/systemd, pg tools, MinIO `mc`, `age`, independent backup media.
+- **Dependencies/persistence:** Node/pnpm, Docker/systemd, pg tools, `rclone`, `age`, independent backup media.
 - **Security boundary:** pinned GitHub actions, frozen lockfile, secret/dependency/CodeQL/Trivy source and final-image gates; the final image removes npm/Corepack/store/cache tooling, and the production container drops capabilities and binds host port to loopback.
 - **Failure/retry/idempotency:** image build is reproducible from lockfile but not bit-for-bit guaranteed; the image carries its exact migration bundle and a non-waiting advisory-locked database-only migrator using a separately scoped secret; backup refuses concurrent/non-quiesced runs and never overwrites; retention is dry-run by default and requires exact acknowledgement.
 - **Scaling/availability:** systemd/Compose address single host. External HA services can reduce storage failures but cannot make the current app horizontally safe.
@@ -210,7 +210,7 @@ All durable schema changes are in the ordered migration journal. There is no sep
 ## Tests and tools
 
 - Server unit/security tests: `packages/server/src/**/*.test.ts`.
-- PostgreSQL+MinIO boundary test: `packages/server/src/security/integration.test.ts` with `RUN_INTEGRATION=1`.
+- PostgreSQL+object-store boundary test: `packages/server/src/security/integration.test.ts` with `RUN_INTEGRATION=1`.
 - Client state/protocol tests: `packages/client/src/**/*.test.ts(x)`.
 - Backup/restore safety tests: `scripts/tests/backup-security.test.sh`.
 - CI: build, lint, typecheck, unit, integration, backup safety, secret/dependency scan, CodeQL, Trivy, SBOM.

@@ -55,6 +55,13 @@ function productionSecret(name: string, minimumBytes = 32): string {
   return configured;
 }
 
+// Object storage settings were renamed from MINIO_* to S3_*; the old names
+// are not read, so refuse to start rather than silently use defaults.
+const legacyStorageSettings = Object.keys(env).filter((name) => name.startsWith('MINIO_')).sort();
+if (legacyStorageSettings.length > 0) {
+  throw new Error(`Object storage settings are now named S3_* (for example MINIO_ENDPOINT is S3_ENDPOINT). Rename: ${legacyStorageSettings.join(', ')}`);
+}
+
 const configuredCorsOrigins = env.CORS_ORIGINS || env.CORS_ORIGIN;
 if (isProduction && !configuredCorsOrigins) {
   throw new Error('CORS_ORIGINS must be explicitly configured in production');
@@ -101,7 +108,7 @@ export const config = {
     checkpointRequired: env.AUDIT_CHECKPOINT_REQUIRED === 'true',
     // A separate object-store bucket is outside the checkpoint-file writer's
     // authority. Keep its identity stable across restarts and restores.
-    headBucket: env.AUDIT_HEAD_BUCKET?.trim() || `${env.MINIO_BUCKET || 'alparts'}-audit`,
+    headBucket: env.AUDIT_HEAD_BUCKET?.trim() || `${env.S3_BUCKET || 'alparts'}-audit`,
     headObjectKey: env.AUDIT_HEAD_OBJECT_KEY?.trim() || null,
     witnessPublicKeyPath: env.AUDIT_WITNESS_PUBLIC_KEY_FILE?.trim() || null,
     witnessPath: env.AUDIT_WITNESS_PATH?.trim() || null,
@@ -109,16 +116,17 @@ export const config = {
     witnessRequired: env.AUDIT_WITNESS_REQUIRED === 'true',
   },
 
-  minio: {
-    endPoint: env.MINIO_ENDPOINT || 'localhost',
-    port: parseBoundedInteger('MINIO_PORT', env.MINIO_PORT, 9000, 1, 65535),
-    accessKey: required('MINIO_ACCESS_KEY'),
-    secretKey: productionSecret('MINIO_SECRET_KEY'),
-    bucket: env.MINIO_BUCKET || 'alparts',
-    useSSL: env.MINIO_USE_SSL === 'true' || (isProduction && env.MINIO_USE_SSL !== 'false'),
+  s3: {
+    endpoint: env.S3_ENDPOINT || 'localhost',
+    port: parseBoundedInteger('S3_PORT', env.S3_PORT, 9000, 1, 65535),
+    region: env.S3_REGION?.trim() || 'us-east-1',
+    accessKey: required('S3_ACCESS_KEY'),
+    secretKey: productionSecret('S3_SECRET_KEY'),
+    bucket: env.S3_BUCKET || 'alparts',
+    useSSL: env.S3_USE_SSL === 'true' || (isProduction && env.S3_USE_SSL !== 'false'),
     requestTimeoutMs: parseBoundedInteger(
-      'MINIO_REQUEST_TIMEOUT_MS',
-      env.MINIO_REQUEST_TIMEOUT_MS,
+      'S3_REQUEST_TIMEOUT_MS',
+      env.S3_REQUEST_TIMEOUT_MS,
       10_000,
       1_000,
       60_000,
@@ -158,16 +166,16 @@ if (config.isProduction && (!config.audit.checkpointPath || !config.audit.checkp
 if (config.audit.headObjectKey && !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(config.audit.headObjectKey)) {
   throw new Error('AUDIT_HEAD_OBJECT_KEY must be a stable identifier of at most 128 characters');
 }
-if (config.audit.headBucket === config.minio.bucket) throw new Error('AUDIT_HEAD_BUCKET must be separate from MINIO_BUCKET');
+if (config.audit.headBucket === config.s3.bucket) throw new Error('AUDIT_HEAD_BUCKET must be separate from S3_BUCKET');
 if (config.isProduction && !config.audit.headObjectKey) throw new Error('Production requires AUDIT_HEAD_OBJECT_KEY');
 if ((config.audit.witnessRequired || config.audit.witnessPath || config.audit.witnessPublicKeyPath || config.audit.witnessDeploymentId)
   && (!config.audit.witnessPath || !config.audit.witnessPublicKeyPath
     || !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(config.audit.witnessDeploymentId ?? ''))) {
   throw new Error('Audit witness requires its public key, signed witness file and deployment UUID');
 }
-if (config.isProduction && !config.minio.useSSL && (
+if (config.isProduction && !config.s3.useSSL && (
   env.ALLOW_INSECURE_LOOPBACK_DEPENDENCIES !== 'true'
-  || !isLoopbackHost(config.minio.endPoint)
+  || !isLoopbackHost(config.s3.endpoint)
 )) {
   throw new Error('Production object-storage TLS may be disabled only for an explicitly acknowledged loopback endpoint');
 }

@@ -9,20 +9,22 @@ source "$SCRIPT_DIR/lib/backup-common.sh"
 show_help() {
   cat <<'HELP'
 Create one recipient-encrypted Phase 1 backup containing a consistent PostgreSQL
-custom-format dump and the current encrypted objects from one MinIO bucket.
+custom-format dump and the current encrypted objects from one S3-compatible
+bucket (for example SeaweedFS).
 
 Required settings (a *_FILE alternative is accepted for values marked secret):
   DATABASE_SERVICE_FILE        Private libpq service file for the source
   DATABASE_SERVICE             Service section name in that file
-  MINIO_URL                    Source URL (HTTPS, or HTTP on loopback only)
-  MINIO_ACCESS_KEY             Source access key (secret)
-  MINIO_SECRET_KEY             Source secret key (secret)
-  MINIO_BUCKET                 Source bucket name
+  S3_URL                       Source URL (HTTPS, or HTTP on loopback only)
+  S3_ACCESS_KEY                Source access key (secret)
+  S3_SECRET_KEY                Source secret key (secret)
+  S3_BUCKET                    Source bucket name
   BACKUP_AGE_RECIPIENT         Hybrid post-quantum age recipient (age1pq1...)
   BACKUP_OUTPUT_DIR            Existing directory for the encrypted artifact
   ALPARTS_BACKUP_QUIESCED      Must be exactly YES_WRITES_ARE_STOPPED
 
 Optional:
+  S3_REGION                    Signing region (default us-east-1)
   BACKUP_REASON                Safe label recorded inside the encrypted manifest
 
 The script never stops the application. ALPARTS_BACKUP_QUIESCED is an operator
@@ -41,10 +43,11 @@ if [[ "${1-}" == '--help' || "${1-}" == '-h' ]]; then
 fi
 [[ $# -eq 0 ]] || backup_die 'This script accepts no positional arguments; use --help'
 
-for dependency in age awk chmod cmp cut date find grep jq ln mc mkdir mktemp od pg_dump psql rm sed sha256sum sort stat sync tar tr uniq wc; do
+for dependency in age awk chmod cmp cut date find grep jq ln mkdir mktemp od pg_dump psql rclone rm sed sha256sum sort stat sync tar tr uniq wc; do
   require_command "$dependency"
 done
 
+reject_legacy_storage_settings
 [[ "${ALPARTS_BACKUP_QUIESCED-}" == 'YES_WRITES_ARE_STOPPED' ]] \
   || backup_die 'Stop application writes, then set ALPARTS_BACKUP_QUIESCED=YES_WRITES_ARE_STOPPED'
 
@@ -53,17 +56,19 @@ done
 [[ -n "${DATABASE_SERVICE-}" ]] \
   || backup_die 'Missing required setting: DATABASE_SERVICE'
 export -n DATABASE_SERVICE 2>/dev/null || true
-load_required_value MINIO_URL
-load_required_value MINIO_ACCESS_KEY
-load_required_value MINIO_SECRET_KEY
-load_required_value MINIO_BUCKET
+load_required_value S3_URL
+load_required_value S3_ACCESS_KEY
+load_required_value S3_SECRET_KEY
+load_required_value S3_BUCKET
+S3_REGION="${S3_REGION:-us-east-1}"
+export -n S3_REGION 2>/dev/null || true
 load_required_value BACKUP_AGE_RECIPIENT
 load_required_value BACKUP_OUTPUT_DIR
 
-validate_minio_url "$MINIO_URL"
+validate_s3_url "$S3_URL"
 validate_postgres_service "$DATABASE_SERVICE_FILE" "$DATABASE_SERVICE"
 export -n DATABASE_SERVICE_FILE 2>/dev/null || true
-validate_bucket_name "$MINIO_BUCKET"
+validate_bucket_name "$S3_BUCKET"
 [[ "$BACKUP_AGE_RECIPIENT" != AGE-SECRET-KEY-* && "$BACKUP_AGE_RECIPIENT" != *[$'\t\r\n ']* ]] \
   || backup_die 'BACKUP_AGE_RECIPIENT must be a public recipient, not an age identity'
 validate_backup_recipient "$BACKUP_AGE_RECIPIENT"
@@ -93,7 +98,7 @@ STAGING_DIR="$(mktemp -d "${TMPDIR:-/tmp}/alparts-backup.XXXXXXXX")"
 chmod 700 -- "$STAGING_DIR"
 PAYLOAD_DIR="$STAGING_DIR/payload"
 OBJECT_DIR="$PAYLOAD_DIR/objects"
-MC_CONFIG_DIR="$STAGING_DIR/mc"
+STORAGE_CONFIG="$STAGING_DIR/rclone.conf"
 mkdir -p -- "$OBJECT_DIR"
 
 RUN_ID="$(date -u +'%Y%m%dT%H%M%SZ')-$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')"
@@ -105,8 +110,9 @@ postgres_with_service "$DATABASE_SERVICE_FILE" "$DATABASE_SERVICE" \
   psql -X --no-psqlrc --quiet --set=ON_ERROR_STOP=1 \
   --command 'SELECT 1;' >/dev/null
 require_matching_postgres_major pg_dump "$DATABASE_SERVICE_FILE" "$DATABASE_SERVICE"
-configure_mc_alias "$MC_CONFIG_DIR" source "$MINIO_URL" "$MINIO_ACCESS_KEY" "$MINIO_SECRET_KEY"
-mc_with_config "$MC_CONFIG_DIR" stat "source/$MINIO_BUCKET" >/dev/null
+configure_s3_remote "$STORAGE_CONFIG" source "$S3_URL" "$S3_ACCESS_KEY" "$S3_SECRET_KEY" "$S3_REGION"
+rclone_with_config "$STORAGE_CONFIG" lsjson --stat "source:$S3_BUCKET" >/dev/null \
+  || backup_die 'Source bucket is not reachable; verify the URL, credentials and bucket'
 write_table_counts "$DATABASE_SERVICE_FILE" "$DATABASE_SERVICE" "$STAGING_DIR/source-table-counts-before.tsv"
 write_object_references "$DATABASE_SERVICE_FILE" "$DATABASE_SERVICE" "$STAGING_DIR/source-object-references-before.tsv"
 
@@ -117,16 +123,16 @@ postgres_with_service "$DATABASE_SERVICE_FILE" "$DATABASE_SERVICE" \
 pg_dump_version="$(pg_dump --version)"
 pg_dump_version="${pg_dump_version%%$'\n'*}"
 
-backup_log 'Copying encrypted MinIO object bytes'
-write_mc_object_listing "$MC_CONFIG_DIR" "source/$MINIO_BUCKET" "$STAGING_DIR/source-object-listing.tsv"
+backup_log 'Copying encrypted object bytes'
+write_object_listing "$STORAGE_CONFIG" "source:$S3_BUCKET" "$STAGING_DIR/source-object-listing.tsv"
 # Copy only keys that already passed validation in the listing above. A key
 # added while copying can therefore never be written to the local disk.
 while IFS=$'\t' read -r object_key _; do
   [[ -n "$object_key" ]] || continue
   mkdir -p -- "$OBJECT_DIR/$(dirname -- "$object_key")"
-  mc_with_config "$MC_CONFIG_DIR" cp --quiet "source/$MINIO_BUCKET/$object_key" "$OBJECT_DIR/$object_key" >/dev/null
+  rclone_with_config "$STORAGE_CONFIG" copyto "source:$S3_BUCKET/$object_key" "$OBJECT_DIR/$object_key" >/dev/null
 done < "$STAGING_DIR/source-object-listing.tsv"
-write_mc_object_listing "$MC_CONFIG_DIR" "source/$MINIO_BUCKET" "$STAGING_DIR/source-object-listing-after.tsv"
+write_object_listing "$STORAGE_CONFIG" "source:$S3_BUCKET" "$STAGING_DIR/source-object-listing-after.tsv"
 cmp --silent "$STAGING_DIR/source-object-listing.tsv" "$STAGING_DIR/source-object-listing-after.tsv" \
   || backup_die 'Source bucket changed during the quiesced backup window'
 validate_object_tree "$OBJECT_DIR"
@@ -153,19 +159,19 @@ database_sha256="${database_sha256%% *}"
 inventory_sha256="$(sha256sum -- "$PAYLOAD_DIR/object-inventory.tsv")"
 inventory_sha256="${inventory_sha256%% *}"
 created_at="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-mc_version="$(mc --version 2>&1)"
-mc_version="${mc_version%%$'\n'*}"
+storage_tool_version="$(rclone version 2>&1)"
+storage_tool_version="${storage_tool_version%%$'\n'*}"
 
 jq -n \
   --argjson formatVersion 1 \
   --arg runId "$RUN_ID" \
   --arg createdAt "$created_at" \
   --arg reason "$BACKUP_REASON" \
-  --arg sourceBucket "$MINIO_BUCKET" \
+  --arg sourceBucket "$S3_BUCKET" \
   --arg databaseSha256 "$database_sha256" \
   --arg inventorySha256 "$inventory_sha256" \
   --arg pgDumpVersion "$pg_dump_version" \
-  --arg mcVersion "$mc_version" \
+  --arg storageToolVersion "$storage_tool_version" \
   --argjson tableCount "$table_count" \
   --argjson objectCount "$object_count" \
   --argjson objectBytes "$object_bytes" \
@@ -174,7 +180,7 @@ jq -n \
     runId: $runId,
     createdAt: $createdAt,
     reason: $reason,
-    source: { minioBucket: $sourceBucket },
+    source: { bucket: $sourceBucket },
     database: {
       format: "postgresql-custom",
       sha256: $databaseSha256,
@@ -186,7 +192,7 @@ jq -n \
       count: $objectCount,
       bytes: $objectBytes,
       inventorySha256: $inventorySha256,
-      mcVersion: $mcVersion
+      storageToolVersion: $storageToolVersion
     }
   }' > "$PAYLOAD_DIR/manifest.json"
 

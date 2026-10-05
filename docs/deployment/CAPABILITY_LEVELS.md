@@ -15,7 +15,7 @@ The levels describe what an environment can make possible; they do not upgrade t
 ## Level 0: development
 
 - Bind only loopback and use synthetic data.
-- Disposable PostgreSQL/MinIO is acceptable.
+- Disposable PostgreSQL/SeaweedFS is acceptable.
 - Security semantics remain enabled; production secrets and public traffic are prohibited.
 - No durability statement is valid.
 
