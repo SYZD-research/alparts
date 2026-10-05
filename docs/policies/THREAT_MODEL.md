@@ -80,7 +80,7 @@ Canonical/current threat model: [`docs/security/THREAT_MODEL.md`](../security/TH
 - Single-node/single-DBで、HA、broker、failover、rolling upgrade、cluster migrationはない。
 - P2P DTLS-SRTP音声以外のmedia architecture（SFU/SFrame、映像、画面共有、録音表示、正式なparticipant-change group rekey）はない。Device directory transparencyがないため、malicious serverによるidentity split viewを通話でも形式的に閉じていない。P2P peer/IP metadata露出、TURN credential配布、NAT到達性、mesh scalabilityも残存riskである。
 - Retention/export、Restricted profile、signed update/SLSA、mobile、Bot/Webhook、独立外部security reviewはない。
-- Project codeは閲覧のみを許可するlicense（SYZD Research View-Only License）で公開しており、OSI承認licenseではない。Third-party noticeの法務確認は未完了である。
+- Project codeはAGPL-3.0-onlyで公開している。配布物へのthird-party noticeの同梱は未完了である。
 - Authorized recipientによるcopy/screenshot、受信済みdataの完全消去、serverに対する完全metadata秘匿は提供しない。
 
 これらは `SPECIFICATION.md` が想定する高保証production useのrelease blockerである。詳細なstatusとacceptance conditionは `IMPLEMENTATION_TODO.md`、運用制限は `LIMITATIONS.md` を参照する。
