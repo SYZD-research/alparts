@@ -11,7 +11,7 @@
     "node": ">=24.8.0",
     "pnpm": ">=11.21.0"
   },
-  "license": "SEE LICENSE IN LICENSE",
+  "license": "AGPL-3.0-only",
   "overrides": {
     "esbuild": "^0.28.2"
   },

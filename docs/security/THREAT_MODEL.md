@@ -113,7 +113,7 @@ Important account/session/device, workspace/member/role/invite, channel/key, mes
 - No signed release/update or generated provenance attestation; an SBOM workflow alone does not establish artifact authenticity.
 - External credential rotation for the removed tracked development account cannot be proven from this repository.
 - Metadata (membership, timing, IDs, sizes, MIME/chunk count, routing and network candidates) remains visible to relevant server/storage/peer operators.
-- Project code is public for viewing only (SYZD Research View-Only License), not open source; running, modifying or redistributing it needs written permission. This is a governance matter, not a cryptographic control.
+- Project code is licensed AGPL-3.0-only. This is a governance matter, not a cryptographic control.
 
 ## Review triggers
 
