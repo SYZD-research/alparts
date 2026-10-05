@@ -2,9 +2,9 @@
   "name": "alparts",
   "version": "0.1.0",
   "devDependencies": {
-    "@secretlint/secretlint-rule-preset-recommend": "13.0.5",
+    "@secretlint/secretlint-rule-preset-recommend": "13.0.6",
     "oxlint": "1.85.0",
-    "secretlint": "13.0.5"
+    "secretlint": "13.0.6"
   },
   "description": "Secure communications platform",
   "engines": {
