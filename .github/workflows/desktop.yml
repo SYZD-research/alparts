@@ -40,7 +40,8 @@ jobs:
             os: macos-14
             target: macos
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 35
+    # A failed hdiutil attempt can take about eight minutes before it errors.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -72,7 +73,27 @@ jobs:
             exit 1
           fi
           echo "ALPARTS_TRANSPORT_PINS_FILE=$pins_file" >> "$GITHUB_ENV"
-      - run: pnpm --filter @alparts/desktop run dist:${{ matrix.target }}
+      - name: Build packages
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -o pipefail
+          if [[ "$TARGET" != macos ]]; then
+            exec pnpm --filter @alparts/desktop run "dist:$TARGET"
+          fi
+          # GitHub's macOS runners intermittently fail hdiutil while creating
+          # the DMG (actions/runner-images#12323). Retry only that failure, and
+          # keep Spotlight from indexing the volumes being built.
+          sudo mdutil -a -i off >/dev/null || true
+          for attempt in 1 2 3; do
+            log="$RUNNER_TEMP/desktop-dist-$attempt.log"
+            if pnpm --filter @alparts/desktop run dist:macos 2>&1 | tee "$log"; then exit 0; fi
+            grep -qE 'hdiutil: .*(Device not configured|Resource busy)' "$log" || exit 1
+            echo "::warning::hdiutil failed while creating the DMG (attempt $attempt of 3); retrying"
+            rm -f packages/desktop/release/*.dmg packages/desktop/release/*.dmg.blockmap
+          done
+          exit 1
       # Pull requests still build every package; only manual runs keep them,
       # since each run's packages exceed the repository's artifact storage.
       - name: Confirm the packages were built
