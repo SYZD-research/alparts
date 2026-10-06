@@ -17,6 +17,7 @@ import {
   type CropState,
   type SourceCrop,
 } from './avatar-crop-model';
+import { useT } from '../../i18n';
 
 const PREVIEW_SIZE = 72;
 const CORNERS: { corner: CropCorner; className: string }[] = [
@@ -35,6 +36,7 @@ export function AvatarCropper({ bitmap, busy, onConfirm, onCancel }: {
   onConfirm: (crop: SourceCrop) => void;
   onCancel: () => void;
 }) {
+  const t = useT();
   const source = useMemo(() => ({ width: bitmap.width, height: bitmap.height }), [bitmap]);
   const [state, setState] = useState(() => initialCrop(source));
   const drag = useRef<Drag | null>(null);
@@ -117,13 +119,13 @@ export function AvatarCropper({ bitmap, busy, onConfirm, onCancel }: {
   return (
     <div className="space-y-4">
       <p className="text-sm text-discord-muted">
-        枠の中がアイコンになります。画像や枠をドラッグして位置を、枠の角で大きさを調整できます。
+        {t('枠の中がアイコンになります。画像や枠をドラッグして位置を、枠の角で大きさを調整できます。')}
       </p>
       <div className="flex flex-wrap items-start justify-center gap-4">
         <div
           ref={stage}
           role="group"
-          aria-label="アイコンにする範囲"
+          aria-label={t('アイコンにする範囲')}
           tabIndex={0}
           onPointerDown={pointerDown}
           onPointerMove={pointerMove}
@@ -147,29 +149,29 @@ export function AvatarCropper({ bitmap, busy, onConfirm, onCancel }: {
         </div>
         <div className="flex flex-col items-center gap-1 text-xs text-discord-muted">
           <canvas ref={preview} className="rounded-full bg-black/40" style={{ width: PREVIEW_SIZE, height: PREVIEW_SIZE }} />
-          仕上がり
+          {t('仕上がり')}
         </div>
       </div>
 
       <div className="space-y-3 text-sm text-discord-muted">
         <div className="flex items-center gap-2">
-          <span className="w-20 shrink-0">拡大</span>
-          <button type="button" aria-label="縮小" disabled={busy} onClick={() => zoomBy(1 / 1.25)} className={control}>−</button>
+          <span className="w-20 shrink-0">{t('拡大')}</span>
+          <button type="button" aria-label={t('縮小')} disabled={busy} onClick={() => zoomBy(1 / 1.25)} className={control}>−</button>
           <input
             type="range"
             min={0}
             max={100}
             step={1}
             disabled={busy}
-            aria-label="拡大率"
+            aria-label={t('拡大率')}
             value={Math.round(zoomToSlider(state.zoom))}
             onChange={(event) => setState(setZoom(source, state, sliderToZoom(Number(event.target.value))))}
             className="min-w-0 flex-1 accent-discord-accent"
           />
-          <button type="button" aria-label="拡大" disabled={busy} onClick={() => zoomBy(1.25)} className={control}>＋</button>
+          <button type="button" aria-label={t('拡大')} disabled={busy} onClick={() => zoomBy(1.25)} className={control}>＋</button>
         </div>
         <label className="flex items-center gap-2">
-          <span className="w-20 shrink-0">枠の大きさ</span>
+          <span className="w-20 shrink-0">{t('枠の大きさ')}</span>
           <input
             type="range"
             min={Math.min(MIN_FRAME, largest)}
@@ -185,14 +187,14 @@ export function AvatarCropper({ bitmap, busy, onConfirm, onCancel }: {
 
       <div className="flex justify-between gap-2">
         <button type="button" disabled={busy} onClick={() => setState(initialCrop(source))} className="rounded px-3 py-2 text-sm text-discord-muted hover:bg-discord-hover disabled:opacity-50">
-          元に戻す
+          {t('元に戻す')}
         </button>
         <div className="flex gap-2">
           <button type="button" disabled={busy} onClick={onCancel} className="rounded px-3 py-2 text-sm text-discord-muted hover:bg-discord-hover disabled:opacity-50">
-            やめる
+            {t('やめる')}
           </button>
           <button type="button" disabled={busy} onClick={() => onConfirm(toSourceCrop(source, state))} className="rounded bg-discord-accent px-4 py-2 text-sm font-medium text-white disabled:opacity-50">
-            {busy ? '保存中…' : 'この範囲で設定'}
+            {busy ? t('保存中…') : t('この範囲で設定')}
           </button>
         </div>
       </div>

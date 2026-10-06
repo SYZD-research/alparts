@@ -7,6 +7,7 @@ import {
   type AuthenticationOptions,
 } from '../../services/passkey.service';
 import { Dialog } from '../ui/Dialog';
+import { useT } from '../../i18n';
 interface Request {
   purpose: string;
   resolve: (token: string) => void;
@@ -44,6 +45,7 @@ api.setStepUpHandler(
     }),
 );
 export function StepUpDialog() {
+  const t = useT();
   const request = useStepUp((s) => s.request);
   const [options, setOptions] = useState<AuthenticationOptions | null>(null);
   const [password, setPassword] = useState('');
@@ -74,12 +76,12 @@ export function StepUpDialog() {
     <Dialog
       open={!!request}
       onClose={() => request?.reject()}
-      title="本人確認"
-      description="この操作を続けるため、本人確認を行ってください。"
+      title={t('本人確認')}
+      description={t('この操作を続けるため、本人確認を行ってください。')}
     >
       {error && (
         <p role="alert" className="text-discord-red">
-          本人確認を完了できませんでした。閉じてからもう一度お試しください。
+          {t('本人確認を完了できませんでした。閉じてからもう一度お試しください。')}
         </p>
       )}
       <form
@@ -102,7 +104,7 @@ export function StepUpDialog() {
       >
         {options?.passwordAllowed && (
           <label className="block text-sm text-discord-text">
-            現在のパスワード
+            {t('現在のパスワード')}
             <input
               type="password"
               autoComplete="current-password"
@@ -115,19 +117,19 @@ export function StepUpDialog() {
         )}
         {options && !options.passwordAllowed && !canUsePasskeys() && (
           <p role="status" className="text-sm text-discord-text">
-            この操作は、対応するブラウザーでWeb版を開いて行ってください。パスキーでの本人確認が必要です。
+            {t('この操作は、対応するブラウザーでWeb版を開いて行ってください。パスキーでの本人確認が必要です。')}
           </p>
         )}
         <div className="mt-4 flex justify-end gap-3">
           <button type="button" onClick={() => request?.reject()}>
-            キャンセル
+            {t('キャンセル')}
           </button>
           <button
             type="submit"
             disabled={!options || busy || (!options.passwordAllowed && !canUsePasskeys())}
             className="rounded bg-discord-accent px-4 py-2 text-white disabled:opacity-50"
           >
-            {busy ? '確認中…' : options?.passwordAllowed ? '確認する' : 'パスキーで確認'}
+            {busy ? t('確認中…') : options?.passwordAllowed ? t('確認する') : t('パスキーで確認')}
           </button>
         </div>
       </form>

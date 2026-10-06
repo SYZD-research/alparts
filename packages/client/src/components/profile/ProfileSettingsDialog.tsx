@@ -9,8 +9,10 @@ import { UserAvatar } from '../user/UserAvatar';
 import type { SourceCrop } from './avatar-crop-model';
 import { AvatarCropper } from './AvatarCropper';
 import { bioLengthStatus, profileErrorMessage } from './profile-model';
+import { useT } from '../../i18n';
 
 export function ProfileSettingsDialog() {
+  const t = useT();
   const open = useUiStore((state) => state.isProfileSettingsOpen);
   const close = useUiStore((state) => state.closeProfileSettings);
   const [profile, setProfile] = useState<OwnProfile | null>(null);
@@ -43,7 +45,7 @@ export function ProfileSettingsDialog() {
     let active = true;
     void api.getOwnProfile()
       .then((next) => { if (active) apply(next); })
-      .catch(() => { if (active) setMessage({ kind: 'error', text: 'プロフィールを読み込めませんでした。もう一度お試しください。' }); });
+      .catch(() => { if (active) setMessage({ kind: 'error', text: t('プロフィールを読み込めませんでした。もう一度お試しください。') }); });
     return () => { active = false; };
   }, [open]);
 
@@ -62,7 +64,7 @@ export function ProfileSettingsDialog() {
 
   const save = () => run(async () => {
     apply(await api.updateOwnProfile({ displayName, bio }));
-  }, 'プロフィールを保存しました。');
+  }, t('プロフィールを保存しました。'));
 
   const chooseImage = async (file: File | undefined) => {
     if (!file) return;
@@ -78,25 +80,25 @@ export function ProfileSettingsDialog() {
     await api.uploadAvatar(await renderAvatar(bitmap, crop));
     apply(await api.getOwnProfile());
     setCropping(null);
-  }, '画像を変更しました。');
+  }, t('画像を変更しました。'));
 
   const removeImage = () => run(async () => {
     await api.removeAvatar();
     apply(await api.getOwnProfile());
-  }, '画像を削除しました。');
+  }, t('画像を削除しました。'));
 
   const appeal = (workspaceId: string) => run(async () => {
     await api.requestProfileAppeal(workspaceId);
     setConfirmAppeal(null);
     apply(await api.getOwnProfile());
-  }, '管理者に警告の解除を依頼しました。');
+  }, t('管理者に警告の解除を依頼しました。'));
 
   const length = bioLengthStatus(bio);
 
   return (
-    <Dialog open={open} onClose={() => { if (!busy) close(); }} title="プロフィール" size="sm">
+    <Dialog open={open} onClose={() => { if (!busy) close(); }} title={t('プロフィール')} size="sm">
       {!profile ? (
-        <p className="py-6 text-center text-discord-muted">{message?.text ?? '読み込み中…'}</p>
+        <p className="py-6 text-center text-discord-muted">{message?.text ?? t('読み込み中…')}</p>
       ) : cropping ? (
         <div className="space-y-3">
           <AvatarCropper bitmap={cropping} busy={busy} onConfirm={(crop) => { void saveImage(cropping, crop); }} onCancel={() => setCropping(null)} />
@@ -115,19 +117,19 @@ export function ProfileSettingsDialog() {
                 onChange={(event) => { void chooseImage(event.target.files?.[0]); event.target.value = ''; }}
               />
               <button type="button" disabled={busy} onClick={() => fileInput.current?.click()} className="rounded bg-discord-hover px-3 py-1.5 text-sm text-white disabled:opacity-50">
-                画像を選ぶ
+                {t('画像を選ぶ')}
               </button>
               {profile.avatarUrl && (
                 <button type="button" disabled={busy} onClick={() => { void removeImage(); }} className="rounded px-3 py-1.5 text-sm text-discord-red hover:bg-discord-red/10 disabled:opacity-50">
-                  画像を削除
+                  {t('画像を削除')}
                 </button>
               )}
-              <p className="text-xs text-discord-muted">PNG・JPEG・WebP（5MBまで）</p>
+              <p className="text-xs text-discord-muted">{t('PNG・JPEG・WebP（5MBまで）')}</p>
             </div>
           </div>
 
           <label className="block text-sm text-discord-muted">
-            表示名
+            {t('表示名')}
             <input
               value={displayName}
               maxLength={100}
@@ -137,7 +139,7 @@ export function ProfileSettingsDialog() {
           </label>
 
           <label className="block text-sm text-discord-muted">
-            自己紹介
+            {t('自己紹介')}
             <textarea
               value={bio}
               rows={5}
@@ -145,7 +147,7 @@ export function ProfileSettingsDialog() {
               className="mt-1 block w-full resize-none rounded bg-discord-input px-3 py-2 text-discord-text"
             />
             <span className={`mt-1 block text-right text-xs ${length.ok ? 'text-discord-muted' : 'text-discord-red'}`}>
-              {length.characters}/200文字・{length.lines}/5行
+              {t('{characters}/200文字・{lines}/5行', { characters: length.characters, lines: length.lines })}
             </span>
           </label>
 
@@ -162,7 +164,7 @@ export function ProfileSettingsDialog() {
               onClick={() => { void save(); }}
               className="rounded bg-discord-accent px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
             >
-              {busy ? '保存中…' : '保存'}
+              {busy ? t('保存中…') : t('保存')}
             </button>
           </div>
 
@@ -170,29 +172,29 @@ export function ProfileSettingsDialog() {
             <section className="space-y-2 border-t border-discord-hover pt-4">
               {profile.flags.map((flag) => (
                 <div key={flag.workspaceId} className="rounded border border-discord-yellow/40 bg-discord-yellow/10 p-3 text-sm text-discord-text">
-                  <p>「{flag.workspaceName}」の管理者が、あなたのプロフィールの確認を必要としています。このワークスペースでは、ほかのメンバーが見る前に確認が表示されます。</p>
-                  {flag.appealStatus === 'pending' && <p className="mt-2 text-discord-muted">管理者に警告の解除を依頼しています。</p>}
-                  {flag.appealStatus === 'denied' && <p className="mt-2 text-discord-muted">解除の依頼は認められませんでした。</p>}
+                  <p>{t('「{workspace}」の管理者が、あなたのプロフィールの確認を必要としています。このワークスペースでは、ほかのメンバーが見る前に確認が表示されます。', { workspace: flag.workspaceName })}</p>
+                  {flag.appealStatus === 'pending' && <p className="mt-2 text-discord-muted">{t('管理者に警告の解除を依頼しています。')}</p>}
+                  {flag.appealStatus === 'denied' && <p className="mt-2 text-discord-muted">{t('解除の依頼は認められませんでした。')}</p>}
                   {flag.appealStatus === 'none' && flag.canAppeal && (
                     confirmAppeal === flag.workspaceId ? (
                       <div className="mt-2 space-y-2">
-                        <p className="font-medium">解除を依頼できるのは、すべてのワークスペースを通じて一度だけです。認められなかった場合、再び依頼することはできません。依頼しますか？</p>
+                        <p className="font-medium">{t('解除を依頼できるのは、すべてのワークスペースを通じて一度だけです。認められなかった場合、再び依頼することはできません。依頼しますか？')}</p>
                         <div className="flex gap-2">
-                          <button type="button" disabled={busy} onClick={() => { void appeal(flag.workspaceId); }} className="rounded bg-discord-accent px-3 py-1.5 text-white disabled:opacity-50">依頼する</button>
-                          <button type="button" disabled={busy} onClick={() => setConfirmAppeal(null)} className="rounded px-3 py-1.5 text-discord-muted hover:bg-discord-hover">やめる</button>
+                          <button type="button" disabled={busy} onClick={() => { void appeal(flag.workspaceId); }} className="rounded bg-discord-accent px-3 py-1.5 text-white disabled:opacity-50">{t('依頼する')}</button>
+                          <button type="button" disabled={busy} onClick={() => setConfirmAppeal(null)} className="rounded px-3 py-1.5 text-discord-muted hover:bg-discord-hover">{t('やめる')}</button>
                         </div>
                       </div>
                     ) : (
                       <button type="button" disabled={busy} onClick={() => setConfirmAppeal(flag.workspaceId)} className="mt-2 rounded bg-discord-hover px-3 py-1.5 text-white disabled:opacity-50">
-                        プロフィールを見直したので、解除を依頼する
+                        {t('プロフィールを見直したので、解除を依頼する')}
                       </button>
                     )
                   )}
                   {flag.appealStatus === 'none' && !flag.canAppeal && (
                     <p className="mt-2 text-discord-muted">
                       {profile.appealUsed
-                        ? '解除の依頼はすでに使用済みです。'
-                        : 'プロフィールを変更すると、解除を一度だけ依頼できます。'}
+                        ? t('解除の依頼はすでに使用済みです。')
+                        : t('プロフィールを変更すると、解除を一度だけ依頼できます。')}
                     </p>
                   )}
                 </div>

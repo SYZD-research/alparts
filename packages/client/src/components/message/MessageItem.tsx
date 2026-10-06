@@ -16,6 +16,7 @@ import { canSwipeMessage, messageSwipeAction } from './message-swipe-model';
 import { formatDateParts } from '../../stores/date-format';
 import { useUiStore } from '../../stores/ui.store';
 import { UserAvatar } from '../user/UserAvatar';
+import { useT } from '../../i18n';
 
 interface Props {
   message: Message;
@@ -26,6 +27,7 @@ interface Props {
 }
 
 export function MessageItem({ message, isFirst, onJumpToMessage, canPin = true }: Props) {
+  const t = useT();
   const [showActions, setShowActions] = useState(false);
   const [bookmarkFailure, setBookmarkFailure] = useState<string | null>(null);
   const [copyStatus, setCopyStatus] = useState<string | null>(null);
@@ -93,7 +95,7 @@ export function MessageItem({ message, isFirst, onJumpToMessage, canPin = true }
 
   const handleCopyLink = async () => {
     if (!permalinkPath) {
-      setCopyStatus('メッセージへのリンクを作成できませんでした');
+      setCopyStatus(t('メッセージへのリンクを作成できませんでした'));
       return;
     }
     const link = new URL(permalinkPath, window.location.origin).toString();
@@ -101,10 +103,10 @@ export function MessageItem({ message, isFirst, onJumpToMessage, canPin = true }
     try {
       if (!navigator.clipboard?.writeText) throw new Error('Clipboard API unavailable');
       await navigator.clipboard.writeText(link);
-      setCopyStatus('メッセージリンクをコピーしました');
+      setCopyStatus(t('メッセージリンクをコピーしました'));
     } catch {
       setFallbackLink(link);
-      setCopyStatus('自動コピーできませんでした。下のリンクを選択してコピーしてください');
+      setCopyStatus(t('自動コピーできませんでした。下のリンクを選択してコピーしてください'));
     }
   };
 
@@ -112,20 +114,20 @@ export function MessageItem({ message, isFirst, onJumpToMessage, canPin = true }
   if (isDeleted) {
     return (
       <div id={`message-${message.id}`} tabIndex={-1} className="px-4 py-1 text-sm italic text-discord-muted">
-        <span>メッセージが削除されました</span>
+        <span>{t('メッセージが削除されました')}</span>
         <button
           type="button"
           onClick={() => { void handleCopyLink(); }}
           disabled={!permalinkPath}
           className="ml-2 text-xs not-italic underline disabled:opacity-50"
-          aria-label="削除されたメッセージへのリンクをコピー"
+          aria-label={t('削除されたメッセージへのリンクをコピー')}
         >
-          リンク
+          {t('リンク')}
         </button>
         {copyStatus && <span role="status" className="ml-2 text-xs not-italic">{copyStatus}</span>}
         {fallbackLink && (
           <label className="mt-1 block text-xs not-italic">
-            コピー用リンク
+            {t('コピー用リンク')}
             <input
               readOnly
               value={fallbackLink}
@@ -147,7 +149,7 @@ export function MessageItem({ message, isFirst, onJumpToMessage, canPin = true }
   };
 
   const handleDelete = () => {
-    if (confirm('このメッセージを削除しますか？')) {
+    if (confirm(t('このメッセージを削除しますか？'))) {
       void deleteMessage(message.id, message.channelId).catch(() => undefined);
     }
   };
@@ -155,7 +157,7 @@ export function MessageItem({ message, isFirst, onJumpToMessage, canPin = true }
   const handleBookmark = () => {
     setBookmarkFailure(null);
     void toggleBookmark(message.id).catch(() => {
-      setBookmarkFailure('保存状態を更新できませんでした。もう一度お試しください');
+      setBookmarkFailure(t('保存状態を更新できませんでした。もう一度お試しください'));
     });
   };
 
@@ -186,7 +188,7 @@ export function MessageItem({ message, isFirst, onJumpToMessage, canPin = true }
           role="status"
         >
           <span aria-hidden="true" className="text-xl leading-none">{swipeAction === 'edit' ? '✎' : '↩'}</span>
-          <span>{swipeAction === 'edit' ? '編集' : '返信'}</span>
+          <span>{swipeAction === 'edit' ? t('編集') : t('返信')}</span>
         </div>
       )}
       <div
@@ -213,7 +215,7 @@ export function MessageItem({ message, isFirst, onJumpToMessage, canPin = true }
               onClick={() => onJumpToMessage?.(message.refMessageId!)}
               disabled={!onJumpToMessage}
               className="relative mb-1 flex max-w-full items-center gap-1.5 text-left text-xs text-discord-muted hover:text-discord-text disabled:cursor-default"
-              aria-label="返信先のメッセージへ移動"
+              aria-label={t('返信先のメッセージへ移動')}
             >
               <span aria-hidden="true" className="absolute -left-9 top-1/2 h-4 w-9 -translate-y-px rounded-tl-md border-l-2 border-t-2 border-discord-hover" />
               <UserAvatar
@@ -224,15 +226,15 @@ export function MessageItem({ message, isFirst, onJumpToMessage, canPin = true }
               />
               {referencedMessage ? (
                 <>
-                  <span className="shrink-0 font-semibold text-discord-text">{referencedMessage.author?.displayName || '不明なユーザー'}</span>
+                  <span className="shrink-0 font-semibold text-discord-text">{referencedMessage.author?.displayName || t('不明なユーザー')}</span>
                   <span className="truncate">
                     {referencedMessage.type === 'delete'
-                      ? '削除されたメッセージ'
-                      : userFacingMessageText(referencedMessage.content || '') || (referencedMessage.attachments?.length ? '添付ファイル' : '本文なし')}
+                      ? t('削除されたメッセージ')
+                      : userFacingMessageText(referencedMessage.content || '') || (referencedMessage.attachments?.length ? t('添付ファイル') : t('本文なし'))}
                   </span>
                 </>
               ) : (
-                <span className="truncate hover:underline">元のメッセージを表示</span>
+                <span className="truncate hover:underline">{t('元のメッセージを表示')}</span>
               )}
             </button>
           )}
@@ -243,7 +245,7 @@ export function MessageItem({ message, isFirst, onJumpToMessage, canPin = true }
                 onClick={() => { if (activeWorkspaceId) openMemberProfile(activeWorkspaceId, message.authorId); }}
                 className="font-medium text-white hover:underline"
               >
-                {message.author?.displayName || '不明なユーザー'}
+                {message.author?.displayName || t('不明なユーザー')}
               </button>
               <span className="text-xs text-discord-muted">
                 {date} {timestamp}
@@ -258,9 +260,9 @@ export function MessageItem({ message, isFirst, onJumpToMessage, canPin = true }
               currentUserId={user?.id || null}
               authenticatedBroadcastMention={message.broadcastMention === true}
             />
-            {message.type === 'edit' && <span className="ml-1 text-xs text-discord-muted">（編集済み）</span>}
-            {message.isPinned && <span className="ml-2 text-xs text-discord-yellow">📌 ピン留め</span>}
-            {bookmarked && <span className="ml-2 text-xs text-discord-accent">🔖 保存済み</span>}
+            {message.type === 'edit' && <span className="ml-1 text-xs text-discord-muted">{t('（編集済み）')}</span>}
+            {message.isPinned && <span className="ml-2 text-xs text-discord-yellow">{t('📌 ピン留め')}</span>}
+            {bookmarked && <span className="ml-2 text-xs text-discord-accent">{t('🔖 保存済み')}</span>}
           </div>
           {message.attachments?.map((attachment) => (
             <AttachmentItem
@@ -273,7 +275,7 @@ export function MessageItem({ message, isFirst, onJumpToMessage, canPin = true }
           {copyStatus && <p role="status" className="mt-1 text-xs text-discord-muted">{copyStatus}</p>}
           {fallbackLink && (
             <label className="mt-1 block text-xs text-discord-muted">
-              コピー用リンク
+              {t('コピー用リンク')}
               <input
                 readOnly
                 value={fallbackLink}
@@ -310,14 +312,14 @@ export function MessageItem({ message, isFirst, onJumpToMessage, canPin = true }
             <button
               onClick={() => handleReaction('👍')}
               className="px-2 py-1 hover:bg-discord-hover text-discord-muted hover:text-discord-text text-sm"
-              title="リアクション"
+              title={t('リアクション')}
             >
               👍
             </button>
             <button
               onClick={() => selectMessageAction('reply')}
               className="px-2 py-1 hover:bg-discord-hover text-discord-muted hover:text-discord-text text-sm"
-              title="返信"
+              title={t('返信')}
             >
               ↩
             </button>
@@ -325,7 +327,7 @@ export function MessageItem({ message, isFirst, onJumpToMessage, canPin = true }
               <button
                 onClick={() => void pinMessage(message.id, message.channelId).catch(() => undefined)}
                 className="px-2 py-1 hover:bg-discord-hover text-discord-muted hover:text-discord-text text-sm"
-                title={message.isPinned ? 'ピンを外す' : 'ピン留め'}
+                title={message.isPinned ? t('ピンを外す') : t('ピン留め')}
               >
                 📌
               </button>
@@ -335,9 +337,9 @@ export function MessageItem({ message, isFirst, onJumpToMessage, canPin = true }
               onClick={handleBookmark}
               disabled={bookmarkSaving}
               aria-pressed={bookmarked}
-              aria-label={bookmarked ? '保存済みメッセージから削除' : 'メッセージを保存'}
+              aria-label={bookmarked ? t('保存済みメッセージから削除') : t('メッセージを保存')}
               className="px-2 py-1 hover:bg-discord-hover text-discord-muted hover:text-discord-text text-sm disabled:opacity-50"
-              title={bookmarked ? '保存済みから削除' : '保存'}
+              title={bookmarked ? t('保存済みから削除') : t('保存')}
             >
               {bookmarked ? '🔖' : '♡'}
             </button>
@@ -346,8 +348,8 @@ export function MessageItem({ message, isFirst, onJumpToMessage, canPin = true }
               onClick={() => { void handleCopyLink(); }}
               disabled={!permalinkPath}
               className="px-2 py-1 text-sm text-discord-muted hover:bg-discord-hover hover:text-discord-text disabled:opacity-40"
-              title="リンクをコピー"
-              aria-label="メッセージへのリンクをコピー"
+              title={t('リンクをコピー')}
+              aria-label={t('メッセージへのリンクをコピー')}
             >
               🔗
             </button>
@@ -356,14 +358,14 @@ export function MessageItem({ message, isFirst, onJumpToMessage, canPin = true }
                 <button
                   onClick={() => selectMessageAction('edit')}
                   className="px-2 py-1 hover:bg-discord-hover text-discord-muted hover:text-discord-text text-sm"
-                  title="編集"
+                  title={t('編集')}
                 >
                   ✎
                 </button>
                 <button
                   onClick={handleDelete}
                   className="px-2 py-1 hover:bg-discord-red hover:text-white text-discord-muted text-sm"
-                  title="削除"
+                  title={t('削除')}
                 >
                   🗑
                 </button>

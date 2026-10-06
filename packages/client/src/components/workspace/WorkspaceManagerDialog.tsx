@@ -11,6 +11,7 @@ import { InvitationManager } from './InvitationManager';
 import { RoleManager } from './RoleManager';
 import { AuditLogPanel } from './AuditLogPanel';
 import { ProfileFlagsPanel } from './ProfileFlagsPanel';
+import { useT } from '../../i18n';
 
 type ManagementTab = 'accept' | 'invitations' | 'roles' | 'permissions' | 'profiles' | 'audit';
 
@@ -20,6 +21,7 @@ interface TabDefinition {
 }
 
 export function WorkspaceManagerDialog() {
+  const t = useT();
   const open = useUiStore((state) => state.isWorkspaceManagerOpen);
   const close = useUiStore((state) => state.closeWorkspaceManager);
   const activeWorkspaceId = useWorkspaceStore((state) => state.activeWorkspaceId);
@@ -41,13 +43,13 @@ export function WorkspaceManagerDialog() {
   const roleRequest = useRef(0);
 
   const tabs = useMemo<TabDefinition[]>(() => [
-    { id: 'accept', label: '招待を受諾' },
-    ...(canManageMembers ? [{ id: 'invitations' as const, label: '招待を管理' }] : []),
-    { id: 'roles', label: 'ロール' },
-    { id: 'permissions', label: '権限の理由' },
-    ...(canManageMembers ? [{ id: 'profiles' as const, label: 'プロフィールの警告' }] : []),
-    ...(canViewAudit ? [{ id: 'audit' as const, label: '操作履歴' }] : []),
-  ], [canManageMembers, canViewAudit]);
+    { id: 'accept', label: t('招待を受諾') },
+    ...(canManageMembers ? [{ id: 'invitations' as const, label: t('招待を管理') }] : []),
+    { id: 'roles', label: t('ロール') },
+    { id: 'permissions', label: t('権限の理由') },
+    ...(canManageMembers ? [{ id: 'profiles' as const, label: t('プロフィールの警告') }] : []),
+    ...(canViewAudit ? [{ id: 'audit' as const, label: t('操作履歴') }] : []),
+  ], [canManageMembers, canViewAudit, t]);
 
   const loadRoles = useCallback(async () => {
     if (!activeWorkspaceId) return;
@@ -60,7 +62,7 @@ export function WorkspaceManagerDialog() {
     } catch {
       if (request === roleRequest.current) {
         setRoles([]);
-        setRolesError('ロールを読み込めませんでした。もう一度お試しください。');
+        setRolesError(t('ロールを読み込めませんでした。もう一度お試しください。'));
       }
     } finally {
       if (request === roleRequest.current) setRolesLoading(false);
@@ -106,13 +108,13 @@ export function WorkspaceManagerDialog() {
     <Dialog
       open={open && Boolean(activeWorkspaceId)}
       onClose={close}
-      title={`${workspaceName || 'ワークスペース'}の管理`}
-      description="招待、ロール、権限、操作履歴を管理します。"
+      title={t('{name}の管理', { name: workspaceName || t('ワークスペース') })}
+      description={t('招待、ロール、権限、操作履歴を管理します。')}
       size="lg"
     >
       {open && activeWorkspaceId && (
         <div>
-          <div role="tablist" aria-label="ワークスペース管理" className="mb-5 flex flex-wrap gap-1 border-b border-discord-hover">
+          <div role="tablist" aria-label={t('ワークスペース管理')} className="mb-5 flex flex-wrap gap-1 border-b border-discord-hover">
             {tabs.map((tab, index) => (
               <button
                 key={tab.id}

@@ -1,3 +1,4 @@
+import { t } from '../i18n';
 export function solveLoginChallenge(
   challenge: unknown,
   signal?: AbortSignal | null,
@@ -11,7 +12,7 @@ export function solveLoginChallenge(
       signal?.removeEventListener('abort', abort);
       worker.terminate();
       if (proof) resolve(proof);
-      else reject(new Error('ログインできませんでした。時間をおいてもう一度お試しください。'));
+      else reject(new Error(t('ログインできませんでした。時間をおいてもう一度お試しください。')));
     };
     const abort = () => finish();
     const timeout = setTimeout(abort, 90_000);

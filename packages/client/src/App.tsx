@@ -6,17 +6,19 @@ import { getActiveDevice } from './services/crypto.service';
 import { DeviceApprovalPage } from './components/security/DeviceApprovalPage';
 import { StepUpDialog } from './components/security/StepUpDialog';
 import { AppLayout } from './components/layout/AppLayout';
+import { useT } from './i18n';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { user, isLoading, isInitialized } = useAuthStore();
   const location = useLocation();
+  const t = useT();
   const [, forceRefresh] = useState(0);
   const approved = useCallback(() => forceRefresh((n) => n + 1), []);
 
   if (isLoading || !isInitialized) {
     return (
       <div className="flex items-center justify-center h-screen bg-discord-bg">
-        <div className="text-discord-muted">読み込み中…</div>
+        <div className="text-discord-muted">{t('読み込み中…')}</div>
       </div>
     );
   }

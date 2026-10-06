@@ -5,6 +5,7 @@ import type {
   PermissionOverridePreview,
   PermissionOverrideWriteInput,
 } from '../services/api';
+import { t } from '../i18n';
 
 export type OverridePermissionState = 'inherit' | 'allow' | 'deny' | 'conflict';
 
@@ -44,7 +45,7 @@ export function setOverridePermissionState(
   state: Exclude<OverridePermissionState, 'conflict'>,
 ): { allowMask: number; denyMask: number } {
   if ((permission & channelScopedPermissionMask) !== permission || permission <= 0) {
-    throw new Error('チャンネルスコープ外の権限はoverrideできません');
+    throw new Error(t('チャンネルスコープ外の権限はoverrideできません'));
   }
   const clearedAllow = allowMask & ~permission;
   const clearedDeny = denyMask & ~permission;
@@ -61,8 +62,8 @@ export function validateOverrideMasks(allowMask: number, denyMask: number): stri
     || denyMask < 0
     || (allowMask & ~channelScopedPermissionMask) !== 0
     || (denyMask & ~channelScopedPermissionMask) !== 0
-  ) return 'この画面では変更できない権限が含まれています。もう一度読み込んでください。';
-  if ((allowMask & denyMask) !== 0) return '同じ権限を許可と拒否の両方には設定できません。競合を解消してください。';
+  ) return t('この画面では変更できない権限が含まれています。もう一度読み込んでください。');
+  if ((allowMask & denyMask) !== 0) return t('同じ権限を許可と拒否の両方には設定できません。競合を解消してください。');
   return null;
 }
 
@@ -86,7 +87,7 @@ export function overrideDeleteInputFromPreview(
   preview: PermissionOverridePreview,
 ): PermissionOverrideDeleteInput {
   assertPreviewRevisions(preview);
-  if (preview.currentRevision < 1) throw new Error('削除対象のoverride revisionが不正です');
+  if (preview.currentRevision < 1) throw new Error(t('削除対象のoverride revisionが不正です'));
   return {
     expectedRevision: preview.currentRevision,
     expectedAuthorizationRevision: preview.authorizationRevision,
@@ -148,18 +149,20 @@ export function formatChannelPermissionReason(
   reason: ChannelPermissionReason,
   roleNames: ReadonlyMap<string, string>,
 ): string {
-  if (reason.source === 'workspace-owner' && reason.effect === 'allow') return 'ワークスペースの所有者に許可されています';
+  if (reason.source === 'workspace-owner' && reason.effect === 'allow') return t('ワークスペースの所有者に許可されています');
   if (reason.source === 'role' && reason.effect === 'allow' && reason.roleId) {
-    return `ロール「${reason.roleName || roleNames.get(reason.roleId) || '不明'}」が許可`;
+    return t('ロール「{role}」が許可', { role: reason.roleName || roleNames.get(reason.roleId) || t('不明') });
   }
   if ((reason.source === 'category' || reason.source === 'channel')
     && (reason.effect === 'allow' || reason.effect === 'deny')
     && reason.roleId) {
-    const scope = reason.source === 'category' ? 'カテゴリーの設定' : 'チャンネルの設定';
-    const effect = reason.effect === 'allow' ? '許可' : '拒否';
-    return `${scope}（${roleNames.get(reason.roleId) || '不明なロール'}）が${effect}`;
+    const role = roleNames.get(reason.roleId) || t('不明なロール');
+    if (reason.source === 'category') {
+      return reason.effect === 'allow' ? t('カテゴリーの設定（{role}）が許可', { role }) : t('カテゴリーの設定（{role}）が拒否', { role });
+    }
+    return reason.effect === 'allow' ? t('チャンネルの設定（{role}）が許可', { role }) : t('チャンネルの設定（{role}）が拒否', { role });
   }
-  return '詳細を確認できません';
+  return t('詳細を確認できません');
 }
 
 function assertPreviewRevisions(preview: PermissionOverridePreview): void {

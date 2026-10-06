@@ -19,6 +19,7 @@ import {
   transitionOutboxItem,
   type OutboxItem,
 } from './outbox-model';
+import { t } from '../i18n';
 
 export type { OutboxItem, OutboxStatus } from './outbox-model';
 
@@ -96,7 +97,7 @@ function validateContent(content: string): void {
     !content
     || content.length > MAX_MESSAGE_LENGTH
     || new TextEncoder().encode(content).length > MAX_MESSAGE_LENGTH * 4
-  ) throw new Error('メッセージが長すぎます');
+  ) throw new Error(t('メッセージが長すぎます'));
 }
 
 export const useOutboxStore = create<OutboxState>((set, get) => ({
@@ -162,7 +163,7 @@ export const useOutboxStore = create<OutboxState>((set, get) => ({
         set((state) => ({
           errorsByChannel: {
             ...state.errorsByChannel,
-            [channelId]: errorMessage(error, '未送信メッセージを保存できませんでした'),
+            [channelId]: errorMessage(error, t('未送信メッセージを保存できませんでした')),
           },
         }));
       }
@@ -254,7 +255,7 @@ export const useOutboxStore = create<OutboxState>((set, get) => ({
             ...state.items,
             [idempotencyKey]: transitionOutboxItem(state.items[idempotencyKey], {
               type: 'fail',
-              error: errorMessage(error, '送信に失敗しました'),
+              error: errorMessage(error, t('送信に失敗しました')),
             }),
           },
         }));
@@ -306,7 +307,7 @@ export const useOutboxStore = create<OutboxState>((set, get) => ({
           ...state.items,
           [idempotencyKey]: transitionOutboxItem(item, {
             type: 'queue',
-            error: 'オフラインです。接続復旧後に再送します',
+            error: t('オフラインです。接続復旧後に再送します'),
           }),
         },
       }));

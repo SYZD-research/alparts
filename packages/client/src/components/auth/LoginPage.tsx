@@ -3,8 +3,11 @@ import { canUsePasskeys } from '../../services/passkey.service';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../../stores/auth.store';
 import { safeMessageReturnPath } from '../../stores/permalink-model';
+import { LanguageSelect } from '../settings/LanguageSelect';
+import { useT } from '../../i18n';
 
 export function LoginPage() {
+  const t = useT();
   const [isRegister, setIsRegister] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -45,10 +48,10 @@ export function LoginPage() {
     <div className="flex items-center justify-center h-screen bg-discord-bg">
       <div className="w-full max-w-md p-8 bg-discord-sidebar rounded-lg">
         <h1 className="text-2xl font-bold text-center text-white mb-2">
-          {isRegister ? 'アカウント作成' : 'おかえりなさい！'}
+          {isRegister ? t('アカウント作成') : t('おかえりなさい！')}
         </h1>
         <p className="text-discord-muted text-center mb-6">
-          {isRegister ? 'alpartsへようこそ' : 'alpartsにログイン'}
+          {isRegister ? t('alpartsへようこそ') : t('alpartsにログイン')}
         </p>
 
         {!isRegister && canUsePasskeys() && (
@@ -66,7 +69,7 @@ export function LoginPage() {
             }}
             className="mb-4 w-full rounded bg-discord-accent px-4 py-3 font-bold text-white disabled:opacity-50"
           >
-            パスキーでログイン
+            {t('パスキーでログイン')}
           </button>
         )}
         <form onSubmit={handleSubmit} className="space-y-4">
@@ -74,7 +77,7 @@ export function LoginPage() {
             <>
               <div>
                 <label className="block text-xs font-bold text-discord-muted uppercase mb-2">
-                  表示名
+                  {t('表示名')}
                 </label>
                 <input
                   type="text"
@@ -86,7 +89,7 @@ export function LoginPage() {
               </div>
               <div>
                 <label className="block text-xs font-bold text-discord-muted uppercase mb-2">
-                  招待コード
+                  {t('招待コード')}
                 </label>
                 <input
                   type="password"
@@ -105,7 +108,7 @@ export function LoginPage() {
 
           <div>
             <label className="block text-xs font-bold text-discord-muted uppercase mb-2">
-              メールアドレス
+              {t('メールアドレス')}
             </label>
             <input
               type="email"
@@ -121,7 +124,7 @@ export function LoginPage() {
 
           <div>
             <label className="block text-xs font-bold text-discord-muted uppercase mb-2">
-              パスワード
+              {t('パスワード')}
             </label>
             <input
               type="password"
@@ -137,10 +140,10 @@ export function LoginPage() {
           {isRegister && codeSent && (
             <div>
               <p role="status" className="mb-2 text-sm text-discord-text">
-                {email} に確認コードを送りました。メールに書かれた6桁のコードを入力してください。
+                {t('{email} に確認コードを送りました。メールに書かれた6桁のコードを入力してください。', { email })}
               </p>
               <label className="block text-xs font-bold text-discord-muted uppercase mb-2">
-                確認コード
+                {t('確認コード')}
               </label>
               <input
                 type="text"
@@ -162,7 +165,7 @@ export function LoginPage() {
                 }}
                 className="mt-2 text-sm text-discord-accent hover:underline disabled:opacity-50"
               >
-                コードを送り直す
+                {t('コードを送り直す')}
               </button>
             </div>
           )}
@@ -174,12 +177,12 @@ export function LoginPage() {
             disabled={isLoading}
             className="w-full py-2.5 bg-discord-accent hover:bg-discord-accent-hover rounded font-medium text-white transition-colors disabled:opacity-50"
           >
-            {isLoading ? '処理中...' : isRegister ? 'アカウント作成' : 'ログイン'}
+            {isLoading ? t('処理中...') : isRegister ? t('アカウント作成') : t('ログイン')}
           </button>
         </form>
 
         <p className="text-sm text-discord-muted mt-4 text-center">
-          {isRegister ? 'すでにアカウントをお持ちですか？' : 'アカウントをお持ちでないですか？'}
+          {isRegister ? t('すでにアカウントをお持ちですか？') : t('アカウントをお持ちでないですか？')}
           <button
             onClick={() => {
               setIsRegister(!isRegister);
@@ -187,9 +190,10 @@ export function LoginPage() {
             }}
             className="text-discord-accent hover:underline ml-1"
           >
-            {isRegister ? 'ログイン' : 'アカウント作成'}
+            {isRegister ? t('ログイン') : t('アカウント作成')}
           </button>
         </p>
+        <LanguageSelect className="mt-6" />
       </div>
     </div>
   );

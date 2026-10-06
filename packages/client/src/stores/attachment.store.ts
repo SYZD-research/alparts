@@ -34,6 +34,7 @@ import {
   signAttachmentEnvelope,
 } from '../services/crypto.service';
 import { useMessageStore } from './message.store';
+import { t } from '../i18n';
 
 export type AttachmentUploadStatus =
   | 'queued'
@@ -117,13 +118,13 @@ let resuming = false;
 
 function taskErrorMessage(error: unknown): string {
   if (error instanceof ApiError) {
-    if (error.status === 403) return 'このチャンネルで添付ファイルを送信する権限がありません';
-    if (error.status === 413) return 'ストレージ容量またはファイルサイズの上限を超えました';
-    if (error.status === 410 && error.code === 'UPLOAD_EXPIRED') return 'アップロードの有効期限が切れました。自動的にやり直します';
-    if (error.status === 409) return 'アップロード状態が競合しました。一覧を再読み込みして確認してください';
-    if (error.status === 429) return 'アップロードが混雑しています。しばらくして再試行してください';
+    if (error.status === 403) return t('このチャンネルで添付ファイルを送信する権限がありません');
+    if (error.status === 413) return t('ストレージ容量またはファイルサイズの上限を超えました');
+    if (error.status === 410 && error.code === 'UPLOAD_EXPIRED') return t('アップロードの有効期限が切れました。自動的にやり直します');
+    if (error.status === 409) return t('アップロード状態が競合しました。一覧を再読み込みして確認してください');
+    if (error.status === 429) return t('アップロードが混雑しています。しばらくして再試行してください');
   }
-  return error instanceof Error && error.message ? error.message : '添付ファイルを送信できませんでした';
+  return error instanceof Error && error.message ? error.message : t('添付ファイルを送信できませんでした');
 }
 
 function isOnline(): boolean {
@@ -146,14 +147,14 @@ function isCurrentRuntime(taskId: string, runtime: UploadRuntime, generation: nu
 
 async function prepareUpload(runtime: UploadRuntime, signal: AbortSignal): Promise<PreparedUpload> {
   const { file, message } = runtime;
-  if (file.size > MAX_FILE_SIZE) throw new Error('添付ファイルは100MB以下にしてください');
+  if (file.size > MAX_FILE_SIZE) throw new Error(t('添付ファイルは100MB以下にしてください'));
   const attempt = runtime.reservationAttempt || await createReservationAttempt(runtime);
   if (
     signal.aborted
     || runtime.cancelled
     || attempt.idempotencyKey !== runtime.reservationIdempotencyKey
   ) {
-    throw new DOMException('操作はキャンセルされました', 'AbortError');
+    throw new DOMException(t('操作はキャンセルされました'), 'AbortError');
   }
   runtime.reservationAttempt = attempt;
   const reservation = await createAttachmentReservationWithRetry({
@@ -163,12 +164,12 @@ async function prepareUpload(runtime: UploadRuntime, signal: AbortSignal): Promi
     idempotencyKey: attempt.idempotencyKey,
   }, signal);
   if (reservation.uploadId !== attempt.idempotencyKey) {
-    throw new Error('添付予約IDがclient idempotency keyと一致しません');
+    throw new Error(t('添付予約IDがclient idempotency keyと一致しません'));
   }
   runtime.reservationUploadId = reservation.uploadId;
   if (signal.aborted || runtime.cancelled) {
     void cancelAttachmentReservationBestEffort(reservation.uploadId);
-    throw new DOMException('操作はキャンセルされました', 'AbortError');
+    throw new DOMException(t('操作はキャンセルされました'), 'AbortError');
   }
   assertAttachmentReservationContract(reservation, file.size);
   const wrappedKey = await wrapSealedAttachmentFileKey(
@@ -180,7 +181,7 @@ async function prepareUpload(runtime: UploadRuntime, signal: AbortSignal): Promi
   );
   if (signal.aborted || runtime.cancelled) {
     void cancelAttachmentReservationBestEffort(reservation.uploadId);
-    throw new DOMException('操作はキャンセルされました', 'AbortError');
+    throw new DOMException(t('操作はキャンセルされました'), 'AbortError');
   }
   const prepared: PreparedUpload = {
     reservation,
@@ -199,10 +200,10 @@ async function prepareUpload(runtime: UploadRuntime, signal: AbortSignal): Promi
 async function createReservationAttempt(runtime: UploadRuntime): Promise<ReservationAttempt> {
   const { file, message } = runtime;
   const channelKey = await getChannelKeyForVersion(message.channelId, message.keyVersion);
-  if (!channelKey) throw new Error('このチャンネルは現在ファイルを送信できません');
+  if (!channelKey) throw new Error(t('このチャンネルは現在ファイルを送信できません'));
   const preparedKey = await prepareAttachmentFileKey(file.name, message.id);
   try {
-    if (preparedKey.filenameEnc.length > 8192) throw new Error('添付ファイル名が長すぎます');
+    if (preparedKey.filenameEnc.length > 8192) throw new Error(t('添付ファイル名が長すぎます'));
     return {
       idempotencyKey: runtime.reservationIdempotencyKey,
       channelKey,
@@ -236,7 +237,7 @@ async function runUpload(taskId: string): Promise<void> {
   const runtime = runtimes.get(taskId);
   if (!runtime || runtime.running || runtime.cancelled) return;
   if (!isOnline()) {
-    updateTask(taskId, { status: 'failed', error: 'オフラインです。接続復旧後に再開します' });
+    updateTask(taskId, { status: 'failed', error: t('オフラインです。接続復旧後に再開します') });
     return;
   }
 
@@ -259,7 +260,7 @@ async function runUpload(taskId: string): Promise<void> {
       controller.signal,
     );
     if (status.messageId !== runtime.message.id || status.uploadId !== prepared.reservation.uploadId) {
-      throw new Error('添付アップロードの再開情報が一致しません');
+      throw new Error(t('添付アップロードの再開情報が一致しません'));
     }
     const reportedIndexes = new Set(status.uploadedIndexes);
     if (
@@ -269,7 +270,7 @@ async function runUpload(taskId: string): Promise<void> {
         !reportedIndexes.has(chunk.index) || chunk.index < 0 || chunk.index >= prepared.chunkCount
       ))
     ) {
-      throw new Error('添付アップロードのチャンク状態が不正です');
+      throw new Error(t('添付アップロードのチャンク状態が不正です'));
     }
     const uploadedSizes = new Map(status.chunks.map((chunk) => [chunk.index, chunk.ciphertextSizeBytes]));
     let uploadedBytes = 0;
@@ -289,7 +290,7 @@ async function runUpload(taskId: string): Promise<void> {
     for (let index = 0; index < prepared.chunkCount; index += 1) {
       const expectedCiphertextSize = attachmentCiphertextChunkSize(runtime.file.size, index);
       if (uploadedSizes.get(index) === expectedCiphertextSize) continue;
-      if (controller.signal.aborted) throw new DOMException('操作はキャンセルされました', 'AbortError');
+      if (controller.signal.aborted) throw new DOMException(t('操作はキャンセルされました'), 'AbortError');
       const start = index * ATTACHMENT_PLAINTEXT_CHUNK_BYTES;
       const end = Math.min(runtime.file.size, start + ATTACHMENT_PLAINTEXT_CHUNK_BYTES);
       const plaintext = await runtime.file.slice(start, end).arrayBuffer();
@@ -305,7 +306,7 @@ async function runUpload(taskId: string): Promise<void> {
           prepared.chunkCount,
           runtime.file.size,
         );
-        if (ciphertext.byteLength !== expectedCiphertextSize) throw new Error('暗号化チャンクのサイズが不正です');
+        if (ciphertext.byteLength !== expectedCiphertextSize) throw new Error(t('暗号化チャンクのサイズが不正です'));
         await withTransientAttachmentRetry(
           () => api.putAttachmentChunk(
             prepared.reservation.uploadId,
@@ -429,7 +430,7 @@ async function runUpload(taskId: string): Promise<void> {
       retryAfterExpiry = expiryPlan.retryAutomatically;
     }
     updateTask(taskId, controller.signal.aborted
-      ? { status: 'cancelled', error: 'アップロードをキャンセルしました' }
+      ? { status: 'cancelled', error: t('アップロードをキャンセルしました') }
       : retryAfterExpiry
         ? { status: 'queued', error: null, progress: 0, uploadedChunks: 0 }
         : { status: 'failed', error: taskErrorMessage(error) });
@@ -446,11 +447,11 @@ export const useAttachmentStore = create<AttachmentState>((set, get) => ({
   startUploads: (message, files) => {
     if (files.length === 0) return Promise.resolve();
     if (files.length > ATTACHMENT_MAX_COUNT_PER_MESSAGE) {
-      throw new Error(`1件のメッセージに添付できるファイルは${ATTACHMENT_MAX_COUNT_PER_MESSAGE}件までです`);
+      throw new Error(t('1件のメッセージに添付できるファイルは{count}件までです', { count: ATTACHMENT_MAX_COUNT_PER_MESSAGE }));
     }
-    if (!isOnline()) throw new Error('添付ファイルはオンライン時のみ送信できます');
+    if (!isOnline()) throw new Error(t('添付ファイルはオンライン時のみ送信できます'));
     if (runtimes.size + files.length > MAX_LOCAL_ATTACHMENT_RUNTIMES) {
-      throw new Error('端末上の添付アップロード上限に達しました');
+      throw new Error(t('端末上の添付アップロード上限に達しました'));
     }
     set((state) => ({
       tasks: pruneTerminalTaskHistory(state.tasks, files.length),
@@ -529,7 +530,7 @@ export const useAttachmentStore = create<AttachmentState>((set, get) => ({
     runtimes.delete(taskId);
     if (!finalizing || !prepared) {
       cancelKnownReservation(runtime);
-      updateTask(taskId, { status: 'cancelled', error: 'アップロードをキャンセルしました' });
+      updateTask(taskId, { status: 'cancelled', error: t('アップロードをキャンセルしました') });
       return;
     }
     // The server may already have accepted the file. Report what it decided
@@ -600,7 +601,7 @@ async function settleFinalizingCancellation(taskId: string, runtime: UploadRunti
   }
   if (generation !== attachmentGeneration) return;
   if (!attachment) {
-    updateTask(taskId, { status: 'cancelled', error: 'アップロードをキャンセルしました' });
+    updateTask(taskId, { status: 'cancelled', error: t('アップロードをキャンセルしました') });
     return;
   }
   useMessageStore.getState().applyAttachment(runtime.message.channelId, attachment);

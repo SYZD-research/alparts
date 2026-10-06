@@ -4,6 +4,7 @@ import type {
   VoiceIceServer,
   VoiceParticipant,
 } from '@alparts/shared';
+import { t } from '../i18n';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const PARTICIPANT_ID = /^[A-Za-z0-9_-]{1,128}$/;
@@ -68,7 +69,7 @@ export function buildVoiceDescriptionEnvelope(input: {
     || (input.description.type !== 'offer' && input.description.type !== 'answer')
     || !input.description.sdp
   ) {
-    throw new Error('音声通話SDPが不正です');
+    throw new Error(t('音声通話SDPが不正です'));
   }
   return {
     type: 'voice-signal',
@@ -97,9 +98,9 @@ export function buildVoiceIceEnvelope(input: {
   targetParticipantId: string;
   candidate: RTCIceCandidate;
 }): SignedVoiceSignalEnvelope {
-  if (!isSignalSequence(input.sequence)) throw new Error('音声通話sequenceが不正です');
+  if (!isSignalSequence(input.sequence)) throw new Error(t('音声通話sequenceが不正です'));
   const candidate = input.candidate.toJSON();
-  if (!candidate.candidate) throw new Error('音声通話ICE candidateが不正です');
+  if (!candidate.candidate) throw new Error(t('音声通話ICE candidateが不正です'));
   return {
     type: 'voice-signal',
     signalId: input.signalId,

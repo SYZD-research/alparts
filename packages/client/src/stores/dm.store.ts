@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { api, type DirectMessageConversation } from '../services/api';
 import { findReusableOneToOneDm } from './dm-model';
 import { useWorkspaceStore } from './workspace.store';
+import { t } from '../i18n';
 
 interface DmState {
   conversationsByWorkspace: Record<string, DirectMessageConversation[]>;
@@ -31,7 +32,7 @@ function workspaceEpoch(workspaceId: string): number {
 }
 
 function errorMessage(error: unknown): string {
-  return error instanceof Error && error.message ? error.message : 'DMを処理できませんでした';
+  return error instanceof Error && error.message ? error.message : t('DMを処理できませんでした');
 }
 
 function ordered(conversations: DirectMessageConversation[]): DirectMessageConversation[] {
@@ -83,12 +84,12 @@ export const useDmStore = create<DmState>((set, get) => ({
 
   createOrReuseDm: async (workspaceId, currentUserId, selectedMemberIds) => {
     const memberIds = [...new Set(selectedMemberIds)].filter((id) => id !== currentUserId).sort();
-    if (memberIds.length < 1 || memberIds.length > 19) throw new Error('1〜19人のメンバーを選択してください');
+    if (memberIds.length < 1 || memberIds.length > 19) throw new Error(t('1〜19人のメンバーを選択してください'));
     // Refresh immediately before creation so a DM made in another tab/device
     // is reused whenever it is already visible to the server.
     const conversations = await get().loadDms(workspaceId);
     const loadError = get().errorsByWorkspace[workspaceId];
-    if (!conversations || loadError) throw new Error('DMを確認できませんでした。もう一度お試しください。');
+    if (!conversations || loadError) throw new Error(t('DMを確認できませんでした。もう一度お試しください。'));
     if (memberIds.length === 1) {
       const existing = findReusableOneToOneDm(
         conversations,

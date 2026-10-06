@@ -14,6 +14,7 @@ import {
 import { api } from './api';
 import { getChannelKeyForVersion, verifyAttachmentSignature } from './crypto.service';
 import { getMessageCryptoVerificationState } from '../stores/message-projector';
+import { t } from '../i18n';
 
 export const ATTACHMENT_PLAINTEXT_CHUNK_BYTES = SHARED_ATTACHMENT_PLAINTEXT_CHUNK_BYTES;
 export const ATTACHMENT_GCM_TAG_BYTES = SHARED_ATTACHMENT_GCM_TAG_BYTES;
@@ -69,7 +70,7 @@ export function attachmentChunkAad(
 
 export function attachmentChunkCount(plaintextSize: number): number {
   if (!Number.isSafeInteger(plaintextSize) || plaintextSize < 0 || plaintextSize > MAX_FILE_SIZE) {
-    throw new Error('添付ファイルのサイズが許容範囲外です');
+    throw new Error(t('添付ファイルのサイズが許容範囲外です'));
   }
   return Math.max(1, Math.ceil(plaintextSize / ATTACHMENT_PLAINTEXT_CHUNK_BYTES));
 }
@@ -77,7 +78,7 @@ export function attachmentChunkCount(plaintextSize: number): number {
 export function attachmentPlaintextChunkSize(plaintextSize: number, index: number): number {
   const chunkCount = attachmentChunkCount(plaintextSize);
   if (!Number.isSafeInteger(index) || index < 0 || index >= chunkCount) {
-    throw new Error('添付チャンク番号が不正です');
+    throw new Error(t('添付チャンク番号が不正です'));
   }
   const offset = index * ATTACHMENT_PLAINTEXT_CHUNK_BYTES;
   return Math.min(ATTACHMENT_PLAINTEXT_CHUNK_BYTES, Math.max(0, plaintextSize - offset));
@@ -88,9 +89,9 @@ export function attachmentCiphertextChunkSize(plaintextSize: number, index: numb
 }
 
 export function attachmentChunkNonce(prefix: Uint8Array, index: number): Uint8Array {
-  if (prefix.byteLength !== ATTACHMENT_NONCE_PREFIX_BYTES) throw new Error('ファイル情報の形式が不正です');
+  if (prefix.byteLength !== ATTACHMENT_NONCE_PREFIX_BYTES) throw new Error(t('ファイル情報の形式が不正です'));
   if (!Number.isSafeInteger(index) || index < 0 || index > 0xffff_ffff) {
-    throw new Error('ファイルの分割情報が不正です');
+    throw new Error(t('ファイルの分割情報が不正です'));
   }
   const nonce = new Uint8Array(12);
   nonce.set(prefix, 0);
@@ -135,7 +136,7 @@ export async function wrapPreparedAttachmentFileKey(
   messageId: string,
   uploadId: string,
 ): Promise<string> {
-  if (rawFileKey.byteLength !== 32) throw new Error('添付ファイル鍵が不正です');
+  if (rawFileKey.byteLength !== 32) throw new Error(t('添付ファイル鍵が不正です'));
   return encryptPacked(channelKey, rawFileKey, attachmentWrappedKeyAad(messageId, uploadId));
 }
 
@@ -146,7 +147,7 @@ export async function sealPreparedAttachmentFileKey(
   messageId: string,
   idempotencyKey: string,
 ): Promise<string> {
-  if (rawFileKey.byteLength !== 32) throw new Error('添付ファイル鍵が不正です');
+  if (rawFileKey.byteLength !== 32) throw new Error(t('添付ファイル鍵が不正です'));
   return encryptPacked(channelKey, rawFileKey, preparedKeyAad(messageId, idempotencyKey));
 }
 
@@ -191,7 +192,7 @@ export async function decryptAttachmentChunk(
   index: number,
 ): Promise<ArrayBuffer> {
   if (ciphertext.byteLength !== attachmentCiphertextChunkSize(manifest.plaintextSize, index)) {
-    throw new Error('添付チャンクのサイズがmanifestと一致しません');
+    throw new Error(t('添付チャンクのサイズがmanifestと一致しません'));
   }
   return crypto.subtle.decrypt({
     name: 'AES-GCM',
@@ -214,14 +215,14 @@ export async function unwrapAttachmentFileKey(
   const envelope = await verifyAttachmentMetadata(message, attachment);
   const manifest = validateAttachmentManifest(attachment, envelope.messageId);
   const channelKey = await getChannelKeyForVersion(message.channelId, message.keyVersion);
-  if (!channelKey) throw new Error('このチャンネルは現在ファイルを送信できません');
+  if (!channelKey) throw new Error(t('このチャンネルは現在ファイルを送信できません'));
   const raw = await decryptPacked(
     channelKey,
     attachment.wrappedKey,
     attachmentWrappedKeyAad(manifest.messageId, manifest.uploadId),
   );
   try {
-    if (raw.byteLength !== 32) throw new Error('添付ファイル鍵が不正です');
+    if (raw.byteLength !== 32) throw new Error(t('添付ファイル鍵が不正です'));
     return importAttachmentFileKey(raw);
   } finally {
     raw.fill(0);
@@ -260,13 +261,13 @@ export function buildSignedAttachmentEnvelope(
     || !attachment.signature
     || normalizeAttachmentMimeType(attachment.mimeType) !== attachment.mimeType
   ) {
-    throw new Error('ファイル情報が欠落しているか、メッセージと一致しません');
+    throw new Error(t('ファイル情報が欠落しているか、メッセージと一致しません'));
   }
   const filenamePacked = decodeCanonicalBase64(attachment.filenameEnc);
   const wrappedKeyPacked = decodeCanonicalBase64(attachment.wrappedKey, 60);
   decodeCanonicalBase64(attachment.signature, 64);
   if (filenamePacked.byteLength < 28 || filenamePacked.byteLength > 8192 || wrappedKeyPacked.byteLength !== 60) {
-    throw new Error('ファイル情報の形式が不正です');
+    throw new Error(t('ファイル情報の形式が不正です'));
   }
   return {
     type: 'attachment',
@@ -296,7 +297,7 @@ export async function verifyAttachmentMetadata(
   message: AttachmentMessage,
   attachment: Attachment,
 ): Promise<SignedAttachmentEnvelope> {
-  if (getMessageCryptoVerificationState(message as Message) !== true) throw new Error('メッセージを確認できないため、ファイルを開けません');
+  if (getMessageCryptoVerificationState(message as Message) !== true) throw new Error(t('メッセージを確認できないため、ファイルを開けません'));
   const envelope = buildSignedAttachmentEnvelope(message, attachment);
   let directoryEntry = await getDeviceDirectory(message.channelId, envelope.deviceId, false);
   let identity = directoryEntry?.userId === envelope.authorId ? directoryEntry.identityKey : undefined;
@@ -304,11 +305,11 @@ export async function verifyAttachmentMetadata(
     directoryEntry = await getDeviceDirectory(message.channelId, envelope.deviceId, true);
     identity = directoryEntry?.userId === envelope.authorId ? directoryEntry.identityKey : undefined;
   }
-  if (!identity || !attachment.signature) throw new Error('ファイルの送信元を確認できません');
+  if (!identity || !attachment.signature) throw new Error(t('ファイルの送信元を確認できません'));
   if (await verifyAttachmentSignature(envelope, attachment.signature, identity)) return envelope;
   const { messageIdempotencyKey: bound, ...legacy } = envelope;
   if (bound !== undefined && await verifyAttachmentSignature(legacy, attachment.signature, identity)) return legacy;
-  throw new Error('ファイルの内容を検証できませんでした');
+  throw new Error(t('ファイルの内容を検証できませんでした'));
 }
 
 export function clearAttachmentVerificationCache(): void {
@@ -339,7 +340,7 @@ export function validateAttachmentManifest(
     || plaintextSize < 0
     || plaintextSize > MAX_FILE_SIZE
   ) {
-    throw new Error('対応していないファイル形式です');
+    throw new Error(t('対応していないファイル形式です'));
   }
 
   const expectedChunkCount = attachmentChunkCount(plaintextSize);
@@ -352,12 +353,12 @@ export function validateAttachmentManifest(
     || attachment.ciphertextSizeBytes !== expectedCiphertextSize
     || attachment.downloadPolicy !== 'attachment-only'
   ) {
-    throw new Error('ファイルサイズの情報が一致しません');
+    throw new Error(t('ファイルサイズの情報が一致しません'));
   }
 
   const noncePrefix = decodeCanonicalBase64(manifest.noncePrefix, ATTACHMENT_NONCE_PREFIX_BYTES);
   if (attachment.contentNonce !== manifest.noncePrefix) {
-    throw new Error('ファイル情報が一致しません');
+    throw new Error(t('ファイル情報が一致しません'));
   }
   return {
     uploadId: manifest.uploadId,
@@ -412,18 +413,18 @@ export function encodeCanonicalBase64(value: ArrayBuffer | Uint8Array): string {
 
 export function decodeCanonicalBase64(value: string, expectedBytes?: number): Uint8Array {
   if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) {
-    throw new Error('データの形式が不正です');
+    throw new Error(t('データの形式が不正です'));
   }
   let binary: string;
   try {
     binary = atob(value);
   } catch {
-    throw new Error('データの形式が不正です');
+    throw new Error(t('データの形式が不正です'));
   }
   const bytes = new Uint8Array(binary.length);
   for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
   if ((expectedBytes !== undefined && bytes.byteLength !== expectedBytes) || encodeCanonicalBase64(bytes) !== value) {
-    throw new Error('正しい形式のデータではありません');
+    throw new Error(t('正しい形式のデータではありません'));
   }
   return bytes;
 }
@@ -465,7 +466,7 @@ async function encryptPacked(key: CryptoKey, plaintext: Uint8Array, additionalDa
 
 async function decryptPacked(key: CryptoKey, packedBase64: string, additionalData: Uint8Array): Promise<Uint8Array> {
   const packed = decodeCanonicalBase64(packedBase64);
-  if (packed.byteLength < 12 + ATTACHMENT_GCM_TAG_BYTES) throw new Error('暗号化添付メタデータが短すぎます');
+  if (packed.byteLength < 12 + ATTACHMENT_GCM_TAG_BYTES) throw new Error(t('暗号化添付メタデータが短すぎます'));
   const plaintext = await crypto.subtle.decrypt({
     name: 'AES-GCM',
     iv: ownedArrayBuffer(packed.subarray(0, 12)),

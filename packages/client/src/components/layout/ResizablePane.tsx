@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useT } from '../../i18n';
 
 interface ResizablePaneProps {
   children: ReactNode;
@@ -67,6 +68,7 @@ export function ResizablePane({
     window.addEventListener('pointercancel', stop, { once: true });
   };
 
+  const t = useT();
   const resizeWithKeyboard = (event: React.KeyboardEvent<HTMLDivElement>) => {
     const growKey = resizeEdge === 'right' ? 'ArrowRight' : 'ArrowLeft';
     const shrinkKey = resizeEdge === 'right' ? 'ArrowLeft' : 'ArrowRight';
@@ -96,7 +98,7 @@ export function ResizablePane({
         onPointerDown={beginResize}
         onKeyDown={resizeWithKeyboard}
         onDoubleClick={() => setWidth(clampPaneWidth(defaultWidth, minWidth, maxWidth))}
-        title="ドラッグして幅を変更（ダブルクリックで元に戻す）"
+        title={t('ドラッグして幅を変更（ダブルクリックで元に戻す）')}
         className={`group absolute inset-y-0 z-30 w-2 cursor-col-resize touch-none outline-none ${resizeEdge === 'right' ? '-right-1' : '-left-1'}`}
       >
         <span className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-transparent transition-colors group-hover:bg-discord-accent group-focus-visible:bg-discord-accent" />

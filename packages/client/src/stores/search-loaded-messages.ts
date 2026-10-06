@@ -1,3 +1,6 @@
+import { t } from '../i18n';
+import { TAMPERED_MESSAGE_MARKER, UNAVAILABLE_MESSAGE_MARKER, UNVERIFIED_MESSAGE_MARKER } from '../services/message-display';
+
 export interface SearchableLoadedMessage {
   id: string;
   channelId: string;
@@ -17,9 +20,9 @@ export interface LoadedMessageSearchResult {
 }
 
 const NON_CONTENT_MARKERS = new Set([
-  '[表示できないメッセージ]',
-  '[メッセージを検証できませんでした]',
-  '[改ざんを検出しました]',
+  UNAVAILABLE_MESSAGE_MARKER,
+  UNVERIFIED_MESSAGE_MARKER,
+  TAMPERED_MESSAGE_MARKER,
 ]);
 
 function normalized(value: string): string {
@@ -48,7 +51,7 @@ export function searchLoadedMessages(
         || NON_CONTENT_MARKERS.has(message.content)
       ) continue;
       const content = normalized(message.content);
-      const authorName = message.author?.displayName || '不明なユーザー';
+      const authorName = message.author?.displayName || t('不明なユーザー');
       const author = normalized(authorName);
       const channel = normalized(channelName);
       const contentIndex = content.indexOf(needle);

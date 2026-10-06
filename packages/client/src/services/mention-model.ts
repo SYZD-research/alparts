@@ -1,4 +1,5 @@
 import { MAX_DIRECT_MENTION_RECIPIENTS_PER_MESSAGE } from '@alparts/shared';
+import { t } from '../i18n';
 
 export interface MentionMember {
   userId: string;
@@ -222,9 +223,8 @@ export function extractMentionedUserIds(content: string, members: MentionMember[
 function mentionNode(segment: MentionSegment): MarkdownNode {
   const own = segment.targetsCurrentUser === true;
   const label = segment.value;
-  const title = own
-    ? `${segment.broadcast ? `@${segment.broadcast}` : segment.displayName}（あなた宛て）`
-    : `${segment.broadcast ? `@${segment.broadcast}` : segment.displayName}へのメンション`;
+  const name = segment.broadcast ? `@${segment.broadcast}` : segment.displayName ?? '';
+  const title = own ? t('{name}（あなた宛て）', { name }) : t('{name}へのメンション', { name });
   return {
     type: 'mention',
     children: [{ type: 'text', value: label }],

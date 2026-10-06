@@ -20,11 +20,13 @@ import { defaultChannelReadState, scanLoadedMentionUnread } from '../../stores/u
 import { useMessageStore } from '../../stores/message.store';
 import { useVoiceStore } from '../../stores/voice.store';
 import { VoiceCallPanel } from '../voice/VoiceCallPanel';
+import { useT } from '../../i18n';
 
 const EMPTY_DMS: DirectMessageConversation[] = [];
 const EMPTY_CHANNEL_STATES: Record<string, ChannelReadState> = {};
 
 export function ChannelSidebar({ onNavigateToChat }: { onNavigateToChat?: () => void }) {
+  const t = useT();
   const { activeWorkspaceId, categories, members } = useWorkspaceStore();
   const { channels, activeChannelId, setActiveChannel } = useChannelStore();
   const { user } = useAuthStore();
@@ -133,32 +135,32 @@ export function ChannelSidebar({ onNavigateToChat }: { onNavigateToChat?: () => 
     <div className="flex h-full min-h-0 w-full flex-col bg-discord-sidebar">
       <div className="flex h-12 shrink-0 items-center justify-between gap-2 border-b border-discord-bg px-4 shadow-sm">
         <h2 className="truncate font-bold text-white">
-          {useWorkspaceStore.getState().workspaces.find((workspace) => workspace.id === activeWorkspaceId)?.name || 'ワークスペース'}
+          {useWorkspaceStore.getState().workspaces.find((workspace) => workspace.id === activeWorkspaceId)?.name || t('ワークスペース')}
         </h2>
         <div className="flex shrink-0 items-center">
-          <button type="button" onClick={openWorkspaceManager} className="rounded px-2 py-1 text-discord-muted hover:bg-discord-hover hover:text-white" title="招待・ロール・権限を管理" aria-label="ワークスペースの招待・ロール・権限を管理">◈</button>
-          {canManageChannels && <button type="button" onClick={openChannelManager} className="rounded px-2 py-1 text-discord-muted hover:bg-discord-hover hover:text-white" title="チャンネルとカテゴリーを管理" aria-label="チャンネルとカテゴリーを管理">⚙</button>}
+          <button type="button" onClick={openWorkspaceManager} className="rounded px-2 py-1 text-discord-muted hover:bg-discord-hover hover:text-white" title={t('招待・ロール・権限を管理')} aria-label={t('ワークスペースの招待・ロール・権限を管理')}>◈</button>
+          {canManageChannels && <button type="button" onClick={openChannelManager} className="rounded px-2 py-1 text-discord-muted hover:bg-discord-hover hover:text-white" title={t('チャンネルとカテゴリーを管理')} aria-label={t('チャンネルとカテゴリーを管理')}>⚙</button>}
         </div>
       </div>
 
       <div className="flex-1 overflow-y-auto px-2 pt-3">
-        {channelStateError && <p role="alert" className="mb-2 rounded bg-discord-red/10 px-2 py-1 text-xs text-discord-red">チャンネルを読み込めませんでした</p>}
+        {channelStateError && <p role="alert" className="mb-2 rounded bg-discord-red/10 px-2 py-1 text-xs text-discord-red">{t('チャンネルを読み込めませんでした')}</p>}
 
         {favoriteChannels.length > 0 && (
           <section className="mb-4" aria-labelledby="favorite-channels-title">
-            <h3 id="favorite-channels-title" className="px-1 py-1 text-xs font-bold uppercase tracking-wide text-discord-muted">★ お気に入り</h3>
+            <h3 id="favorite-channels-title" className="px-1 py-1 text-xs font-bold uppercase tracking-wide text-discord-muted">{t('★ お気に入り')}</h3>
             {favoriteChannels.map((channel) => channelRow(channel, 'favorite'))}
           </section>
         )}
 
         <section className="mb-4" aria-labelledby="direct-messages-title">
           <div className="flex items-center justify-between px-1 py-1 text-xs font-bold uppercase tracking-wide text-discord-muted">
-            <h3 id="direct-messages-title">ダイレクトメッセージ</h3>
-            <button type="button" onClick={() => openDmComposer(activeWorkspaceId)} className="rounded px-1 text-base font-normal hover:bg-discord-hover hover:text-white" aria-label="DMを開始">+</button>
+            <h3 id="direct-messages-title">{t('ダイレクトメッセージ')}</h3>
+            <button type="button" onClick={() => openDmComposer(activeWorkspaceId)} className="rounded px-1 text-base font-normal hover:bg-discord-hover hover:text-white" aria-label={t('DMを開始')}>+</button>
           </div>
-          {dmError && <p role="alert" className="px-2 py-1 text-xs text-discord-red">DMを読み込めませんでした</p>}
-          {isLoadingDms && <p role="status" className="px-2 py-1 text-xs text-discord-muted">DMを読み込み中…</p>}
-          {!isLoadingDms && !dmError && conversations.length === 0 && <p className="px-2 py-1 text-xs text-discord-muted">まだDMはありません</p>}
+          {dmError && <p role="alert" className="px-2 py-1 text-xs text-discord-red">{t('DMを読み込めませんでした')}</p>}
+          {isLoadingDms && <p role="status" className="px-2 py-1 text-xs text-discord-muted">{t('DMを読み込み中…')}</p>}
+          {!isLoadingDms && !dmError && conversations.length === 0 && <p className="px-2 py-1 text-xs text-discord-muted">{t('まだDMはありません')}</p>}
           {conversations.map((conversation) => {
             const channel = channels.find((candidate) => candidate.id === conversation.channelId);
             if (!channel || !isVisible(channel)) return null;
@@ -183,20 +185,20 @@ export function ChannelSidebar({ onNavigateToChat }: { onNavigateToChat?: () => 
 
         {visibleChannels.some((channel) => !channel.categoryId) && (
           <section className="mb-1" aria-labelledby="uncategorized-channels-title">
-            <h3 id="uncategorized-channels-title" className="px-1 py-1 text-xs font-bold uppercase tracking-wide text-discord-muted">チャンネル</h3>
+            <h3 id="uncategorized-channels-title" className="px-1 py-1 text-xs font-bold uppercase tracking-wide text-discord-muted">{t('チャンネル')}</h3>
             {visibleChannels.filter((channel) => !channel.categoryId).map((channel) => channelRow(channel, 'uncategorized'))}
           </section>
         )}
 
         {hiddenCount > 0 && (
           <button type="button" onClick={() => toggleShowHidden(activeWorkspaceId)} aria-pressed={showHidden} className="mt-2 flex w-full items-center rounded px-2 py-1.5 text-xs text-discord-muted hover:bg-discord-hover hover:text-white">
-            {showHidden ? '非表示チャンネルを隠す' : `非表示チャンネルを表示（${hiddenCount}）`}
+            {showHidden ? t('非表示チャンネルを隠す') : t('非表示チャンネルを表示（{count}）', { count: hiddenCount })}
           </button>
         )}
-        <p className="mt-2 px-2 text-[10px] leading-4 text-discord-muted">テキストチャンネルでは、ミュートすると通知を止められます。非表示にすると一覧から隠れます。</p>
+        <p className="mt-2 px-2 text-[10px] leading-4 text-discord-muted">{t('テキストチャンネルでは、ミュートすると通知を止められます。非表示にすると一覧から隠れます。')}</p>
 
         {canManageChannels && (
-          <button type="button" onClick={openChannelManager} className="mt-2 flex w-full items-center rounded px-2 py-1.5 text-sm text-discord-muted hover:bg-discord-hover hover:text-discord-text"><span className="mr-1.5">+</span>チャンネルを追加・管理</button>
+          <button type="button" onClick={openChannelManager} className="mt-2 flex w-full items-center rounded px-2 py-1.5 text-sm text-discord-muted hover:bg-discord-hover hover:text-discord-text"><span className="mr-1.5">+</span>{t('チャンネルを追加・管理')}</button>
         )}
       </div>
 
@@ -206,7 +208,7 @@ export function ChannelSidebar({ onNavigateToChat }: { onNavigateToChat?: () => 
         <div className="flex h-14 shrink-0 items-center bg-discord-bg/50 px-2">
           <div className="flex min-w-0 flex-1 items-center gap-2 rounded px-2 py-1">
             <div className="flex h-8 w-8 items-center justify-center rounded-full bg-discord-accent text-sm font-bold text-white">{user.displayName.slice(0, 1).toUpperCase()}</div>
-            <div className="min-w-0"><div className="truncate text-sm font-medium text-white">{user.displayName}</div><div className="truncate text-xs text-discord-muted">オンライン</div></div>
+            <div className="min-w-0"><div className="truncate text-sm font-medium text-white">{user.displayName}</div><div className="truncate text-xs text-discord-muted">{t('オンライン')}</div></div>
           </div>
         </div>
       )}
@@ -245,6 +247,7 @@ function ChannelRow({
   onToggleSettings: () => void;
   onUpdate: (updates: { favorite?: boolean; muted?: boolean; hidden?: boolean; notificationLevel?: NotificationLevel }) => Promise<void>;
 }) {
+  const t = useT();
   const isVoice = channel.type === 'voice';
   const prefix = channel.type === 'dm' ? '@' : channel.type === 'announcement' ? '!' : isVoice ? '🔊' : channel.type === 'forum' ? '💬' : '#';
   const unreadLabel = preference.unreadCount > 99 ? '99+' : String(preference.unreadCount);
@@ -261,22 +264,22 @@ function ChannelRow({
           <span className="mr-1.5 text-discord-muted" aria-hidden="true">{prefix}</span>
           <span className="truncate">{label}</span>
           <span className="ml-auto flex shrink-0 items-center gap-1 pl-1">
-            {!isVoice && preference.muted && <span title="ミュート中" aria-label="ミュート中">🔕</span>}
-            {!isVoice && mentionCount > 0 && <span title={`メンション${mentionCount}件`} className="rounded bg-discord-red px-1 text-[10px] text-white">@{mentionCount}</span>}
-            {!isVoice && preference.unreadCount > 0 && <span aria-label={`未読${preference.unreadCount}件`} className="min-w-5 rounded-full bg-discord-accent px-1 text-center text-[10px] text-white">{unreadLabel}</span>}
+            {!isVoice && preference.muted && <span title={t('ミュート中')} aria-label={t('ミュート中')}>🔕</span>}
+            {!isVoice && mentionCount > 0 && <span title={t('メンション{count}件', { count: mentionCount })} className="rounded bg-discord-red px-1 text-[10px] text-white">@{mentionCount}</span>}
+            {!isVoice && preference.unreadCount > 0 && <span aria-label={t('未読{count}件', { count: preference.unreadCount })} className="min-w-5 rounded-full bg-discord-accent px-1 text-center text-[10px] text-white">{unreadLabel}</span>}
           </span>
         </button>
-        <button type="button" onClick={onToggleSettings} aria-expanded={expanded} aria-label={`${label}の${isVoice ? '表示設定' : '通知と表示設定'}`} className="rounded px-1.5 py-1 text-xs text-discord-muted hover:bg-discord-hover hover:text-white">⋯</button>
+        <button type="button" onClick={onToggleSettings} aria-expanded={expanded} aria-label={isVoice ? t('{name}の表示設定', { name: label }) : t('{name}の通知と表示設定', { name: label })} className="rounded px-1.5 py-1 text-xs text-discord-muted hover:bg-discord-hover hover:text-white">⋯</button>
       </div>
       {isVoice && participantUsers.length > 0 && (
-        <ul aria-label={`${label}の参加者`} className="ml-7 flex flex-wrap gap-1 px-1 pb-1.5 pt-1">
+        <ul aria-label={t('{name}の参加者', { name: label })} className="ml-7 flex flex-wrap gap-1 px-1 pb-1.5 pt-1">
           {participantUsers.map(({ member, speaking, muted }, index) => {
-            const displayName = member?.user.displayName || 'ユーザー';
+            const displayName = member?.user.displayName || t('ユーザー');
             return (
               <li
                 key={member?.userId || `${displayName}:${index}`}
-                title={`${displayName}${muted ? '（ミュート中）' : speaking ? '（発言中）' : ''}`}
-                aria-label={`${displayName}${muted ? '、ミュート中' : speaking ? '、発言中' : ''}`}
+                title={muted ? t('{name}（ミュート中）', { name: displayName }) : speaking ? t('{name}（発言中）', { name: displayName }) : displayName}
+                aria-label={muted ? t('{name}、ミュート中', { name: displayName }) : speaking ? t('{name}、発言中', { name: displayName }) : displayName}
                 className={`flex h-7 w-7 items-center justify-center rounded-full bg-discord-accent text-[11px] font-bold text-white ${speaking ? 'ring-2 ring-discord-green' : ''} ${muted ? 'opacity-55' : ''}`}
               >
                 {displayName.slice(0, 1).toUpperCase()}
@@ -286,22 +289,22 @@ function ChannelRow({
         </ul>
       )}
       {expanded && (
-        <div role="group" aria-label={`${label}の個人設定`} className="mx-1 mb-1 space-y-2 rounded bg-discord-bg/70 p-2">
+        <div role="group" aria-label={t('{name}の個人設定', { name: label })} className="mx-1 mb-1 space-y-2 rounded bg-discord-bg/70 p-2">
           <div className="flex flex-wrap gap-1">
-            <button type="button" aria-pressed={preference.favorite} disabled={saving} onClick={() => void onUpdate({ favorite: !preference.favorite }).catch(() => undefined)} className="rounded px-2 py-1 text-xs text-discord-muted hover:bg-discord-hover hover:text-white disabled:opacity-50">{preference.favorite ? '★ お気に入り' : '☆ お気に入り'}</button>
-            {!isVoice && <button type="button" aria-pressed={preference.muted} disabled={saving} onClick={() => void onUpdate({ muted: !preference.muted }).catch(() => undefined)} className="rounded px-2 py-1 text-xs text-discord-muted hover:bg-discord-hover hover:text-white disabled:opacity-50">{preference.muted ? '🔔 ミュート解除' : '🔕 ミュート'}</button>}
-            <button type="button" aria-pressed={preference.hidden} disabled={saving} onClick={() => void onUpdate({ hidden: !preference.hidden }).catch(() => undefined)} className="rounded px-2 py-1 text-xs text-discord-muted hover:bg-discord-hover hover:text-white disabled:opacity-50">{preference.hidden ? '表示に戻す' : '非表示'}</button>
+            <button type="button" aria-pressed={preference.favorite} disabled={saving} onClick={() => void onUpdate({ favorite: !preference.favorite }).catch(() => undefined)} className="rounded px-2 py-1 text-xs text-discord-muted hover:bg-discord-hover hover:text-white disabled:opacity-50">{preference.favorite ? t('★ お気に入り') : t('☆ お気に入り')}</button>
+            {!isVoice && <button type="button" aria-pressed={preference.muted} disabled={saving} onClick={() => void onUpdate({ muted: !preference.muted }).catch(() => undefined)} className="rounded px-2 py-1 text-xs text-discord-muted hover:bg-discord-hover hover:text-white disabled:opacity-50">{preference.muted ? t('🔔 ミュート解除') : t('🔕 ミュート')}</button>}
+            <button type="button" aria-pressed={preference.hidden} disabled={saving} onClick={() => void onUpdate({ hidden: !preference.hidden }).catch(() => undefined)} className="rounded px-2 py-1 text-xs text-discord-muted hover:bg-discord-hover hover:text-white disabled:opacity-50">{preference.hidden ? t('表示に戻す') : t('非表示')}</button>
           </div>
           {!isVoice && <label className="block text-[11px] text-discord-muted">
-            通知レベル
+            {t('通知レベル')}
             <select value={preference.notificationLevel} disabled={saving} onChange={(event) => void onUpdate({ notificationLevel: event.target.value as NotificationLevel }).catch(() => undefined)} className="mt-1 w-full rounded bg-discord-input px-2 py-1 text-xs text-discord-text disabled:opacity-50">
-              <option value="all">すべて</option>
-              <option value="mentions">メンションのみ</option>
-              <option value="none">通知なし</option>
+              <option value="all">{t('すべて|notification-level')}</option>
+              <option value="mentions">{t('メンションのみ')}</option>
+              <option value="none">{t('通知なし|notification-level')}</option>
             </select>
           </label>}
-          {saving && <p role="status" className="text-[10px] text-discord-muted">保存中…</p>}
-          {error && <p role="alert" className="text-[10px] text-discord-red">設定を保存できませんでした</p>}
+          {saving && <p role="status" className="text-[10px] text-discord-muted">{t('保存中…')}</p>}
+          {error && <p role="alert" className="text-[10px] text-discord-red">{t('設定を保存できませんでした')}</p>}
         </div>
       )}
     </div>

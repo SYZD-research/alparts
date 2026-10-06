@@ -29,6 +29,7 @@ import { useVoiceChannelPresence } from '../../hooks/useVoiceChannelPresence';
 import { AttentionNotifications } from '../notification/AttentionNotifications';
 import { useHorizontalSwipe } from '../../hooks/useHorizontalSwipe';
 import { useMobileLayout } from '../../hooks/useMobileLayout';
+import { useT } from '../../i18n';
 
 type PermalinkNavigationStatus = {
   kind: 'loading' | 'success' | 'error';
@@ -36,6 +37,7 @@ type PermalinkNavigationStatus = {
 } | null;
 
 export function AppLayout() {
+  const t = useT();
   useSocketEvents();
   useVoiceChannelPresence();
 
@@ -154,11 +156,11 @@ export function AppLayout() {
       return;
     }
     if (messageRoute.kind === 'invalid') {
-      setPermalinkStatus({ kind: 'error', message: 'このメッセージへのリンクを開けませんでした。' });
+      setPermalinkStatus({ kind: 'error', message: t('このメッセージへのリンクを開けませんでした。') });
       return;
     }
 
-    setPermalinkStatus({ kind: 'loading', message: 'メッセージを開いています…' });
+    setPermalinkStatus({ kind: 'loading', message: t('メッセージを開いています…') });
     void (async () => {
       try {
         const authoritativeChannel = await api.getChannel(messageRoute.channelId);
@@ -167,7 +169,7 @@ export function AppLayout() {
           || authoritativeChannel.id !== messageRoute.channelId
           || authoritativeChannel.workspaceId !== messageRoute.workspaceId
         ) {
-          if (request === permalinkRequest.current) throw new Error('リンクの内容が一致しません');
+          if (request === permalinkRequest.current) throw new Error(t('リンクの内容が一致しません'));
           return;
         }
 
@@ -175,7 +177,7 @@ export function AppLayout() {
         if (request !== permalinkRequest.current) return;
         const workspaceState = useWorkspaceStore.getState();
         if (!workspaceState.workspaces.some((workspace) => workspace.id === messageRoute.workspaceId)) {
-          throw new Error('このワークスペースを閲覧する権限がないか、存在しません');
+          throw new Error(t('このワークスペースを閲覧する権限がないか、存在しません'));
         }
 
         if (workspaceState.activeWorkspaceId !== messageRoute.workspaceId) {
@@ -190,27 +192,27 @@ export function AppLayout() {
 
         const loadedChannel = useChannelStore.getState().channels.find((channel) => channel.id === messageRoute.channelId);
         if (!loadedChannel || loadedChannel.type === 'voice' || loadedChannel.workspaceId !== authoritativeChannel.workspaceId) {
-          throw new Error('リンク先チャンネルを開けませんでした');
+          throw new Error(t('リンク先チャンネルを開けませんでした'));
         }
         setActiveChannel(messageRoute.channelId);
         const found = await loadMessageThroughHistory(messageRoute.channelId, messageRoute.messageId, 20);
         if (request !== permalinkRequest.current) return;
         if (!found) {
-          throw new Error('リンク先メッセージを見つけられませんでした');
+          throw new Error(t('リンク先メッセージを見つけられませんでした'));
         }
         await useForumStore.getState().revealMessage(messageRoute.channelId, messageRoute.messageId);
         if (request !== permalinkRequest.current) return;
         if (!await focusMessageElement(messageRoute.messageId)) {
-          throw new Error('メッセージは読み込みましたが表示要素を準備できませんでした');
+          throw new Error(t('メッセージは読み込みましたが表示要素を準備できませんでした'));
         }
         if (request === permalinkRequest.current) {
-          setPermalinkStatus({ kind: 'success', message: 'リンク先メッセージを表示しました。' });
+          setPermalinkStatus({ kind: 'success', message: t('リンク先メッセージを表示しました。') });
         }
       } catch {
         if (request === permalinkRequest.current) {
           setPermalinkStatus({
             kind: 'error',
-            message: 'このメッセージを表示できません。削除されたか、閲覧できない可能性があります。',
+            message: t('このメッセージを表示できません。削除されたか、閲覧できない可能性があります。'),
           });
         }
       }
@@ -229,9 +231,9 @@ export function AppLayout() {
         >
           <span>{permalinkStatus.message}</span>
           {permalinkStatus.kind === 'error' ? (
-            <button type="button" onClick={() => { setPermalinkStatus(null); navigate('/', { replace: true }); }} className="shrink-0 underline">閉じる</button>
+            <button type="button" onClick={() => { setPermalinkStatus(null); navigate('/', { replace: true }); }} className="shrink-0 underline">{t('閉じる')}</button>
           ) : permalinkStatus.kind === 'success' ? (
-            <button type="button" onClick={() => setPermalinkStatus(null)} className="shrink-0 underline">閉じる</button>
+            <button type="button" onClick={() => setPermalinkStatus(null)} className="shrink-0 underline">{t('閉じる')}</button>
           ) : null}
         </div>
       )}
@@ -250,7 +252,7 @@ export function AppLayout() {
       <SavedMessagesDialog />
       <ProfileSettingsDialog />
       <MemberProfileDialog />
-      <aside ref={drawerRef} className="channel-drawer flex shrink-0" aria-label="ワークスペースとチャンネル" aria-hidden={mobile && mobilePanel !== 'channels'} {...navigationSwipe.handlers}>
+      <aside ref={drawerRef} className="channel-drawer flex shrink-0" aria-label={t('ワークスペースとチャンネル')} aria-hidden={mobile && mobilePanel !== 'channels'} {...navigationSwipe.handlers}>
         <div className="workspace-navigation flex"><WorkspaceSidebar /></div>
         {activeWorkspaceId && (
           <div className="channel-navigation flex">
@@ -260,7 +262,7 @@ export function AppLayout() {
               minWidth={176}
               maxWidth={420}
               resizeEdge="right"
-              label="チャンネル一覧の幅を変更"
+              label={t('チャンネル一覧の幅を変更')}
             >
               <ChannelSidebar onNavigateToChat={showChat} />
             </ResizablePane>
@@ -275,31 +277,31 @@ export function AppLayout() {
             <div className="flex-1 flex items-center justify-center bg-discord-bg">
               <div className="text-center text-discord-muted">
                 <h2 className="text-2xl font-bold mb-2">alparts</h2>
-                <p>チャンネルを選択してください</p>
+                <p>{t('チャンネルを選択してください')}</p>
               </div>
             </div>
           )}
         </div>
         {mobile && mobilePanel === 'channels' && (
-          <button type="button" className="channel-drawer-backdrop absolute inset-0 z-20 bg-black/40" onClick={showChat} aria-label="チャットに戻る" />
+          <button type="button" className="channel-drawer-backdrop absolute inset-0 z-20 bg-black/40" onClick={showChat} aria-label={t('チャットに戻る')} />
         )}
       </div>
       {activeChannelId && membersOpen && (
         <>
-          {mobile && <button type="button" className="fixed inset-x-0 bottom-0 top-12 z-30 bg-black/40" aria-label="メンバー一覧を閉じる" onClick={() => setMembersOpen(false)} />}
-          <aside id="member-list" className="member-navigation flex shrink-0" aria-label="メンバー一覧">
+          {mobile && <button type="button" className="fixed inset-x-0 bottom-0 top-12 z-30 bg-black/40" aria-label={t('メンバー一覧を閉じる')} onClick={() => setMembersOpen(false)} />}
+          <aside id="member-list" className="member-navigation flex shrink-0" aria-label={t('メンバー一覧')}>
             <ResizablePane
               storageKey="alparts:member-sidebar-width"
               defaultWidth={240}
               minWidth={176}
               maxWidth={420}
               resizeEdge="left"
-              label="メンバー一覧の幅を変更"
+              label={t('メンバー一覧の幅を変更')}
             >
               <div className="flex h-full min-h-0 flex-col bg-discord-sidebar">
                 <div className="flex h-11 shrink-0 items-center justify-between border-b border-discord-hover px-4">
-                  <h2 className="text-sm font-bold text-white">メンバー</h2>
-                  <button type="button" className="h-10 w-10 rounded text-xl text-discord-muted hover:bg-discord-hover hover:text-white" aria-label="メンバー一覧を閉じる" onClick={() => setMembersOpen(false)}>×</button>
+                  <h2 className="text-sm font-bold text-white">{t('メンバー')}</h2>
+                  <button type="button" className="h-10 w-10 rounded text-xl text-discord-muted hover:bg-discord-hover hover:text-white" aria-label={t('メンバー一覧を閉じる')} onClick={() => setMembersOpen(false)}>×</button>
                 </div>
                 <div className="min-h-0 flex-1"><UserList /></div>
               </div>

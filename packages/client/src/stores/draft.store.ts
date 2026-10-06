@@ -6,6 +6,7 @@ import {
   saveLocalDraft,
 } from '../services/local-state.service';
 import { draftScopeBelongsToChannel as belongsToChannel, draftScopeChannelId } from './draft-scope';
+import { t } from '../i18n';
 
 export { forumPostDraftScope } from './draft-scope';
 
@@ -46,7 +47,7 @@ let draftGeneration = 0;
 function errorMessage(error: unknown): string {
   return error instanceof Error && error.message
     ? error.message
-    : '下書きを端末へ保存できませんでした';
+    : t('下書きを端末へ保存できませんでした');
 }
 
 function nextDraftVersion(channelId: string): number {

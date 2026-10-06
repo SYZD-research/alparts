@@ -4,8 +4,10 @@ import { useChannelStore } from '../../stores/channel.store';
 import { useForumStore } from '../../stores/forum.store';
 import { useWorkspaceStore } from '../../stores/workspace.store';
 import { useUiStore } from '../../stores/ui.store';
+import { useT } from '../../i18n';
 
 export function AttentionNotifications() {
+  const t = useT();
   const items = useAttentionStore((state) => state.items);
   const dismissKind = useAttentionStore((state) => state.dismissKind);
   const setActiveWorkspace = useWorkspaceStore((state) => state.setActiveWorkspace);
@@ -37,20 +39,20 @@ export function AttentionNotifications() {
 
   if (groups.length === 0) return null;
   return (
-    <aside aria-label="新着通知" aria-live="polite" className="fixed right-4 top-4 z-50 w-72 space-y-2">
+    <aside aria-label={t('新着通知')} aria-live="polite" className="fixed right-4 top-4 z-50 w-72 space-y-2">
       {groups.map(({ kind, items: groupedItems }) => (
         <div key={kind} role="status" className="rounded-lg border border-discord-hover bg-discord-sidebar p-3 text-sm text-discord-text shadow-2xl">
           <div className="flex items-start gap-2">
             <button type="button" onClick={() => { void openLatest(kind); }} className="min-w-0 flex-1 text-left font-medium hover:underline">
               {kind === 'profile-appeal'
-                ? `プロフィールの警告について、解除の依頼があります（${groupedItems.length}件）`
+                ? t('プロフィールの警告について、解除の依頼があります（{count}件）', { count: groupedItems.length })
                 : kind === 'channel-restarted'
-                  ? `メンバーが新しく開始したため、以前のメッセージを表示できなくなったチャンネルがあります（${groupedItems.length}件）`
+                  ? t('メンバーが新しく開始したため、以前のメッセージを表示できなくなったチャンネルがあります（{count}件）', { count: groupedItems.length })
                   : kind === 'reply'
-                    ? `${groupedItems.length}件の返信があります`
-                    : `${groupedItems.length}件のメンションがあります`}
+                    ? t('{count}件の返信があります', { count: groupedItems.length })
+                    : t('{count}件のメンションがあります', { count: groupedItems.length })}
             </button>
-            <button type="button" onClick={() => dismissKind(kind)} aria-label="通知を閉じる" className="rounded px-1 text-discord-muted hover:bg-discord-hover hover:text-white">×</button>
+            <button type="button" onClick={() => dismissKind(kind)} aria-label={t('通知を閉じる')} className="rounded px-1 text-discord-muted hover:bg-discord-hover hover:text-white">×</button>
           </div>
         </div>
       ))}

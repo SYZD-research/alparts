@@ -37,7 +37,9 @@ import {
 import { useChannelStore } from './channel.store';
 import type { SealedMessage } from './sealed-message';
 import { encodeForumPostContent } from '../services/forum-post-model';
+import { TAMPERED_MESSAGE_MARKER, UNAVAILABLE_MESSAGE_MARKER, UNVERIFIED_MESSAGE_MARKER } from '../services/message-display';
 import type { ForumPostState } from '@alparts/shared';
+import { t } from '../i18n';
 
 export const MAX_RESIDENT_MESSAGE_EVENTS_PER_CHANNEL = 1_000;
 export const MAX_RESIDENT_MESSAGE_EVENTS_TOTAL = 5_000;
@@ -212,7 +214,7 @@ function channelUpdate(state: MessageState, channelId: string, events: Message[]
       securityErrors: envelopeConflict
         ? {
             ...omitEvicted(state.securityErrors),
-            [channelId]: '安全のため、このチャンネルの履歴の読み込みを停止しました',
+            [channelId]: t('安全のため、このチャンネルの履歴の読み込みを停止しました'),
           }
         : omitEvicted(state.securityErrors),
       channelKeyPending: omitEvicted(state.channelKeyPending),
@@ -230,7 +232,7 @@ function channelUpdate(state: MessageState, channelId: string, events: Message[]
   if (envelopeConflict) {
     update.securityErrors = {
       ...state.securityErrors,
-      [channelId]: '安全のため、このチャンネルの履歴の読み込みを停止しました',
+      [channelId]: t('安全のため、このチャンネルの履歴の読み込みを停止しました'),
     };
   }
   return update;
@@ -245,7 +247,7 @@ export function isForumChannel(channelId: string): boolean {
 function forumPostIdOf(state: MessageState, channelId: string, messageId: string): string {
   const base = (state.eventsByChannel[channelId] || []).find((event) => event.id === messageId && event.type === 'message');
   if (!base || getMessageCryptoVerificationState(base) !== true) {
-    throw new Error('メッセージを確認できませんでした。再読み込みしてお試しください。');
+    throw new Error(t('メッセージを確認できませんでした。再読み込みしてお試しください。'));
   }
   return base.postId ?? base.id;
 }
@@ -270,7 +272,7 @@ async function retrySameEncryptedEnvelope<TRequest, TResponse>(
     attempts: 3,
     baseDelayMs: 250,
     isCurrent: () => isMessageContextCurrent(channelId, generation, channelEpoch),
-    staleError: () => new Error('チャンネルの認可状態が変更されました'),
+    staleError: () => new Error(t('チャンネルの認可状態が変更されました')),
   });
 }
 
@@ -397,7 +399,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         cursors: { ...current.cursors, [channelId]: null },
         operationErrors: {
           ...current.operationErrors,
-          [channelId]: 'これ以上の履歴を表示できません。再読み込みしてお試しください。',
+          [channelId]: t('これ以上の履歴を表示できません。再読み込みしてお試しください。'),
         },
       }));
       return;
@@ -417,7 +419,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       await get().decryptMessages(channelId);
     } catch (error) {
       if (isMessageContextCurrent(channelId, generation, channelEpoch) && loadVersions.get(channelId) === loadVersion) {
-        set((current) => ({ operationErrors: { ...current.operationErrors, [channelId]: errorMessage(error, '過去のメッセージを読み込めませんでした') } }));
+        set((current) => ({ operationErrors: { ...current.operationErrors, [channelId]: errorMessage(error, t('過去のメッセージを読み込めませんでした')) } }));
       }
     } finally {
       if (isMessageContextCurrent(channelId, generation, channelEpoch)) {
@@ -528,10 +530,10 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         mentionedUserIds,
         postId,
       });
-      if (!isMessageContextCurrent(channelId, generation, channelEpoch)) throw new Error('チャンネルの認可が変更されたため送信を中止しました');
+      if (!isMessageContextCurrent(channelId, generation, channelEpoch)) throw new Error(t('チャンネルの認可が変更されたため送信を中止しました'));
     } catch (error) {
       if (isMessageContextCurrent(channelId, generation, channelEpoch)) {
-        set((state) => ({ operationErrors: { ...state.operationErrors, [channelId]: errorMessage(error, 'メッセージを送信できませんでした') } }));
+        set((state) => ({ operationErrors: { ...state.operationErrors, [channelId]: errorMessage(error, t('メッセージを送信できませんでした')) } }));
       }
       throw error;
     }
@@ -545,7 +547,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     }
     // New posts go through createForumPost; everything else in a forum is a reply.
     const forum = isForumChannel(channelId);
-    if (forum !== Boolean(postId)) throw new Error('メッセージを送信できませんでした');
+    if (forum !== Boolean(postId)) throw new Error(t('メッセージを送信できませんでした'));
     const device = getActiveDevice();
     const channelKey = await ensureChannelKey(channelId);
     const idempotencyKey = options.idempotencyKey || crypto.randomUUID();
@@ -589,7 +591,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     const channelEpoch = currentChannelEpoch(channelId);
     set((state) => ({ operationErrors: { ...state.operationErrors, [channelId]: null } }));
     try {
-      if (sealed.envelope.channelId !== channelId) throw new Error('メッセージを送信できませんでした');
+      if (sealed.envelope.channelId !== channelId) throw new Error(t('メッセージを送信できませんでした'));
       // Network retries reuse the exact authenticated envelope. Re-encrypting
       // under the same idempotency key would correctly be rejected as a
       // different event if the first response was lost.
@@ -600,7 +602,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         channelId,
         channelEpoch,
       );
-      if (!isMessageContextCurrent(channelId, generation, channelEpoch)) throw new Error('チャンネルの認可が変更されたため送信結果を破棄しました');
+      if (!isMessageContextCurrent(channelId, generation, channelEpoch)) throw new Error(t('チャンネルの認可が変更されたため送信結果を破棄しました'));
       const decryptedMessage = {
         ...requireLocallySignedMessageResponse(message, sealed.envelope, sealed.request.signature),
         content,
@@ -609,7 +611,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       return decryptedMessage;
     } catch (error) {
       if (isMessageContextCurrent(channelId, generation, channelEpoch)) {
-        set((state) => ({ operationErrors: { ...state.operationErrors, [channelId]: errorMessage(error, 'メッセージを送信できませんでした') } }));
+        set((state) => ({ operationErrors: { ...state.operationErrors, [channelId]: errorMessage(error, t('メッセージを送信できませんでした')) } }));
       }
       throw error;
     }
@@ -620,7 +622,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     const channelEpoch = currentChannelEpoch(channelId);
     set((state) => ({ operationErrors: { ...state.operationErrors, [channelId]: null } }));
     try {
-      if (!isForumChannel(channelId)) throw new Error('投稿を作成できませんでした');
+      if (!isForumChannel(channelId)) throw new Error(t('投稿を作成できませんでした'));
       const content = encodeForumPostContent({ title: post.title, body: post.body });
       const device = getActiveDevice();
       const channelKey = await ensureChannelKey(channelId);
@@ -658,7 +660,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         channelId,
         channelEpoch,
       );
-      if (!isMessageContextCurrent(channelId, generation, channelEpoch)) throw new Error('チャンネルの認可が変更されたため送信結果を破棄しました');
+      if (!isMessageContextCurrent(channelId, generation, channelEpoch)) throw new Error(t('チャンネルの認可が変更されたため送信結果を破棄しました'));
       const message = { ...requireLocallySignedMessageResponse(result.message, envelope, signature), content } as Message;
       if (result.state.postId !== message.id || result.state.channelId !== channelId) {
         throw new Error('Server returned a post state for a different post');
@@ -667,7 +669,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       return { message, state: result.state };
     } catch (error) {
       if (isMessageContextCurrent(channelId, generation, channelEpoch)) {
-        set((state) => ({ operationErrors: { ...state.operationErrors, [channelId]: errorMessage(error, '投稿を作成できませんでした') } }));
+        set((state) => ({ operationErrors: { ...state.operationErrors, [channelId]: errorMessage(error, t('投稿を作成できませんでした')) } }));
       }
       throw error;
     }
@@ -685,7 +687,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         set((state) => ({
           securityErrors: {
             ...state.securityErrors,
-            [channelId]: errorMessage(error, 'メッセージ検証の再同期が必要です'),
+            [channelId]: errorMessage(error, t('メッセージ検証の再同期が必要です')),
           },
         }));
       });
@@ -755,14 +757,14 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         channelId,
         channelEpoch,
       );
-      if (!isMessageContextCurrent(channelId, generation, channelEpoch)) throw new Error('チャンネルの認可が変更されたため編集結果を破棄しました');
+      if (!isMessageContextCurrent(channelId, generation, channelEpoch)) throw new Error(t('チャンネルの認可が変更されたため編集結果を破棄しました'));
       get().addMessage(channelId, {
         ...requireLocallySignedMessageResponse(event, envelope, signature),
         content,
       } as Message);
     } catch (error) {
       if (isMessageContextCurrent(channelId, generation, channelEpoch)) {
-        set((state) => ({ operationErrors: { ...state.operationErrors, [channelId]: errorMessage(error, 'メッセージを編集できませんでした') } }));
+        set((state) => ({ operationErrors: { ...state.operationErrors, [channelId]: errorMessage(error, t('メッセージを編集できませんでした')) } }));
       }
       throw error;
     }
@@ -804,15 +806,15 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         channelId,
         channelEpoch,
       );
-      if (!isMessageContextCurrent(channelId, generation, channelEpoch)) throw new Error('チャンネルの認可が変更されたため削除結果を破棄しました');
-      if (!result?.event) throw new Error('署名済み削除イベントが返されませんでした');
+      if (!isMessageContextCurrent(channelId, generation, channelEpoch)) throw new Error(t('チャンネルの認可が変更されたため削除結果を破棄しました'));
+      if (!result?.event) throw new Error(t('署名済み削除イベントが返されませんでした'));
       if (result.messageId !== messageId || result.channelId !== channelId) {
         throw new Error('Server returned a delete result for a different message');
       }
       get().addMessage(channelId, requireLocallySignedMessageResponse(result.event, envelope, signature));
     } catch (error) {
       if (isMessageContextCurrent(channelId, generation, channelEpoch)) {
-        set((state) => ({ operationErrors: { ...state.operationErrors, [channelId]: errorMessage(error, 'メッセージを削除できませんでした') } }));
+        set((state) => ({ operationErrors: { ...state.operationErrors, [channelId]: errorMessage(error, t('メッセージを削除できませんでした')) } }));
       }
       throw error;
     }
@@ -822,7 +824,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     set((state) => ({
       securityErrors: {
         ...state.securityErrors,
-        [channelId]: 'メッセージの削除を確認できませんでした。再読み込みしてお試しください。',
+        [channelId]: t('メッセージの削除を確認できませんでした。再読み込みしてお試しください。'),
       },
     }));
   },
@@ -855,7 +857,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       get().applyReactionUpdate(channelId, messageId, result.reactions || []);
     } catch (error) {
       if (isMessageContextCurrent(channelId, generation, channelEpoch)) {
-        set((state) => ({ operationErrors: { ...state.operationErrors, [channelId]: errorMessage(error, 'リアクションを更新できませんでした') } }));
+        set((state) => ({ operationErrors: { ...state.operationErrors, [channelId]: errorMessage(error, t('リアクションを更新できませんでした')) } }));
       }
       throw error;
     }
@@ -871,7 +873,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       get().applyPinUpdate(channelId, messageId, Boolean(result.pinned));
     } catch (error) {
       if (isMessageContextCurrent(channelId, generation, channelEpoch)) {
-        set((state) => ({ operationErrors: { ...state.operationErrors, [channelId]: errorMessage(error, 'ピンを更新できませんでした') } }));
+        set((state) => ({ operationErrors: { ...state.operationErrors, [channelId]: errorMessage(error, t('ピンを更新できませんでした')) } }));
       }
       throw error;
     }
@@ -921,7 +923,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
           if (message.type !== 'message' && message.type !== 'edit' && message.type !== 'delete') return message;
           if (!message.deviceId || !message.signature || (message.type !== 'delete' && !message.contentNonce)) {
             if (message.type !== 'message') return null;
-            return markMessageCryptoVerification({ ...message, content: '[表示できないメッセージ]' }, false);
+            return markMessageCryptoVerification({ ...message, content: UNAVAILABLE_MESSAGE_MARKER }, false);
           }
           const identity = identities.get(message.deviceId);
           const envelope: SignedMessageEnvelope = {
@@ -947,7 +949,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
           );
           if (invalidSignature) {
             if (message.type !== 'message') return null;
-            return markMessageCryptoVerification({ ...message, content: '[メッセージを検証できませんでした]' }, false);
+            return markMessageCryptoVerification({ ...message, content: UNVERIFIED_MESSAGE_MARKER }, false);
           }
           if (message.type === 'delete') return markMessageCryptoVerification(message, true);
           const key = keysByVersion.get(message.keyVersion) ?? null;
@@ -955,7 +957,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
           try {
             return markMessageCryptoVerification({ ...message, content: await decryptMessage(envelope, key) }, true);
           } catch {
-            return markMessageCryptoVerification({ ...message, content: '[改ざんを検出しました]' }, false);
+            return markMessageCryptoVerification({ ...message, content: TAMPERED_MESSAGE_MARKER }, false);
           }
         }));
         if (signal.aborted) throw signal.reason;
@@ -981,7 +983,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
             ...next,
             securityErrors: {
               ...state.securityErrors,
-              [channelId]: '安全を確認できない変更があるため、一部の更新を表示していません。',
+              [channelId]: t('安全を確認できない変更があるため、一部の更新を表示していません。'),
             },
           };
         });
@@ -1003,7 +1005,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
             ...channelUpdate(state, channelId, events),
             securityErrors: {
               ...state.securityErrors,
-              [channelId]: errorMessage(error, 'メッセージを安全に検証できませんでした'),
+              [channelId]: errorMessage(error, t('メッセージを安全に検証できませんでした')),
             },
           };
         });

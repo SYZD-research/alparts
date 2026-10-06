@@ -3,15 +3,17 @@ import type { ProfileFlagEntry } from '@alparts/shared';
 import { api } from '../../services/api';
 import { formatDateTime } from '../../stores/date-format';
 import { useUiStore } from '../../stores/ui.store';
+import { useT, type MessageKey, msg } from '../../i18n';
 
-const STATUS_LABELS: Record<ProfileFlagEntry['appealStatus'], string> = {
-  none: '警告中',
-  pending: '解除を依頼されています',
-  denied: '解除の依頼を却下済み',
+const STATUS_LABELS: Record<ProfileFlagEntry['appealStatus'], MessageKey> = {
+  none: msg('警告中'),
+  pending: msg('解除を依頼されています'),
+  denied: msg('解除の依頼を却下済み'),
 };
 
 /** Profiles warned in this workspace, pending requests first. */
 export function ProfileFlagsPanel({ workspaceId }: { workspaceId: string }) {
+  const t = useT();
   const [flags, setFlags] = useState<ProfileFlagEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const openMemberProfile = useUiStore((state) => state.openMemberProfile);
@@ -23,15 +25,15 @@ export function ProfileFlagsPanel({ workspaceId }: { workspaceId: string }) {
       const next = await api.listProfileFlags(workspaceId);
       setFlags([...next].sort((left, right) => Number(right.appealStatus === 'pending') - Number(left.appealStatus === 'pending')));
     } catch {
-      setError('警告の一覧を読み込めませんでした。もう一度お試しください。');
+      setError(t('警告の一覧を読み込めませんでした。もう一度お試しください。'));
     }
   }, [workspaceId]);
 
   useEffect(() => { void load(); }, [load]);
 
   if (error) return <p role="alert" className="text-sm text-discord-red">{error}</p>;
-  if (!flags) return <p className="text-sm text-discord-muted">読み込み中…</p>;
-  if (flags.length === 0) return <p className="text-sm text-discord-muted">警告を付けたプロフィールはありません。</p>;
+  if (!flags) return <p className="text-sm text-discord-muted">{t('読み込み中…')}</p>;
+  if (flags.length === 0) return <p className="text-sm text-discord-muted">{t('警告を付けたプロフィールはありません。')}</p>;
   return (
     <ul className="space-y-2">
       {flags.map((flag) => (
@@ -39,7 +41,7 @@ export function ProfileFlagsPanel({ workspaceId }: { workspaceId: string }) {
           <div className="min-w-0">
             <p className="truncate font-medium text-white">{flag.displayName}</p>
             <p className={flag.appealStatus === 'pending' ? 'text-discord-yellow' : 'text-discord-muted'}>
-              {STATUS_LABELS[flag.appealStatus]} · {formatDateTime(flag.appealRequestedAt ?? flag.flaggedAt)}
+              {t(STATUS_LABELS[flag.appealStatus])} · {formatDateTime(flag.appealRequestedAt ?? flag.flaggedAt)}
             </p>
           </div>
           <button
@@ -47,7 +49,7 @@ export function ProfileFlagsPanel({ workspaceId }: { workspaceId: string }) {
             onClick={() => { closeWorkspaceManager(); openMemberProfile(workspaceId, flag.userId); }}
             className="shrink-0 rounded bg-discord-hover px-3 py-1.5 text-white"
           >
-            確認する
+            {t('確認する')}
           </button>
         </li>
       ))}

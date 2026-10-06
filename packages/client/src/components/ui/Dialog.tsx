@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
+import { useT } from '../../i18n';
 
 interface DialogProps {
   open: boolean;
@@ -17,6 +18,7 @@ const widths = {
 };
 
 export function Dialog({ open, title, description, onClose, children, size = 'md' }: DialogProps) {
+  const t = useT();
   const titleId = useId();
   const descriptionId = useId();
   const panelRef = useRef<HTMLDivElement>(null);
@@ -86,7 +88,7 @@ export function Dialog({ open, title, description, onClose, children, size = 'md
             <h2 id={titleId} className="text-lg font-bold text-white">{title}</h2>
             {description && <p id={descriptionId} className="mt-1 text-sm text-discord-muted">{description}</p>}
           </div>
-          <button type="button" onClick={onClose} className="rounded px-2 py-1 text-discord-muted hover:bg-discord-hover hover:text-white" aria-label="閉じる">
+          <button type="button" onClick={onClose} className="rounded px-2 py-1 text-discord-muted hover:bg-discord-hover hover:text-white" aria-label={t('閉じる')}>
             ×
           </button>
         </header>
