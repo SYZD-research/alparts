@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import * as http from 'node:http';
 import * as https from 'node:https';
-import { Readable } from 'node:stream';
+import { pipeline, Readable, Transform } from 'node:stream';
 import {
   CreateBucketCommand,
   DeleteObjectCommand,
@@ -259,11 +259,47 @@ async function bucketExists(bucket: string, deadline: number, client = s3Client)
   }
 }
 
-/** The response body stays bound to the deadline after the headers arrive. */
-async function getObjectStream(bucket: string, key: string, deadline: number, client = s3Client): Promise<Readable> {
+/**
+ * Passes exactly `bytes` bytes and fails before forwarding any byte beyond
+ * them, or at the end when fewer arrived.
+ */
+export function exactLengthStream(source: Readable, bytes: number): Readable {
+  let seen = 0;
+  const limiter = new Transform({
+    transform(chunk: Buffer, _encoding, callback) {
+      seen += chunk.length;
+      if (seen > bytes) callback(new Error('OBJECT_STORAGE_INTEGRITY'));
+      else callback(null, chunk);
+    },
+    flush(callback) {
+      callback(seen === bytes ? null : new Error('OBJECT_STORAGE_INTEGRITY'));
+    },
+  });
+  // A failure on either side destroys both; the reader sees it on the limiter.
+  pipeline(source, limiter, () => undefined);
+  return limiter;
+}
+
+/**
+ * The response body stays bound to the deadline after the headers arrive.
+ * With expectedBytes, a store that answers with another length is refused,
+ * so it can never add bytes to what the client receives.
+ */
+async function getObjectStream(
+  bucket: string,
+  key: string,
+  deadline: number,
+  client = s3Client,
+  expectedBytes?: number,
+): Promise<Readable> {
   const result = await send((options) => client.send(new GetObjectCommand({ Bucket: bucket, Key: key }), options), deadline);
   if (!(result.Body instanceof Readable)) throw new Error('OBJECT_STORAGE_INVALID_RESPONSE');
-  return result.Body;
+  if (expectedBytes === undefined) return result.Body;
+  if (result.ContentLength !== expectedBytes) {
+    result.Body.destroy();
+    throw new Error('OBJECT_STORAGE_INTEGRITY');
+  }
+  return exactLengthStream(result.Body, expectedBytes);
 }
 
 /** Delete keys in bounded batches; any per-key failure is reported. */
@@ -306,11 +342,11 @@ export function readStoredObject(storageKey: string, maxBytes: number): Promise<
   ), deadline);
 }
 
-export async function getStoredObject(storageKey: string): Promise<Readable> {
+export async function getStoredObject(storageKey: string, expectedBytes: number): Promise<Readable> {
   const deadline = createObjectStorageDeadline();
   const release = await objectStorageGate.acquireLease(deadline);
   try {
-    const stream = await getObjectStream(config.s3.bucket, storageKey, deadline);
+    const stream = await getObjectStream(config.s3.bucket, storageKey, deadline, s3Client, expectedBytes);
     if (Date.now() >= deadline) {
       stream.destroy(new Error('OBJECT_STORAGE_TIMEOUT'));
       throw new Error('OBJECT_STORAGE_TIMEOUT');

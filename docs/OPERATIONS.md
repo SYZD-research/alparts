@@ -18,7 +18,7 @@
 
 Processはlisten前にaudit HMAC chainを全件検証する。失敗はsecurity incidentである。起動させる目的でaudit rowやcheckpointを書き換えたり削除したりしない。
 
-Serverのlisten addressはIP literalだけを受理し、`BIND_HOST` 未設定時は `127.0.0.1` に限定する。Example systemd unitもloopbackへ固定する。Container imageの既定もloopbackであり、production Composeだけがcontainer network内で `BIND_HOST=0.0.0.0` を明示し、host側は`127.0.0.1`へpublishする。TLS reverse proxyとnetwork policyを必ず前段に置く。オブジェクトストレージへのrequestは `S3_REQUEST_TIMEOUT_MS`（既定10秒）の絶対期限を持ち、object listingは件数・key byte・prefix grammar・absolute deadlineも制限する。
+Serverのlisten addressはIP literalだけを受理し、`BIND_HOST` 未設定時は `127.0.0.1` に限定する。Example systemd unitもloopbackへ固定する。Container imageの既定もloopbackであり、production Composeだけがcontainer network内で `BIND_HOST=0.0.0.0` を明示し、host側は`127.0.0.1`へpublishする。TLS reverse proxyとnetwork policyを必ず前段に置く。オブジェクトストレージへのrequestは `S3_REQUEST_TIMEOUT_MS`（既定10秒）の絶対期限を持ち、object listingは件数・key byte・prefix grammar・absolute deadlineも制限する。添付のdownloadは、GET応答の長さを保存時のサイズと照合し、そのサイズを超えるbyteはclientへ送らない。
 
 新規登録では、入力されたメールアドレスへ6桁の確認コード（15分有効、誤入力5回で無効）を送り、そのアドレスの持ち主であることを確かめる。送信には `SMTP_HOST`・`SMTP_FROM`（必要なら `SMTP_USER`・`SMTP_PASSWORD_FILE`）を設定する。Productionでは `SMTP_SECURE=true`（最初からTLS）またはSTARTTLSを必須とし、証明書を検証する。Productionで`SMTP_HOST`が未設定の場合、既存accountのloginはそのまま使えるが、新規登録は`EMAIL_VERIFICATION=disabled`で明示的に確認を無効にしない限り拒否され、起動時に`registration.unavailable`の警告を出す。開発環境ではSMTPがなければメールをmemoryに保持してlogへ出す。既に登録済みのアドレスにはコードではなく案内メールを送るため、応答からaccountの有無は分からない。この変更より前に作成されたaccountのメールアドレスは確認されていない。
 
