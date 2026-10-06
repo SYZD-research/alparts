@@ -4,7 +4,7 @@
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.HIDE_OVERLAY_WINDOWS" />
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
-    <application android:label="alparts" android:icon="@drawable/app_icon" android:allowBackup="false"
+    <application android:label="alparts" android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher" android:allowBackup="false"
         android:fullBackupContent="false" android:dataExtractionRules="@xml/data_extraction_rules"
         android:usesCleartextTraffic="false" android:theme="@style/AlpartsTheme"
         android:networkSecurityConfig="@xml/network_security_config"
