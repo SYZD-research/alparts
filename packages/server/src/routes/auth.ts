@@ -10,6 +10,7 @@ import {
   credentialAccountRateLimitKey,
   credentialRateLimitKey,
   rateLimit,
+  requestSource,
 } from '../middleware/rate-limit.js';
 import { config } from '../config/index.js';
 import { expiredSessionCookie, sessionCookie } from '../security/cookies.js';
@@ -52,7 +53,7 @@ const loginIpLimit = rateLimit({ windowMs: 15 * 60 * 1000, max: 100 });
 const reauthenticateLimit = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 8,
-  key: (req) => (req as AuthRequest).userId || req.ip || req.socket.remoteAddress || 'unknown',
+  key: (req) => (req as AuthRequest).userId || requestSource(req),
 });
 const sessionIdSchema = z.string().uuid();
 

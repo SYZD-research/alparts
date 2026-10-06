@@ -4,7 +4,7 @@ import { authMiddleware, type AuthRequest } from '../middleware/auth.js';
 import { requireChannelAccess, requireMessagePermission, requireWorkspaceMembership } from '../middleware/rbac.js';
 import { Permissions } from '@alparts/shared';
 import * as userStateService from '../services/user-state.service.js';
-import { rateLimit } from '../middleware/rate-limit.js';
+import { rateLimit, requestSource } from '../middleware/rate-limit.js';
 
 const router = Router();
 const preferenceSchema = z.object({
@@ -19,7 +19,7 @@ const bookmarkQuery = z.object({
 const channelStateLimit = rateLimit({
   windowMs: 60_000,
   max: 30,
-  key: (req) => (req as AuthRequest).userId || req.ip || 'unknown',
+  key: (req) => (req as AuthRequest).userId || requestSource(req),
 });
 
 router.get('/workspaces/:wid/channel-state', authMiddleware, channelStateLimit, requireWorkspaceMembership('wid'), async (req: AuthRequest, res) => {

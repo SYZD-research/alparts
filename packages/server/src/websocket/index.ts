@@ -27,6 +27,7 @@ import {
 } from '../services/authorization.service.js';
 import { VoiceSignalingHub } from './voice.handler.js';
 import { MAX_WORKSPACE_MEMBERSHIPS_PER_USER } from '../security/limits.js';
+import { rateLimitSource, reportUntrustedForwarding, requestClientAddress } from '../security/client-address.js';
 
 const channelIdSchema = z.string().uuid();
 const maxTimerDelayMs = 2_147_000_000;
@@ -108,11 +109,14 @@ export function setupWebSocket(io: SocketServer) {
     const authToken = typeof socket.handshake.auth?.token === 'string' && socket.handshake.auth.token.length <= 4096
       ? socket.handshake.auth.token
       : null;
-    if (!consumePendingHandshakeAttempt(socket.handshake.address)) {
+    // Behind a reverse proxy every peer address is the proxy; count clients.
+    reportUntrustedForwarding(socket.request);
+    const source = rateLimitSource(requestClientAddress(socket.request));
+    if (!consumePendingHandshakeAttempt(source)) {
       next(new Error('Connection rate exceeded'));
       return;
     }
-    const releasePendingHandshake = acquirePendingHandshakeLease(socket.id, socket.handshake.address);
+    const releasePendingHandshake = acquirePendingHandshakeLease(socket.id, source);
     if (!releasePendingHandshake) {
       next(new Error('Connection limit exceeded'));
       return;
