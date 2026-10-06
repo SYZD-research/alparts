@@ -2,9 +2,9 @@ import { normalizeEmail } from '../security/email.js';
 import { passwordPepper, protectPasswordHash } from '../security/password-pepper.js';
 import { createHmac, randomUUID } from 'node:crypto';
 import jwt from 'jsonwebtoken';
-import { and, eq, gt, lte, sql } from 'drizzle-orm';
+import { and, eq, gt, lte, ne, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
-import { sessions, users } from '../db/schema.js';
+import { passkeys, sessions, users } from '../db/schema.js';
 import { config } from '../config/index.js';
 import { audit, auditedTransaction, type AuditEntry } from '../middleware/audit.js';
 import { hashSessionToken } from '../security/session.js';
@@ -23,6 +23,12 @@ const DUMMY_PASSWORD_HASH = protectPasswordHash('$2b$12$DuhNW97PNP4tI0drdrcUqexx
 function assertPasswordSupported(password: string): void {
   const bytes = Buffer.byteLength(password, 'utf8');
   if (bytes < 12 || bytes > 72) throw new Error('INVALID_PASSWORD_LENGTH');
+}
+
+/** The stored form of a new password. Run it before taking any lock. */
+export async function hashNewPassword(password: string): Promise<string> {
+  assertPasswordSupported(password);
+  return hashPassword(password, SALT_ROUNDS);
 }
 
 export async function register(
@@ -108,7 +114,9 @@ export async function login(email: string, password: string, deviceInfo?: Record
     const normalizedEmail = normalizeEmail(email);
     const user = await db.query.users.findFirst({ where: eq(users.email, normalizedEmail) });
     const { valid, upgradedHash } = await verifyPasswordForUpgrade(password, user?.passwordHash || DUMMY_PASSWORD_HASH);
-    if (!user || user.disabledAt || !valid) {
+    // A user who turned password login off gets the same answer as a wrong
+    // password, so the response never confirms that a password was right.
+    if (!user || user.disabledAt || !valid || user.passwordLoginDisabled) {
       await audit({
         action: 'user.login.failed',
         targetType: 'user',
@@ -153,7 +161,11 @@ export async function establishSession(
     if (beforeCreate) await beforeCreate(transaction);
     await transaction.execute(sql`select pg_advisory_xact_lock(hashtext(${`sessions:${user.id}`})::bigint)`);
     const [currentUser] = await transaction.select().from(users).where(eq(users.id, user.id)).for('share');
-    if (!currentUser || currentUser.disabledAt || (method === 'password' && currentUser.passwordHash !== user.passwordHash)) throw new Error('INVALID_CREDENTIALS');
+    if (
+      !currentUser
+      || currentUser.disabledAt
+      || (method === 'password' && (currentUser.passwordHash !== user.passwordHash || currentUser.passwordLoginDisabled))
+    ) throw new Error('INVALID_CREDENTIALS');
     await transaction.delete(sessions).where(and(
       eq(sessions.userId, user.id),
       lte(sessions.expiresAt, new Date()),
@@ -253,6 +265,80 @@ export async function revokeAllSessions(userId: string): Promise<string[]> {
     targetType: 'user',
     targetId: userId,
     details: { count: removedIds.length },
+  }));
+}
+
+/**
+ * Sets a new password after the session confirmed the user's identity. Every
+ * other login ends, and confirmations made with the old password stop working.
+ * Returns the ended sessions so their connections can be closed.
+ */
+export async function changePassword(userId: string, currentSessionId: string, newPassword: string): Promise<string[]> {
+  const passwordHash = await hashNewPassword(newPassword);
+  return auditedTransaction(async (transaction) => {
+    await transaction.execute(sql`select pg_advisory_xact_lock(hashtext(${`sessions:${userId}`})::bigint)`);
+    const [user] = await transaction.select({ disabledAt: users.disabledAt })
+      .from(users)
+      .where(eq(users.id, userId))
+      .for('update');
+    if (!user || user.disabledAt) throw new Error('INVALID_CREDENTIALS');
+    await transaction.update(users).set({ passwordHash, updatedAt: new Date() }).where(eq(users.id, userId));
+    const removed = await transaction.delete(sessions)
+      .where(and(eq(sessions.userId, userId), ne(sessions.id, currentSessionId)))
+      .returning({ id: sessions.id });
+    return removed.map((session: { id: string }) => session.id);
+  }, (revoked) => ({
+    actorId: userId,
+    action: 'user.password.change',
+    targetType: 'user',
+    targetId: userId,
+    details: { revokedSessions: revoked.length },
+  }));
+}
+
+export async function isPasswordLoginEnabled(userId: string): Promise<boolean> {
+  const user = await db.query.users.findFirst({ columns: { passwordLoginDisabled: true }, where: eq(users.id, userId) });
+  if (!user) throw new Error('USER_NOT_FOUND');
+  return !user.passwordLoginDisabled;
+}
+
+/**
+ * Turns password login on or off. Turning it off needs a passkey to sign in
+ * with, and ends the other logins that were opened with the password.
+ * Returns the ended sessions so their connections can be closed.
+ */
+export async function setPasswordLogin(userId: string, currentSessionId: string, enabled: boolean): Promise<string[]> {
+  return auditedTransaction(async (transaction) => {
+    // The passkey lock orders this with passkey removal.
+    await transaction.execute(sql`select pg_advisory_xact_lock(hashtext(${`passkeys:${userId}`})::bigint)`);
+    await transaction.execute(sql`select pg_advisory_xact_lock(hashtext(${`sessions:${userId}`})::bigint)`);
+    const [user] = await transaction.select({ disabledAt: users.disabledAt })
+      .from(users)
+      .where(eq(users.id, userId))
+      .for('update');
+    if (!user || user.disabledAt) throw new Error('INVALID_CREDENTIALS');
+    if (!enabled) {
+      const [key] = await transaction.select({ id: passkeys.id }).from(passkeys).where(eq(passkeys.userId, userId)).limit(1);
+      if (!key) throw new Error('PASSKEY_REQUIRED');
+    }
+    await transaction.update(users)
+      .set({ passwordLoginDisabled: !enabled, updatedAt: new Date() })
+      .where(eq(users.id, userId));
+    if (enabled) return [];
+    const removed = await transaction.delete(sessions)
+      .where(and(
+        eq(sessions.userId, userId),
+        eq(sessions.authenticationMethod, 'password'),
+        ne(sessions.id, currentSessionId),
+      ))
+      .returning({ id: sessions.id });
+    return removed.map((session: { id: string }) => session.id);
+  }, (revoked) => ({
+    actorId: userId,
+    action: enabled ? 'user.password_login.enable' : 'user.password_login.disable',
+    targetType: 'user',
+    targetId: userId,
+    details: { revokedSessions: revoked.length },
   }));
 }
 

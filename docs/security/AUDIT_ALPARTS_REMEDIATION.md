@@ -165,6 +165,15 @@ node packages/server/dist/scripts/set-account-state.js disable USER_UUID
 node packages/server/dist/scripts/set-account-state.js enable USER_UUID
 ```
 
+### パスワードの再設定
+
+本人がパスワードを忘れた、またはパスキーをすべて失った場合に、運用者が実行する。新しいパスワード（12〜72 バイト）は標準入力から渡し、コマンドの引数には書かない。
+再設定すると、パスワードでのログインが有効に戻り、そのアカウントのすべてのログインが終了する。新しいパスワードは本人確認のうえで安全な経路で伝え、本人に変更してもらう。
+
+```bash
+node packages/server/dist/scripts/reset-password.js USER_UUID < new-password.txt
+```
+
 ### 独立した監査署名
 
 Node 24.8.0 以上が必要。サーバー外のオフライン端末で鍵を作り、独立して確認したチェックポイントのみ署名する。

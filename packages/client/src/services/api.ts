@@ -68,6 +68,7 @@ const API_ERROR_MESSAGES_BY_CODE: Record<string, string> = {
   STALE_OVERRIDE: '他の変更と重なりました。表示を更新してもう一度お試しください。',
   DIRECTORY_CONFLICT: '端末の一覧が更新されました。表示を更新してもう一度お試しください。',
   IDEMPOTENCY_CONFLICT: '同じ操作がすでに行われています。表示を更新してください。',
+  PASSKEY_REQUIRED: 'パスワードでのログインをオフにするには、先にパスキーを追加してください。',
 };
 
 /** Fixed, local wording for an HTTP failure. */
@@ -649,6 +650,26 @@ class ApiService {
 
   async revokeAllSessions() {
     return this.request<SuccessResponse & { revoked: number }>('/auth/sessions', { method: 'DELETE' });
+  }
+
+  /** Needs an identity confirmation; every other login of the account ends. */
+  async changePassword(newPassword: string) {
+    return this.request<SuccessResponse & { revoked: number }>('/auth/password', {
+      method: 'PUT',
+      body: JSON.stringify({ newPassword }),
+    });
+  }
+
+  async getPasswordLogin() {
+    return this.request<{ enabled: boolean }>('/auth/password-login');
+  }
+
+  /** Needs an identity confirmation; turning it off needs a passkey. */
+  async setPasswordLogin(enabled: boolean) {
+    return this.request<SuccessResponse & { enabled: boolean; revoked: number }>('/auth/password-login', {
+      method: 'PUT',
+      body: JSON.stringify({ enabled }),
+    });
   }
 
   // Workspaces

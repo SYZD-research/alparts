@@ -410,7 +410,7 @@ process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
     process.env.AUDIT_HEAD_OBJECT_KEY = `test-${randomUUID()}`;
     const database = await import('../db/index.js');
     closeDb = database.closeDb;
-    assert.equal(await database.checkDatabaseSchema(), 21);
+    assert.equal(await database.checkDatabaseSchema(), 22);
     const audit = await import('../middleware/audit.js');
     await audit.provisionAuditCheckpoint();
     const app = await import('../app.js');
@@ -1453,6 +1453,66 @@ process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
       throw new Error('ROLLBACK_FIXTURE');
     }), /ROLLBACK_FIXTURE/);
   });
+  it('changes the password, turns password login off and recovers through an operator reset', { timeout: 30_000 }, async () => {
+    const { db } = await import('../db/index.js');
+    const auth = await import('../services/auth.service.js');
+    const { spawn } = await import('node:child_process');
+    const { fileURLToPath } = await import('node:url');
+    const user = await db.query.users.findFirst({ where: (u, { eq }) => eq(u.id, userId) });
+    assert.ok(user);
+    const { config } = await import('../config/index.js');
+    // The service is called directly where possible; HTTP logins share a small per-account budget.
+    const login = async (secret: string) => `${config.auth.cookieName}=${(await auth.login(user.email, secret)).token}`;
+    const reset = (secret: string) => new Promise<{ code: number | null; stderr: string }>((resolve, reject) => {
+      const child = spawn(process.execPath, ['--import', 'tsx',
+        fileURLToPath(new URL('../scripts/reset-password.ts', import.meta.url)), userId], { stdio: ['pipe', 'ignore', 'pipe'], timeout: 20_000 });
+      let stderr = '';
+      child.stderr.on('data', (chunk) => { stderr += chunk; });
+      child.once('error', reject);
+      child.once('close', (code) => resolve({ code, stderr }));
+      child.stdin.end(`${secret}\n`);
+    });
+
+    // A password change needs a confirmation and ends every other login.
+    const other = await login(password);
+    const newPassword = 'Changed-Account-Security-Password!';
+    assert.equal((await request('/api/auth/password', { newPassword }, cookie, 'PUT')).status, 428);
+    assert.equal((await sensitive('/api/auth/password', { newPassword: 'short' }, 'PUT')).status, 400);
+    assert.ok((await json(await sensitive('/api/auth/password', { newPassword }, 'PUT'))).revoked >= 1);
+    assert.equal((await request('/api/auth/me', undefined, other)).status, 401);
+    assert.equal((await request('/api/auth/me')).status, 200, 'the login that changed it stays');
+    await assert.rejects(login(password), /INVALID_CREDENTIALS/);
+    const changed = await login(newPassword);
+
+    // Password login can be turned off only with a passkey; it ends password logins.
+    await assert.rejects(auth.setPasswordLogin(legacyUser, randomUUID(), false), /PASSKEY_REQUIRED/);
+    assert.deepEqual(await json(await request('/api/auth/password-login')), { enabled: true });
+    assert.equal((await json(await sensitive('/api/auth/password-login', { enabled: false }, 'PUT'))).enabled, false);
+    assert.equal((await request('/api/auth/me', undefined, changed)).status, 401);
+    assert.deepEqual(await json(await request('/api/auth/password-login')), { enabled: false });
+    const refused = await request('/api/auth/login', { email: user.email, password: newPassword }, '');
+    assert.equal(refused.status, 401, 'the right password no longer signs in');
+
+    // An operator reset sets a new password, turns password login back on and ends every login.
+    assert.notEqual((await reset('too-short')).code, 0);
+    const restored = await reset(password);
+    assert.equal(restored.code, 0, restored.stderr);
+    assert.equal((await request('/api/auth/me')).status, 401);
+    cookie = await login(password);
+    assert.deepEqual(await json(await request('/api/auth/password-login')), { enabled: true });
+    // The new login proves the existing device key again before it can use the device.
+    const challenge = (await json(await request('/api/devices/challenge', {}, cookie))).challenge;
+    const rebound = await json(await request('/api/devices', {
+      name: 'First',
+      identityKey: firstKeys.identityKey,
+      challenge,
+      proof: signature(firstKeys.privateKey, serializeDeviceChallengeProof(userId, challenge)),
+      currentPassword: password,
+    }, cookie));
+    assert.equal(rebound.id, first.id);
+    assert.equal((await (await import('../middleware/audit.js')).verifyAuditChain()).valid, true);
+  });
+
   it('disables an account across CLI, password, passkey and already-connected sockets', { timeout: 15_000 }, async () => {
     const { db } = await import('../db/index.js');
     const auth = await import('../services/auth.service.js');
