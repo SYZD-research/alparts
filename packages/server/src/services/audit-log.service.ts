@@ -1,7 +1,19 @@
-import { and, desc, eq, lt, or, sql } from 'drizzle-orm';
+import { and, desc, eq, like, lt, not, or, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { auditLogs } from '../db/schema.js';
 import { audit, getAuditIntegrityStatus } from '../middleware/audit.js';
+import {
+  getChannelAuthorizationFromSnapshot,
+  isVisibleChannelAuthorization,
+  loadWorkspaceAuthorizationSnapshot,
+  lockWorkspaceForAuthorization,
+} from './authorization.service.js';
+
+// A member's own channel settings and bookmarks are never shown in the log.
+const PERSONAL_ACTIONS = ['channel.preference.%', 'message.bookmark.%'];
+// Activity inside a channel (messages, DMs, membership, keys, files) is shown
+// only to viewers who can see that channel, and to the member who did it.
+const CHANNEL_ACTIVITY_ACTIONS = ['message.%', 'dm.%', 'channel.member.%', 'channel.key.%', 'forum.post.%', 'attachment.%'];
 
 function workspaceAuditScope(workspaceId: string) {
   return or(
@@ -10,13 +22,44 @@ function workspaceAuditScope(workspaceId: string) {
   );
 }
 
+function viewerAuditScope(viewerId: string, visibleChannelIds: readonly string[]) {
+  const channel = sql`coalesce(${auditLogs.details} ->> 'channelId', case when ${auditLogs.targetType} = 'channel' then ${auditLogs.targetId}::text end)`;
+  const visibleChannel = visibleChannelIds.length
+    ? sql`${channel} in (${sql.join(visibleChannelIds.map((id) => sql`${id}`), sql`, `)})`
+    : sql`false`;
+  return and(
+    not(or(...PERSONAL_ACTIONS.map((pattern) => like(auditLogs.action, pattern)))!),
+    or(
+      not(or(...CHANNEL_ACTIVITY_ACTIONS.map((pattern) => like(auditLogs.action, pattern)))!),
+      eq(auditLogs.actorId, viewerId),
+      visibleChannel,
+    ),
+  );
+}
+
+async function visibleChannelIds(workspaceId: string, viewerId: string): Promise<string[]> {
+  return db.transaction(async (transaction) => {
+    await lockWorkspaceForAuthorization(transaction, workspaceId, 'share');
+    const snapshot = await loadWorkspaceAuthorizationSnapshot(transaction, workspaceId);
+    if (!snapshot) return [];
+    return snapshot.channels
+      .filter((channel) => isVisibleChannelAuthorization(
+        getChannelAuthorizationFromSnapshot(snapshot, viewerId, channel, {}, false),
+      ))
+      .map((channel) => channel.id);
+  });
+}
+
 export async function listWorkspaceAuditLogs(
   workspaceId: string,
   actorId: string,
   options: { cursor?: string; limit?: number },
 ) {
   const limit = Math.min(Math.max(options.limit ?? 50, 1), 100);
-  const scope = workspaceAuditScope(workspaceId);
+  const scope = and(
+    workspaceAuditScope(workspaceId),
+    viewerAuditScope(actorId, await visibleChannelIds(workspaceId, actorId)),
+  );
   let cursorCondition;
   if (options.cursor) {
     const [cursor] = await db.select({ id: auditLogs.id, createdAt: auditLogs.createdAt })
