@@ -33,6 +33,7 @@
     "test": "pnpm run build:shared && pnpm -r --if-present run test",
     "test:backup-security": "bash scripts/tests/backup-security.test.sh",
     "test:release": "node --test scripts/release/*.test.mjs",
+    "test:deps": "node --test scripts/deps/*.test.mjs",
     "release:prepare": "node scripts/release/create-release.mjs",
     "notices": "node scripts/release/third-party-notices.mjs",
     "notices:check": "node scripts/release/third-party-notices.mjs --check",
