@@ -345,6 +345,8 @@ async function runUpload(taskId: string): Promise<void> {
       noncePrefix,
       plaintextSize: runtime.file.size,
       chunkCount: prepared.chunkCount,
+      // The message's own signed key, checked against the signed request it was sent with.
+      messageIdempotencyKey: runtime.message.idempotencyKey,
     };
     const signature = await signAttachmentEnvelope(signedEnvelope);
     let attachment: Attachment;

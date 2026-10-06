@@ -1913,7 +1913,7 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     assert.equal(completeStatusResponse.status, 200);
     assert.deepEqual((await json<{ uploadedIndexes: number[] }>(completeStatusResponse)).uploadedIndexes, [0, 1]);
 
-    const finalizeBody = signedAttachmentFinalizeBody({
+    const finalizeInput = {
       uploadId: upload.uploadId,
       messageId: message.id,
       channelId,
@@ -1926,19 +1926,28 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
       chunkCount: attachmentChunkCount,
       wrappedKey: wrapKey(attachmentKey, aliceKeys.identityKey),
       cryptoManifest: {
-        version: 1,
-        algorithm: 'AES-256-GCM',
-        nonceStrategy: 'prefix-counter-be32',
+        version: 1 as const,
+        algorithm: 'AES-256-GCM' as const,
+        nonceStrategy: 'prefix-counter-be32' as const,
         noncePrefix: noncePrefix.toString('base64'),
-        aadVersion: 1,
+        aadVersion: 1 as const,
         plaintextSize: attachmentPlaintextSize,
       },
+    };
+    const finalizeBody = signedAttachmentFinalizeBody({
+      ...finalizeInput,
+      messageIdempotencyKey: messageRequest.body.idempotencyKey,
     });
     const forgedAttachmentFinalize = await request(`/api/files/uploads/${upload.uploadId}/finalize`, {
       method: 'POST', cookie: alice.cookie,
       body: { ...finalizeBody, signature: Buffer.alloc(64).toString('base64') },
     });
     assert.equal(forgedAttachmentFinalize.status, 400);
+    const misboundAttachmentFinalize = await request(`/api/files/uploads/${upload.uploadId}/finalize`, {
+      method: 'POST', cookie: alice.cookie,
+      body: signedAttachmentFinalizeBody({ ...finalizeInput, messageIdempotencyKey: randomUUID() }),
+    });
+    assert.equal(misboundAttachmentFinalize.status, 400, 'a file signed for another message is refused');
     let attachmentBroadcastCount = 0;
     const onAttachmentCreated = () => { attachmentBroadcastCount += 1; };
     aliceSocket.on('attachment:created', onAttachmentCreated);
@@ -3960,6 +3969,8 @@ function signedAttachmentFinalizeBody(input: {
     aadVersion: 1;
     plaintextSize: number;
   };
+  /** Omitted for the legacy layout that older clients still sign. */
+  messageIdempotencyKey?: string;
 }) {
   const envelope: SignedAttachmentEnvelope = {
     type: 'attachment',
@@ -3975,6 +3986,7 @@ function signedAttachmentFinalizeBody(input: {
     noncePrefix: input.cryptoManifest.noncePrefix,
     plaintextSize: input.cryptoManifest.plaintextSize,
     chunkCount: input.chunkCount,
+    ...(input.messageIdempotencyKey ? { messageIdempotencyKey: input.messageIdempotencyKey } : {}),
   };
   const signature = sign('sha256', Buffer.from(serializeAttachmentEnvelope(envelope)), {
     key: input.privateKey,
