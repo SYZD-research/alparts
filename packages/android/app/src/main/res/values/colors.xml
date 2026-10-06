@@ -6,6 +6,8 @@
     <color name="alparts_text">#DBDEE1</color>
     <color name="alparts_muted">#949BA4</color>
     <color name="alparts_accent">#5865F2</color>
+    <!-- The logo is a white alpaca on black. -->
+    <color name="ic_launcher_background">#000000</color>
     <color name="alparts_accent_pressed">#4752C4</color>
     <color name="alparts_error">#ED4245</color>
 </resources>
