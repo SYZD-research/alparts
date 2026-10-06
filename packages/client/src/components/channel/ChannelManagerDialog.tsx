@@ -188,12 +188,15 @@ export function ChannelManagerDialog() {
     if (!selectedChannel || busy) return;
     prepareMutation();
     try {
+      const categoryId = form.categoryId || null;
+      // Privacy and category changes ask for identity confirmation, so send
+      // them only when they actually change.
       const updated = await api.updateChannel(selectedChannel.id, {
         name: form.name.trim(),
         topic: form.topic.trim(),
         position: parsePosition(form.position),
-        isPrivate: form.isPrivate,
-        categoryId: form.categoryId || null,
+        ...(form.isPrivate !== selectedChannel.isPrivate ? { isPrivate: form.isPrivate } : {}),
+        ...(categoryId !== (selectedChannel.categoryId ?? null) ? { categoryId } : {}),
       });
       await refreshWorkspace();
       setSelectedChannelId(updated.id);

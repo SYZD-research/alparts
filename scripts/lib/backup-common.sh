@@ -30,6 +30,34 @@ require_command() {
     || backup_die "Required command is not installed: ${command_name}"
 }
 
+# rclone 1.75.1 fixed how object listings are bounded; older versions are refused.
+readonly MINIMUM_RCLONE_VERSION='1.75.1'
+
+# Succeeds when version $1 (x.y.z) is at least $2.
+version_at_least() {
+  local -a have want
+  IFS=. read -r -a have <<< "$1"
+  IFS=. read -r -a want <<< "$2"
+  local part
+  for part in 0 1 2; do
+    (( 10#${have[part]} > 10#${want[part]} )) && return 0
+    (( 10#${have[part]} < 10#${want[part]} )) && return 1
+  done
+  return 0
+}
+
+require_storage_tool() {
+  require_command rclone
+  local banner version
+  banner="$(rclone version 2>/dev/null)" || backup_die 'Could not read the rclone version'
+  banner="${banner%%$'\n'*}"
+  version="${banner#rclone v}"
+  version="${version%%[^0-9.]*}"
+  [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || backup_die "Unrecognized rclone version: ${banner}"
+  version_at_least "$version" "$MINIMUM_RCLONE_VERSION" \
+    || backup_die "rclone ${MINIMUM_RCLONE_VERSION} or newer is required (found ${version})"
+}
+
 load_required_value() {
   local variable_name="$1"
   local file_variable_name="${variable_name}_FILE"

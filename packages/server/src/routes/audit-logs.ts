@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { Permissions } from '@alparts/shared';
 import { authMiddleware, type AuthRequest } from '../middleware/auth.js';
 import { requireWorkspacePermission } from '../middleware/rbac.js';
-import { rateLimit } from '../middleware/rate-limit.js';
+import { rateLimit, requestSource } from '../middleware/rate-limit.js';
 import * as auditLogService from '../services/audit-log.service.js';
 
 const router = Router();
@@ -15,12 +15,12 @@ const listQuery = z.object({
 const auditReadLimit = rateLimit({
   windowMs: 60_000,
   max: 60,
-  key: (req) => (req as AuthRequest).userId || req.ip || 'unknown',
+  key: (req) => (req as AuthRequest).userId || requestSource(req),
 });
 const integrityReadLimit = rateLimit({
   windowMs: 60_000,
   max: 5,
-  key: (req) => (req as AuthRequest).userId || req.ip || 'unknown',
+  key: (req) => (req as AuthRequest).userId || requestSource(req),
 });
 
 router.post(

@@ -271,7 +271,7 @@ try {
     const f = await fixture();
     const { hashPassword } = await import('../../packages/server/src/security/password-work.ts');
     const { actionPurpose } = await import('../../packages/server/src/security/action-purpose.ts');
-    const { isSensitiveAction } = await import('../../packages/shared/src/index.ts');
+    const { isSensitiveRequest } = await import('../../packages/shared/src/index.ts');
     const password = randomUUID() + randomUUID();
     await db.update(schema.users).set({ passwordHash: await hashPassword(password, 12) }).where(eq(schema.users.id, f.manager));
     const manager = await register(f.manager);
@@ -292,7 +292,7 @@ try {
         ['PUT', `/channels/${f.channelId}`, { name: 'Safe rename' }, 200],
       ] as const) {
         const headers: Record<string, string> = { Cookie: manager.cookie, Origin: 'http://localhost:5173', 'Content-Type': 'application/json' };
-        if (isSensitiveAction(method, `/api${path}`)) {
+        if (isSensitiveRequest(method, `/api${path}`, body)) {
           const purpose = actionPurpose(method, `/api${path}`, body);
           const options = await fetch(`http://127.0.0.1:${address.port}/api/auth/step-up/options`, {
             method: 'POST', headers, body: JSON.stringify({ purpose }), signal: AbortSignal.timeout(10_000),
@@ -442,11 +442,9 @@ try {
     try {
       const result = await profiles.setAvatar(f.subject, samePixelsPng(0));
       assert.ok(injected, 'fault injection must actually fire');
-      const stream = await profiles.openAvatar(f.subject, f.subject, result.avatarUrl.split('/').at(-1)!);
-      assert.ok(stream);
-      const chunks: Buffer[] = [];
-      for await (const data of stream) chunks.push(Buffer.from(data));
-      assert.ok(Buffer.concat(chunks).equals(sanitizeAvatarPng(samePixelsPng(0))));
+      const image = await profiles.readAvatar(f.subject, f.subject, result.avatarUrl.split('/').at(-1)!);
+      assert.ok(image);
+      assert.ok(image.equals(sanitizeAvatarPng(samePixelsPng(0))));
     } finally { db.transaction = original; }
   });
 

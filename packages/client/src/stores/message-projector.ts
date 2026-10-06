@@ -183,9 +183,38 @@ export function mergeMessageEvents(...batches: Message[][]): Message[] {
       events.set(event.id, existing ? mergeDuplicateEvent(existing, event) : canonical ? event : withoutLegacyVerificationProperty(event));
     }
   }
-  const ordered = [...events.values()].sort(compareMessageEvents);
+  const ordered = quarantineReplayedEvents([...events.values()].sort(compareMessageEvents));
   canonicalBatches.add(ordered);
   return ordered;
+}
+
+/**
+ * The server keeps one event per channel and idempotency key, so a second
+ * signed event carrying the same author and key under another id replays an
+ * earlier operation, such as an old edit that would roll a message back.
+ * Only the first verified one counts; later ones are quarantined like an
+ * equivocation.
+ */
+function quarantineReplayedEvents(ordered: Message[]): Message[] {
+  const seen = new Set<string>();
+  let changed = false;
+  const result = ordered.map((event) => {
+    if (!isAuthenticatedMessageEvent(event) || !event.idempotencyKey) return event;
+    const conflicted = hasAuthenticatedEnvelopeConflict(event);
+    if (!conflicted && getMessageCryptoVerificationState(event) !== true) return event;
+    const key = `${event.channelId}\u0000${event.authorId}\u0000${event.idempotencyKey}`;
+    const replay = seen.has(key);
+    seen.add(key);
+    if (!replay || conflicted) return event;
+    changed = true;
+    return {
+      ...event,
+      content: '',
+      [localVerificationState]: false,
+      [authenticatedEnvelopeConflict]: true,
+    } as Message;
+  });
+  return changed ? result : ordered;
 }
 
 function addReaction(reactions: Reaction[], emoji: string, userId: string): Reaction[] {

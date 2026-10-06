@@ -55,7 +55,7 @@ The repository can create unsigned development artifacts. A public release must 
 - A deployment change clears that origin’s cookies/storage and its protected desktop vault namespace before loading the new deployment.
 - Device private keys and local-state keys are wrapped by Electron `safeStorage`: DPAPI on Windows, Keychain on macOS, and a Secret Service implementation on Linux. The app refuses to start when only unprotected Linux fallback storage is available.
 - OS lock, suspend, the configured idle interval, or “今すぐロック” clears decrypted client state and requires the account password before reopening it. The main process keeps the lock state across renderer reloads.
-- Attachments are decrypted in 5 MiB chunks into an opaque native save handle. Partial files are removed on failure or cancellation. Dangerous files receive Windows zone information or macOS quarantine metadata; Linux files are saved without execute permission.
+- Attachments are decrypted in 5 MiB chunks into an opaque native save handle. Partial files are removed on failure or cancellation. Every saved file receives Windows zone information or macOS quarantine metadata, whatever its type, as browsers do; Linux files are saved without execute permission. Risky types additionally need a confirmation in the UI.
 
 The desktop client does not expose diagnostic details in normal UI messages. Development logs and tests hold implementation-level failure information.
 
@@ -70,4 +70,4 @@ packages/desktop/node_modules/.bin/electron-fuses read \
   --app packages/desktop/release/linux-unpacked/alparts
 ```
 
-Desktop unit tests cover URL/origin restrictions, bundle path traversal, vault persistence/rotation/deletion, settings validation, attachment streaming, size bounds, cancellation cleanup, and dangerous filename recognition. Native installer execution, signing, and OS key-store behavior must additionally be checked on each target operating system.
+Desktop unit tests cover URL/origin restrictions, bundle path traversal, vault persistence/rotation/deletion, settings validation, attachment streaming, size bounds, cancellation cleanup, and marking of every saved file. Native installer execution, signing, and OS key-store behavior must additionally be checked on each target operating system.

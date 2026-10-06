@@ -9,7 +9,7 @@ import {
   MAX_KEY_RECIPIENTS,
   MAX_KEY_VERSION_LOOKUP_IDS,
 } from '../security/limits.js';
-import { rateLimit } from '../middleware/rate-limit.js';
+import { rateLimit, requestSource } from '../middleware/rate-limit.js';
 
 const router = Router();
 const wrappedKey = z.string().min(100).max(2048).regex(/^[A-Za-z0-9+/]+={0,2}$/);
@@ -56,12 +56,12 @@ const deviceDirectoryQuerySchema = z.object({
 const keyMutationLimit = rateLimit({
   windowMs: 60_000,
   max: 60,
-  key: (req) => `${(req as AuthRequest).userId || req.ip || 'unknown'}:${req.params.id || 'unknown'}`,
+  key: (req) => `${(req as AuthRequest).userId || requestSource(req)}:${req.params.id || 'unknown'}`,
 });
 const keyAbortLimit = rateLimit({
   windowMs: 60 * 60 * 1000,
   max: 10,
-  key: (req) => `${(req as AuthRequest).userId || req.ip || 'unknown'}:${req.params.id || 'unknown'}`,
+  key: (req) => `${(req as AuthRequest).userId || requestSource(req)}:${req.params.id || 'unknown'}`,
 });
 
 router.get('/channels/:id/key-recipients', authMiddleware, requireChannelAccess('id'), async (req: AuthRequest, res) => {

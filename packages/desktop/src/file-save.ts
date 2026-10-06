@@ -6,16 +6,8 @@ import path from 'node:path';
 export const MAX_NATIVE_SAVE_BYTES = 100 * 1024 * 1024;
 export const MAX_NATIVE_SAVE_CHUNK_BYTES = 5 * 1024 * 1024;
 
-const DANGEROUS_EXTENSIONS = new Set([
-  'exe', 'com', 'bat', 'cmd', 'ps1', 'sh', 'js', 'mjs', 'cjs', 'vbs', 'msi',
-  'scr', 'dll', 'hta', 'html', 'htm', 'svg', 'xml', 'xhtml', 'pdf', 'docm',
-  'xlsm', 'pptm', 'jar', 'apk', 'app', 'dmg', 'iso', 'php', 'wasm', 'zip',
-  '7z', 'rar', 'gz', 'bz2', 'xz', 'tar', 'lnk', 'reg', 'cpl', 'gadget', 'wsf',
-  'wsh', 'sct', 'chm', 'inf', 'pif', 'vb', 'vbe', 'jse', 'doc', 'xls', 'ppt',
-]);
-
 export type SaveTargetSelector = (suggestedName: string) => Promise<string | null>;
-export type SavedFileProtector = (filename: string, dangerous: boolean) => Promise<void>;
+export type SavedFileProtector = (filename: string) => Promise<void>;
 
 interface ActiveSave {
   handle: FileHandle;
@@ -23,7 +15,6 @@ interface ActiveSave {
   targetPath: string;
   expectedBytes: number;
   writtenBytes: number;
-  dangerous: boolean;
   writing: boolean;
 }
 
@@ -44,6 +35,8 @@ export class NativeFileSaveManager {
     if (this.#active.size + this.#pendingSelections >= 2) throw new Error('TOO_MANY_ACTIVE_SAVES');
     const suggestedName = normalizeSuggestedFilename(suggestedNameValue);
     const expectedBytes = normalizeExpectedBytes(expectedBytesValue);
+    // The flag only decides the renderer's own confirmation. Every saved file
+    // is marked as downloaded, whatever its type, as browsers do.
     if (typeof dangerousValue !== 'boolean') throw new Error('INVALID_DANGER_FLAG');
 
     this.#pendingSelections += 1;
@@ -67,9 +60,6 @@ export class NativeFileSaveManager {
       targetPath,
       expectedBytes,
       writtenBytes: 0,
-      dangerous: dangerousValue
-        || isDangerousDownloadFilename(suggestedName)
-        || isDangerousDownloadFilename(path.basename(targetPath)),
       writing: false,
     });
     return token;
@@ -118,7 +108,7 @@ export class NativeFileSaveManager {
     try {
       await save.handle.sync();
       await save.handle.close();
-      await this.protectSavedFile(save.temporaryPath, save.dangerous);
+      await this.protectSavedFile(save.temporaryPath);
       await rename(save.temporaryPath, save.targetPath);
       return true;
     } catch (error) {
@@ -169,16 +159,6 @@ export function normalizeSuggestedFilename(value: unknown): string {
   return filename;
 }
 
-export function isDangerousDownloadFilename(value: string): boolean {
-  const normalized = value.normalize('NFKC').trim().replace(/[. ]+$/g, '').toLowerCase();
-  const segments = normalized.split('.');
-  if (segments.length < 2) return false;
-  return segments.slice(1).some((extension) => {
-    const token = extension.split(/[^a-z0-9]/, 1)[0];
-    return DANGEROUS_EXTENSIONS.has(extension) || DANGEROUS_EXTENSIONS.has(token);
-  });
-}
-
 export function assertSafeSelectedPath(value: unknown, platform = process.platform): string {
   const pathApi = platform === 'win32' ? path.win32 : path;
   if (
@@ -201,9 +181,8 @@ export function assertSafeSelectedPath(value: unknown, platform = process.platfo
   return value;
 }
 
-async function protectSavedFileForPlatform(filename: string, dangerous: boolean): Promise<void> {
+async function protectSavedFileForPlatform(filename: string): Promise<void> {
   await chmod(filename, 0o600);
-  if (!dangerous) return;
   if (process.platform === 'win32') {
     await writeFile(`${filename}:Zone.Identifier`, '[ZoneTransfer]\r\nZoneId=3\r\n', {
       encoding: 'utf8',
@@ -221,7 +200,7 @@ async function protectSavedFileForPlatform(filename: string, dangerous: boolean)
     ]);
   }
   // On Linux, mode 0600 deliberately removes execute permission. Together
-  // with the mandatory confirmation in the UI this is the equivalent guard.
+  // with the confirmation the UI asks for risky types, this is the guard.
 }
 
 async function runFixedProgram(program: string, args: string[]): Promise<void> {

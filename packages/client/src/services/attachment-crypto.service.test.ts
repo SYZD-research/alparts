@@ -101,8 +101,9 @@ describe('attachment crypto protocol', () => {
 
   it('verifies the canonical sender envelope and fails closed on tampering or legacy metadata', async () => {
     const attachment = attachmentFixture(17, new Uint8Array([8, 7, 6, 5, 4, 3, 2, 1]));
-    const message = { id: messageId, channelId, authorId, keyVersion: 1 };
+    const message = { id: messageId, channelId, authorId, keyVersion: 1, idempotencyKey: 'message-signed-key' };
     const envelope = buildSignedAttachmentEnvelope(message, attachment);
+    expect(envelope.messageIdempotencyKey).toBe('message-signed-key');
     const signing = await crypto.subtle.generateKey(
       { name: 'ECDSA', namedCurve: 'P-256' },
       true,
@@ -132,6 +133,14 @@ describe('attachment crypto protocol', () => {
       signature,
       identityKey,
     )).toBe(false);
+    // Another message under the same id, or the unbound legacy layout, does not verify.
+    expect(await verifyAttachmentSignature(
+      { ...envelope, messageIdempotencyKey: 'another-message-key' },
+      signature,
+      identityKey,
+    )).toBe(false);
+    const { messageIdempotencyKey: _bound, ...legacy } = envelope;
+    expect(await verifyAttachmentSignature(legacy, signature, identityKey)).toBe(false);
     expect(() => buildSignedAttachmentEnvelope(message, { ...attachment, channelId: null }))
       .toThrow(/ファイル情報/);
     expect(() => buildSignedAttachmentEnvelope(message, { ...attachment, keyVersion: 2 }))

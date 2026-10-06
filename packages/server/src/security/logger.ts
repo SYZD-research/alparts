@@ -2,7 +2,7 @@ import { currentLogContext } from './log-context.js';
 
 type ErrorLike = { name?: unknown; code?: unknown };
 
-function base(level: 'info' | 'error', event: string) {
+function base(level: 'info' | 'warning' | 'error', event: string) {
   const context = currentLogContext();
   return {
     timestamp: new Date().toISOString(),
@@ -32,4 +32,8 @@ export function logError(event: string, error: unknown): void {
 
 export function logInfo(event: string, details: Record<string, string | number | boolean> = {}): void {
   console.log(JSON.stringify({ ...base('info', event), ...details }));
+}
+
+export function logWarning(event: string, details: Record<string, string | number | boolean> = {}): void {
+  console.warn(JSON.stringify({ ...base('warning', event), ...details }));
 }

@@ -1,4 +1,4 @@
-import { MAX_FILE_SIZE, type Attachment, type Message } from '@alparts/shared';
+import { MAX_FILE_SIZE, type Attachment } from '@alparts/shared';
 import {
   api,
   ApiError,
@@ -16,6 +16,7 @@ import {
   sanitizeAttachmentFilename,
   unwrapAttachmentFileKey,
   validateAttachmentManifest,
+  type AttachmentMessage,
 } from './attachment-crypto.service';
 import {
   boundedBackoffDelayMs,
@@ -162,7 +163,7 @@ export function assertAttachmentReservationContract(
  * the signed, normalized MIME type rather than sniffing untrusted content.
  */
 export async function loadAttachmentImagePreview(
-  message: Pick<Message, 'id' | 'channelId' | 'authorId' | 'keyVersion'>,
+  message: AttachmentMessage,
   attachment: Attachment,
   signal: AbortSignal,
   onProgress: (progress: AttachmentDownloadProgress) => void,
@@ -225,7 +226,7 @@ export async function loadAttachmentImagePreview(
 }
 
 export async function downloadAttachment(
-  message: Pick<Message, 'id' | 'channelId' | 'authorId' | 'keyVersion'>,
+  message: AttachmentMessage,
   attachment: Attachment,
   filename: string,
   signal: AbortSignal,

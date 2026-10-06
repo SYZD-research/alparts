@@ -7,7 +7,11 @@ import { config } from '../config/index.js';
 import { db } from '../db/index.js';
 import { auditLogs } from '../db/schema.js';
 import { BoundedAsyncGate } from '../security/bounded-async-gate.js';
-import { AUDIT_COMMIT_WAIT_MS, MAX_PENDING_AUDIT_COMMITS } from '../security/limits.js';
+import {
+  AUDIT_CHECKPOINT_RETRY_INTERVAL_MS,
+  AUDIT_COMMIT_WAIT_MS,
+  MAX_PENDING_AUDIT_COMMITS,
+} from '../security/limits.js';
 import { currentLogContext } from '../security/log-context.js';
 import { logError } from '../security/logger.js';
 import { readWitnessFile, verifyAuditWitness, type AuditWitnessPayload } from '../security/audit-witness.js';
@@ -53,6 +57,10 @@ const auditCommitGate = new BoundedAsyncGate(1, MAX_PENDING_AUDIT_COMMITS, {
 });
 let checkpointFailure: Error | null = null;
 let checkpointIntegrityFailure: Error | null = null;
+// The committed row whose checkpoint write last failed, retried no sooner
+// than checkpointRetryAfter so an unreachable store is not hammered.
+let pendingCheckpoint: CommittedAuditEntry | null = null;
+let checkpointRetryAfter = 0;
 let lastFullVerification: { valid: boolean; checkpoint: 'disabled' | 'initialized' | 'verified' } | null = null;
 let lastAcceptedCheckpoint: AuditCheckpointV2 | null = null;
 let durableAuditHead: AuditCheckpointV2 | null = null;
@@ -171,7 +179,8 @@ export async function auditedTransaction<T>(
     } catch (error) {
       // The state transaction and its chained audit row are already durable.
       // Report that committed result exactly once, but retain checkpointFailure
-      // so the next mutation and readiness fail closed until operator recovery.
+      // so the next mutation and readiness fail closed until the checkpoint
+      // for this row is written.
       logError('audit.checkpoint_write_failed_after_commit', error);
     }
     return committed.result;
@@ -217,6 +226,7 @@ async function assertAuditCommitAdmission(): Promise<void> {
   } catch {
     // The stable failure object below is the authoritative admission result.
   }
+  await retryFailedCheckpoint();
   if (checkpointFailure) throw new AuditUnavailableError({ cause: checkpointFailure });
   if (checkpointIntegrityFailure) throw new AuditUnavailableError({ cause: checkpointIntegrityFailure });
   await assertExternalWitness();
@@ -291,13 +301,33 @@ function enqueueCheckpoint(entry: CommittedAuditEntry): Promise<void> {
     .then(() => writeAuditCheckpoint(entry.id, entry.hash, entry.createdAt))
     .then(() => {
       checkpointFailure = null;
+      pendingCheckpoint = null;
     })
     .catch((error: unknown) => {
       checkpointFailure = error instanceof Error ? error : new Error('Audit checkpoint update failed');
+      pendingCheckpoint = entry;
+      checkpointRetryAfter = Date.now() + AUDIT_CHECKPOINT_RETRY_INTERVAL_MS;
       throw checkpointFailure;
     });
   checkpointQueue = next;
   return next;
+}
+
+/**
+ * A checkpoint write that failed for a transient reason, such as storage that
+ * was briefly unreachable or full, is retried for the already committed row
+ * before a later write or readiness check is refused. The retry runs the same
+ * chain checks as any checkpoint advance; integrity failures stay latched
+ * until an operator recovers them.
+ */
+async function retryFailedCheckpoint(): Promise<void> {
+  if (!checkpointFailure || checkpointIntegrityFailure || !pendingCheckpoint) return;
+  if (Date.now() < checkpointRetryAfter) return;
+  try {
+    await enqueueCheckpoint(pendingCheckpoint);
+  } catch {
+    // checkpointFailure keeps the stable failure for the caller.
+  }
 }
 
 export async function checkAuditCheckpoint(): Promise<void> {
@@ -318,6 +348,7 @@ async function checkAuditCheckpointNow(): Promise<void> {
     }
     if (observed === checkpointQueue) break;
   }
+  await retryFailedCheckpoint();
   if (checkpointFailure) throw checkpointFailure;
   if (checkpointIntegrityFailure) throw checkpointIntegrityFailure;
   let checkpoint: AuditCheckpoint | null;
@@ -429,6 +460,7 @@ export async function provisionAuditCheckpoint(): Promise<void> {
       await writeAuditCheckpoint(initialized.id, initialized.hash, initialized.createdAt, true);
     }
     checkpointFailure = null;
+    pendingCheckpoint = null;
   } catch (error) {
     throw latchCheckpointIntegrityFailure(error);
   }

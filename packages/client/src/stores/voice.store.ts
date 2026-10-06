@@ -747,7 +747,7 @@ async function loadDeviceDirectory(channelId: string): Promise<Map<string, Devic
     if (requestedDeviceIds.length < 1 || requestedDeviceIds.length > MAX_VOICE_PARTICIPANTS) {
       throw new Error('Invalid voice device directory request');
     }
-    const request = api.getChannelDeviceDirectory(channelId, requestedDeviceIds).then((entries) => {
+    const request = api.getChannelDeviceDirectory(channelId, requestedDeviceIds, 'active').then((entries) => {
       if (entries.length > MAX_VOICE_PARTICIPANTS) throw new Error('Invalid device directory');
       const result = new Map<string, DeviceDirectoryEntry>();
       for (const entry of entries) {

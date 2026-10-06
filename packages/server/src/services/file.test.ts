@@ -227,6 +227,21 @@ describe('fixed attachment chunk contract', () => {
     replacement?.();
   });
 
+  it('counts avatar downloads per user, apart from attachment downloads', async () => {
+    const limits = await import('../security/download-limits.js');
+    const avatars = Array.from({ length: limits.MAX_AVATAR_DOWNLOADS_PER_USER }, () => limits.acquireAvatarDownloadLease('user-a'));
+    assert.ok(avatars.every((release) => typeof release === 'function'));
+    assert.equal(limits.acquireAvatarDownloadLease('user-a'), null);
+    const other = limits.acquireAvatarDownloadLease('user-b');
+    assert.equal(typeof other, 'function');
+    const attachment = limits.acquireDownloadLease('user-a');
+    assert.equal(typeof attachment, 'function');
+    avatars[0]?.();
+    const replacement = limits.acquireAvatarDownloadLease('user-a');
+    assert.equal(typeof replacement, 'function');
+    for (const release of [...avatars, other, attachment, replacement]) release?.();
+  });
+
   it('removes an expired queued operation instead of running it later', async () => {
     const { BoundedAsyncGate } = await import('./object-storage.js');
     const gate = new BoundedAsyncGate(1, 1, {

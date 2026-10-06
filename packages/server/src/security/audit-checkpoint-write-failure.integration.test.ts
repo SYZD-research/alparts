@@ -4,6 +4,7 @@ import { chmod, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
+import { setTimeout as delay } from 'node:timers/promises';
 import { eq } from 'drizzle-orm';
 
 const enabled = process.env.RUN_INTEGRATION === '1';
@@ -71,5 +72,27 @@ describe('audit checkpoint write failure admission', { skip: !enabled }, () => {
       (error: unknown) => error instanceof audit.AuditUnavailableError,
     );
     await assert.rejects(audit.checkAuditCheckpoint());
+  });
+
+  it('writes the missed checkpoint and admits writes again once storage recovers', async () => {
+    const audit = await import('../middleware/audit.js');
+    const { AUDIT_CHECKPOINT_RETRY_INTERVAL_MS } = await import('./limits.js');
+    const { db } = await import('../db/index.js');
+    const { auditLogs } = await import('../db/schema.js');
+    const recoveredAction = `security.audit.checkpoint-recovered.${randomUUID()}`;
+
+    await chmod(checkpointDirectory, 0o700);
+    await delay(AUDIT_CHECKPOINT_RETRY_INTERVAL_MS + 100);
+    await audit.checkAuditCheckpoint();
+    const result = await audit.auditedTransaction(async () => recoveredAction, () => ({
+      action: recoveredAction,
+      targetType: 'system',
+    }));
+
+    assert.equal(result, recoveredAction);
+    const row = await db.query.auditLogs.findFirst({ where: eq(auditLogs.action, recoveredAction) });
+    assert.ok(row);
+    assert.equal(JSON.parse(await readFile(checkpointPath, 'utf8')).logId, row.id);
+    assert.equal((await audit.verifyAuditChain()).valid, true);
   });
 });

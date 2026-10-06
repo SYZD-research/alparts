@@ -1,6 +1,6 @@
 import { deleteChannelSecurityState, readSecurityState, writeSecurityState, fromBase64 } from './security-storage';
 import { padMessage, unpadMessage } from './message-padding';
-import { prepareMlsPackage, proposeMlsEpoch, deriveMlsDelivery, mlsLocator } from './mls.service';
+import { prepareMlsPackage, proposeMlsEpoch, deriveMlsDelivery, mlsLocator, nonMlsDeliveryAllowed, pinnedMlsVersion } from './mls.service';
 import { verifyDirectoryDevices, verifiedDirectory } from './directory.service';
 import {
   serializeAttachmentEnvelope,
@@ -489,7 +489,7 @@ async function ensureChannelKeyAttempt(
     ]);
     channelKeyScopes.assertCurrent(scope);
     assertKeyRecipientState(state);
-    await verifyDirectoryDevices(channelId, state.recipients, true);
+    await verifyDirectoryDevices(channelId, state.recipients, 'active');
     if (state.pendingVersion === null && (state.rotationRequired || state.currentVersion === 0)) {
       try { await prepareMlsPackage(channelId, state.nextVersion); }
       catch (error) {
@@ -629,7 +629,9 @@ async function ensureChannelKeyAttempt(
 
     const distributed = new Set(state.distributedDeviceIds);
     const missing = state.recipients.filter((recipient) => !distributed.has(recipient.deviceId));
-    if (missing.length > 0) {
+    // An MLS key reaches new members only through an MLS epoch; never wrap it
+    // for devices the server merely reports as missing.
+    if (missing.length > 0 && !mlsLocator(active.delivery.encryptedKey)) {
       try {
         await distributeFromDelivery(channelId, active.delivery, missing, device);
         channelKeyScopes.assertCurrent(scope);
@@ -835,7 +837,7 @@ async function assertDeliveriesMatchDirectory(channelId: string, deliveries: rea
   const ids = [...new Set(deliveries.map((d) => d.distributorDeviceId))];
   for (let i = 0; i < ids.length; i += 64) {
     const batch = ids.slice(i, i + 64);
-    const directory = await api.getChannelDeviceDirectory(channelId, batch);
+    const directory = await api.getChannelDeviceDirectory(channelId, batch, 'active');
     for (const delivery of deliveries.filter((d) => batch.includes(d.distributorDeviceId))) {
       if (directory.find((d) => d.deviceId === delivery.distributorDeviceId)?.identityKey !== delivery.distributorIdentityKey) throw new Error('DIRECTORY_INVALID');
     }
@@ -859,7 +861,7 @@ async function acknowledgeCommittedChannelKey(
   await api.acknowledgeChannelKey(channelId, wrapped.deliveryId, signature);
 }
 
-const EQUIVOCATION_ERRORS = new Set(['INVALID_MLS_TRANSCRIPT', 'INVALID_MLS_SIGNATURE', 'DIRECTORY_INVALID']);
+const EQUIVOCATION_ERRORS = new Set(['INVALID_MLS_TRANSCRIPT', 'INVALID_MLS_SIGNATURE', 'DIRECTORY_INVALID', 'MLS_DOWNGRADE']);
 
 async function unwrapCommittedChannelKey(
   channelId: string,
@@ -882,6 +884,11 @@ async function unwrapCommittedChannelKey(
   try {
     const locator = mlsLocator(wrapped.encryptedKey);
     if (locator && locator.version !== wrapped.version) return null;
+    // A channel already on MLS never goes back to keys the server could
+    // have produced itself.
+    if (!locator && !nonMlsDeliveryAllowed(await pinnedMlsVersion(channelId), wrapped.version)) {
+      throw new Error('MLS_DOWNGRADE');
+    }
     raw = locator ? await deriveMlsDelivery(channelId, wrapped.version, locator.transcript, wrapped.epochStatus) : await unwrapChannelKey(wrapped.encryptedKey, device);
   } catch (error) {
     // A delivery that is simply not ours is skipped. Conflicting signed

@@ -27,6 +27,10 @@ Optional:
   S3_REGION                    Signing region (default us-east-1)
   BACKUP_REASON                Safe label recorded inside the encrypted manifest
 
+Options:
+  --preflight                  Check the tools and settings only, then exit
+                               without touching the database or the store
+
 The script never stops the application. ALPARTS_BACKUP_QUIESCED is an operator
 assertion that all application writes are already stopped for the complete run.
 The installed pg_dump major must match the source PostgreSQL server major.
@@ -41,14 +45,20 @@ if [[ "${1-}" == '--help' || "${1-}" == '-h' ]]; then
   show_help
   exit 0
 fi
+preflight=false
+if [[ "${1-}" == '--preflight' ]]; then
+  preflight=true
+  shift
+fi
 [[ $# -eq 0 ]] || backup_die 'This script accepts no positional arguments; use --help'
 
 for dependency in age awk chmod cmp cut date find grep jq ln mkdir mktemp od pg_dump psql rclone rm sed sha256sum sort stat sync tar tr uniq wc; do
   require_command "$dependency"
 done
+require_storage_tool
 
 reject_legacy_storage_settings
-[[ "${ALPARTS_BACKUP_QUIESCED-}" == 'YES_WRITES_ARE_STOPPED' ]] \
+[[ "$preflight" == true || "${ALPARTS_BACKUP_QUIESCED-}" == 'YES_WRITES_ARE_STOPPED' ]] \
   || backup_die 'Stop application writes, then set ALPARTS_BACKUP_QUIESCED=YES_WRITES_ARE_STOPPED'
 
 [[ -n "${DATABASE_SERVICE_FILE-}" ]] \
@@ -78,6 +88,11 @@ validate_backup_recipient "$BACKUP_AGE_RECIPIENT"
 BACKUP_REASON="${BACKUP_REASON-manual}"
 [[ "$BACKUP_REASON" =~ ^[A-Za-z0-9._:-]{1,80}$ ]] \
   || backup_die 'BACKUP_REASON must be 1-80 safe label characters'
+
+if [[ "$preflight" == true ]]; then
+  backup_log 'Preflight passed: the tools and settings are ready'
+  exit 0
+fi
 
 STAGING_DIR=''
 CIPHER_TEMP=''
