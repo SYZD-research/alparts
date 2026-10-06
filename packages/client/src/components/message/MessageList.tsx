@@ -9,6 +9,7 @@ import { latestReadableMessageId } from '../../stores/user-state-model';
 import { useWorkspaceStore } from '../../stores/workspace.store';
 import { focusMessageElement } from '../../services/message-navigation';
 import { MessageContent } from './MessageContent';
+import { useT } from '../../i18n';
 
 interface Props {
   channelId: string;
@@ -18,6 +19,7 @@ interface Props {
 const EMPTY_MESSAGES: Message[] = [];
 
 export function MessageList({ channelId, visible: chatVisible = true }: Props) {
+  const t = useT();
   const [jumpError, setJumpError] = useState<string | null>(null);
   const messages = useMessageStore((state) => state.messagesByChannel[channelId] || EMPTY_MESSAGES);
   const isLoading = useMessageStore((state) => Boolean(state.loadingByChannel[channelId]));
@@ -120,14 +122,14 @@ export function MessageList({ channelId, visible: chatVisible = true }: Props) {
     let found = Boolean(document.getElementById(`message-${messageId}`));
     if (!found) found = await loadMessageThroughHistory(channelId, messageId, 20);
     if (!found || !await focusMessageElement(messageId)) {
-      setJumpError('返信先のメッセージを読み込めませんでした');
+      setJumpError(t('返信先のメッセージを読み込めませんでした'));
     }
   };
 
   if (isLoading && messages.length === 0) {
     return (
       <div className="flex-1 flex items-center justify-center">
-        <div className="text-discord-muted">読み込み中...</div>
+        <div className="text-discord-muted">{t('読み込み中…')}</div>
       </div>
     );
   }
@@ -151,14 +153,14 @@ export function MessageList({ channelId, visible: chatVisible = true }: Props) {
       >
       {isLoadingMore && (
         <div className="text-center py-2 text-discord-muted text-sm">
-          さらに読み込み中...
+          {t('さらに読み込み中...')}
         </div>
       )}
 
       {jumpError && (
         <div role="alert" className="sticky top-1 z-10 mx-4 flex items-center justify-between gap-3 rounded bg-discord-red/15 px-3 py-2 text-sm text-discord-red">
           <span>{jumpError}</span>
-          <button type="button" onClick={() => setJumpError(null)} className="underline">閉じる</button>
+          <button type="button" onClick={() => setJumpError(null)} className="underline">{t('閉じる')}</button>
         </div>
       )}
 
@@ -166,8 +168,8 @@ export function MessageList({ channelId, visible: chatVisible = true }: Props) {
         <div className="flex items-center justify-center h-full">
           <div className="text-center text-discord-muted">
             <div className="text-4xl mb-2">#</div>
-            <p className="font-bold text-lg text-discord-text">このチャンネルの始まりです</p>
-            <p>最初のメッセージを送信しましょう！</p>
+            <p className="font-bold text-lg text-discord-text">{t('このチャンネルの始まりです')}</p>
+            <p>{t('最初のメッセージを送信しましょう！')}</p>
           </div>
         </div>
       )}
@@ -192,11 +194,11 @@ export function MessageList({ channelId, visible: chatVisible = true }: Props) {
           </div>
           <div className="min-w-0 flex-1">
             <div className="flex items-baseline gap-2">
-              <span className="font-medium text-white">{user?.displayName || '自分'}</span>
+              <span className="font-medium text-white">{user?.displayName || t('自分')}</span>
               <span className="text-xs text-discord-muted">
-                {item.status === 'sending' && '送信中…'}
-                {item.status === 'queued' && '未送信・自動送信待ち'}
-                {item.status === 'failed' && '送信失敗'}
+                {item.status === 'sending' && t('送信中…')}
+                {item.status === 'queued' && t('未送信・自動送信待ち')}
+                {item.status === 'failed' && t('送信失敗')}
               </span>
             </div>
             <div className="break-words text-discord-text">
@@ -208,7 +210,7 @@ export function MessageList({ channelId, visible: chatVisible = true }: Props) {
             </div>
             {item.status !== 'sending' && (
               <button type="button" onClick={() => retryOutboxItem(item.id)} className="mt-1 text-xs text-discord-muted underline hover:text-discord-text">
-                {item.status === 'failed' ? '送信できませんでした — 再試行' : '今すぐ再試行'}
+                {item.status === 'failed' ? t('送信できませんでした — 再試行') : t('今すぐ再試行')}
               </button>
             )}
           </div>

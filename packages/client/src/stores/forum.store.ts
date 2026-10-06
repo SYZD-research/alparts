@@ -9,6 +9,7 @@ import {
   type ForumPostBroadcastState,
   type ForumSort,
 } from './forum-model';
+import { t } from '../i18n';
 
 export interface ForumChannelView {
   postIds: string[];
@@ -283,7 +284,7 @@ export const useForumStore = create<ForumState>((set, get) => {
         }));
       } catch (error) {
         if (!isScopeCurrent(channelId, scope) || listVersions.get(channelId) !== version) return;
-        update(channelId, () => ({ loading: false, error: errorText(error, '投稿を読み込めませんでした') }));
+        update(channelId, () => ({ loading: false, error: errorText(error, t('投稿を読み込めませんでした')) }));
       }
     },
 
@@ -311,7 +312,7 @@ export const useForumStore = create<ForumState>((set, get) => {
         }));
       } catch (error) {
         if (!isScopeCurrent(channelId, scope) || listVersions.get(channelId) !== version) return;
-        update(channelId, () => ({ loadingMore: false, error: errorText(error, '投稿を読み込めませんでした') }));
+        update(channelId, () => ({ loadingMore: false, error: errorText(error, t('投稿を読み込めませんでした')) }));
       }
     },
 

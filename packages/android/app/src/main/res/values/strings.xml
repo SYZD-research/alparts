@@ -1,17 +1,35 @@
 <resources>
-    <string name="app_name">alparts</string>
-    <string name="connection_title">alpartsへようこそ</string>
-    <string name="connection_description">管理者から案内されたアドレスを入力してください。</string>
-    <string name="connection_label">接続先</string>
+    <string name="app_name" translatable="false">alparts</string>
+    <string name="connection_title">Welcome to alparts</string>
+    <string name="connection_description">Enter the address your administrator gave you.</string>
+    <string name="connection_label">Server</string>
     <string name="connection_hint" translatable="false">https://chat.example.com</string>
-    <string name="connect">接続する</string>
-    <string name="connecting">接続しています…</string>
-    <string name="connection_invalid">接続先を確認してください。</string>
-    <string name="connection_unavailable">接続できませんでした。通信環境と接続先を確認して、もう一度お試しください。</string>
-    <string name="connection_server_unavailable">接続先が応答していません。しばらく待ってから、もう一度お試しください。</string>
-    <string name="connection_not_alparts">接続先を確認できませんでした。管理者から案内されたアドレスを確認してください。</string>
-    <string name="connection_not_allowed">この接続先ではアプリを利用できません。管理者に確認してください。</string>
-    <string name="connection_unsafe">接続先の安全性を確認できませんでした。管理者に確認してください。</string>
-    <string name="connection_save_failed">接続先を保存できませんでした。もう一度お試しください。</string>
-    <string name="unlock">ロックを解除</string>
+    <string name="connect">Connect</string>
+    <string name="connecting">Connecting…</string>
+    <string name="connection_invalid">Check the server address.</string>
+    <string name="connection_unavailable">Could not connect. Check your connection and the server address, then try again.</string>
+    <string name="connection_server_unavailable">The server is not responding. Wait a moment and try again.</string>
+    <string name="connection_not_alparts">Could not verify the server. Check the address your administrator gave you.</string>
+    <string name="connection_not_allowed">The app cannot be used with this server. Check with your administrator.</string>
+    <string name="connection_unsafe">Could not verify that the server is safe. Check with your administrator.</string>
+    <string name="connection_save_failed">Could not save the server. Please try again.</string>
+    <string name="unlock">Unlock</string>
+    <string name="unlock_prompt">Unlock your device to continue.</string>
+    <string name="status_storage_unavailable">This device cannot store data safely.</string>
+    <string name="status_saved_server_unreadable">Could not read the saved server.</string>
+    <string name="status_screen_lock_required">Set up a screen lock on this device, then try again.</string>
+    <string name="status_webview_update">Update Android System WebView.</string>
+    <string name="status_locked">The app is locked.</string>
+    <string name="microphone_rationale">To join calls, allow alparts to use the microphone.</string>
+    <string name="microphone_blocked">The microphone cannot be used. To join calls, allow microphone access in Settings.</string>
+    <string name="microphone_settings_hint">In your device settings, allow alparts to use the microphone.</string>
+    <string name="microphone_denied">You cannot join the call because microphone access was not allowed.</string>
+    <string name="dangerous_file_warning">Opening this file could affect your device or data. Check the sender and contents before opening it.</string>
+    <string name="action_continue">Continue</string>
+    <string name="action_cancel">Cancel</string>
+    <string name="action_open_settings">Open settings</string>
+    <string name="action_not_now">Not now</string>
+    <string name="action_save">Save</string>
+    <string name="error_operation_failed">Could not complete the action.</string>
+    <string name="error_save_failed">Could not save.</string>
 </resources>

@@ -28,6 +28,7 @@ import {
   matchesPreviewImageSignature,
 } from './attachment-preview';
 import { getDesktopBridge } from './desktop.service';
+import { t } from '../i18n';
 
 export interface AttachmentDownloadProgress {
   completedBytes: number;
@@ -153,7 +154,7 @@ export function assertAttachmentReservationContract(
     || reservation.crypto.aadFormat !== ATTACHMENT_CHUNK_AAD_FORMAT
     || plaintextSize > reservation.maxPlaintextBytes
   ) {
-    throw new Error('サーバーとのファイル形式の取り決めが一致しません。最新版で再読み込みしてください');
+    throw new Error(t('サーバーとのファイル形式の取り決めが一致しません。最新版で再読み込みしてください'));
   }
 }
 
@@ -173,8 +174,8 @@ export async function loadAttachmentImagePreview(
   if (!canPreviewImage(attachment.mimeType, manifest.plaintextSize)) {
     throw new Error(
       manifest.plaintextSize > ATTACHMENT_IMAGE_PREVIEW_MAX_BYTES
-        ? '画像が大きいためプレビューできません。ファイルとして保存してください'
-        : 'この画像形式は安全なプレビューに対応していません',
+        ? t('画像が大きいためプレビューできません。ファイルとして保存してください')
+        : t('この画像形式は安全なプレビューに対応していません'),
     );
   }
 
@@ -199,7 +200,7 @@ export async function loadAttachmentImagePreview(
       const plaintext = new Uint8Array(await decryptAttachmentChunk(ciphertext, fileKey, manifest, index));
       try {
         if (index === 0 && !matchesPreviewImageSignature(attachment.mimeType, plaintext)) {
-          throw new Error('添付データが指定された画像形式と一致しないため、プレビューを停止しました');
+          throw new Error(t('添付データが指定された画像形式と一致しないため、プレビューを停止しました'));
         }
         const copy = new Uint8Array(plaintext.byteLength);
         copy.set(plaintext);
@@ -253,12 +254,12 @@ export async function downloadAttachment(
   try {
     if (desktopTokenPromise) {
       desktopToken = await desktopTokenPromise;
-      if (!desktopToken) throw new DOMException('操作はキャンセルされました', 'AbortError');
+      if (!desktopToken) throw new DOMException(t('操作はキャンセルされました'), 'AbortError');
     } else if (handlePromise) {
       const handle = await handlePromise;
       writable = await handle.createWritable();
     } else if (manifest.plaintextSize > ATTACHMENT_FALLBACK_BLOB_LIMIT_BYTES) {
-      throw new Error('このブラウザーでは100MBを超える添付を安全に保存できません');
+      throw new Error(t('このブラウザーでは100MBを超える添付を安全に保存できません'));
     }
 
     const fileKey = await unwrapAttachmentFileKey(message, attachment);
@@ -346,7 +347,7 @@ function getSaveFilePicker(): SaveFilePicker | null {
 }
 
 function throwIfAborted(signal: AbortSignal): void {
-  if (signal.aborted) throw new DOMException('操作はキャンセルされました', 'AbortError');
+  if (signal.aborted) throw new DOMException(t('操作はキャンセルされました'), 'AbortError');
 }
 
 async function abortableDelay(milliseconds: number, signal: AbortSignal): Promise<void> {
@@ -357,7 +358,7 @@ async function abortableDelay(milliseconds: number, signal: AbortSignal): Promis
     }, milliseconds);
     const onAbort = () => {
       clearTimeout(timer);
-      reject(new DOMException('操作はキャンセルされました', 'AbortError'));
+      reject(new DOMException(t('操作はキャンセルされました'), 'AbortError'));
     };
     signal.addEventListener('abort', onAbort, { once: true });
   });

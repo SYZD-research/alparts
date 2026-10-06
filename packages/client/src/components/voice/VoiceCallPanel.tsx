@@ -6,9 +6,11 @@ import {
   useVoiceStore,
   type VoiceConnectionQuality,
 } from '../../stores/voice.store';
+import { t, useT } from '../../i18n';
 
 /** Persistent call controls live in the sidebar so text-channel navigation cannot unmount them. */
 export function VoiceCallPanel() {
+  const t = useT();
   const status = useVoiceStore((state) => state.status);
   const channelId = useVoiceStore((state) => state.channelId);
   const participants = useVoiceStore((state) => state.participants);
@@ -44,20 +46,20 @@ export function VoiceCallPanel() {
   if (status === 'idle' || !channelId) return null;
   if (status !== 'connected') {
     return (
-      <section aria-label="音声通話" className="border-t border-discord-bg bg-discord-bg/70 p-2">
+      <section aria-label={t('音声通話')} className="border-t border-discord-bg bg-discord-bg/70 p-2">
         <p className={`truncate text-xs font-semibold ${status === 'joining' ? 'text-discord-green' : 'text-discord-red'}`}>
-          {status === 'joining' ? '音声チャンネルに参加中…' : '音声チャンネルに参加できませんでした'}
+          {status === 'joining' ? t('音声チャンネルに参加中…') : t('音声チャンネルに参加できませんでした')}
         </p>
-        <p className="mt-0.5 truncate text-xs text-discord-muted">{channelName || '音声チャンネル'}</p>
+        <p className="mt-0.5 truncate text-xs text-discord-muted">{channelName || t('音声チャンネル')}</p>
         {error && <p role="alert" className="mt-1 text-xs text-discord-red">{error}</p>}
         <div className="mt-2 flex gap-1">
           {status === 'error' && (
             <button type="button" onClick={() => void join(channelId)} className="flex-1 rounded bg-discord-green px-2 py-1.5 text-xs font-medium text-white">
-              再試行
+              {t('再試行')}
             </button>
           )}
           <button type="button" onClick={leave} className="flex-1 rounded bg-discord-hover px-2 py-1.5 text-xs text-discord-text">
-            {status === 'joining' ? 'キャンセル' : '閉じる'}
+            {status === 'joining' ? t('キャンセル') : t('閉じる')}
           </button>
         </div>
       </section>
@@ -65,34 +67,34 @@ export function VoiceCallPanel() {
   }
 
   return (
-    <section aria-label="音声通話" className="border-t border-discord-bg bg-discord-bg/70 p-2">
+    <section aria-label={t('音声通話')} className="border-t border-discord-bg bg-discord-bg/70 p-2">
       <div className="flex items-center gap-2">
         <div className="min-w-0 flex-1">
-          <p className="truncate text-xs font-semibold text-discord-green">音声接続済み</p>
-          <p className="truncate text-[11px] text-discord-muted">{channelName || '音声チャンネル'}・{qualityLabel(quality)}</p>
+          <p className="truncate text-xs font-semibold text-discord-green">{t('音声接続済み')}</p>
+          <p className="truncate text-[11px] text-discord-muted">{channelName || t('音声チャンネル')}{t('・')}{qualityLabel(quality)}</p>
         </div>
         <button
           type="button"
           aria-pressed={muted}
-          aria-label={muted ? 'ミュートを解除' : 'ミュート'}
-          title={muted ? 'ミュートを解除' : 'ミュート'}
+          aria-label={muted ? t('ミュートを解除') : t('ミュート')}
+          title={muted ? t('ミュートを解除') : t('ミュート')}
           onClick={() => setMuted(!muted)}
           className={`rounded px-2 py-1.5 text-sm ${muted ? 'bg-discord-red text-white' : 'bg-discord-hover text-discord-text'}`}
         >
           {muted ? '🔇' : '🎙'}
         </button>
         <button type="button" onClick={leave} className="rounded bg-discord-red px-2 py-1.5 text-xs font-medium text-white">
-          切断
+          {t('切断')}
         </button>
       </div>
 
-      <ul aria-label="通話参加者" className="mt-2 flex flex-wrap gap-1">
+      <ul aria-label={t('通話参加者')} className="mt-2 flex flex-wrap gap-1">
         {participants.map((participant) => {
-          const displayName = members.find((member) => member.userId === participant.userId)?.user.displayName ?? 'ユーザー';
+          const displayName = members.find((member) => member.userId === participant.userId)?.user.displayName ?? t('ユーザー');
           return (
             <li
               key={participant.participantId}
-              title={`${displayName}${participant.muted ? '（ミュート中）' : participant.speaking ? '（発言中）' : ''}`}
+              title={`${displayName}${participant.muted ? t('（ミュート中）') : participant.speaking ? t('（発言中）') : ''}`}
               className={`max-w-full truncate rounded-full border px-2 py-0.5 text-[11px] ${participant.speaking ? 'border-discord-green text-white' : 'border-discord-hover text-discord-muted'}`}
             >
               {participant.muted ? '🔇' : participant.speaking ? '●' : '○'} {displayName}
@@ -120,24 +122,24 @@ export function VoiceCallPanel() {
           }}
           className={`mt-2 w-full rounded px-2 py-2 text-xs font-semibold disabled:opacity-40 ${pushToTalkActive ? 'bg-discord-green text-white' : 'bg-discord-input text-discord-text'}`}
         >
-          {muted ? 'ミュートを解除してください' : pushToTalkActive ? '送信中 — 離すと停止' : '押している間だけ話す'}
+          {muted ? t('ミュートを解除してください') : pushToTalkActive ? t('送信中 — 離すと停止') : t('押している間だけ話す')}
         </button>
       )}
 
       <details className="mt-2 text-xs text-discord-muted">
-        <summary className="cursor-pointer rounded px-1 py-1 hover:bg-discord-hover hover:text-white">音声設定</summary>
+        <summary className="cursor-pointer rounded px-1 py-1 hover:bg-discord-hover hover:text-white">{t('音声設定')}</summary>
         <div className="mt-2 space-y-2">
           <label className="block">
-            話し方
+            {t('話し方')}
             <select value={mode} onChange={(event) => setMode(event.target.value === 'push-to-talk' ? 'push-to-talk' : 'voice-activity')} className="mt-1 w-full rounded bg-discord-input px-2 py-1.5 text-discord-text">
-              <option value="voice-activity">音声検出</option>
-              <option value="push-to-talk">プッシュトゥトーク</option>
+              <option value="voice-activity">{t('音声検出')}</option>
+              <option value="push-to-talk">{t('プッシュトゥトーク')}</option>
             </select>
           </label>
           <label className="block">
-            マイク
+            {t('マイク')}
             <select value={selectedInputId} onChange={(event) => void setInputDevice(event.target.value)} className="mt-1 w-full rounded bg-discord-input px-2 py-1.5 text-discord-text">
-              <option value="">システム既定</option>
+              <option value="">{t('システム既定')}</option>
               {inputDevices.filter((device) => device.deviceId !== 'default').map((device) => (
                 <option key={device.deviceId} value={device.deviceId}>{device.label}</option>
               ))}
@@ -145,9 +147,9 @@ export function VoiceCallPanel() {
           </label>
           {supportsAudioOutputSelection() && (
             <label className="block">
-              スピーカー
+              {t('スピーカー')}
               <select value={selectedOutputId} onChange={(event) => setOutputDevice(event.target.value)} className="mt-1 w-full rounded bg-discord-input px-2 py-1.5 text-discord-text">
-                <option value="">システム既定</option>
+                <option value="">{t('システム既定')}</option>
                 {outputDevices.filter((device) => device.deviceId !== 'default').map((device) => (
                   <option key={device.deviceId} value={device.deviceId}>{device.label}</option>
                 ))}
@@ -157,7 +159,7 @@ export function VoiceCallPanel() {
         </div>
       </details>
 
-      {error && <p role="alert" className="mt-2 text-xs text-discord-red">通話に問題が発生しました。接続を確認してください。</p>}
+      {error && <p role="alert" className="mt-2 text-xs text-discord-red">{t('通話に問題が発生しました。接続を確認してください。')}</p>}
       {participants.map((participant) => participant.participantId === self?.participantId ? null : (
         <RemoteVoiceAudio
           key={participant.participantId}
@@ -204,8 +206,8 @@ function supportsAudioOutputSelection(): boolean {
 }
 
 function qualityLabel(quality: VoiceConnectionQuality): string {
-  if (quality === 'good') return '品質 良好';
-  if (quality === 'fair') return '品質 普通';
-  if (quality === 'poor') return '品質 低下';
-  return '接続確認中';
+  if (quality === 'good') return t('品質 良好');
+  if (quality === 'fair') return t('品質 普通');
+  if (quality === 'poor') return t('品質 低下');
+  return t('接続確認中');
 }

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { WorkspaceMember } from '@alparts/shared';
 import { api, type EffectivePermissions } from '../../services/api';
 import { managementErrorMessage, permissionLabel } from '../../stores/workspace-management-model';
+import { useT } from '../../i18n';
 
 interface EffectivePermissionsPanelProps {
   workspaceId: string;
@@ -16,6 +17,7 @@ export function EffectivePermissionsPanel({
   members,
   canInspectOthers,
 }: EffectivePermissionsPanelProps) {
+  const t = useT();
   const [selectedUserId, setSelectedUserId] = useState(currentUserId);
   const [evaluation, setEvaluation] = useState<EffectivePermissions | null>(null);
   const [loading, setLoading] = useState(false);
@@ -40,7 +42,7 @@ export function EffectivePermissionsPanel({
     }).catch((loadError: unknown) => {
       if (generation === requestGeneration.current) {
         setEvaluation(null);
-        setError(managementErrorMessage(loadError, '権限を読み込めませんでした'));
+        setError(managementErrorMessage(loadError, t('権限を読み込めませんでした')));
       }
     }).finally(() => {
       if (generation === requestGeneration.current) setLoading(false);
@@ -51,11 +53,11 @@ export function EffectivePermissionsPanel({
   return (
     <section className="space-y-4" aria-labelledby="effective-permissions-title">
       <div>
-        <h3 id="effective-permissions-title" className="font-semibold text-white">権限と付与理由</h3>
-        <p className="mt-1 text-sm text-discord-muted">複数のロールを持つ場合の権限をまとめ、どのロールが各権限を許可しているかを表示します。</p>
+        <h3 id="effective-permissions-title" className="font-semibold text-white">{t('権限と付与理由')}</h3>
+        <p className="mt-1 text-sm text-discord-muted">{t('複数のロールを持つ場合の権限をまとめ、どのロールが各権限を許可しているかを表示します。')}</p>
       </div>
       <label className="block max-w-md text-sm text-discord-text">
-        対象メンバー
+        {t('対象メンバー')}
         <select
           value={selectedUserId}
           onChange={(event) => setSelectedUserId(event.target.value)}
@@ -63,18 +65,18 @@ export function EffectivePermissionsPanel({
           className="mt-1 w-full rounded bg-discord-bg px-3 py-2 text-white disabled:opacity-70"
         >
           {visibleMembers.map((member) => (
-            <option key={member.userId} value={member.userId}>{member.user.displayName}{member.userId === currentUserId ? '（自分）' : ''}</option>
+            <option key={member.userId} value={member.userId}>{member.user.displayName}{member.userId === currentUserId ? t('（自分）') : ''}</option>
           ))}
         </select>
       </label>
-      {!canInspectOthers && <p className="text-xs text-discord-muted">他メンバーの権限理由を閲覧するには「ロールを管理」権限が必要です。</p>}
-      {loading && <p role="status" className="text-sm text-discord-muted">権限を評価中…</p>}
+      {!canInspectOthers && <p className="text-xs text-discord-muted">{t('他メンバーの権限理由を閲覧するには「ロールを管理」権限が必要です。')}</p>}
+      {loading && <p role="status" className="text-sm text-discord-muted">{t('権限を評価中…')}</p>}
       {error && <p role="alert" className="text-sm text-discord-red">{error}</p>}
       {evaluation && !loading && (
         <div className="space-y-4">
           <div className="rounded bg-discord-bg/50 p-3">
-            <p className="text-xs font-bold uppercase tracking-wide text-discord-muted">割当ロール</p>
-            <p className="mt-1 text-sm text-white">{evaluation.roles.map((role) => role.name).join('、') || 'なし'}</p>
+            <p className="text-xs font-bold uppercase tracking-wide text-discord-muted">{t('割当ロール')}</p>
+            <p className="mt-1 text-sm text-white">{evaluation.roles.map((role) => role.name).join(t('、')) || t('なし')}</p>
           </div>
           <ul className="grid gap-2 md:grid-cols-2">
             {evaluation.permissionDetails.map((detail) => (
@@ -84,8 +86,8 @@ export function EffectivePermissionsPanel({
                 </p>
                 <p className="mt-1 text-xs text-discord-muted">
                   {detail.allowed
-                    ? `理由: ${detail.reasons.map((reason) => reason.roleName).join('、') || '不明'}`
-                    : 'この権限を付与するロールはありません。'}
+                    ? t('理由: {roles}', { roles: detail.reasons.map((reason) => reason.roleName).join(t('、')) || t('不明') })
+                    : t('この権限を付与するロールはありません。')}
                 </p>
               </li>
             ))}

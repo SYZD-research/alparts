@@ -80,10 +80,10 @@ public final class MainActivity extends Activity {
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
         if (android.os.Build.VERSION.SDK_INT >= 31) getWindow().setHideOverlayWindows(true);
         try { vault = new SecretVault(this); }
-        catch (Exception ignored) { showStatus("この端末でデータを安全に保存できません。"); return; }
+        catch (Exception ignored) { showStatus(getString(R.string.status_storage_unavailable)); return; }
         origin = getPreferences(MODE_PRIVATE).getString("server", null);
         try { if (origin != null) origin = ServerAddress.normalize(origin); }
-        catch (RuntimeException ignored) { showStatus("保存された接続先を確認できません。"); return; }
+        catch (RuntimeException ignored) { showStatus(getString(R.string.status_saved_server_unreadable)); return; }
         idleMinutes = getPreferences(MODE_PRIVATE).getInt("idleMinutes", 5);
         unlock();
     }
@@ -121,10 +121,10 @@ public final class MainActivity extends Activity {
         if (authenticating || vault == null) return;
         KeyguardManager manager = (KeyguardManager) getSystemService(KEYGUARD_SERVICE);
         if (!manager.isDeviceSecure()) {
-            showStatus("端末の画面ロックを設定してから、もう一度お試しください。");
+            showStatus(getString(R.string.status_screen_lock_required));
             return;
         }
-        Intent intent = manager.createConfirmDeviceCredentialIntent("alparts", "続けるには端末のロックを解除してください。");
+        Intent intent = manager.createConfirmDeviceCredentialIntent("alparts", getString(R.string.unlock_prompt));
         if (intent == null) return;
         authenticating = true;
         startActivityForResult(intent, 10);
@@ -221,7 +221,7 @@ public final class MainActivity extends Activity {
         if (!unlocked) return;
         if (origin == null) { connectionSetup(); return; }
         if (!WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
-            showStatus("Android System WebView を更新してください。"); return;
+            showStatus(getString(R.string.status_webview_update)); return;
         }
         web = new WebView(this);
         WebView.setWebContentsDebuggingEnabled(false);
@@ -342,12 +342,12 @@ public final class MainActivity extends Activity {
         microphoneRequestCanceled = false;
         if (shouldShowRequestPermissionRationale(Manifest.permission.RECORD_AUDIO)) {
             microphoneDialog = new AlertDialog.Builder(this)
-                .setMessage("通話に参加するには、マイクの使用を許可してください。")
-                .setPositiveButton("続ける", (dialog, which) -> {
+                .setMessage(getString(R.string.microphone_rationale))
+                .setPositiveButton(getString(R.string.action_continue), (dialog, which) -> {
                     microphoneDialog = null;
                     launchMicrophonePermission();
                 })
-                .setNegativeButton("キャンセル", (dialog, which) -> clearMicrophoneRequest(true))
+                .setNegativeButton(getString(R.string.action_cancel), (dialog, which) -> clearMicrophoneRequest(true))
                 .setOnCancelListener(dialog -> clearMicrophoneRequest(true)).show();
             protectDialog(microphoneDialog);
         } else launchMicrophonePermission();
@@ -393,20 +393,20 @@ public final class MainActivity extends Activity {
             if (!ready || microphoneRequestCanceled) return;
             if (microphoneDeniedPermanently) {
                 microphoneDialog = new AlertDialog.Builder(this)
-                    .setMessage("マイクを使用できません。通話に参加するには、設定でマイクの使用を許可してください。")
-                    .setPositiveButton("設定を開く", (dialog, which) -> {
+                    .setMessage(getString(R.string.microphone_blocked))
+                    .setPositiveButton(getString(R.string.action_open_settings), (dialog, which) -> {
                         microphoneDialog = null;
                         try { startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
                             Uri.parse("package:" + getPackageName()))); }
                         catch (RuntimeException ignored) {
-                            Toast.makeText(this, "端末の設定から、alparts のマイクの使用を許可してください。", Toast.LENGTH_LONG).show();
+                            Toast.makeText(this, getString(R.string.microphone_settings_hint), Toast.LENGTH_LONG).show();
                         }
                     })
-                    .setNegativeButton("今はしない", (dialog, which) -> microphoneDialog = null)
+                    .setNegativeButton(getString(R.string.action_not_now), (dialog, which) -> microphoneDialog = null)
                     .setOnCancelListener(dialog -> microphoneDialog = null).show();
                 protectDialog(microphoneDialog);
             } else {
-                Toast.makeText(this, "マイクの使用が許可されなかったため、通話に参加できません。", Toast.LENGTH_LONG).show();
+                Toast.makeText(this, getString(R.string.microphone_denied), Toast.LENGTH_LONG).show();
             }
         }
     }
@@ -463,9 +463,9 @@ public final class MainActivity extends Activity {
                     saveReply = reply; saveRequest = id;
                     if (args.optBoolean("dangerous") || name.toLowerCase(java.util.Locale.ROOT).matches(".*\\.(apk|exe|msi|bat|cmd|ps1|sh|html?|svg|js|jar)$")) {
                         protectDialog(new android.app.AlertDialog.Builder(this)
-                            .setMessage("このファイルを開くと、端末やデータに影響する可能性があります。送信者と内容を確認してから開いてください。")
-                            .setPositiveButton("保存する", (dialog, which) -> launchSave(name))
-                            .setNegativeButton("キャンセル", (dialog, which) -> cancelSaveDialog())
+                            .setMessage(getString(R.string.dangerous_file_warning))
+                            .setPositiveButton(getString(R.string.action_save), (dialog, which) -> launchSave(name))
+                            .setNegativeButton(getString(R.string.action_cancel), (dialog, which) -> cancelSaveDialog())
                             .setOnCancelListener(dialog -> cancelSaveDialog()).show());
                     } else launchSave(name);
                     return;
@@ -482,7 +482,7 @@ public final class MainActivity extends Activity {
                 default: throw new IllegalArgumentException();
             }
             respond(reply, id, result, null);
-        } catch (Exception ignored) { respond(reply, id, null, "操作を完了できませんでした。"); }
+        } catch (Exception ignored) { respond(reply, id, null, getString(R.string.error_operation_failed)); }
     }
     private void requireSave(JSONObject args) throws Exception {
         if (saveStream == null || !args.getString("token").equals(saveToken)) throw new IllegalArgumentException();
@@ -514,7 +514,7 @@ public final class MainActivity extends Activity {
         if (request == 10) {
             authenticating = false;
             if (result == RESULT_OK) { unlocked = true; openClient(); }
-            else showStatus("アプリはロックされています。");
+            else showStatus(getString(R.string.status_locked));
         } else if (request == 20 && saveReply != null) {
             try {
                 if (result == RESULT_OK && data != null && data.getData() != null) {
@@ -524,7 +524,7 @@ public final class MainActivity extends Activity {
                     saveToken = UUID.randomUUID().toString(); writtenBytes = 0;
                 }
                 respond(saveReply, saveRequest, saveToken, null);
-            } catch (Exception ignored) { cancelSave(); respond(saveReply, saveRequest, null, "保存できませんでした。"); }
+            } catch (Exception ignored) { cancelSave(); respond(saveReply, saveRequest, null, getString(R.string.error_save_failed)); }
             saveReply = null;
             if (web != null) { web.setVisibility(View.VISIBLE); web.onResume(); }
             resetIdle();
@@ -558,9 +558,9 @@ public final class MainActivity extends Activity {
         handler.removeCallbacks(idleLock);
         cancelSave();
         if (fileSelection != null) { fileSelection.onReceiveValue(null); fileSelection = null; }
-        if (saveReply != null) { respond(saveReply, saveRequest, null, "アプリはロックされています。"); saveReply = null; }
+        if (saveReply != null) { respond(saveReply, saveRequest, null, getString(R.string.status_locked)); saveReply = null; }
         if (web != null) { web.stopLoading(); web.destroy(); web = null; }
-        showStatus("アプリはロックされています。");
+        showStatus(getString(R.string.status_locked));
     }
     @Override protected void onStop() {
         super.onStop();

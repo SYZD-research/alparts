@@ -1,4 +1,5 @@
 import type { DirectMessageConversation } from '../services/api';
+import { t } from '../i18n';
 
 function uniqueSorted(values: string[]): string[] {
   return [...new Set(values)].sort((left, right) => left < right ? -1 : left > right ? 1 : 0);
@@ -19,5 +20,5 @@ export function directMessageTitle(conversation: DirectMessageConversation, curr
   const names = conversation.members
     .filter((member) => member.id !== currentUserId)
     .map((member) => member.displayName);
-  return names.length > 0 ? names.join('、') : '自分だけのDM';
+  return names.length > 0 ? names.join(t('、')) : t('自分だけのDM');
 }

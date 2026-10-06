@@ -7,6 +7,7 @@ import { auditGuardedTransaction } from '../middleware/audit.js';
 import { logError } from '../security/logger.js';
 import { passwordPepper } from '../security/password-pepper.js';
 import { emailDelivery, sendEmail } from './email.service.js';
+import { existingAccountEmail, registrationCodeEmail, type EmailLocale } from './email-messages.js';
 
 export const EMAIL_CODE_TTL_MS = 15 * 60_000;
 export const MAX_EMAIL_CODE_ATTEMPTS = 5;
@@ -31,7 +32,7 @@ function sameDigest(left: string, right: string): boolean {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
-async function deliver(to: string, subject: string, text: string): Promise<void> {
+async function deliver(to: string, { subject, text }: { subject: string; text: string }): Promise<void> {
   try {
     await sendEmail({ to, subject, text });
   } catch (error) {
@@ -44,17 +45,11 @@ async function deliver(to: string, subject: string, text: string): Promise<void>
  * Mails a registration code. An address that already has an account gets a
  * notice instead of a code, so the answer does not reveal which one it was.
  */
-export async function sendRegistrationCode(normalizedEmail: string): Promise<void> {
+export async function sendRegistrationCode(normalizedEmail: string, locale: EmailLocale): Promise<void> {
   if (emailDelivery() === 'unavailable') throw new Error('REGISTRATION_UNAVAILABLE');
   const existing = await db.query.users.findFirst({ columns: { id: true }, where: eq(users.email, normalizedEmail) });
   if (existing) {
-    await deliver(
-      normalizedEmail,
-      'alparts のアカウントについて',
-      'このメールアドレスで alparts のアカウントを作成しようとする操作がありました。\n'
-        + 'このアドレスのアカウントはすでにあります。ご自身の操作であれば、ログインしてください。\n'
-        + '心当たりがない場合は、このメールを無視してください。\n',
-    );
+    await deliver(normalizedEmail, existingAccountEmail(locale));
     return;
   }
   const code = String(randomInt(0, 1_000_000)).padStart(6, '0');
@@ -74,12 +69,7 @@ export async function sendRegistrationCode(normalizedEmail: string): Promise<voi
         set: { codeHash, attempts: 0, expiresAt, createdAt: new Date() },
       });
   });
-  await deliver(
-    normalizedEmail,
-    'alparts の確認コード',
-    `alparts のアカウント作成に使う確認コードです。\n\n${code}\n\n`
-      + 'このコードは15分間有効です。心当たりがない場合は、このメールを無視してください。\n',
-  );
+  await deliver(normalizedEmail, registrationCodeEmail(locale, code));
 }
 
 /** Spends the code for this address. A wrong code counts against it. */

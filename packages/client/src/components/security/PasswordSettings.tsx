@@ -1,14 +1,15 @@
 import { useEffect, useState } from 'react';
 import { ApiError, api } from '../../services/api';
+import { t, useT } from '../../i18n';
 
 const MIN_PASSWORD_LENGTH = 12;
 const MAX_PASSWORD_BYTES = 72;
 
 /** What is wrong with a new password, in the user's words, or null. */
 export function newPasswordProblem(password: string, confirmation: string): string | null {
-  if (password.length < MIN_PASSWORD_LENGTH) return 'パスワードは12文字以上にしてください。';
-  if (new TextEncoder().encode(password).length > MAX_PASSWORD_BYTES) return 'パスワードが長すぎます。';
-  if (password !== confirmation) return '確認用に入力したパスワードが一致しません。';
+  if (password.length < MIN_PASSWORD_LENGTH) return t('パスワードは12文字以上にしてください。');
+  if (new TextEncoder().encode(password).length > MAX_PASSWORD_BYTES) return t('パスワードが長すぎます。');
+  if (password !== confirmation) return t('確認用に入力したパスワードが一致しません。');
   return null;
 }
 
@@ -18,6 +19,7 @@ function failureMessage(error: unknown, fallback: string): string {
 
 /** onChanged reloads the login list, since a change can end other logins. */
 export function PasswordSettings({ hasPasskey, onChanged }: { hasPasskey: boolean; onChanged: () => void }) {
+  const t = useT();
   const [newPassword, setNewPassword] = useState('');
   const [confirmation, setConfirmation] = useState('');
   const [passwordLogin, setPasswordLogin] = useState<boolean | null>(null);
@@ -48,8 +50,8 @@ export function PasswordSettings({ hasPasskey, onChanged }: { hasPasskey: boolea
   };
 
   return (
-    <section className="space-y-3" aria-label="パスワード">
-      <h3 className="font-bold text-white">パスワード</h3>
+    <section className="space-y-3" aria-label={t('パスワード')}>
+      <h3 className="font-bold text-white">{t('パスワード')}</h3>
       {error && <p role="alert" className="text-sm text-discord-red">{error}</p>}
       {status && <p role="status" className="text-sm text-discord-text">{status}</p>}
       <form
@@ -67,12 +69,12 @@ export function PasswordSettings({ hasPasskey, onChanged }: { hasPasskey: boolea
             setNewPassword('');
             setConfirmation('');
             onChanged();
-            return 'パスワードを変更しました。ほかの端末ではログアウトしました。';
-          }, 'パスワードを変更できませんでした。もう一度お試しください。');
+            return t('パスワードを変更しました。ほかの端末ではログアウトしました。');
+          }, t('パスワードを変更できませんでした。もう一度お試しください。'));
         }}
       >
         <label className="block text-sm">
-          新しいパスワード
+          {t('新しいパスワード')}
           <input
             type="password"
             autoComplete="new-password"
@@ -82,7 +84,7 @@ export function PasswordSettings({ hasPasskey, onChanged }: { hasPasskey: boolea
           />
         </label>
         <label className="block text-sm">
-          新しいパスワード（確認）
+          {t('新しいパスワード（確認）')}
           <input
             type="password"
             autoComplete="new-password"
@@ -91,22 +93,22 @@ export function PasswordSettings({ hasPasskey, onChanged }: { hasPasskey: boolea
             className="mt-2 block w-full rounded bg-discord-bg p-3 text-discord-text"
           />
         </label>
-        <p className="text-xs text-discord-muted">変更すると、ほかの端末ではログアウトします。</p>
+        <p className="text-xs text-discord-muted">{t('変更すると、ほかの端末ではログアウトします。')}</p>
         <button
           disabled={busy || !newPassword || !confirmation}
           className="rounded bg-discord-accent px-3 py-2 text-white disabled:opacity-50"
         >
-          {busy ? '処理中…' : 'パスワードを変更'}
+          {busy ? t('処理中…') : t('パスワードを変更')}
         </button>
       </form>
       {hasPasskey && passwordLogin !== null && (
         <div className="space-y-2 rounded bg-discord-bg p-3">
           <p className="text-sm text-discord-text">
-            パスワードでのログイン: {passwordLogin ? 'オン' : 'オフ'}
+            {passwordLogin ? t('パスワードでのログイン: オン') : t('パスワードでのログイン: オフ')}
           </p>
           {passwordLogin && (
             <p className="text-xs text-discord-muted">
-              オフにすると、ログインにはパスキーが必要になります。パスワードでログインしているほかの端末はログアウトします。
+              {t('オフにすると、ログインにはパスキーが必要になります。パスワードでログインしているほかの端末はログアウトします。')}
             </p>
           )}
           {confirmingLoginChange ? (
@@ -122,13 +124,13 @@ export function PasswordSettings({ hasPasskey, onChanged }: { hasPasskey: boolea
                     setConfirmingLoginChange(false);
                     onChanged();
                     return enabled
-                      ? 'パスワードでのログインをオンにしました。'
-                      : 'パスワードでのログインをオフにしました。';
-                  }, '設定を変更できませんでした。もう一度お試しください。');
+                      ? t('パスワードでのログインをオンにしました。')
+                      : t('パスワードでのログインをオフにしました。');
+                  }, t('設定を変更できませんでした。もう一度お試しください。'));
                 }}
                 className="rounded bg-discord-red px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
               >
-                {busy ? '処理中…' : passwordLogin ? 'オフにする' : 'オンにする'}
+                {busy ? t('処理中…') : passwordLogin ? t('オフにする') : t('オンにする')}
               </button>
               <button
                 type="button"
@@ -136,7 +138,7 @@ export function PasswordSettings({ hasPasskey, onChanged }: { hasPasskey: boolea
                 onClick={() => setConfirmingLoginChange(false)}
                 className="rounded px-3 py-2 text-sm text-discord-muted hover:bg-discord-hover"
               >
-                キャンセル
+                {t('キャンセル')}
               </button>
             </div>
           ) : (
@@ -146,7 +148,7 @@ export function PasswordSettings({ hasPasskey, onChanged }: { hasPasskey: boolea
               onClick={() => setConfirmingLoginChange(true)}
               className="rounded border border-discord-muted px-3 py-2 text-sm disabled:opacity-50"
             >
-              {passwordLogin ? 'パスワードでのログインをオフにする' : 'パスワードでのログインをオンにする'}
+              {passwordLogin ? t('パスワードでのログインをオフにする') : t('パスワードでのログインをオンにする')}
             </button>
           )}
         </div>

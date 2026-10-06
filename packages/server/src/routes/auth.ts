@@ -14,6 +14,7 @@ import {
 } from '../middleware/rate-limit.js';
 import { config } from '../config/index.js';
 import { expiredSessionCookie, sessionCookie } from '../security/cookies.js';
+import { emailLocale } from '../services/email-messages.js';
 
 const router = Router();
 const password = z.string().min(12).max(72).refine((value) => Buffer.byteLength(value, 'utf8') <= 72);
@@ -98,7 +99,9 @@ function sendRegistrationError(res: import('express').Response, error: any): boo
 router.post('/register/code', registrationCodeIpLimit, registrationCodeLimit, registrationCodeAccountLimit, async (req, res) => {
   try {
     const body = registrationCodeSchema.parse(req.body);
-    res.status(202).json({ required: await authService.requestRegistrationCode(body.email, body.inviteToken) });
+    res.status(202).json({
+      required: await authService.requestRegistrationCode(body.email, body.inviteToken, emailLocale(req.get('accept-language'))),
+    });
   } catch (error: any) {
     if (sendRegistrationError(res, error)) return;
     if (error.name === 'ZodError') {

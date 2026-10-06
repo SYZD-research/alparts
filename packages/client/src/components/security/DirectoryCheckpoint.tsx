@@ -1,9 +1,11 @@
 import { useState } from 'react';
 import { getActiveDevice } from '../../services/crypto.service';
 import { verifiedDirectory } from '../../services/directory.service';
+import { useT } from '../../i18n';
 
 /** The comparison must travel outside the server being checked. */
 export function DirectoryCheckpoint() {
+  const t = useT();
   const [code, setCode] = useState('');
   const [otherCode, setOtherCode] = useState('');
   const [message, setMessage] = useState('');
@@ -22,22 +24,22 @@ export function DirectoryCheckpoint() {
           sequence: Number(match[1]),
           hash: match[2].toLowerCase(),
         });
-        setMessage('同じ端末一覧から続いていることを確認しました。');
+        setMessage(t('同じ端末一覧から続いていることを確認しました。'));
       } else {
         const { head } = await verifiedDirectory(userId);
         setCode(`${head.sequence}-${head.hash}`);
       }
     } catch {
-      setMessage('一致を確認できませんでした。知らない端末は承認せず、コードを確認してください。');
+      setMessage(t('一致を確認できませんでした。知らない端末は承認せず、コードを確認してください。'));
     } finally {
       setBusy(false);
     }
   };
   return (
-    <section className="space-y-3" aria-label="端末一覧の確認">
-      <h3 className="font-bold text-white">端末一覧の確認</h3>
+    <section className="space-y-3" aria-label={t('端末一覧の確認')}>
+      <h3 className="font-bold text-white">{t('端末一覧の確認')}</h3>
       <p className="text-sm text-discord-muted">
-        自分の別の端末と確認コードを照合できます。コードはその端末の画面で直接確認してください。
+        {t('自分の別の端末と確認コードを照合できます。コードはその端末の画面で直接確認してください。')}
       </p>
       <button
         disabled={busy}
@@ -46,7 +48,7 @@ export function DirectoryCheckpoint() {
           void run(false);
         }}
       >
-        確認コードを表示
+        {t('確認コードを表示')}
       </button>
       {code && (
         <code className="block select-all break-all rounded bg-discord-bg p-3 text-sm">{code}</code>
@@ -59,7 +61,7 @@ export function DirectoryCheckpoint() {
         }}
       >
         <label className="block text-sm">
-          別の端末の確認コード
+          {t('別の端末の確認コード')}
           <input
             value={otherCode}
             onChange={(event) => setOtherCode(event.target.value)}
@@ -72,7 +74,7 @@ export function DirectoryCheckpoint() {
           disabled={busy || !otherCode.trim()}
           className="rounded bg-discord-accent px-3 py-2 text-white disabled:opacity-50"
         >
-          照合する
+          {t('照合する')}
         </button>
       </form>
       {message && (

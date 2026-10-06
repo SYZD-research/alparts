@@ -1,6 +1,7 @@
 import type { MemberProfile } from '@alparts/shared';
 import { ApiError } from '../../services/api';
 import { AvatarImageError } from '../../services/avatar-image';
+import { t } from '../../i18n';
 
 export const MAX_BIO_CHARACTERS = 200;
 export const MAX_BIO_LINES = 5;
@@ -15,21 +16,21 @@ export function bioLengthStatus(bio: string) {
 
 export function profileErrorMessage(error: unknown): string {
   if (error instanceof AvatarImageError) {
-    if (error.reason === 'type') return 'PNG・JPEG・WebP の画像を選んでください。';
-    if (error.reason === 'size') return '5MB以下の画像を選んでください。';
-    return '画像を読み込めませんでした。別の画像をお試しください。';
+    if (error.reason === 'type') return t('PNG・JPEG・WebP の画像を選んでください。');
+    if (error.reason === 'size') return t('5MB以下の画像を選んでください。');
+    return t('画像を読み込めませんでした。別の画像をお試しください。');
   }
   if (error instanceof ApiError) {
-    if (error.code === 'INVALID_AVATAR' || error.code === 'AVATAR_TOO_LARGE') return '画像を読み込めませんでした。別の画像をお試しください。';
-    if (error.code === 'PROFILE_APPEAL_USED') return '解除の依頼はすでに使用済みです。';
-    if (error.code === 'PROFILE_APPEAL_NEEDS_CHANGE') return 'プロフィールを変更してから依頼してください。';
-    if (error.code === 'PROFILE_APPEAL_NOT_PENDING') return '依頼の状態が変わりました。表示を更新してください。';
-    if (error.code === 'MEMBER_HIERARCHY') return '自分と同じか上の順位のメンバーには、この操作はできません。';
-    if (error.status === 400) return '表示名と自己紹介を確認してください。使用できない文字が含まれているか、長すぎます。';
-    if (error.status === 429) return '変更が多すぎます。しばらく待ってからお試しください。';
+    if (error.code === 'INVALID_AVATAR' || error.code === 'AVATAR_TOO_LARGE') return t('画像を読み込めませんでした。別の画像をお試しください。');
+    if (error.code === 'PROFILE_APPEAL_USED') return t('解除の依頼はすでに使用済みです。');
+    if (error.code === 'PROFILE_APPEAL_NEEDS_CHANGE') return t('プロフィールを変更してから依頼してください。');
+    if (error.code === 'PROFILE_APPEAL_NOT_PENDING') return t('依頼の状態が変わりました。表示を更新してください。');
+    if (error.code === 'MEMBER_HIERARCHY') return t('自分と同じか上の順位のメンバーには、この操作はできません。');
+    if (error.status === 400) return t('表示名と自己紹介を確認してください。使用できない文字が含まれているか、長すぎます。');
+    if (error.status === 429) return t('変更が多すぎます。しばらく待ってからお試しください。');
     return error.message;
   }
-  return '保存できませんでした。もう一度お試しください。';
+  return t('保存できませんでした。もう一度お試しください。');
 }
 
 export interface ProfileTarget {

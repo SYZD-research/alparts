@@ -7,6 +7,7 @@ import { clearActiveDevice, ensureDeviceSession } from '../services/crypto.servi
 import { connectSocket, disconnectSocket, setSocketUnauthorizedHandler } from '../services/socket';
 import { resetAuthenticatedState } from './reset';
 import { authErrorMessage } from './auth-error';
+import { t } from '../i18n';
 
 interface AuthState {
   user: User | null;
@@ -87,7 +88,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       disconnectSocket();
       resetAuthenticatedState();
       clearActiveDevice();
-      set({ user: null, error: 'パスキーでログインできませんでした。もう一度お試しください。', isLoading: false, isInitialized: true });
+      set({ user: null, error: t('パスキーでログインできませんでした。もう一度お試しください。'), isLoading: false, isInitialized: true });
       throw error;
     }
   },
@@ -183,7 +184,7 @@ function invalidateExpiredSession(): void {
     isLoading: false,
     isInitialized: true,
     // Expiry and a sign-out from another device look the same here; say both.
-    error: 'ログイン状態が終了しました。もう一度ログインしてください。心当たりがない場合は、ログイン後にログイン中の端末を確認してください。',
+    error: t('ログイン状態が終了しました。もう一度ログインしてください。心当たりがない場合は、ログイン後にログイン中の端末を確認してください。'),
   });
 }
 

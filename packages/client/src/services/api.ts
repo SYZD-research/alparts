@@ -24,6 +24,7 @@ import type {
   WorkspaceMember,
 } from '@alparts/shared';
 import { withExpectedAuthorizationRevision } from './role-authorization-revision';
+import { currentLocale, msg, t, type MessageKey } from '../i18n';
 
 const API_BASE = '/api';
 export const API_REQUEST_DEADLINE_MS = 60_000;
@@ -57,35 +58,35 @@ interface ApiErrorPayload {
   statusCode?: number;
 }
 
-const API_ERROR_MESSAGES_BY_CODE: Record<string, string> = {
-  DEVICE_LIMIT_REACHED: '登録済みの端末が上限に達しています。不要な端末の登録を解除してください。',
-  SESSION_LIMIT_REACHED: 'ログイン中の端末が上限に達しています。別の端末からログアウトしてお試しください。',
-  DEVICE_STEP_UP_REQUIRED: 'この端末を追加するには、もう一度ログインしてください。',
-  DEVICE_APPROVAL_REQUIRED: 'この端末はまだ承認されていません。承認済みの端末から承認してください。',
-  STEP_UP_REQUIRED: '続けるには本人確認が必要です。',
-  UPDATE_REQUIRED: 'アプリを更新してから、もう一度お試しください。',
-  STALE_PREVIEW: '他の変更と重なりました。表示を更新してもう一度お試しください。',
-  STALE_OVERRIDE: '他の変更と重なりました。表示を更新してもう一度お試しください。',
-  DIRECTORY_CONFLICT: '端末の一覧が更新されました。表示を更新してもう一度お試しください。',
-  IDEMPOTENCY_CONFLICT: '同じ操作がすでに行われています。表示を更新してください。',
-  PASSKEY_REQUIRED: 'パスワードでのログインをオフにするには、先にパスキーを追加してください。',
+const API_ERROR_MESSAGES_BY_CODE: Record<string, MessageKey> = {
+  DEVICE_LIMIT_REACHED: msg('登録済みの端末が上限に達しています。不要な端末の登録を解除してください。'),
+  SESSION_LIMIT_REACHED: msg('ログイン中の端末が上限に達しています。別の端末からログアウトしてお試しください。'),
+  DEVICE_STEP_UP_REQUIRED: msg('この端末を追加するには、もう一度ログインしてください。'),
+  DEVICE_APPROVAL_REQUIRED: msg('この端末はまだ承認されていません。承認済みの端末から承認してください。'),
+  STEP_UP_REQUIRED: msg('続けるには本人確認が必要です。'),
+  UPDATE_REQUIRED: msg('アプリを更新してから、もう一度お試しください。'),
+  STALE_PREVIEW: msg('他の変更と重なりました。表示を更新してもう一度お試しください。'),
+  STALE_OVERRIDE: msg('他の変更と重なりました。表示を更新してもう一度お試しください。'),
+  DIRECTORY_CONFLICT: msg('端末の一覧が更新されました。表示を更新してもう一度お試しください。'),
+  IDEMPOTENCY_CONFLICT: msg('同じ操作がすでに行われています。表示を更新してください。'),
+  PASSKEY_REQUIRED: msg('パスワードでのログインをオフにするには、先にパスキーを追加してください。'),
 };
 
 /** Fixed, local wording for an HTTP failure. */
 export function apiErrorMessage(status: number, code?: string): string {
-  if (code && API_ERROR_MESSAGES_BY_CODE[code]) return API_ERROR_MESSAGES_BY_CODE[code];
-  if (status === 400) return '入力内容を確認してください。';
-  if (status === 401) return 'ログインし直してください。';
-  if (status === 403) return 'この操作を行う権限がありません。';
-  if (status === 404) return '対象が見つかりません。表示を更新してください。';
-  if (status === 409) return '他の変更と重なりました。表示を更新してもう一度お試しください。';
-  if (status === 410) return 'アプリを更新してから、もう一度お試しください。';
-  if (status === 413) return 'サイズが大きすぎます。';
-  if (status === 428) return '続けるには本人確認が必要です。';
-  if (status === 429) return '操作が多すぎます。しばらく待ってからお試しください。';
-  if (status === 503) return '現在混み合っています。しばらく待ってからお試しください。';
-  if (status >= 500) return 'サーバーで問題が発生しました。しばらく待ってからお試しください。';
-  return '操作を完了できませんでした。もう一度お試しください。';
+  if (code && API_ERROR_MESSAGES_BY_CODE[code]) return t(API_ERROR_MESSAGES_BY_CODE[code]);
+  if (status === 400) return t('入力内容を確認してください。');
+  if (status === 401) return t('ログインし直してください。');
+  if (status === 403) return t('この操作を行う権限がありません。');
+  if (status === 404) return t('対象が見つかりません。表示を更新してください。');
+  if (status === 409) return t('他の変更と重なりました。表示を更新してもう一度お試しください。');
+  if (status === 410) return t('アプリを更新してから、もう一度お試しください。');
+  if (status === 413) return t('サイズが大きすぎます。');
+  if (status === 428) return t('続けるには本人確認が必要です。');
+  if (status === 429) return t('操作が多すぎます。しばらく待ってからお試しください。');
+  if (status === 503) return t('現在混み合っています。しばらく待ってからお試しください。');
+  if (status >= 500) return t('サーバーで問題が発生しました。しばらく待ってからお試しください。');
+  return t('操作を完了できませんでした。もう一度お試しください。');
 }
 
 export class ApiError extends Error {
@@ -547,6 +548,8 @@ class ApiService {
     if (options.body !== undefined && !headers.has('Content-Type')) {
       headers.set('Content-Type', 'application/json');
     }
+    // Lets the server write emails in the language chosen in the app.
+    if (!headers.has('Accept-Language')) headers.set('Accept-Language', currentLocale());
     let response: Response;
     try {
       response = await fetch(`${API_BASE}${path}`, {

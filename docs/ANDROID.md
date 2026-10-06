@@ -1,5 +1,7 @@
 # Android client
 
+English | [日本語](ANDROID.ja.md)
+
 The Android client shares the bundled React UI, cryptography, encrypted drafts/outbox,
 history projector and attachment format with the desktop/Web client. This is a
 development client, not completion of the Phase 2 security acceptance criteria.
@@ -81,6 +83,14 @@ are in `gradle/verification-metadata.xml`; review that file when updating depend
   permission; a denial can be retried and repeated denial offers app settings.
   OS results are held until resume and cannot grant a canceled or locked request.
   Incoming call audio can play without a separate media-element tap.
+
+## Language
+
+The app is available in English and Japanese. The native screens (connection,
+unlock, and the microphone and file dialogs) follow the device's language:
+Japanese when the device is set to Japanese, English otherwise. The bundled
+screens start in the same language and can be switched with the 🌐 button in the
+sidebar or on the sign-in screen; that choice is saved in the app.
 
 ## Touch navigation
 

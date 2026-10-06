@@ -8,6 +8,7 @@ import { useUiStore } from '../../stores/ui.store';
 import { useWorkspaceStore } from '../../stores/workspace.store';
 import { Dialog } from '../ui/Dialog';
 import { PermissionOverrideManager } from './PermissionOverrideManager';
+import { t, useT } from '../../i18n';
 
 type ManagerTab = 'create' | 'edit' | 'categories' | 'permissions';
 type Confirmation =
@@ -35,16 +36,16 @@ const EMPTY_CHANNEL_FORM: ChannelFormState = {
 
 function mutationError(error: unknown): string {
   if (error instanceof ApiError && error.code === 'MEMBER_HIERARCHY') {
-    return '自分と同じか上の順位のメンバーは、非公開チャンネルから削除できません。';
+    return t('自分と同じか上の順位のメンバーは、非公開チャンネルから削除できません。');
   }
-  if (error instanceof ApiError && error.status === 403) return 'チャンネル管理権限がありません。状態は変更されていません。';
-  if (error instanceof Error && error.message === '位置は0〜1000000の整数で入力してください') return error.message;
-  return '変更を保存できませんでした。もう一度お試しください。';
+  if (error instanceof ApiError && error.status === 403) return t('チャンネル管理権限がありません。状態は変更されていません。');
+  if (error instanceof Error && error.message === t('位置は0〜1000000の整数で入力してください')) return error.message;
+  return t('変更を保存できませんでした。もう一度お試しください。');
 }
 
 function parsePosition(value: string): number {
   const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed < 0 || parsed > 1_000_000) throw new Error('位置は0〜1000000の整数で入力してください');
+  if (!Number.isInteger(parsed) || parsed < 0 || parsed > 1_000_000) throw new Error(t('位置は0〜1000000の整数で入力してください'));
   return parsed;
 }
 
@@ -60,6 +61,7 @@ function channelForm(channel: Channel): ChannelFormState {
 }
 
 export function ChannelManagerDialog() {
+  const t = useT();
   const open = useUiStore((state) => state.isChannelManagerOpen);
   const close = useUiStore((state) => state.closeChannelManager);
   const authorizationRefreshVersion = useUiStore((state) => state.authorizationRefreshVersion);
@@ -175,7 +177,7 @@ export function ChannelManagerDialog() {
       if (created.type !== 'voice') setActiveChannel(created.id);
       setSelectedChannelId(created.id);
       setTab('edit');
-      setNotice(`「${created.name}」を作成しました。`);
+      setNotice(t('「{name}」を作成しました。', { name: created.name }));
     } catch (caught) {
       setError(mutationError(caught));
     } finally {
@@ -200,7 +202,7 @@ export function ChannelManagerDialog() {
       });
       await refreshWorkspace();
       setSelectedChannelId(updated.id);
-      setNotice(`「${updated.name}」を更新しました。`);
+      setNotice(t('「{name}」を更新しました。', { name: updated.name }));
       await loadPrivateMembers(updated);
     } catch (caught) {
       setError(mutationError(caught));
@@ -217,11 +219,11 @@ export function ChannelManagerDialog() {
       const position = parsePosition(categoryPosition);
       if (selectedCategory) {
         const updated = await api.updateCategory(workspaceId, selectedCategory.id, { name: categoryName.trim(), position });
-        setNotice(`カテゴリー「${updated.name}」を更新しました。`);
+        setNotice(t('カテゴリー「{name}」を更新しました。', { name: updated.name }));
       } else {
         const created = await api.createCategory(workspaceId, categoryName.trim(), position);
         setSelectedCategoryId(created.id);
-        setNotice(`カテゴリー「${created.name}」を作成しました。`);
+        setNotice(t('カテゴリー「{name}」を作成しました。', { name: created.name }));
       }
       await refreshWorkspace();
     } catch (caught) {
@@ -238,7 +240,7 @@ export function ChannelManagerDialog() {
       await api.addChannelMember(selectedChannel.id, memberToAdd);
       await loadPrivateMembers(selectedChannel);
       setMemberToAdd('');
-      setNotice('非公開チャンネルへメンバーを追加しました。');
+      setNotice(t('非公開チャンネルへメンバーを追加しました。'));
     } catch (caught) {
       setError(mutationError(caught));
     } finally {
@@ -256,14 +258,14 @@ export function ChannelManagerDialog() {
         const next = nextChannels?.find((channel) => channel.type !== 'dm' && channel.type !== 'voice') || null;
         if (activeChannelId === confirmation.id) setActiveChannel(next?.id || null);
         setSelectedChannelId(next?.id || '');
-        setNotice('チャンネルを削除しました。');
+        setNotice(t('チャンネルを削除しました。'));
       } else if (confirmation.kind === 'delete-category') {
         await api.deleteCategory(workspaceId, confirmation.id);
         await refreshWorkspace();
         setSelectedCategoryId('');
         setCategoryName('');
         setCategoryPosition('0');
-        setNotice('カテゴリーを削除し、所属チャンネルをカテゴリーなしへ移動しました。');
+        setNotice(t('カテゴリーを削除し、所属チャンネルをカテゴリーなしへ移動しました。'));
       } else {
         await api.removeChannelMember(confirmation.channelId, confirmation.userId);
         if (confirmation.self) {
@@ -272,10 +274,10 @@ export function ChannelManagerDialog() {
             channel.id !== confirmation.channelId && channel.type !== 'voice'
           ))?.id || null);
           setSelectedChannelId('');
-          setNotice('自分を非公開チャンネルから削除しました。');
+          setNotice(t('自分を非公開チャンネルから削除しました。'));
         } else {
           await loadPrivateMembers(selectedChannel);
-          setNotice('非公開チャンネルからメンバーを削除しました。');
+          setNotice(t('非公開チャンネルからメンバーを削除しました。'));
         }
       }
       setConfirmation(null);
@@ -295,20 +297,20 @@ export function ChannelManagerDialog() {
     <Dialog
       open={open}
       onClose={() => { if (!busy) close(); }}
-      title="チャンネルとカテゴリーの管理"
-      description="ここでの変更は、権限がない場合は保存されません。"
+      title={t('チャンネルとカテゴリーの管理')}
+      description={t('ここでの変更は、権限がない場合は保存されません。')}
       size="lg"
     >
       {!workspaceId || !canManage ? (
-        <div role="alert" className="rounded bg-discord-red/15 p-4 text-sm text-discord-red">チャンネル管理権限がありません。</div>
+        <div role="alert" className="rounded bg-discord-red/15 p-4 text-sm text-discord-red">{t('チャンネル管理権限がありません。')}</div>
       ) : (
         <div className="space-y-5">
-          <div role="tablist" aria-label="管理対象" className="flex gap-1 rounded bg-discord-bg p-1">
+          <div role="tablist" aria-label={t('管理対象')} className="flex gap-1 rounded bg-discord-bg p-1">
             {([
-              ['create', 'チャンネル作成'],
-              ['edit', 'チャンネル編集'],
-              ['categories', 'カテゴリー'],
-              ['permissions', '権限設定'],
+              ['create', t('チャンネル作成')],
+              ['edit', t('チャンネル編集')],
+              ['categories', t('カテゴリー|tab')],
+              ['permissions', t('権限設定')],
             ] as Array<[ManagerTab, string]>).map(([value, label]) => (
               <button
                 key={value}
@@ -326,52 +328,52 @@ export function ChannelManagerDialog() {
           {error && <div role="alert" className="rounded bg-discord-red/15 px-3 py-2 text-sm text-discord-red">{error}</div>}
           {notice && <div role="status" className="rounded bg-discord-green/15 px-3 py-2 text-sm text-discord-green">{notice}</div>}
           {confirmation && (
-            <div role="alertdialog" aria-label="削除の確認" className="rounded border border-discord-red/60 bg-discord-red/10 p-4">
+            <div role="alertdialog" aria-label={t('削除の確認')} className="rounded border border-discord-red/60 bg-discord-red/10 p-4">
               <p className="text-sm text-discord-text">{confirmation.label}</p>
               {confirmation.kind === 'remove-member' && (
-                <p className="mt-2 text-xs text-discord-muted">削除したメンバーは、このチャンネルの履歴にアクセスできなくなります。</p>
+                <p className="mt-2 text-xs text-discord-muted">{t('削除したメンバーは、このチャンネルの履歴にアクセスできなくなります。')}</p>
               )}
               <div className="mt-3 flex justify-end gap-2">
-                <button type="button" onClick={() => setConfirmation(null)} className="rounded px-3 py-2 text-sm text-discord-muted hover:bg-discord-hover">キャンセル</button>
-                <button type="button" onClick={() => { void executeConfirmation(); }} className="rounded bg-discord-red px-3 py-2 text-sm text-white">理解して実行</button>
+                <button type="button" onClick={() => setConfirmation(null)} className="rounded px-3 py-2 text-sm text-discord-muted hover:bg-discord-hover">{t('キャンセル')}</button>
+                <button type="button" onClick={() => { void executeConfirmation(); }} className="rounded bg-discord-red px-3 py-2 text-sm text-white">{t('理解して実行')}</button>
               </div>
             </div>
           )}
 
           {tab === 'create' && (
-            <ChannelForm form={form} setForm={setForm} categories={categories} submit={submitCreateChannel} busy={busy} submitLabel="チャンネルを作成" />
+            <ChannelForm form={form} setForm={setForm} categories={categories} submit={submitCreateChannel} busy={busy} submitLabel={t('チャンネルを作成|button')} />
           )}
 
           {tab === 'edit' && (
             <div className="space-y-5">
               <label className="block text-sm text-discord-text">
-                編集するチャンネル
+                {t('編集するチャンネル')}
                 <select value={selectedChannelId} onChange={(event) => setSelectedChannelId(event.target.value)} className="mt-1 w-full rounded bg-discord-input px-3 py-2">
                   {manageableChannels.map((channel) => <option key={channel.id} value={channel.id}>{channel.name}</option>)}
                 </select>
               </label>
               {selectedChannel ? (
                 <>
-                  <ChannelForm form={form} setForm={setForm} categories={categories} submit={submitUpdateChannel} busy={busy} submitLabel="変更を保存" isEditing />
+                  <ChannelForm form={form} setForm={setForm} categories={categories} submit={submitUpdateChannel} busy={busy} submitLabel={t('変更を保存')} isEditing />
                   <section className="rounded bg-discord-bg p-4">
-                    <h3 className="font-medium text-white">非公開チャンネルのメンバー</h3>
+                    <h3 className="font-medium text-white">{t('非公開チャンネルのメンバー')}</h3>
                     {!selectedChannel.isPrivate ? (
-                      <p className="mt-2 text-sm text-discord-muted">非公開に変更して保存すると、メンバーを選べるようになります。</p>
+                      <p className="mt-2 text-sm text-discord-muted">{t('非公開に変更して保存すると、メンバーを選べるようになります。')}</p>
                     ) : isLoadingMembers ? (
-                      <p className="mt-2 text-sm text-discord-muted">読み込み中…</p>
+                      <p className="mt-2 text-sm text-discord-muted">{t('読み込み中…')}</p>
                     ) : (
                       <div className="mt-3 space-y-3">
                         <div className="flex gap-2">
                           <select value={memberToAdd} onChange={(event) => setMemberToAdd(event.target.value)} className="min-w-0 flex-1 rounded bg-discord-input px-3 py-2 text-sm">
-                            <option value="">追加するメンバーを選択</option>
+                            <option value="">{t('追加するメンバーを選択')}</option>
                             {eligibleMembers.map((member) => <option key={member.userId} value={member.userId}>{member.user.displayName}</option>)}
                           </select>
-                          <button type="button" onClick={() => { void addPrivateMember(); }} disabled={!memberToAdd || busy} className="rounded bg-discord-accent px-3 py-2 text-sm text-white disabled:opacity-40">追加</button>
+                          <button type="button" onClick={() => { void addPrivateMember(); }} disabled={!memberToAdd || busy} className="rounded bg-discord-accent px-3 py-2 text-sm text-white disabled:opacity-40">{t('追加')}</button>
                         </div>
                         <ul className="space-y-1">
                           {channelMembers.map((member) => (
                             <li key={member.id} className="flex items-center justify-between gap-3 rounded bg-discord-sidebar px-3 py-2 text-sm text-discord-text">
-                              <span>{member.displayName}{member.id === currentUser?.id ? '（自分）' : ''}</span>
+                              <span>{member.displayName}{member.id === currentUser?.id ? t('（自分）') : ''}</span>
                               <button
                                 type="button"
                                 onClick={() => setConfirmation({
@@ -379,13 +381,13 @@ export function ChannelManagerDialog() {
                                   channelId: selectedChannel.id,
                                   userId: member.id,
                                   label: member.id === currentUser?.id
-                                    ? '自分をこの非公開チャンネルから削除します。直ちに閲覧できなくなります。'
-                                    : `${member.displayName}をこの非公開チャンネルから削除します。`,
+                                    ? t('自分をこの非公開チャンネルから削除します。直ちに閲覧できなくなります。')
+                                    : t('{name}をこの非公開チャンネルから削除します。', { name: member.displayName }),
                                   self: member.id === currentUser?.id,
                                 })}
                                 className="rounded px-2 py-1 text-xs text-discord-red hover:bg-discord-red hover:text-white"
                               >
-                                削除
+                                {t('削除')}
                               </button>
                             </li>
                           ))}
@@ -394,30 +396,30 @@ export function ChannelManagerDialog() {
                     )}
                   </section>
                   <section className="rounded border border-discord-red/50 p-4">
-                    <h3 className="font-medium text-discord-red">危険な操作</h3>
+                    <h3 className="font-medium text-discord-red">{t('危険な操作')}</h3>
                     <button
                       type="button"
                       onClick={() => setConfirmation({
                         kind: 'delete-channel',
                         id: selectedChannel.id,
                         label: selectedChannel.type === 'voice'
-                          ? `音声チャンネル「${selectedChannel.name}」を削除します。この操作は元に戻せません。`
-                          : `チャンネル「${selectedChannel.name}」と履歴を削除します。この操作は元に戻せません。`,
+                          ? t('音声チャンネル「{name}」を削除します。この操作は元に戻せません。', { name: selectedChannel.name })
+                          : t('チャンネル「{name}」と履歴を削除します。この操作は元に戻せません。', { name: selectedChannel.name }),
                       })}
                       className="mt-3 rounded bg-discord-red px-3 py-2 text-sm text-white"
                     >
-                      チャンネルを削除
+                      {t('チャンネルを削除')}
                     </button>
                   </section>
                 </>
-              ) : <p className="text-sm text-discord-muted">編集できるチャンネルがありません。</p>}
+              ) : <p className="text-sm text-discord-muted">{t('編集できるチャンネルがありません。')}</p>}
             </div>
           )}
 
           {tab === 'categories' && (
             <form onSubmit={submitCategory} className="space-y-4">
               <label className="block text-sm text-discord-text">
-                操作するカテゴリー
+                {t('操作するカテゴリー')}
                 <select
                   value={selectedCategoryId}
                   onChange={(event) => {
@@ -426,24 +428,24 @@ export function ChannelManagerDialog() {
                   }}
                   className="mt-1 w-full rounded bg-discord-input px-3 py-2"
                 >
-                  <option value="">新しいカテゴリー</option>
+                  <option value="">{t('新しいカテゴリー')}</option>
                   {categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
                 </select>
               </label>
               <label className="block text-sm text-discord-text">
-                名前
+                {t('名前')}
                 <input required maxLength={100} value={categoryName} onChange={(event) => setCategoryName(event.target.value)} className="mt-1 w-full rounded bg-discord-input px-3 py-2" />
               </label>
               <label className="block text-sm text-discord-text">
-                位置
+                {t('位置')}
                 <input required type="number" min={0} max={1_000_000} value={categoryPosition} onChange={(event) => setCategoryPosition(event.target.value)} className="mt-1 w-full rounded bg-discord-input px-3 py-2" />
               </label>
               <div className="flex items-center justify-between gap-3">
                 {selectedCategory ? (
-                  <button type="button" onClick={() => setConfirmation({ kind: 'delete-category', id: selectedCategory.id, label: `カテゴリー「${selectedCategory.name}」を削除します。所属チャンネルはカテゴリーなしへ移動します。` })} className="rounded px-3 py-2 text-sm text-discord-red hover:bg-discord-red hover:text-white">カテゴリーを削除</button>
+                  <button type="button" onClick={() => setConfirmation({ kind: 'delete-category', id: selectedCategory.id, label: t('カテゴリー「{name}」を削除します。所属チャンネルはカテゴリーなしへ移動します。', { name: selectedCategory.name }) })} className="rounded px-3 py-2 text-sm text-discord-red hover:bg-discord-red hover:text-white">{t('カテゴリーを削除')}</button>
                 ) : <span />}
                 <button type="submit" disabled={busy || !categoryName.trim()} className="rounded bg-discord-accent px-4 py-2 text-sm text-white disabled:opacity-40">
-                  {busy ? '保存中…' : selectedCategory ? 'カテゴリーを更新' : 'カテゴリーを作成'}
+                  {busy ? t('保存中…') : selectedCategory ? t('カテゴリーを更新') : t('カテゴリーを作成')}
                 </button>
               </div>
             </form>
@@ -474,50 +476,51 @@ function ChannelForm({ form, setForm, categories, submit, busy, submitLabel, isE
   submitLabel: string;
   isEditing?: boolean;
 }) {
+  const t = useT();
   return (
     <form onSubmit={submit} className="space-y-4">
       <label className="block text-sm text-discord-text">
-        名前
+        {t('名前')}
         <input required maxLength={100} value={form.name} onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} className="mt-1 w-full rounded bg-discord-input px-3 py-2" />
       </label>
       <label className="block text-sm text-discord-text">
-        トピック
+        {t('トピック')}
         <textarea maxLength={500} value={form.topic} onChange={(event) => setForm((current) => ({ ...current, topic: event.target.value }))} className="mt-1 w-full rounded bg-discord-input px-3 py-2" rows={2} />
       </label>
       <div className="grid gap-4 sm:grid-cols-2">
         <label className="block text-sm text-discord-text">
-          カテゴリー
+          {t('カテゴリー')}
           <select value={form.categoryId} onChange={(event) => setForm((current) => ({ ...current, categoryId: event.target.value }))} className="mt-1 w-full rounded bg-discord-input px-3 py-2">
-            <option value="">カテゴリーなし</option>
+            <option value="">{t('カテゴリーなし')}</option>
             {categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
           </select>
         </label>
         <label className="block text-sm text-discord-text">
-          位置
+          {t('位置')}
           <input required type="number" min={0} max={1_000_000} value={form.position} onChange={(event) => setForm((current) => ({ ...current, position: event.target.value }))} className="mt-1 w-full rounded bg-discord-input px-3 py-2" />
         </label>
       </div>
       {!isEditing && (
         <label className="block text-sm text-discord-text">
-          種類
+          {t('種類')}
           <select value={form.type} onChange={(event) => setForm((current) => ({ ...current, type: event.target.value as ChannelFormState['type'] }))} className="mt-1 w-full rounded bg-discord-input px-3 py-2">
-            <option value="text">テキスト</option>
-            <option value="announcement">アナウンス</option>
-            <option value="voice">音声</option>
-            <option value="forum">フォーラム</option>
+            <option value="text">{t('テキスト')}</option>
+            <option value="announcement">{t('アナウンス')}</option>
+            <option value="voice">{t('音声')}</option>
+            <option value="forum">{t('フォーラム')}</option>
           </select>
         </label>
       )}
       <label className="flex items-start gap-3 rounded bg-discord-bg p-3 text-sm text-discord-text">
         <input type="checkbox" checked={form.isPrivate} onChange={(event) => setForm((current) => ({ ...current, isPrivate: event.target.checked }))} className="mt-0.5 h-4 w-4 accent-discord-accent" />
         <span>
-          非公開チャンネル
-          <span className="mt-1 block text-xs text-discord-muted">非公開にすると、保存した管理者だけが最初のメンバーになります。</span>
+          {t('非公開チャンネル')}
+          <span className="mt-1 block text-xs text-discord-muted">{t('非公開にすると、保存した管理者だけが最初のメンバーになります。')}</span>
         </span>
       </label>
       <div className="flex justify-end">
         <button type="submit" disabled={busy || !form.name.trim()} className="rounded bg-discord-accent px-4 py-2 text-sm font-medium text-white disabled:opacity-40">
-          {busy ? '保存中…' : submitLabel}
+          {busy ? t('保存中…') : submitLabel}
         </button>
       </div>
     </form>

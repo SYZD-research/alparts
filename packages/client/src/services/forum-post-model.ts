@@ -1,4 +1,5 @@
 import { MAX_FORUM_POST_TITLE_LENGTH, MAX_MESSAGE_LENGTH } from '@alparts/shared';
+import { t } from '../i18n';
 
 // Formatting controls (including bidirectional overrides) and line breaks
 // could make a title look like a different one or break the list layout.
@@ -23,9 +24,9 @@ export function sanitizeForumPostTitle(title: string): string {
  */
 export function encodeForumPostContent(input: ForumPostContent): string {
   const title = sanitizeForumPostTitle(input.title);
-  if (!title) throw new Error('タイトルを入力してください');
+  if (!title) throw new Error(t('タイトルを入力してください'));
   const encoded = `${title}\n${input.body.trim()}`;
-  if (encoded.length > MAX_MESSAGE_LENGTH) throw new Error('本文が長すぎます');
+  if (encoded.length > MAX_MESSAGE_LENGTH) throw new Error(t('本文が長すぎます'));
   return encoded;
 }
 

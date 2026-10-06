@@ -1,5 +1,7 @@
 # Phase 1 backup and restore verification
 
+English | [日本語](BACKUP.ja.md)
+
 The scripts in `scripts/` create one recipient-encrypted backup of PostgreSQL and the S3-compatible object bucket (SeaweedFS in the recommended deployment), then restore and verify it only in explicitly disposable targets. They are for the Phase 1 single-node deployment. They are not a production disaster-recovery system.
 
 ## Safety boundary

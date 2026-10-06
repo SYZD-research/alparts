@@ -14,8 +14,10 @@ import { ApiError } from '../../services/api';
 import { CHANNEL_HISTORY_UNAVAILABLE } from '../../services/crypto.service';
 import { Dialog } from '../ui/Dialog';
 import { ForumView } from '../forum/ForumView';
+import { useT } from '../../i18n';
 
 export function ChatArea({ visible = true }: { visible?: boolean }) {
+  const t = useT();
   const activeChannelId = useChannelStore((state) => state.activeChannelId);
   const channel = useChannelStore((state) => state.channels.find((candidate) => candidate.id === state.activeChannelId));
   const loadMessages = useMessageStore((state) => state.loadMessages);
@@ -60,13 +62,13 @@ export function ChatArea({ visible = true }: { visible?: boolean }) {
       setShowFreshStart(false);
       } catch (error) {
       if (error instanceof ApiError && error.code === 'INVALID_CREDENTIALS') {
-        setFreshStartError('パスワードが正しくありません。');
+        setFreshStartError(t('パスワードが正しくありません。'));
       } else if (error instanceof ApiError && error.status === 403) {
-        setFreshStartError('この操作を行う権限がありません。チャンネルの管理者へ依頼してください。');
+        setFreshStartError(t('この操作を行う権限がありません。チャンネルの管理者へ依頼してください。'));
       } else if (error instanceof ApiError && error.status === 409) {
-        setFreshStartError('チャンネルの状態が変わりました。閉じてから、もう一度お試しください。');
+        setFreshStartError(t('チャンネルの状態が変わりました。閉じてから、もう一度お試しください。'));
       } else {
-        setFreshStartError('新しいメッセージを開始できませんでした。もう一度お試しください。');
+        setFreshStartError(t('新しいメッセージを開始できませんでした。もう一度お試しください。'));
       }
     } finally {
       setIsStartingFresh(false);
@@ -116,7 +118,7 @@ export function ChatArea({ visible = true }: { visible?: boolean }) {
   if (!activeChannelId) return null;
 
   const typingNames = Object.keys(typingUsers || {}).map((userId) => (
-    members.find((member) => member.userId === userId)?.user.displayName || 'ユーザー'
+    members.find((member) => member.userId === userId)?.user.displayName || t('ユーザー')
   ));
 
   return (
@@ -124,8 +126,8 @@ export function ChatArea({ visible = true }: { visible?: boolean }) {
       <Dialog
         open={showFreshStart}
         onClose={closeFreshStart}
-        title="新しいメッセージから開始しますか？"
-        description="以前のメッセージは削除されませんが、この端末では表示できないままになります。"
+        title={t('新しいメッセージから開始しますか？')}
+        description={t('以前のメッセージは削除されませんが、この端末では表示できないままになります。')}
         size="sm"
       >
         <form
@@ -136,7 +138,7 @@ export function ChatArea({ visible = true }: { visible?: boolean }) {
           }}
         >
           <p className="rounded border border-discord-red/60 bg-discord-red/10 p-3 text-sm text-discord-text">
-            チャンネルは新しいメッセージから再開されます。この操作は元に戻せません。
+            {t('チャンネルは新しいメッセージから再開されます。この操作は元に戻せません。')}
           </p>
           {freshStartError && (
             <p role="alert" className="rounded bg-discord-red/15 px-3 py-2 text-sm text-discord-red">
@@ -145,10 +147,10 @@ export function ChatArea({ visible = true }: { visible?: boolean }) {
           )}
           <div className="flex justify-end gap-2">
             <button type="button" onClick={closeFreshStart} disabled={isStartingFresh} className="rounded px-3 py-2 text-sm text-discord-muted hover:bg-discord-hover disabled:opacity-50">
-              キャンセル
+              {t('キャンセル')}
             </button>
             <button type="submit" disabled={isStartingFresh} className="rounded bg-discord-red px-3 py-2 text-sm font-medium text-white disabled:opacity-50">
-              {isStartingFresh ? '開始中…' : '新しく開始'}
+              {isStartingFresh ? t('開始中…') : t('新しく開始')}
             </button>
           </div>
         </form>
@@ -157,7 +159,7 @@ export function ChatArea({ visible = true }: { visible?: boolean }) {
       <div className="chat-header h-12 shrink-0 px-4 flex items-center border-b border-discord-sidebar shadow-sm">
         <span className="text-discord-muted mr-2" aria-hidden="true">{dmConversation ? '@' : channel?.type === 'forum' ? '💬' : '#'}</span>
         <h3 className="truncate font-bold text-white">
-          {dmConversation && currentUserId ? directMessageTitle(dmConversation, currentUserId) : channel?.name || 'チャンネル'}
+          {dmConversation && currentUserId ? directMessageTitle(dmConversation, currentUserId) : channel?.name || t('チャンネル|single')}
         </h3>
         {channel?.topic && (
           <>
@@ -165,33 +167,33 @@ export function ChatArea({ visible = true }: { visible?: boolean }) {
             <span className="hidden md:block text-sm text-discord-muted truncate">{channel.topic}</span>
           </>
         )}
-        <button type="button" onClick={openSavedMessages} className="ml-auto h-11 shrink-0 rounded px-3 py-1 text-sm text-discord-muted hover:bg-discord-hover hover:text-white" aria-label="保存済みメッセージを開く">
-          <span aria-hidden="true">🔖</span><span className="hidden md:inline"> 保存済み</span>
+        <button type="button" onClick={openSavedMessages} className="ml-auto h-11 shrink-0 rounded px-3 py-1 text-sm text-discord-muted hover:bg-discord-hover hover:text-white" aria-label={t('保存済みメッセージを開く')}>
+          <span aria-hidden="true">🔖</span><span className="hidden md:inline"> {t('保存済み')}</span>
         </button>
       </div>
 
       {securityError ? (
         <div role="alert" className="flex flex-1 flex-col items-center justify-center gap-3 px-8 text-center text-discord-red">
-          <p>このチャンネルを安全に表示できませんでした。</p>
+          <p>{t('このチャンネルを安全に表示できませんでした。')}</p>
           <button
             type="button"
             onClick={() => { void loadMessages(activeChannelId); }}
             className="rounded bg-discord-hover px-3 py-2 text-sm text-discord-text hover:text-white"
           >
-            再試行
+            {t('再試行')}
           </button>
         </div>
       ) : channelRecoveryPending ? (
         <div role="status" className="flex flex-1 flex-col items-center justify-center gap-3 px-8 text-center text-discord-muted">
           {channelKeyPending === CHANNEL_HISTORY_UNAVAILABLE ? (
             <>
-              <p className="text-discord-text">このチャンネルのメッセージを表示できる端末が残っていません。</p>
-              <p className="max-w-lg text-sm">待っても表示されるようにはなりません。新しいメッセージから開始すると、メンバー全員が再び送信できるようになります。以前のメッセージは表示できないままです。</p>
+              <p className="text-discord-text">{t('このチャンネルのメッセージを表示できる端末が残っていません。')}</p>
+              <p className="max-w-lg text-sm">{t('待っても表示されるようにはなりません。新しいメッセージから開始すると、メンバー全員が再び送信できるようになります。以前のメッセージは表示できないままです。')}</p>
             </>
           ) : (
             <>
-              <p className="text-discord-text">この端末でメッセージを表示する準備をしています。</p>
-              <p className="max-w-lg text-sm">以前使っていた端末でalpartsを開いたままにしてください。準備が終わると自動で表示されます。</p>
+              <p className="text-discord-text">{t('この端末でメッセージを表示する準備をしています。')}</p>
+              <p className="max-w-lg text-sm">{t('以前使っていた端末でalpartsを開いたままにしてください。準備が終わると自動で表示されます。')}</p>
             </>
           )}
           <button
@@ -203,7 +205,7 @@ export function ChatArea({ visible = true }: { visible?: boolean }) {
             }}
             className="rounded bg-discord-hover px-3 py-2 text-sm text-discord-text hover:text-white disabled:opacity-50"
           >
-            {isRetryingKey ? '再試行中…' : '再試行'}
+            {isRetryingKey ? t('再試行中…') : t('再試行')}
           </button>
           <button
             type="button"
@@ -213,7 +215,7 @@ export function ChatArea({ visible = true }: { visible?: boolean }) {
             }}
             className="rounded px-3 py-2 text-sm text-discord-red underline hover:bg-discord-red/10"
           >
-            過去のメッセージを使わず開始
+            {t('過去のメッセージを使わず開始')}
           </button>
         </div>
       ) : (
@@ -223,7 +225,7 @@ export function ChatArea({ visible = true }: { visible?: boolean }) {
             : <MessageList channelId={activeChannelId} visible={visible} />}
           {channelKeyPending && (
             <div role="status" className="mx-4 mb-2 flex items-center justify-between gap-3 rounded border border-discord-yellow/40 bg-discord-yellow/10 px-3 py-2 text-sm text-discord-yellow">
-              <span>メッセージを送信できるよう準備しています。しばらくお待ちください。</span>
+              <span>{t('メッセージを送信できるよう準備しています。しばらくお待ちください。')}</span>
               <div className="flex shrink-0 items-center gap-2">
                 <button
                   type="button"
@@ -234,7 +236,7 @@ export function ChatArea({ visible = true }: { visible?: boolean }) {
                   }}
                   className="rounded px-2 py-1 underline hover:bg-discord-hover disabled:opacity-50"
                 >
-                  {isRetryingKey ? '再試行中…' : '再試行'}
+                  {isRetryingKey ? t('再試行中…') : t('再試行')}
                 </button>
                 <button
                   type="button"
@@ -244,23 +246,23 @@ export function ChatArea({ visible = true }: { visible?: boolean }) {
                   }}
                   className="rounded px-2 py-1 text-discord-red underline hover:bg-discord-red/10"
                 >
-                  過去を使わず開始
+                  {t('過去を使わず開始')}
                 </button>
               </div>
             </div>
           )}
           {operationError && (
             <div role="alert" className="mx-4 mb-2 flex items-center justify-between gap-3 rounded bg-discord-red/15 px-3 py-2 text-sm text-discord-red">
-              <span>操作を完了できませんでした。もう一度お試しください。</span>
+              <span>{t('操作を完了できませんでした。もう一度お試しください。')}</span>
               <button type="button" onClick={() => clearOperationError(activeChannelId)} className="underline">
-                閉じる
+                {t('閉じる')}
               </button>
             </div>
           )}
           {channel?.type !== 'forum' && (
             <>
               <div aria-live="polite" className="min-h-5 px-5 text-xs text-discord-muted">
-                {typingNames.length > 0 ? `${typingNames.slice(0, 3).join('、')} が入力中…` : ''}
+                {typingNames.length > 0 ? t('{names} が入力中…', { names: typingNames.slice(0, 3).join(t('、')) }) : ''}
               </div>
               <MessageInput channelId={activeChannelId} sendDisabled={Boolean(channelKeyPending)} />
             </>

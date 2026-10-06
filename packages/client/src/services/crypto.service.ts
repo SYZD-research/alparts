@@ -30,6 +30,7 @@ import {
   getDesktopSecret,
   setDesktopSecret,
 } from './desktop.service';
+import { t } from '../i18n';
 
 const DB_NAME = 'alparts-crypto';
 const STORE_NAME = 'keys';
@@ -88,8 +89,8 @@ export class ChannelKeyActivationPendingError extends Error {
   constructor(readonly remainingDeviceCount: number) {
     super(
       remainingDeviceCount > 0
-        ? `会話の準備をしています（あと${remainingDeviceCount}台）。参加中の端末でこの会話を開いてください。`
-        : '会話の準備をしています',
+        ? t('会話の準備をしています（あと{count}台）。参加中の端末でこの会話を開いてください。', { count: remainingDeviceCount })
+        : t('会話の準備をしています'),
     );
     this.name = 'ChannelKeyActivationPendingError';
   }

@@ -13,11 +13,11 @@ const UNSAFE_BIO_TEXT = /(?!\n)[\p{Cc}\p{Cf}\p{Zl}\p{Zp}͏ᅟᅠ឴឵⠀ㅤﾠ]
 export function profileBio() {
   return z.string()
     .max(MAX_BIO_CHARACTERS * 4)
-    .refine((text) => !UNSAFE_BIO_TEXT.test(text), '自己紹介に使用できない文字が含まれています。')
+    .refine((text) => !UNSAFE_BIO_TEXT.test(text), 'The bio contains characters that cannot be used.')
     .transform((text) => text.normalize('NFC').split('\n').map((line) => line.trimEnd()).join('\n').trim())
-    .refine((text) => [...text].length <= MAX_BIO_CHARACTERS, `自己紹介は${MAX_BIO_CHARACTERS}文字以内にしてください。`)
-    .refine((text) => text.split('\n').length <= MAX_BIO_LINES, `自己紹介は${MAX_BIO_LINES}行以内にしてください。`)
-    .refine((text) => text.length === 0 || /[\p{L}\p{N}\p{P}\p{S}]/u.test(text), '自己紹介に表示できる文字を含めてください。');
+    .refine((text) => [...text].length <= MAX_BIO_CHARACTERS, `The bio must be ${MAX_BIO_CHARACTERS} characters or fewer.`)
+    .refine((text) => text.split('\n').length <= MAX_BIO_LINES, `The bio must be ${MAX_BIO_LINES} lines or fewer.`)
+    .refine((text) => text.length === 0 || /[\p{L}\p{N}\p{P}\p{S}]/u.test(text), 'The bio must contain visible characters.');
 }
 
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);

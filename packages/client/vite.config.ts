@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
@@ -23,6 +24,10 @@ const allowedHosts = (process.env.VITE_ALLOWED_HOSTS ?? '')
 
 export default defineConfig({
   plugins: [react()],
+  test: {
+    // Tests assert the Japanese source text regardless of the machine's language.
+    setupFiles: ['./src/test-setup.ts'],
+  },
   build: {
     rollupOptions: {
       output: {

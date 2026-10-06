@@ -56,21 +56,21 @@ const handle =
       if (error.message === 'LAST_PASSKEY') {
         res.status(409).json({
           error: 'LAST_PASSKEY',
-          message: '別のパスキーを登録してから削除してください。',
+          message: 'Register another passkey before deleting this one.',
         });
         return;
       }
       if (error.message === 'DEVICE_APPROVAL_REQUIRED') {
         res.status(403).json({
           error: 'DEVICE_APPROVAL_REQUIRED',
-          message: '承認済みの端末で操作してください。',
+          message: 'Use an approved device.',
         });
         return;
       }
       // Parser, verifier, challenge and unknown credential failures have one public result.
       res.status(403).json({
         error: 'AUTHENTICATION_FAILED',
-        message: '本人確認を完了できませんでした。もう一度お試しください。',
+        message: 'Identity confirmation failed. Try again.',
       });
     }
   };

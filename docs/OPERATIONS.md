@@ -1,59 +1,63 @@
 # Phase 1 Prototype operations
 
-最終更新: 2026-09-04
+English | [日本語](OPERATIONS.ja.md)
 
-この文書はWindows・macOS・Linux desktop / Web / single-node / basic per-channel key / text中心＋最大8人P2P音声のprototypeだけを対象とする。Embargoed vulnerability、credential、その他のhigh-impact secretを扱うproduction approvalではない。
+Last updated: 2026-09-04
+
+This document covers only the prototype: Windows, macOS and Linux desktop / Web / single node / basic per-channel keys / mainly text, plus peer-to-peer voice for up to eight people. It is not a production approval for handling embargoed vulnerabilities, credentials or other high-impact secrets.
 
 ## Startup contract
 
-1. PostgreSQLとオブジェクトストレージ（推奨はSeaweedFS）へ独立したleast-privilege credentialを用意し、remote接続ではauthenticated TLSを使う。
-2. Secretは`*_FILE`、systemd credential、またはdeployment secret managerから渡す。値をrepository、image、command line、logへ入れない。
-3. Migrationはapplication runtimeとは別のdeployment identityで、application writeを停止した状態で実行する。不可逆変更の前は後述のbackup gateを通す。
-4. Processをnon-root userで起動し、public TLSは信頼するreverse proxyで終端する。PostgreSQL、オブジェクトストレージ、probe、management endpointをpublic networkへ出さない。
-5. Probeを別々にrouteする。
+1. Prepare separate least-privilege credentials for PostgreSQL and object storage (SeaweedFS is recommended), and use authenticated TLS for remote connections.
+2. Pass secrets through `*_FILE`, systemd credentials or a deployment secret manager. Never put the values in the repository, an image, a command line or logs.
+3. Run migrations with a deployment identity separate from the application runtime, with application writes stopped. Before irreversible changes, go through the backup gate described below.
+4. Start the process as a non-root user, and terminate public TLS at a trusted reverse proxy. Do not expose PostgreSQL, object storage, probes or management endpoints to the public network.
+5. Route the probes separately.
 
-   - `/health/startup`: startupが完了したか。
-   - `/health/live`: process event loopがHTTPを処理できるか。
-   - `/health/ready`: drain中ではなく、PostgreSQL、設定したオブジェクトストレージのbucket（起動後に消えていないことを毎回確認する）、audit checkpointが利用可能か。
+   - `/health/startup`: whether startup has completed.
+   - `/health/live`: whether the process event loop can handle HTTP.
+   - `/health/ready`: whether the process is not draining and PostgreSQL, the configured object storage bucket (checked every time, so a bucket that disappears after startup is noticed) and the audit checkpoint are available.
 
-Processはlisten前にaudit HMAC chainを全件検証する。失敗はsecurity incidentである。起動させる目的でaudit rowやcheckpointを書き換えたり削除したりしない。
+Before it starts listening, the process verifies the whole audit HMAC chain. A failure is a security incident. Never rewrite or delete audit rows or checkpoints to make the server start.
 
-Serverのlisten addressはIP literalだけを受理し、`BIND_HOST` 未設定時は `127.0.0.1` に限定する。Example systemd unitもloopbackへ固定する。Container imageの既定もloopbackであり、production Composeだけがcontainer network内で `BIND_HOST=0.0.0.0` を明示し、host側は`127.0.0.1`へpublishする。TLS reverse proxyとnetwork policyを必ず前段に置く。オブジェクトストレージへのrequestは `S3_REQUEST_TIMEOUT_MS`（既定10秒）の絶対期限を持ち、object listingは件数・key byte・prefix grammar・absolute deadlineも制限する。添付のdownloadは、GET応答の長さを保存時のサイズと照合し、そのサイズを超えるbyteはclientへ送らない。
+The server's listen address accepts only IP literals and is limited to `127.0.0.1` when `BIND_HOST` is not set. The example systemd unit is also fixed to loopback. The container image defaults to loopback as well; only the production Compose file sets `BIND_HOST=0.0.0.0` explicitly inside the container network and publishes it to `127.0.0.1` on the host. Always put a TLS reverse proxy and network policy in front. Requests to object storage have an absolute deadline of `S3_REQUEST_TIMEOUT_MS` (10 seconds by default), and object listings are also bounded in count, key bytes, prefix grammar and absolute deadline. Attachment downloads check the length of the GET response against the size recorded at upload and never send the client more bytes than that size.
 
-新規登録では、入力されたメールアドレスへ6桁の確認コード（15分有効、誤入力5回で無効）を送り、そのアドレスの持ち主であることを確かめる。送信には `SMTP_HOST`・`SMTP_FROM`（必要なら `SMTP_USER`・`SMTP_PASSWORD_FILE`）を設定する。Productionでは `SMTP_SECURE=true`（最初からTLS）またはSTARTTLSを必須とし、証明書を検証する。Productionで`SMTP_HOST`が未設定の場合、既存accountのloginはそのまま使えるが、新規登録は`EMAIL_VERIFICATION=disabled`で明示的に確認を無効にしない限り拒否され、起動時に`registration.unavailable`の警告を出す。開発環境ではSMTPがなければメールをmemoryに保持してlogへ出す。既に登録済みのアドレスにはコードではなく案内メールを送るため、応答からaccountの有無は分からない。この変更より前に作成されたaccountのメールアドレスは確認されていない。
+New registrations send a 6-digit verification code to the email address entered (valid for 15 minutes, invalidated after five wrong attempts) to confirm that the person owns the address. Set `SMTP_HOST` and `SMTP_FROM` (and `SMTP_USER` and `SMTP_PASSWORD_FILE` if needed) for sending. In production, `SMTP_SECURE=true` (TLS from the start) or STARTTLS is required, and certificates are verified. If `SMTP_HOST` is not set in production, existing accounts can still sign in, but new registrations are refused unless verification is explicitly turned off with `EMAIL_VERIFICATION=disabled`, and a `registration.unavailable` warning is logged at startup. In development, without SMTP, emails are kept in memory and written to the log. An address that already has an account receives a notice instead of a code, so the response does not reveal whether an account exists. Email addresses of accounts created before this change have not been verified.
 
-音声通話は `VOICE_ICE_SERVERS_JSON` に最大4件のoperator-controlled STUN/TURNをJSONで設定できる。既定の空配列は第三者serviceへ接続しない代わりに、direct candidateで到達できないNAT間の通話を保証しない。TURN credentialは通話参加clientへ渡るため、service管理者credentialを流用せず、短命・最小権限のcredentialを発行する。TURNはauthenticated TLS（`turns:`）を優先し、public Internetへ無制限relayとして開放しない。P2P meshは最大8人であり、media serverとして水平scaleする構成ではない。
+Registration emails are written in English or Japanese. The client sends the language chosen in the app as `Accept-Language`, and the server uses the first supported language in it, falling back to English. No setting is needed.
 
-AttachmentのDB rowとオブジェクトストレージ上のobjectは分散transactionではない。Upload statusはDB内で認可とchunk metadataをsnapshotした後、DB connection/lockを解放してからobjectを照合する。その後のchunk PUT/finalizeは改めてlockと認可を取得する。DB失敗後に残るobjectは期限切れcleanupで回収し、download開始後に失権しても送信開始済みciphertext streamは途中回収できない。これらをatomic cross-store commitまたはremote erasureと説明しない。
+Voice calls can use up to four operator-controlled STUN/TURN servers set as JSON in `VOICE_ICE_SERVERS_JSON`. The default empty array never connects to a third-party service, but in exchange it does not guarantee calls between NATs that direct candidates cannot reach. TURN credentials are handed to the clients in the call, so never reuse service administrator credentials; issue short-lived, least-privilege credentials. Prefer authenticated TLS (`turns:`) for TURN, and do not open it to the public Internet as an unrestricted relay. The peer-to-peer mesh is limited to eight people; it is not a media server that scales horizontally.
+
+An attachment's database row and its object in object storage are not a distributed transaction. The upload status takes a snapshot of authorization and chunk metadata in the database, releases the database connection and lock, and then checks the objects. Later chunk PUT and finalize steps acquire the lock and authorization again. Objects left behind after a database failure are collected by expiry cleanup, and a ciphertext stream that has already started cannot be recalled if access is lost after the download begins. Do not describe these as an atomic cross-store commit or remote erasure.
 
 ## Audit checkpoint
 
-2026-09-30以降はローカル checkpoint に加え、別のオブジェクトストレージ bucket に最新の署名済み head を保持する。`AUDIT_HEAD_BUCKET`（既定は `${S3_BUCKET}-audit`）と `AUDIT_HEAD_OBJECT_KEY`（配備ごとに固定した識別子）を設定する。通常の起動では欠落した head を作らない。DB・checkpoint file の両方を過去へ戻しても、この head が保持されていれば再起動後に拒否する。
+From 2026-09-30, in addition to the local checkpoint, the latest signed head is kept in a separate object storage bucket. Set `AUDIT_HEAD_BUCKET` (`${S3_BUCKET}-audit` by default) and `AUDIT_HEAD_OBJECT_KEY` (an identifier fixed for each deployment). A normal startup never creates a missing head. Even if both the database and the checkpoint file are rolled back, the restart is refused as long as this head is kept.
 
-監査 head 移行手順（既存配備）:
+Audit head migration procedure (existing deployments):
 
-1. アプリを停止し、独立保管した記録と現在の監査チェーンが一致することを確認する。初期化コマンドの HMAC 検査だけでは、移行前に起きた正しい署名付きの末尾切断を判別できない。
-2. 通常の画像・添付ファイルとは別の `AUDIT_HEAD_BUCKET` を作成する。アプリにはこの bucket の `s3:GetBucketLocation` / `s3:ListBucket` と対象 head の `s3:GetObject` / `s3:PutObject` を許可する。削除権限は不要。DB・checkpoint file を修復する担当者とバックアップ復元用の identity には head の書換・削除権限を与えない。
-3. 固定した `AUDIT_HEAD_OBJECT_KEY` と bucket を環境設定に保存し、通常と同じ DB・監査鍵・checkpoint path で `pnpm --filter @alparts/server audit:head:init` を一度実行する。配布イメージでは `node packages/server/dist/scripts/initialize-audit-head.js`。既存 head は上書きしない。新規配備は `audit:checkpoint:init` が両方を作成する。
-4. 再起動して readiness を確認する。以降、識別子・bucket を起動ごとに変更せず、head を通常のデータバックアップと一緒に過去へ復元しない。欠落時に初期化を自動再実行しない。
+1. Stop the app and confirm that the independently kept record matches the current audit chain. The HMAC check in the initialization command alone cannot detect a correctly signed truncation of the tail that happened before the migration.
+2. Create an `AUDIT_HEAD_BUCKET` separate from the one for ordinary pictures and attachments. Allow the app `s3:GetBucketLocation` and `s3:ListBucket` on this bucket and `s3:GetObject` and `s3:PutObject` on the head object. Delete permission is not needed. Do not give rewrite or delete permission on the head to the people who repair the database or checkpoint file, or to the identity used for restoring backups.
+3. Save the fixed `AUDIT_HEAD_OBJECT_KEY` and the bucket in the environment settings, and run `pnpm --filter @alparts/server audit:head:init` once with the same database, audit key and checkpoint path as normal. In the distributed image, run `node packages/server/dist/scripts/initialize-audit-head.js`. An existing head is never overwritten. New deployments create both with `audit:checkpoint:init`.
+4. Restart and check readiness. From then on, do not change the identifier or bucket between starts, do not restore the head to an earlier point together with ordinary data backups, and do not rerun the initialization automatically when the head is missing.
 
-DB commit → ローカル checkpoint の fsync/rename → head の保存、の順に更新する。途中障害は次の書込みを停止する。ローカル checkpoint が head より進んだ状態は、再起動時にチェーン全体と両方の anchor を検証してから前進させる。checkpoint と head の読取りも監査書込みと直列化し、正常な同時更新を巻き戻しと誤判定しない。
+Updates happen in this order: database commit → fsync and rename of the local checkpoint → saving the head. A failure part-way stops the next write. When the local checkpoint is ahead of the head, it is moved forward only after verifying the whole chain and both anchors at restart. Reads of the checkpoint and head are also serialized with audit writes, so a normal concurrent update is never mistaken for a rollback.
 
-この追加 bucket は WORM ではない。DB・ローカルファイル・head のすべてを書き戻せる管理者やサーバー全体の侵害は別の能力であり、局所的な検証だけでは同時巻き戻しを判別できない。独立 witness は引き続き利用できる。head 保存前に停止した commit、witness 後の記録については既存の限界を保つ。通常の backup/restore は `S3_BUCKET` だけを扱うため、head は含めず独立して保全する。
+This additional bucket is not WORM. An administrator who can write back the database, the local file and the head together, or a compromise of the whole server, is a different capability, and local verification alone cannot detect a simultaneous rollback. An independent witness can still be used. The existing limits for a commit that stopped before the head was saved, and for records after the witness, remain. Ordinary backup and restore handle only `S3_BUCKET`, so the head is not included and must be preserved independently.
 
-Newest database audit rowの削除を検出するには、`AUDIT_CHECKPOINT_PATH` をPostgreSQL operatorとはwrite/delete authorityを分離したmountまたはstorageへ置く。FileはHMAC認証され、audit commit後にatomic updateされる。初回deploymentではserverを停止したまま、productionと同じdatabase、`AUDIT_INTEGRITY_KEY`、checkpoint pathを設定して `pnpm --filter @alparts/server audit:checkpoint:init` を一度だけ実行する。その後 `AUDIT_CHECKPOINT_REQUIRED=true` でserverを起動する。既存checkpointがある場合、このcommandは上書きしない。
+To detect deletion of the newest audit row in the database, place `AUDIT_CHECKPOINT_PATH` on a mount or storage whose write and delete authority is separate from the PostgreSQL operator. The file is authenticated with an HMAC and updated atomically after each audit commit. For a first deployment, with the server stopped, set the same database, `AUDIT_INTEGRITY_KEY` and checkpoint path as production and run `pnpm --filter @alparts/server audit:checkpoint:init` exactly once. Then start the server with `AUDIT_CHECKPOINT_REQUIRED=true`. If a checkpoint already exists, this command does not overwrite it.
 
-Required modeでは空chainを含むcheckpoint欠落、参照row/hashの不一致、rollback、tail切断、checkpoint read/write失敗をstartup/readiness/権威的writeでfail closedにする。Message create/edit/delete/replay、reaction/pin、preference/bookmarkとsecurity/administration mutationはstateとaudit rowを同一transactionへ入れる。Read positionとprovisional upload chunk metadata/cleanupは専用audit eventを増やさないが、同じprocess-local admissionを通る。通常appendとcheckpoint更新は同じPostgreSQL advisory lock内で現在anchorのHMACとDB tailへのdescendant関係を検証し、外部fileは比較対象が変わっていない場合だけatomicに置換する。Integrity failureはprocess内でstickyになり、通常のserver起動やaudit appendは欠落checkpointまたは切断されたsuffixを再作成・再署名しない。欠落時に再provisionすると切断後のchainを新しい正史として承認してしまうため、incident responseで独立保管したcheckpoint/backupと照合するまで実行しない。
+In required mode, a missing checkpoint (including for an empty chain), a mismatch in the referenced row or hash, a rollback, a truncated tail, and checkpoint read or write failures all fail closed at startup, at readiness and on authoritative writes. Message create, edit, delete and replay, reactions and pins, preferences and bookmarks, and security and administration mutations put the state change and the audit row in the same transaction. Read positions and provisional upload chunk metadata and cleanup do not add dedicated audit events, but they go through the same process-local admission. Normal appends and checkpoint updates verify the HMAC of the current anchor and its descendant relationship to the database tail under the same PostgreSQL advisory lock, and the external file is replaced atomically only if the value it was compared with has not changed. An integrity failure is sticky within the process, and neither a normal server start nor an audit append recreates or re-signs a missing checkpoint or a truncated suffix. Reprovisioning when it is missing would approve the truncated chain as the new history, so do not do it until incident response has compared it with an independently kept checkpoint or backup.
 
-State mutationとaudit rowは同じDB transactionでcommitするため、その直後のcheckpoint I/Oだけが失敗した場合、既にcommitしたmutationは成功として一度だけ返す。以後のaudited/guarded authoritative mutationとreadinessはfail closedとなる。Storageの一時的な障害など、integrity failureでないcheckpoint I/O失敗は、次のmutationまたはreadiness確認の時点で（最短2秒間隔で）同じchain検証付きで書き直し、成功すれば自動的に受付を再開する。Integrity failureは引き続きstickyで、operatorの復旧が必要である。Audit headの読み書きは、利用者のdownloadと共有しない専用のobject storage接続と同時実行枠を使う。Operatorは「500だったからDBもrollbackした」と推測してretryしてはならない。Presenceとdevice activity timestampは認可等に使わないadvisory telemetryとしてgate外であり、欠落を許容する。Readiness失敗後はingressをdrainし、このtelemetry更新をservice write成功と解釈しない。この仕組みはprocess内admissionを使うため、複数application processには対応しない。
+Because the state mutation and the audit row are committed in the same database transaction, if only the checkpoint I/O right after it fails, the already committed mutation is reported as successful, once. Later audited or guarded authoritative mutations and readiness then fail closed. A checkpoint I/O failure that is not an integrity failure, such as a temporary storage fault, is rewritten with the same chain verification at the next mutation or readiness check (at most every 2 seconds), and service resumes automatically when it succeeds. Integrity failures stay sticky and need recovery by the operator. Reads and writes of the audit head use a dedicated object storage connection and concurrency slot that are not shared with user downloads. Operators must never assume "it was a 500, so the database rolled back too" and retry. Presence and device activity timestamps are advisory telemetry that is not used for authorization and so sits outside the gate; losing them is acceptable. After a readiness failure, drain ingress, and do not take these telemetry updates as a sign that service writes succeeded. This mechanism uses in-process admission, so it does not support multiple application processes.
 
-Local systemd `StateDirectory` は事故によるDB row削除の検出を改善するが、同一host/operatorがdatabaseとfileを削除できるならoperator separationではない。独立mountを使わない配置で「operator-independent audit」を主張しない。
+A local systemd `StateDirectory` improves detection of accidental database row deletion, but it is not operator separation if the same host or operator can delete both the database and the file. Do not claim "operator-independent audit" for a deployment that does not use an independent mount.
 
-`AUDIT_INTEGRITY_KEY` はaudit chainとcheckpointの検証に必要である。Database dumpと同じcredentialまたは同じ暗号化containerへだけ保存せず、別のencrypted assetとして復旧可能にする。
+`AUDIT_INTEGRITY_KEY` is needed to verify the audit chain and checkpoints. Do not store it only with the same credentials or in the same encrypted container as the database dump; keep it recoverable as a separate encrypted asset.
 
 ## systemd
 
-Built repositoryを `/opt/alparts` に配置し、`deploy/alparts.service` を `/etc/systemd/system` へinstallする。Example unitはNode.js 24以降を `/usr/bin/node` に要求する。別の場所へinstallした場合は、起動前に`ExecStart`をその検証済みabsolute pathへ変更し、`systemd-analyze verify /etc/systemd/system/alparts.service`を実行する。Root-ownedのcredential fileを `/etc/alparts/credentials` に1 secretずつ置き、non-secret endpoint/policyだけを `/etc/alparts/alparts.env` に置く。Example unitが作る `/var/lib/alparts-audit` は、database operatorから分離するclaimを行う前に独立保護先へbind mountする。
+Place the built repository in `/opt/alparts` and install `deploy/alparts.service` in `/etc/systemd/system`. The example unit requires Node.js 24 or later at `/usr/bin/node`. If you installed it elsewhere, change `ExecStart` to that verified absolute path before starting, and run `systemd-analyze verify /etc/systemd/system/alparts.service`. Put root-owned credential files in `/etc/alparts/credentials`, one secret per file, and only non-secret endpoints and policies in `/etc/alparts/alparts.env`. Bind-mount `/var/lib/alparts-audit`, which the example unit creates, onto independently protected storage before claiming separation from the database operator.
 
 ```bash
 sudo systemctl daemon-reload
@@ -64,92 +68,92 @@ curl --fail http://127.0.0.1:3000/health/ready
 
 ## Migration safety sequence
 
-Migration scriptとbackup scriptは互いを自動実行しない。Operatorが次の順序を明示的に管理する。
+The migration script and the backup scripts never run each other automatically. The operator manages the following order explicitly.
 
-1. Deploy対象revisionのtypecheck/test/buildと、fresh disposable databaseへのmigrationを先に検証する。
-2. Applicationをdrain/stopし、DB/オブジェクトストレージへのwriteを停止する。Backup中にwriteがないことをoperatorが保証する。
-3. Age recipient、backup DB read identity、オブジェクトストレージのread identity、output destinationを設定し、migration label付きgateを実行する。
+1. First verify typecheck, tests and build for the revision being deployed, and a migration on a fresh disposable database.
+2. Drain or stop the application and stop writes to the database and object storage. The operator guarantees that nothing writes during the backup.
+3. Set the age recipient, the backup database read identity, the object storage read identity and the output destination, and run the gate with a migration label.
 
    ```bash
    export ALPARTS_BACKUP_QUIESCED=YES_WRITES_ARE_STOPPED
    scripts/pre-migration-backup.sh 0006_example_change
    ```
 
-4. 出力されたartifactを、productionとは別の空DB/空bucketへ `scripts/restore-verify.sh` で復元検証する。`VERIFIED <run-id>` が得られない場合はmigrationへ進まない。
-5. Backup artifactのdigestとverification resultを独立した変更記録へ残す。
-6. Application runtimeとは別のdeployment identityでmigrationを実行する。
+4. Restore the resulting artifact with `scripts/restore-verify.sh` into an empty database and empty bucket separate from production. Do not proceed to the migration unless you get `VERIFIED <run-id>`.
+5. Record the backup artifact digest and the verification result in an independent change record.
+6. Run the migration with a deployment identity separate from the application runtime.
 
    ```bash
    pnpm --filter @alparts/server db:migrate:runtime
    ```
 
-7. Applicationを起動し、startup/live/ready、audit integrity、migration journalとPostgreSQL 16 `public` catalog fingerprintを確認する。Fingerprint mismatchを期待値の書換えで回避せず、schema driftを調査してforward repairまたは検証済みrestoreを行う。Rollback/restoreが必要なら新しい隔離環境で原因を確認してから、承認済みrunbookを使う。
+7. Start the application and check startup, live and ready, audit integrity, the migration journal and the PostgreSQL 16 `public` catalog fingerprint. Do not get around a fingerprint mismatch by rewriting the expected value; investigate the schema drift and do a forward repair or a verified restore. If a rollback or restore is needed, confirm the cause in a new isolated environment first, then use an approved runbook.
 
-`pre-migration-backup.sh` はmigration、service停止、restore、cleanupを実行しない。`restore-verify.sh` は既存schemaをdropせず、既存bucketをclearせず、productionらしいtarget名を拒否する。Environmentと全手順は [BACKUP.md](./BACKUP.md) を参照する。
+`pre-migration-backup.sh` does not run migrations, stop services, restore or clean up. `restore-verify.sh` does not drop existing schemas or clear existing buckets, and refuses target names that look like production. See [BACKUP.md](./BACKUP.md) for the environment and the full procedure.
 
 ## Graceful shutdown
 
-`SIGTERM` と `SIGINT` はreadinessを直ちに失敗させ、新規API workを拒否し、realtime clientをdisconnectし、background cleanupを停止し、HTTP connectionを最大25秒drainしてdatabase poolを閉じる。Systemd unitは強制終了まで30秒を許容する。
+`SIGTERM` and `SIGINT` make readiness fail immediately, refuse new API work, disconnect realtime clients, stop background cleanup, drain HTTP connections for up to 25 seconds and close the database pool. The systemd unit allows 30 seconds before a forced kill.
 
-Shutdownをbackupのquiesce mechanismとして暗黙に扱わない。Database、オブジェクトストレージ、管理toolを含めてwrite sourceが停止したことを別途確認する。
+Do not treat shutdown as an implicit quiesce mechanism for backups. Separately confirm that every write source, including the database, object storage and management tools, has stopped.
 
 ## Metrics and alerting
 
-`METRICS_ENABLED=true` の場合だけ `/metrics` を登録する。`METRICS_TOKEN` またはmodeを保護した `METRICS_TOKEN_FILE` に32 byte以上の値が必須で、Bearer tokenをconstant-time比較する。Endpointはtokenがあってもpublic routeへ公開しない。
+`/metrics` is registered only when `METRICS_ENABLED=true`. A value of at least 32 bytes in `METRICS_TOKEN`, or in a mode-protected `METRICS_TOKEN_FILE`, is required, and the Bearer token is compared in constant time. Even with a token, do not expose the endpoint on a public route.
 
-収集対象はHTTP rate/status/latency、DB pool total/idle/waiting/max、password/object-storage gate active/pending/cap、event-loop p50/p99/max、process memory/uptimeである。External監視でdisk/inode、PostgreSQL、object容量、TLS期限、backup/off-host copy/restore、systemd restart、synthetic encrypted read/writeを追加する。LogはUTCのstructured JSONでrequest/trace/actor/tenant contextを持つが、body、token、password、key、plaintextは出力しない。
+Collected metrics are HTTP rate, status and latency; database pool total, idle, waiting and max; password and object storage gate active, pending and cap; event loop p50, p99 and max; and process memory and uptime. Add external monitoring for disk and inodes, PostgreSQL, object capacity, TLS expiry, backups, off-host copies and restores, systemd restarts, and synthetic encrypted reads and writes. Logs are structured JSON in UTC with request, trace, actor and tenant context, but never include bodies, tokens, passwords, keys or plaintext.
 
 ## Automated single-host backup
 
-`deploy/alparts-backup.timer` はdaily + random delay + persistentでoneshot serviceを起動する。`scripts/backup-under-systemd.sh` はflockで重複を拒否し、対象serviceがactiveでなければ状態を変更せず失敗し、appを止める前に`backup.sh --preflight`で必要なcommand（rclone 1.75.1以上を含む）と設定を確認し、stop後だけquiesce assertionを設定する。成功/失敗/signalのtrapはservice再起動を試みる。Backup unitはappを自らstopするため、appへの`Requires=`関係を持たせない。
+`deploy/alparts-backup.timer` starts a oneshot service daily, with a random delay, as a persistent timer. `scripts/backup-under-systemd.sh` refuses to overlap using flock, fails without changing anything if the target service is not active, checks the required commands (including rclone 1.75.1 or later) and settings with `backup.sh --preflight` before stopping the app, and sets the quiesce assertion only after the stop. A trap for success, failure and signals tries to restart the service. Because the backup unit stops the app itself, do not give it a `Requires=` relationship to the app.
 
-Retentionはbackup成功とapp再起動の後にだけ実行する。`scripts/prune-backups.sh` はdefault dry-run、狭い既存directory、exact filename、日数/最低copy数、`BACKUP_PRUNE_ACK=DELETE_EXPIRED_ENCRYPTED_BACKUPS`を要求する。Timer成功だけではDRにならないため、artifactのoff-host/off-region copyとrestore testを別に監視する。
+Retention runs only after a successful backup and an app restart. `scripts/prune-backups.sh` defaults to a dry run and requires a narrow existing directory, exact file names, a number of days and a minimum number of copies, and `BACKUP_PRUNE_ACK=DELETE_EXPIRED_ENCRYPTED_BACKUPS`. A successful timer alone is not disaster recovery, so monitor off-host and off-region copies of the artifacts and restore tests separately.
 
 ## Backup / restore boundary
 
-Backup toolingは次を一つのrun IDへ収集する。
+The backup tooling collects the following under one run ID.
 
-- `--format=custom --serializable-deferrable` のPostgreSQL logical dump。
-- 設定したbucket内の最新object byte。
-- Table count、attachment/object reference、object inventory、SHA-256 checksum、manifest、tool version。
+- A PostgreSQL logical dump made with `--format=custom --serializable-deferrable`.
+- The latest object bytes in the configured bucket.
+- Table counts, attachment and object references, an object inventory, SHA-256 checksums, a manifest and tool versions.
 
-Plaintext stagingはmode `0700`の`mktemp`配下だけに作りtrapで削除し、published artifactはage recipient public keyへ暗号化する。Output既存fileを置換しない。PostgreSQLとオブジェクトストレージの間に共通transactionはないため、quiesceしないbackupは整合snapshotではない。
+Plaintext staging is created only under a mode-`0700` `mktemp` directory and removed by a trap, and the published artifact is encrypted to an age recipient public key. Existing output files are never replaced. PostgreSQL and object storage share no transaction, so a backup taken without quiescing is not a consistent snapshot.
 
-Restore verifierは次を強制する。
+The restore verifier enforces the following.
 
-- `alparts_restore_*` / `alparts_verify_*` databaseと `alparts-restore-*` / `alparts-verify-*` bucketだけを許可し、production-like名とsource/default bucketを拒否する。
-- Non-system schema/objectがないDB、objectがないbucketだけを許可する。
-- Restore ownerが `NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS` で、危険なbuilt-in roleを継承できないことを確認する。
-- Filesystem extraction前にarchive entry数、regular fileごとのlogical byte、aggregate expanded byteを設定上限と照合する。GNU tarが示すexpanded sizeを使い、compact sparse/unsupported metadataを検出できる場合は拒否する。
-- Decrypt→archive/path/type validation→checksum→single-transaction `pg_restore`→object copy→全table count・attachment reference・object key/size/SHAの再download比較を行う。
+- Only `alparts_restore_*` / `alparts_verify_*` databases and `alparts-restore-*` / `alparts-verify-*` buckets are allowed; production-like names and the source or default bucket are refused.
+- Only a database with no non-system schemas or objects and a bucket with no objects are allowed.
+- The restore owner is checked to be `NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS` and unable to inherit dangerous built-in roles.
+- Before filesystem extraction, the number of archive entries, the logical bytes of each regular file and the aggregate expanded bytes are checked against the configured limits. The expanded sizes reported by GNU tar are used, and compact sparse or unsupported metadata is refused when it can be detected.
+- It decrypts, validates the archive, paths and types, checks checksums, runs a single-transaction `pg_restore`, copies the objects, and then downloads them again to compare every table count, attachment reference and object key, size and SHA.
 
-PostgreSQL接続はmode `0600`のlibpq service fileとsection名で渡し、オブジェクトストレージのcredentialはshell builtinでmode `0600`の一時`rclone` configへ書き込む（mode `0700`のstaging配下）。Password、access key、secret keyをchild process argvまたはenvironmentへ渡さず、`RCLONE_*`・`AWS_*`の環境変数もchildから除く。Restoreのexpanded-byte上限は、保護されたstaging filesystemのquotaと安全な空き容量以下へ設定する。
+The PostgreSQL connection is passed as a mode-`0600` libpq service file and a section name, and object storage credentials are written by a shell builtin into a temporary mode-`0600` `rclone` configuration (under the mode-`0700` staging directory). Passwords, access keys and secret keys are never passed in child process argv or environment, and `RCLONE_*` and `AWS_*` environment variables are also removed from children. Set the restore expanded-byte limit at or below the quota and safely available space of the protected staging filesystem.
 
-### 確認済みroundtrip
+### Verified round trips
 
-2026-08-26に既存DB/bucket/volumeを使わない一意なPostgreSQL 16/MinIO環境で、`backup.sh` から非特権の空verify DB/空bucketへの `restore-verify.sh` を完走した。
+On 2026-08-26, in a unique PostgreSQL 16 and MinIO environment that used no existing database, bucket or volume, `backup.sh` followed by `restore-verify.sh` into an unprivileged, empty verification database and empty bucket completed.
 
-2026-10-02に、オブジェクトストレージを SeaweedFS 4.47、転送ツールを rclone へ置き換えた後、一意な PostgreSQL 16/SeaweedFS 環境で同じ `backup.sh` → `restore-verify.sh` を完走した（43 table、avatar 参照を含む 2 object、74,096 bytes）。
+On 2026-10-02, after replacing object storage with SeaweedFS 4.47 and the transfer tool with rclone, the same `backup.sh` → `restore-verify.sh` completed in a unique PostgreSQL 16 and SeaweedFS environment (43 tables, 2 objects including an avatar reference, 74,096 bytes).
 
 - Run ID: `20260826T144441Z-c50148de2d3e`
-- Database: 4 tableのsource/restore count一致
-- Object: 2 object、合計144 bytes
-- Verification: manifest、payload checksum、attachment reference、object inventory、再download SHAが一致
+- Database: source and restore counts matched for 4 tables
+- Objects: 2 objects, 144 bytes in total
+- Verification: manifest, payload checksums, attachment references, object inventory and re-download SHA all matched
 
-この結果は、そのartifactのDB rowと最新encrypted object byteを検証targetへ再現できたことだけを示す。Application startup、original audit keyでのchain verification、browser device keyによるfixture decrypt、client attachment full flow、RTO/RPOは検証していない。
+These results show only that the database rows and latest encrypted object bytes of that artifact could be recreated in the verification targets. Application startup, chain verification with the original audit key, fixture decryption with browser device keys, the full client attachment flow, and RTO/RPO were not verified.
 
-### Backupに含まれない資産
+### Assets not included in backups
 
-- `AUDIT_INTEGRITY_KEY`、age identity、deployment/オブジェクトストレージ/PostgreSQL credential。
-- Reverse proxy、systemd、environment/policy configuration。
-- External audit checkpoint fileと、その独立保管先の記録。
-- Browser device private key、channel keyのclient-side recovery material。
-- Object version history、bucket policy、lifecycle、tag、すべてのobject metadata。
+- `AUDIT_INTEGRITY_KEY`, the age identity, and deployment, object storage and PostgreSQL credentials.
+- Reverse proxy, systemd, and environment and policy configuration.
+- The external audit checkpoint file and the records at its independent storage location.
+- Browser device private keys and client-side recovery material for channel keys.
+- Object version history, bucket policies, lifecycle, tags and all object metadata.
 
-これらは必要性とauthorityを分離して別々に暗号化・保管する。Browser device private keyをserver backupへ追加してE2EE recoveryを装わない。
+Encrypt and store these separately, keeping need and authority separated. Do not add browser device private keys to server backups to make it look like end-to-end encryption recovery.
 
-## 未提供の運用保証
+## Operational guarantees not provided
 
-このrepositoryは、PITR/continuous WAL archive、WORM/object lock、automatic off-site replication、scheduled automatic restore、full application automatic recovery、failover、HA、実施済みquarterly DR、実測RTO/RPO、72-hour soakを提供しない。安全側のlocal retentionとdaily systemd scheduleは実装したが、同一host内だけではDRではない。Auditのexternal SIEM/WORM転送、data retention/export、signed update/release provenanceも未実装である。
+This repository does not provide PITR or a continuous WAL archive, WORM or object lock, automatic off-site replication, scheduled automatic restores, full automatic application recovery, failover, HA, completed quarterly disaster recovery exercises, measured RTO/RPO, or a 72-hour soak. Safe local retention and a daily systemd schedule are implemented, but staying on the same host is not disaster recovery. External SIEM or WORM forwarding of audit records, data retention and export, and signed update and release provenance are also not implemented.
 
-これらは [LIMITATIONS.md](./policies/LIMITATIONS.md) のformal release blockerであり、manual backup roundtrip成功で解除されない。
+These are formal release blockers in [LIMITATIONS.md](./policies/LIMITATIONS.md), and a successful manual backup round trip does not lift them.

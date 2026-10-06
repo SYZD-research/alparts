@@ -20,6 +20,7 @@ import {
   parseVoiceJoinResult,
   parseVoiceParticipant,
 } from '../services/voice-signal-model';
+import { t } from '../i18n';
 
 export type VoiceCallStatus = 'idle' | 'joining' | 'connected' | 'error';
 export type VoiceCallMode = 'voice-activity' | 'push-to-talk';
@@ -167,21 +168,21 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       serverJoinedChannelId = channelId;
       const rawJoin = await emitAcknowledged(socket, 'voice:join', { channelId });
       const joined = parseVoiceJoinResult(rawJoin);
-      if (!joined) throw new Error('通話サーバーから不正な応答を受信しました');
+      if (!joined) throw new Error(t('通話サーバーから不正な応答を受信しました'));
       if (!joined.ok) throw new Error(joinErrorMessage(joined.error));
       if (!joined.self || !joined.participants || !joined.iceServers) {
-        throw new Error('通話参加情報が不足しています');
+        throw new Error(t('通話参加情報が不足しています'));
       }
       if (
         generation !== callGeneration
         || joined.self.deviceId !== device.deviceId
         || joined.self.userId !== device.userId
-      ) throw new Error('通話参加者の端末情報を検証できませんでした');
+      ) throw new Error(t('通話参加者の端末情報を検証できませんでした'));
 
       const participantIds = new Set([joined.self.participantId]);
       for (const participant of joined.participants) {
         if (participantIds.has(participant.participantId)) {
-          throw new Error('通話参加者一覧が重複しています');
+          throw new Error(t('通話参加者一覧が重複しています'));
         }
         participantIds.add(participant.participantId);
       }
@@ -277,7 +278,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       const replacementTrack = replacement.getAudioTracks()[0];
       if (!replacementTrack) {
         stopStream(replacement);
-        throw new Error('選択したマイクから音声トラックを取得できませんでした');
+        throw new Error(t('選択したマイクから音声トラックを取得できませんでした'));
       }
       const oldStream = localStream;
       const oldTrack = oldStream.getAudioTracks()[0] ?? null;
@@ -296,7 +297,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
           results[index].status === 'fulfilled' ? sender.replaceTrack(oldTrack) : Promise.resolve()
         )));
         stopStream(replacement);
-        throw new Error('通話中のマイク切替を完了できませんでした');
+        throw new Error(t('通話中のマイク切替を完了できませんでした'));
       }
       localStream = replacement;
       applyTransmissionState();
@@ -318,10 +319,10 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       const devices = await navigator.mediaDevices.enumerateDevices();
       const inputDevices = devices
         .filter((device) => device.kind === 'audioinput')
-        .map((device, index) => ({ deviceId: device.deviceId, label: device.label || `マイク ${index + 1}` }));
+        .map((device, index) => ({ deviceId: device.deviceId, label: device.label || t('マイク {number}', { number: index + 1 }) }));
       const outputDevices = devices
         .filter((device) => device.kind === 'audiooutput')
-        .map((device, index) => ({ deviceId: device.deviceId, label: device.label || `スピーカー ${index + 1}` }));
+        .map((device, index) => ({ deviceId: device.deviceId, label: device.label || t('スピーカー {number}', { number: index + 1 }) }));
       set({ inputDevices, outputDevices });
     } catch {
       // Device enumeration is optional; the active default device still works.
@@ -366,11 +367,11 @@ export function getRemoteVoiceStream(participantId: string): MediaStream | null 
 }
 
 function assertVoiceBrowserSupport(): void {
-  if (!window.isSecureContext) throw new Error('音声通話にはHTTPSの安全な接続が必要です');
+  if (!window.isSecureContext) throw new Error(t('音声通話にはHTTPSの安全な接続が必要です'));
   if (!navigator.mediaDevices?.getUserMedia || typeof RTCPeerConnection === 'undefined') {
-    throw new Error('このブラウザーは音声通話に対応していません');
+    throw new Error(t('このブラウザーは音声通話に対応していません'));
   }
-  if (typeof crypto.randomUUID !== 'function') throw new Error('安全な乱数APIを利用できません');
+  if (typeof crypto.randomUUID !== 'function') throw new Error(t('安全な乱数APIを利用できません'));
 }
 
 async function acquireAudioStream(deviceId: string): Promise<MediaStream> {
@@ -387,7 +388,7 @@ async function acquireAudioStream(deviceId: string): Promise<MediaStream> {
     });
     if (stream.getAudioTracks().length < 1) {
       stopStream(stream);
-      throw new Error('マイクの音声トラックを取得できませんでした');
+      throw new Error(t('マイクの音声トラックを取得できませんでした'));
     }
     return stream;
   } catch (error) {
@@ -396,7 +397,7 @@ async function acquireAudioStream(deviceId: string): Promise<MediaStream> {
       const fallback = await navigator.mediaDevices.getUserMedia({ audio: base, video: false });
       if (fallback.getAudioTracks().length < 1) {
         stopStream(fallback);
-        throw new Error('マイクの音声トラックを取得できませんでした');
+        throw new Error(t('マイクの音声トラックを取得できませんでした'));
       }
       return fallback;
     }
@@ -478,7 +479,7 @@ function attachVoiceListeners(socket: Socket, generation: number, channelId: str
       status: 'error',
       channelId,
       participantsByChannel: {},
-      error: '接続が切れたため、通話を終了しました',
+      error: t('接続が切れたため、通話を終了しました'),
     });
   };
   socket.on('voice:signal', signal);
@@ -529,7 +530,7 @@ async function processIncomingSignal(
       directory = await loadDeviceDirectory(envelope.channelId);
     }
   } catch {
-    noteVoiceError('通話相手の接続情報を確認できませんでした');
+    noteVoiceError(t('通話相手の接続情報を確認できませんでした'));
     return;
   }
   if (generation !== callGeneration) return;
@@ -596,7 +597,7 @@ async function processIncomingSignal(
 function createPeer(participantId: string, generation: number): RTCPeerConnection {
   const existing = peers.get(participantId);
   if (existing) return existing;
-  if (!localStream) throw new Error('ローカル音声が初期化されていません');
+  if (!localStream) throw new Error(t('ローカル音声が初期化されていません'));
 
   const peer = new RTCPeerConnection({ iceServers: runtimeIceServers });
   peers.set(participantId, peer);
@@ -691,7 +692,7 @@ async function sendSignedSignal(envelope: SignedVoiceSignalEnvelope, generation:
     const signature = await signVoiceSignalEnvelope(envelope);
     if (generation !== callGeneration || !listeners?.socket.connected) return;
     const result = await emitAcknowledged(listeners.socket, 'voice:signal', { ...envelope, signature });
-    if (!isSuccessfulAcknowledgement(result)) throw new Error('通話シグナリングを中継できませんでした');
+    if (!isSuccessfulAcknowledgement(result)) throw new Error(t('通話シグナリングを中継できませんでした'));
   });
   outboundQueues.set(envelope.targetParticipantId, next);
   try {
@@ -706,7 +707,7 @@ async function sendSignedSignal(envelope: SignedVoiceSignalEnvelope, generation:
 
 function nextOutboundSignalSequence(targetParticipantId: string): number {
   const previous = outboundSequences.get(targetParticipantId) ?? 0;
-  if (previous >= Number.MAX_SAFE_INTEGER) throw new Error('音声通話sequenceの上限に達しました');
+  if (previous >= Number.MAX_SAFE_INTEGER) throw new Error(t('音声通話sequenceの上限に達しました'));
   const next = previous + 1;
   outboundSequences.set(targetParticipantId, next);
   return next;
@@ -1017,7 +1018,7 @@ async function emitAcknowledged(socket: Socket, event: string, payload: unknown)
     const timer = window.setTimeout(() => {
       if (settled) return;
       settled = true;
-      reject(new Error('通話サーバーの応答がタイムアウトしました'));
+      reject(new Error(t('通話サーバーの応答がタイムアウトしました')));
     }, SIGNAL_ACK_TIMEOUT_MS);
     socket.emit(event, payload, (result: unknown) => {
       if (settled) return;
@@ -1031,9 +1032,9 @@ async function emitAcknowledged(socket: Socket, event: string, payload: unknown)
 async function waitForSocketConnection(socket: Socket): Promise<void> {
   if (socket.connected) return;
   await new Promise<void>((resolve, reject) => {
-    const timer = window.setTimeout(() => finish(new Error('リアルタイム接続がタイムアウトしました')), SIGNAL_ACK_TIMEOUT_MS);
+    const timer = window.setTimeout(() => finish(new Error(t('リアルタイム接続がタイムアウトしました'))), SIGNAL_ACK_TIMEOUT_MS);
     const onConnect = () => finish();
-    const onError = () => finish(new Error('リアルタイム接続を確立できませんでした'));
+    const onError = () => finish(new Error(t('リアルタイム接続を確立できませんでした')));
     const finish = (error?: Error) => {
       window.clearTimeout(timer);
       socket.off('connect', onConnect);
@@ -1048,17 +1049,17 @@ async function waitForSocketConnection(socket: Socket): Promise<void> {
 }
 
 function joinErrorMessage(error: string | undefined): string {
-  if (error === 'DEVICE_REQUIRED') return 'この端末を登録してから通話に参加してください';
-  if (error === 'FORBIDDEN') return 'このチャンネルの通話に参加する権限がありません';
-  if (error === 'VOICE_CHANNEL_FULL') return 'この通話は参加上限（8人）に達しています';
-  return '通話に参加できませんでした';
+  if (error === 'DEVICE_REQUIRED') return t('この端末を登録してから通話に参加してください');
+  if (error === 'FORBIDDEN') return t('このチャンネルの通話に参加する権限がありません');
+  if (error === 'VOICE_CHANNEL_FULL') return t('この通話は参加上限（8人）に達しています');
+  return t('通話に参加できませんでした');
 }
 
 function voiceErrorMessage(error: unknown): string {
   if (error instanceof DOMException) {
-    if (error.name === 'NotAllowedError' || error.name === 'SecurityError') return 'マイクの使用が許可されていません';
-    if (error.name === 'NotFoundError') return '利用できるマイクが見つかりません';
-    if (error.name === 'NotReadableError') return 'マイクをほかのアプリが使用しているため開始できません';
+    if (error.name === 'NotAllowedError' || error.name === 'SecurityError') return t('マイクの使用が許可されていません');
+    if (error.name === 'NotFoundError') return t('利用できるマイクが見つかりません');
+    if (error.name === 'NotReadableError') return t('マイクをほかのアプリが使用しているため開始できません');
   }
-  return '音声通話を開始できませんでした。もう一度お試しください';
+  return t('音声通話を開始できませんでした。もう一度お試しください');
 }

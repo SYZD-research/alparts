@@ -87,7 +87,7 @@ const handle =
         )
         .json({
           error: 'GROUP_STATE_CHANGED',
-          message: '会話の準備を完了できませんでした。もう一度お試しください。',
+          message: 'The conversation could not be prepared. Try again.',
         });
     }
   };

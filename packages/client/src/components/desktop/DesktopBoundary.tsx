@@ -3,6 +3,8 @@ import type { User } from '@alparts/shared';
 import type { AlpartsDesktopInfo } from '../../types/desktop';
 import { getDesktopBridge } from '../../services/desktop.service';
 import { lockAuthenticatedClient, unlockAuthenticatedClient, useAuthStore } from '../../stores/auth.store';
+import { useLocale, useT } from '../../i18n';
+import { LanguageSelect } from '../settings/LanguageSelect';
 
 type BoundaryState =
   | { kind: 'loading' }
@@ -10,6 +12,8 @@ type BoundaryState =
   | { kind: 'error'; message: string };
 
 export function DesktopBoundary({ children }: { children: React.ReactNode }) {
+  const t = useT();
+  const locale = useLocale();
   const bridge = getDesktopBridge();
   const [state, setState] = useState<BoundaryState>(bridge ? { kind: 'loading' } : {
     kind: 'ready',
@@ -28,7 +32,7 @@ export function DesktopBoundary({ children }: { children: React.ReactNode }) {
       if (info.locked) setLockState((current) => ({ ...current, locked: true }));
       setState({ kind: 'ready', info, showConnection: !info.serverUrl });
     } catch {
-      setState({ kind: 'error', message: 'アプリを開始できませんでした。もう一度お試しください。' });
+      setState({ kind: 'error', message: t('アプリを開始できませんでした。もう一度お試しください。') });
     }
   };
 
@@ -49,16 +53,20 @@ export function DesktopBoundary({ children }: { children: React.ReactNode }) {
     };
   }, [bridge]);
 
+  useEffect(() => {
+    void bridge?.setLanguage?.(locale).catch(() => undefined);
+  }, [bridge, locale]);
+
   if (!bridge) return <>{children}</>;
-  if (state.kind === 'loading') return <FullPageStatus message="アプリを準備しています…" />;
+  if (state.kind === 'loading') return <FullPageStatus message={t('アプリを準備しています…')} />;
   if (state.kind === 'error') {
-    return <FullPageStatus message={state.message} actionLabel="もう一度試す" onAction={() => { setState({ kind: 'loading' }); void refresh(); }} />;
+    return <FullPageStatus message={state.message} actionLabel={t('もう一度試す')} onAction={() => { setState({ kind: 'loading' }); void refresh(); }} />;
   }
   if (!state.info.secureStorageReady) {
     return (
       <FullPageStatus
-        message="この端末ではデータを安全に保存できないため、アプリを開始できません。端末のロックを有効にしてから、もう一度お試しください。"
-        actionLabel="もう一度試す"
+        message={t('この端末ではデータを安全に保存できないため、アプリを開始できません。端末のロックを有効にしてから、もう一度お試しください。')}
+        actionLabel={t('もう一度試す')}
         onAction={() => { setState({ kind: 'loading' }); void refresh(); }}
         alert
       />
@@ -79,6 +87,7 @@ export function DesktopBoundary({ children }: { children: React.ReactNode }) {
 }
 
 function ConnectionSetup({ info, onCancel }: { info: AlpartsDesktopInfo; onCancel?: () => void }) {
+  const t = useT();
   const bridge = getDesktopBridge()!;
   const [serverUrl, setServerUrl] = useState(info.serverUrl || '');
   const [confirmed, setConfirmed] = useState(false);
@@ -96,8 +105,8 @@ function ConnectionSetup({ info, onCancel }: { info: AlpartsDesktopInfo; onCance
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : '';
       setError(message.includes('INSECURE_SERVER_URL')
-        ? 'この接続先は安全に利用できません。管理者から案内された接続先を確認してください。'
-        : '接続先を保存できませんでした。入力内容を確認してください。');
+        ? t('この接続先は安全に利用できません。管理者から案内された接続先を確認してください。')
+        : t('接続先を保存できませんでした。入力内容を確認してください。'));
       setSaving(false);
     }
   };
@@ -105,11 +114,11 @@ function ConnectionSetup({ info, onCancel }: { info: AlpartsDesktopInfo; onCance
   return (
     <main className="flex h-screen items-center justify-center bg-discord-bg p-6">
       <section aria-labelledby="desktop-setup-title" className="w-full max-w-lg rounded-lg bg-discord-sidebar p-8 shadow-2xl">
-        <h1 id="desktop-setup-title" className="text-2xl font-bold text-white">接続先を設定</h1>
-        <p className="mt-2 text-sm text-discord-muted">管理者から案内されたアドレスを入力してください。</p>
+        <h1 id="desktop-setup-title" className="text-2xl font-bold text-white">{t('接続先を設定')}</h1>
+        <p className="mt-2 text-sm text-discord-muted">{t('管理者から案内されたアドレスを入力してください。')}</p>
         <form onSubmit={submit} className="mt-6 space-y-4">
           <label className="block text-sm text-discord-text">
-            接続先
+            {t('接続先')}
             <input
               autoFocus
               required
@@ -128,23 +137,25 @@ function ConnectionSetup({ info, onCancel }: { info: AlpartsDesktopInfo; onCance
           {changed && (
             <label className="flex gap-3 rounded border border-discord-red/60 bg-discord-red/10 p-3 text-sm text-discord-text">
               <input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} className="mt-0.5" />
-              <span>接続先を変更すると、現在の接続先についてこの端末に保存した下書きなどが削除されます。</span>
+              <span>{t('接続先を変更すると、現在の接続先についてこの端末に保存した下書きなどが削除されます。')}</span>
             </label>
           )}
           {error && <p role="alert" className="text-sm text-discord-red">{error}</p>}
           <div className="flex justify-end gap-2">
-            {onCancel && <button type="button" onClick={onCancel} disabled={saving} className="rounded px-4 py-2 text-sm text-discord-muted hover:bg-discord-hover">キャンセル</button>}
+            {onCancel && <button type="button" onClick={onCancel} disabled={saving} className="rounded px-4 py-2 text-sm text-discord-muted hover:bg-discord-hover">{t('キャンセル')}</button>}
             <button type="submit" disabled={saving || !serverUrl.trim() || (changed && !confirmed) || info.serverManaged} className="rounded bg-discord-accent px-4 py-2 text-sm font-medium text-white disabled:opacity-40">
-              {saving ? '接続しています…' : '接続する'}
+              {saving ? t('接続しています…') : t('接続する')}
             </button>
           </div>
         </form>
+        <LanguageSelect className="mt-6" />
       </section>
     </main>
   );
 }
 
 function AppUnlock({ user, onUnlocked }: { user: User | null; onUnlocked: () => void }) {
+  const t = useT();
   const bridge = getDesktopBridge()!;
   const [password, setPassword] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -161,7 +172,7 @@ function AppUnlock({ user, onUnlocked }: { user: User | null; onUnlocked: () => 
       setPassword('');
       onUnlocked();
     } catch {
-      setError('ロックを解除できませんでした。パスワードと接続を確認してください。');
+      setError(t('ロックを解除できませんでした。パスワードと接続を確認してください。'));
     } finally {
       setSubmitting(false);
     }
@@ -176,7 +187,7 @@ function AppUnlock({ user, onUnlocked }: { user: User | null; onUnlocked: () => 
       await bridge.unlockComplete();
       onUnlocked();
     } catch {
-      setError('ログイン画面へ戻れませんでした。もう一度お試しください。');
+      setError(t('ログイン画面へ戻れませんでした。もう一度お試しください。'));
     } finally {
       setSubmitting(false);
     }
@@ -185,13 +196,13 @@ function AppUnlock({ user, onUnlocked }: { user: User | null; onUnlocked: () => 
   return (
     <main className="flex h-screen items-center justify-center bg-discord-bg p-6">
       <section aria-labelledby="desktop-unlock-title" className="w-full max-w-md rounded-lg bg-discord-sidebar p-8 shadow-2xl">
-        <h1 id="desktop-unlock-title" className="text-2xl font-bold text-white">アプリはロックされています</h1>
+        <h1 id="desktop-unlock-title" className="text-2xl font-bold text-white">{t('アプリはロックされています')}</h1>
         <p className="mt-2 text-sm text-discord-muted">
-          {user ? `${user.displayName} として続けるには` : '続けるには'}パスワードを入力してください。
+          {user ? t('{name} として続けるにはパスワードを入力してください。', { name: user.displayName }) : t('続けるにはパスワードを入力してください。')}
         </p>
         <form onSubmit={submit} className="mt-6 space-y-4">
           <label className="block text-sm text-discord-text">
-            パスワード
+            {t('パスワード')}
             <input
               autoFocus
               required
@@ -206,10 +217,10 @@ function AppUnlock({ user, onUnlocked }: { user: User | null; onUnlocked: () => 
           </label>
           {error && <p role="alert" className="text-sm text-discord-red">{error}</p>}
           <button type="submit" disabled={submitting} className="w-full rounded bg-discord-accent px-4 py-2.5 font-medium text-white disabled:opacity-40">
-            {submitting ? '確認しています…' : 'ロックを解除'}
+            {submitting ? t('確認しています…') : t('ロックを解除')}
           </button>
           <button type="button" disabled={submitting} onClick={() => { void returnToLogin(); }} className="w-full rounded px-4 py-2 text-sm text-discord-muted hover:bg-discord-hover disabled:opacity-40">
-            ログイン画面に戻る
+            {t('ログイン画面に戻る')}
           </button>
         </form>
       </section>

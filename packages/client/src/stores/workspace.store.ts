@@ -5,6 +5,7 @@ import { useChannelStore } from './channel.store';
 import { useMessageStore } from './message.store';
 import { usePresenceStore } from './presence.store';
 import type { WarnedUsers } from './profile-visibility';
+import { t } from '../i18n';
 
 interface WorkspaceState {
   workspaces: Workspace[];
@@ -58,7 +59,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         // caller can fail closed using `error` without converting a network
         // outage into a false membership revocation.
         listLoading = false;
-        set({ isLoading: selectionLoading, error: error instanceof Error ? error.message : 'ワークスペースを読み込めませんでした' });
+        set({ isLoading: selectionLoading, error: error instanceof Error ? error.message : t('ワークスペースを読み込めませんでした') });
       }
       return null;
     }
@@ -94,7 +95,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       if (generation !== workspaceSelectionGeneration || get().activeWorkspaceId !== id) return;
       useChannelStore.getState().reset();
       selectionLoading = false;
-      set({ categories: [], members: [], warnedUsers: null, isLoading: listLoading, error: error instanceof Error ? error.message : 'ワークスペースを読み込めませんでした' });
+      set({ categories: [], members: [], warnedUsers: null, isLoading: listLoading, error: error instanceof Error ? error.message : t('ワークスペースを読み込めませんでした') });
     }
   },
 
@@ -110,7 +111,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       if (generation === workspaceSelectionGeneration && get().activeWorkspaceId === workspaceId) set({ categories });
     } catch (error) {
       if (generation === workspaceSelectionGeneration && get().activeWorkspaceId === workspaceId) {
-        set({ error: error instanceof Error ? error.message : 'カテゴリーを読み込めませんでした' });
+        set({ error: error instanceof Error ? error.message : t('カテゴリーを読み込めませんでした') });
       }
     }
   },
@@ -133,7 +134,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       }
     } catch (error) {
       if (request === membersRequest && generation === workspaceSelectionGeneration && get().activeWorkspaceId === workspaceId) {
-        set({ error: error instanceof Error ? error.message : 'メンバーを読み込めませんでした' });
+        set({ error: error instanceof Error ? error.message : t('メンバーを読み込めませんでした') });
       }
     }
   },

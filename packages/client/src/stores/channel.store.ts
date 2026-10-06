@@ -3,6 +3,7 @@ import { api } from '../services/api';
 import type { Channel } from '@alparts/shared';
 import { restoreChannelKeyScope } from '../services/crypto.service';
 import { useDraftStore } from './draft.store';
+import { t } from '../i18n';
 
 interface ChannelState {
   activeChannelId: string | null;
@@ -68,7 +69,7 @@ export const useChannelStore = create<ChannelState>((set) => ({
     } catch {
       if (generation === channelRequestGeneration) {
         channelRequestWorkspaceId = null;
-        set({ error: 'チャンネルを読み込めませんでした。接続を確認して再度お試しください。' });
+        set({ error: t('チャンネルを読み込めませんでした。接続を確認して再度お試しください。') });
       }
       return null;
     }

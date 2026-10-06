@@ -4,6 +4,7 @@ import type {
   MessageBookmark,
 } from '@alparts/shared';
 import { messageMentionsCurrentUser } from '../services/mention-model';
+import { TAMPERED_MESSAGE_MARKER, UNAVAILABLE_MESSAGE_MARKER, UNVERIFIED_MESSAGE_MARKER } from '../services/message-display';
 
 export interface OrderedBaseMessage {
   id: string;
@@ -83,9 +84,9 @@ export interface LoadedMentionScan {
 }
 
 const NON_CONTENT_MARKERS = new Set([
-  '[表示できないメッセージ]',
-  '[メッセージを検証できませんでした]',
-  '[改ざんを検出しました]',
+  UNAVAILABLE_MESSAGE_MARKER,
+  UNVERIFIED_MESSAGE_MARKER,
+  TAMPERED_MESSAGE_MARKER,
 ]);
 
 function containsLocalMention(content: string, userId: string, displayName: string): boolean {

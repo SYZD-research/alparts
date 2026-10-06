@@ -30,6 +30,7 @@ import {
   type ActiveMentionQuery,
   type MentionMember,
 } from '../../services/mention-model';
+import { intlLocale, t, useT } from '../../i18n';
 
 interface Props {
   channelId: string;
@@ -49,6 +50,7 @@ interface PendingPaste {
 }
 
 export function MessageInput({ channelId, sendDisabled = false, postId, placeholder }: Props) {
+  const t = useT();
   const draftScope = postId ? forumPostDraftScope(channelId, postId) : channelId;
   const [editContent, setEditContent] = useState('');
   const [isSending, setIsSending] = useState(false);
@@ -218,7 +220,7 @@ export function MessageInput({ channelId, sendDisabled = false, postId, placehol
         setEditContent('');
         setEditTarget(channelId, null);
       } else if (selectedFiles.length > 0) {
-        if (!isOnline) throw new Error('添付ファイルはオンライン時のみ送信できます');
+        if (!isOnline) throw new Error(t('添付ファイルはオンライン時のみ送信できます'));
         const sentBefore = heldAttachments !== null;
         // Register upload runtimes immediately after the durable base message.
         // Draft persistence must not delay or accidentally suppress the file
@@ -231,11 +233,11 @@ export function MessageInput({ channelId, sendDisabled = false, postId, placehol
         );
         if (result.status === 'held') {
           setHeldAttachments(result.held);
-          setAttachmentError('ファイルを送信できませんでした。もう一度お試しください');
+          setAttachmentError(t('ファイルを送信できませんでした。もう一度お試しください'));
         } else {
           setHeldAttachments(null);
           void result.uploads.catch(() => {
-            setAttachmentError('ファイルを送信できませんでした。もう一度お試しください');
+            setAttachmentError(t('ファイルを送信できませんでした。もう一度お試しください'));
           });
           setSelectedFiles([]);
           if (fileInputRef.current) fileInputRef.current.value = '';
@@ -258,7 +260,7 @@ export function MessageInput({ channelId, sendDisabled = false, postId, placehol
       }
     } catch {
       if (selectedFiles.length > 0) {
-        setAttachmentError('ファイルを送信できませんでした。もう一度お試しください');
+        setAttachmentError(t('ファイルを送信できませんでした。もう一度お試しください'));
       }
     } finally {
       setIsSending(false);
@@ -268,11 +270,11 @@ export function MessageInput({ channelId, sendDisabled = false, postId, placehol
   const addSelectedFiles = (files: File[]) => {
     setAttachmentError(null);
     if (editTarget) {
-      setAttachmentError('編集中のメッセージにはファイルを追加できません');
+      setAttachmentError(t('編集中のメッセージにはファイルを追加できません'));
       return;
     }
     if (!isOnline) {
-      setAttachmentError('添付ファイルはオンライン時のみ追加できます');
+      setAttachmentError(t('添付ファイルはオンライン時のみ追加できます'));
       return;
     }
     const seen = new Set(selectedFiles.map(fileIdentity));
@@ -284,12 +286,12 @@ export function MessageInput({ channelId, sendDisabled = false, postId, placehol
     });
     const nextFiles = [...selectedFiles, ...uniqueFiles];
     if (nextFiles.length > ATTACHMENT_MAX_COUNT_PER_MESSAGE) {
-      setAttachmentError(`添付ファイルは1メッセージ${ATTACHMENT_MAX_COUNT_PER_MESSAGE}件までです`);
+      setAttachmentError(t('添付ファイルは1メッセージ{count}件までです', { count: ATTACHMENT_MAX_COUNT_PER_MESSAGE }));
       return;
     }
     const oversized = nextFiles.find((file) => file.size > MAX_FILE_SIZE);
     if (oversized) {
-      setAttachmentError(`${oversized.name} は100MBを超えています`);
+      setAttachmentError(t('{name} は100MBを超えています', { name: oversized.name }));
       return;
     }
     setSelectedFiles(nextFiles);
@@ -329,7 +331,7 @@ export function MessageInput({ channelId, sendDisabled = false, postId, placehol
     dragDepth.current = 0;
     setIsDraggingFiles(false);
     if (sendDisabled) {
-      setAttachmentError('準備が完了してからファイルを追加してください');
+      setAttachmentError(t('準備が完了してからファイルを追加してください'));
       return;
     }
     addSelectedFiles(Array.from(event.dataTransfer.files));
@@ -387,7 +389,7 @@ export function MessageInput({ channelId, sendDisabled = false, postId, placehol
     if (imageFiles.length > 0) {
       event.preventDefault();
       if (sendDisabled) {
-        setAttachmentError('準備が完了してから画像を追加してください');
+        setAttachmentError(t('準備が完了してから画像を追加してください'));
         return;
       }
       addSelectedFiles(imageFiles);
@@ -450,7 +452,7 @@ export function MessageInput({ channelId, sendDisabled = false, postId, placehol
   const applyPendingPaste = () => {
     if (!pendingPaste) return;
     if (pendingPaste.channelId !== channelId || pendingPaste.editMessageId !== (editTarget?.id || null)) {
-      setPasteError('チャンネルまたは編集対象が変わったため、貼り付けを破棄しました');
+      setPasteError(t('チャンネルまたは編集対象が変わったため、貼り付けを破棄しました'));
       setPendingPaste(null);
       return;
     }
@@ -478,40 +480,40 @@ export function MessageInput({ channelId, sendDisabled = false, postId, placehol
       <Dialog
         open={Boolean(pendingPaste)}
         onClose={closePastePreview}
-        title="大量のテキストを貼り付けますか？"
-        description="内容を確認してから入力欄へ追加できます。"
+        title={t('大量のテキストを貼り付けますか？')}
+        description={t('内容を確認してから入力欄へ追加できます。')}
         size="md"
       >
         {pendingPaste && (
           <div className="space-y-4">
             <p className="text-sm text-discord-muted">
-              {pendingPaste.preview.byteCount.toLocaleString('ja-JP')}文字分・{pendingPaste.preview.lineCount.toLocaleString('ja-JP')}行
+              {t('{characters}文字分・{lines}行', { characters: pendingPaste.preview.byteCount.toLocaleString(intlLocale()), lines: pendingPaste.preview.lineCount.toLocaleString(intlLocale()) })}
             </p>
-            <section aria-label="貼り付け内容のプレビュー" className="rounded bg-discord-input p-3">
-              <p className="mb-1 text-xs font-medium text-discord-muted">{pendingPaste.preview.omitted ? '先頭' : '内容'}</p>
+            <section aria-label={t('貼り付け内容のプレビュー')} className="rounded bg-discord-input p-3">
+              <p className="mb-1 text-xs font-medium text-discord-muted">{pendingPaste.preview.omitted ? t('先頭') : t('内容')}</p>
               <pre className="max-h-44 overflow-auto whitespace-pre-wrap break-words text-sm text-discord-text">{pendingPaste.preview.head}</pre>
               {pendingPaste.preview.omitted && (
                 <>
-                  <p className="my-2 text-center text-xs text-discord-muted">…中間を省略…</p>
-                  <p className="mb-1 text-xs font-medium text-discord-muted">末尾</p>
+                  <p className="my-2 text-center text-xs text-discord-muted">{t('…中間を省略…')}</p>
+                  <p className="mb-1 text-xs font-medium text-discord-muted">{t('末尾')}</p>
                   <pre className="max-h-44 overflow-auto whitespace-pre-wrap break-words text-sm text-discord-text">{pendingPaste.preview.tail}</pre>
                 </>
               )}
             </section>
             {pastedResult.length > MAX_MESSAGE_LENGTH && (
               <p role="alert" className="rounded bg-discord-red/15 px-3 py-2 text-sm text-discord-red">
-                反映後は{pastedResult.length.toLocaleString('ja-JP')}文字になり、上限{MAX_MESSAGE_LENGTH.toLocaleString('ja-JP')}文字を超えます。短くしてから貼り付けてください。
+                {t('反映後は{length}文字になり、上限{max}文字を超えます。短くしてから貼り付けてください。', { length: pastedResult.length.toLocaleString(intlLocale()), max: MAX_MESSAGE_LENGTH.toLocaleString(intlLocale()) })}
               </p>
             )}
             <div className="flex justify-end gap-2">
-              <button type="button" onClick={closePastePreview} className="rounded px-3 py-2 text-sm text-discord-muted hover:bg-discord-hover">キャンセル</button>
+              <button type="button" onClick={closePastePreview} className="rounded px-3 py-2 text-sm text-discord-muted hover:bg-discord-hover">{t('キャンセル')}</button>
               <button
                 type="button"
                 onClick={applyPendingPaste}
                 disabled={pastedResult.length > MAX_MESSAGE_LENGTH}
                 className="rounded bg-discord-accent px-4 py-2 text-sm text-white disabled:opacity-40"
               >
-                入力欄へ反映
+                {t('入力欄へ反映')}
               </button>
             </div>
           </div>
@@ -521,8 +523,8 @@ export function MessageInput({ channelId, sendDisabled = false, postId, placehol
         <div className="flex items-center justify-between rounded-t-lg bg-discord-sidebar px-3 py-2 text-xs text-discord-muted">
           <span className="truncate">
             {editTarget
-              ? `${editTarget.author.displayName} のメッセージを編集中`
-              : `${replyTarget?.author.displayName} に返信中`}
+              ? t('{name} のメッセージを編集中', { name: editTarget.author.displayName })
+              : t('{name} に返信中', { name: replyTarget?.author.displayName ?? '' })}
           </span>
           <button
             type="button"
@@ -536,7 +538,7 @@ export function MessageInput({ channelId, sendDisabled = false, postId, placehol
             }}
             className="ml-3 text-discord-text hover:underline"
           >
-            キャンセル
+            {t('キャンセル')}
           </button>
         </div>
       )}
@@ -545,8 +547,8 @@ export function MessageInput({ channelId, sendDisabled = false, postId, placehol
           <span>
             {attachmentError
               || pasteError
-              || (draftError ? '下書きを保存できませんでした。もう一度お試しください' : null)
-              || (outboxError ? 'メッセージを送信できませんでした。もう一度お試しください' : null)}
+              || (draftError ? t('下書きを保存できませんでした。もう一度お試しください') : null)
+              || (outboxError ? t('メッセージを送信できませんでした。もう一度お試しください') : null)}
           </span>
           <button
             type="button"
@@ -558,7 +560,7 @@ export function MessageInput({ channelId, sendDisabled = false, postId, placehol
             }}
             className="underline"
           >
-            閉じる
+            {t('閉じる')}
           </button>
         </div>
       )}
@@ -572,25 +574,25 @@ export function MessageInput({ channelId, sendDisabled = false, postId, placehol
                 </span>
                 <div className="flex shrink-0 gap-2">
                   {attachmentTaskActions(task.status).cancel && (
-                    <button type="button" onClick={() => cancelUpload(task.id)} className="underline">取消</button>
+                    <button type="button" onClick={() => cancelUpload(task.id)} className="underline">{t('取消')}</button>
                   )}
                   {attachmentTaskActions(task.status).resume && (
                     <button type="button" onClick={() => retryUpload(task.id)} disabled={!isOnline} className="underline disabled:opacity-50">
-                      再開
+                      {t('再開')}
                     </button>
                   )}
                   {attachmentTaskActions(task.status).dismiss && (
-                    <button type="button" onClick={() => dismissUpload(task.id)} className="underline">閉じる</button>
+                    <button type="button" onClick={() => dismissUpload(task.id)} className="underline">{t('閉じる')}</button>
                   )}
                 </div>
               </div>
               <progress
                 value={task.progress}
                 max={100}
-                aria-label={`${task.fileName} アップロード進捗 ${task.progress}%`}
+                aria-label={t('{name} アップロード進捗 {percent}%', { name: task.fileName, percent: task.progress })}
                 className={`h-1 w-full overflow-hidden rounded ${task.status === 'failed' ? 'accent-discord-red' : 'accent-discord-accent'}`}
               />
-              {task.error && <p role="alert" className="text-discord-red">ファイルを送信できませんでした。再試行してください</p>}
+              {task.error && <p role="alert" className="text-discord-red">{t('ファイルを送信できませんでした。再試行してください')}</p>}
             </div>
           ))}
         </div>
@@ -600,13 +602,13 @@ export function MessageInput({ channelId, sendDisabled = false, postId, placehol
           {channelOutboxItems.map((item) => (
             <div key={item.id} className="flex items-center justify-between gap-3">
               <span>
-                {item.status === 'sending' && '送信中…'}
-                {item.status === 'queued' && '未送信（接続後に自動送信）'}
-                {item.status === 'failed' && '送信できませんでした'}
+                {item.status === 'sending' && t('送信中…')}
+                {item.status === 'queued' && t('未送信（接続後に自動送信）')}
+                {item.status === 'failed' && t('送信できませんでした')}
               </span>
               {item.status !== 'sending' && (
                 <button type="button" onClick={() => retry(item.id)} className="shrink-0 text-discord-text underline">
-                  再試行
+                  {t('再試行')}
                 </button>
               )}
             </div>
@@ -623,11 +625,11 @@ export function MessageInput({ channelId, sendDisabled = false, postId, placehol
       >
         {isDraggingFiles && (
           <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center rounded-lg border-2 border-dashed border-discord-accent bg-discord-bg/95 text-sm font-semibold text-white">
-            ここに画像・ファイルをドロップ
+            {t('ここに画像・ファイルをドロップ')}
           </div>
         )}
         {selectedFiles.length > 0 && (
-          <ul aria-label="送信する添付ファイル" className="mb-2 flex flex-wrap gap-2 rounded bg-discord-sidebar p-2 text-xs text-discord-muted">
+          <ul aria-label={t('送信する添付ファイル')} className="mb-2 flex flex-wrap gap-2 rounded bg-discord-sidebar p-2 text-xs text-discord-muted">
             {selectedFiles.map((file, index) => (
               <PendingFilePreview
                 key={`${fileIdentity(file)}:${index}`}
@@ -642,10 +644,10 @@ export function MessageInput({ channelId, sendDisabled = false, postId, placehol
             <div
               id={`mention-list-${channelId}`}
               className="absolute bottom-full left-0 right-0 z-30 mb-2 max-h-64 overflow-hidden rounded-lg border border-discord-hover bg-discord-sidebar shadow-2xl"
-              aria-label="メンション候補"
+              aria-label={t('メンション候補')}
             >
               <p className="border-b border-discord-hover px-3 py-2 text-[11px] font-bold uppercase tracking-wide text-discord-muted">
-                メンションするメンバー
+                {t('メンションするメンバー')}
               </p>
               {mentionCandidates.length > 0 ? (
                 <ul role="listbox" className="max-h-52 overflow-y-auto p-1">
@@ -674,7 +676,7 @@ export function MessageInput({ channelId, sendDisabled = false, postId, placehol
                             const status = memberStatus(workspaceMember, presenceStatuses);
                             return (
                               <span className="shrink-0 text-[11px] opacity-70">
-                                {status === 'online' ? 'オンライン' : status === 'offline' ? 'オフライン' : '退席中'}
+                                {status === 'online' ? t('オンライン') : status === 'offline' ? t('オフライン') : t('退席中')}
                               </span>
                             );
                           })()}
@@ -684,7 +686,7 @@ export function MessageInput({ channelId, sendDisabled = false, postId, placehol
                   })}
                 </ul>
               ) : (
-                <p className="px-3 py-3 text-sm text-discord-muted">候補を読み込めませんでした</p>
+                <p className="px-3 py-3 text-sm text-discord-muted">{t('候補を読み込めませんでした')}</p>
               )}
             </div>
           )}
@@ -706,8 +708,8 @@ export function MessageInput({ channelId, sendDisabled = false, postId, placehol
             }}
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
-            placeholder={editTarget ? 'メッセージを編集' : placeholder ?? 'メッセージを送信'}
-            aria-label={editTarget ? 'メッセージを編集' : 'メッセージを送信'}
+            placeholder={editTarget ? t('メッセージを編集') : placeholder ?? t('メッセージを送信')}
+            aria-label={editTarget ? t('メッセージを編集') : t('メッセージを送信')}
             aria-autocomplete="list"
             aria-expanded={showMentionPopup}
             aria-controls={showMentionPopup ? `mention-list-${channelId}` : undefined}
@@ -729,7 +731,7 @@ export function MessageInput({ channelId, sendDisabled = false, postId, placehol
                   disabled={!isOnline || isSending || sendDisabled}
                   className="rounded px-2 py-1 hover:bg-discord-hover disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  ＋ 画像・ファイル（最大{ATTACHMENT_MAX_COUNT_PER_MESSAGE}件・各100MB）
+                  {t('＋ 画像・ファイル（最大{count}件・各100MB）', { count: ATTACHMENT_MAX_COUNT_PER_MESSAGE })}
                 </button>
                 <input
                   ref={fileInputRef}
@@ -737,11 +739,11 @@ export function MessageInput({ channelId, sendDisabled = false, postId, placehol
                   multiple
                   disabled={!isOnline || isSending || sendDisabled}
                   onChange={handleFilesSelected}
-                  aria-label="送信する画像またはファイルを選択"
+                  aria-label={t('送信する画像またはファイルを選択')}
                   className="sr-only"
                   tabIndex={-1}
                 />
-                {!isOnline && <span role="status" className="truncate">オフライン中は本文のみ保存され、接続復旧後に自動送信されます</span>}
+                {!isOnline && <span role="status" className="truncate">{t('オフライン中は本文のみ保存され、接続復旧後に自動送信されます')}</span>}
               </>
             )}
           </div>
@@ -750,7 +752,7 @@ export function MessageInput({ channelId, sendDisabled = false, postId, placehol
             disabled={isSending || sendDisabled || (!content.trim() && selectedFiles.length === 0)}
             className="shrink-0 rounded bg-discord-accent px-4 py-2 font-medium text-white hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40"
           >
-            {isSending ? '送信中…' : sendDisabled ? '準備中…' : editTarget ? '変更を保存' : heldAttachments ? '画像・ファイルを再送信' : selectedFiles.length > 0 ? '画像・ファイルを送信' : '送信'}
+            {isSending ? t('送信中…') : sendDisabled ? t('準備中…') : editTarget ? t('変更を保存') : heldAttachments ? t('画像・ファイルを再送信') : selectedFiles.length > 0 ? t('画像・ファイルを送信') : t('送信')}
           </button>
         </div>
       </form>
@@ -759,6 +761,7 @@ export function MessageInput({ channelId, sendDisabled = false, postId, placehol
 }
 
 function PendingFilePreview({ file, onRemove }: { file: File; onRemove: () => void }) {
+  const t = useT();
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [previewUnavailable, setPreviewUnavailable] = useState(false);
 
@@ -793,7 +796,7 @@ function PendingFilePreview({ file, onRemove }: { file: File; onRemove: () => vo
       {previewUrl ? (
         <img
           src={previewUrl}
-          alt={`${file.name} のプレビュー`}
+          alt={t('{name} のプレビュー', { name: file.name })}
           className="h-24 w-full bg-discord-input object-contain"
           onError={() => {
             setPreviewUrl(null);
@@ -803,7 +806,7 @@ function PendingFilePreview({ file, onRemove }: { file: File; onRemove: () => vo
       ) : (
         <div className="flex h-24 flex-col items-center justify-center px-3 text-center" aria-hidden="true">
           <span className="text-2xl">📄</span>
-          {previewUnavailable && <span className="mt-1 text-[10px] text-discord-muted">画像プレビュー不可</span>}
+          {previewUnavailable && <span className="mt-1 text-[10px] text-discord-muted">{t('画像プレビュー不可')}</span>}
         </div>
       )}
       <div className="px-2 py-1.5">
@@ -814,8 +817,8 @@ function PendingFilePreview({ file, onRemove }: { file: File; onRemove: () => vo
         type="button"
         onClick={onRemove}
         className="absolute right-1 top-1 flex h-6 w-6 items-center justify-center rounded-full bg-discord-bg/90 text-sm text-white hover:bg-discord-red"
-        aria-label={`${file.name}を添付から削除`}
-        title="添付から削除"
+        aria-label={t('{name}を添付から削除', { name: file.name })}
+        title={t('添付から削除')}
       >
         ×
       </button>
@@ -855,13 +858,13 @@ function isPrintableKey(key: string): boolean {
 }
 
 function attachmentTaskLabel(status: string): string {
-  if (status === 'queued') return '待機中';
-  if (status === 'preparing') return '準備中';
-  if (status === 'uploading') return 'アップロード中';
-  if (status === 'finalizing') return '確認中';
-  if (status === 'completed') return '送信完了';
-  if (status === 'cancelled') return '取消済み';
-  return '送信失敗';
+  if (status === 'queued') return t('待機中');
+  if (status === 'preparing') return t('準備中');
+  if (status === 'uploading') return t('アップロード中');
+  if (status === 'finalizing') return t('確認中');
+  if (status === 'completed') return t('送信完了');
+  if (status === 'cancelled') return t('取消済み');
+  return t('送信失敗');
 }
 
 function formatFileSize(size: number): string {

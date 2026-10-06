@@ -16,6 +16,7 @@ import {
   sortBookmarks,
 } from './user-state-model';
 import { runBounded } from './workspace-unread-model';
+import { t } from '../i18n';
 
 type ChannelStateMap = Record<string, ChannelReadState>;
 
@@ -119,7 +120,7 @@ export const useUserStateStore = create<UserStateStore>((set, get) => ({
           loadingByWorkspace: { ...state.loadingByWorkspace, [workspaceId]: false },
           errorsByWorkspace: {
             ...state.errorsByWorkspace,
-            [workspaceId]: messageForError(error, 'チャンネル状態を読み込めませんでした'),
+            [workspaceId]: messageForError(error, t('チャンネル状態を読み込めませんでした')),
           },
         }));
       }
@@ -164,7 +165,7 @@ export const useUserStateStore = create<UserStateStore>((set, get) => ({
         preferenceSavingByChannel: { ...state.preferenceSavingByChannel, [channelId]: false },
         preferenceErrorsByChannel: {
           ...state.preferenceErrorsByChannel,
-          [channelId]: messageForError(error, 'チャンネル設定を保存できませんでした'),
+          [channelId]: messageForError(error, t('チャンネル設定を保存できませんでした')),
         },
       }));
       throw error;
@@ -255,7 +256,7 @@ export const useUserStateStore = create<UserStateStore>((set, get) => ({
         set((storeState) => ({
           errorsByWorkspace: {
             ...storeState.errorsByWorkspace,
-            [workspaceId]: messageForError(error, '既読位置を同期できませんでした'),
+            [workspaceId]: messageForError(error, t('既読位置を同期できませんでした')),
           },
         }));
       }
@@ -323,7 +324,7 @@ export const useUserStateStore = create<UserStateStore>((set, get) => ({
       if (generation === storeGeneration && version === bookmarkListVersion) {
         set({
           bookmarksLoading: false,
-          bookmarkError: messageForError(error, '保存済みメッセージを読み込めませんでした'),
+          bookmarkError: messageForError(error, t('保存済みメッセージを読み込めませんでした')),
         });
       }
     }
@@ -373,7 +374,7 @@ export const useUserStateStore = create<UserStateStore>((set, get) => ({
         && (!requestedChannelId || requestedScopeVersion === channelScopeVersion(requestedChannelId))) {
         set((state) => ({
           bookmarkSavingByMessage: { ...state.bookmarkSavingByMessage, [messageId]: false },
-          bookmarkError: messageForError(error, 'ブックマークを更新できませんでした'),
+          bookmarkError: messageForError(error, t('ブックマークを更新できませんでした')),
         }));
       }
       throw error;
