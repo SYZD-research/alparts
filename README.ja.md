@@ -118,7 +118,7 @@ Androidは、JDK 21とAndroid SDKなどを[Androidガイド](docs/ANDROID.ja.md)
 pnpm android:build
 ```
 
-出力先は`packages/android/app/build/outputs/apk/debug/app-debug.apk`です。Androidからは端末が到達できるHTTPSのサーバーへ接続してください。ローカル起動時のHTTPアドレスは利用できません。
+出力先は`packages/android/app/build/outputs/apk/debug/app-debug.apk`です。Androidからは端末が到達できるHTTPSのサーバーへ接続してください。ローカル起動時のHTTPアドレスは利用できません。PCの開発用サーバーに端末から接続する場合は、`./dev.sh --tailscale`で起動してください（[Tailscale経由での接続](docs/ANDROID.ja.md#tailscale経由で開発用サーバーに接続する)）。
 
 ### 停止と再開
 

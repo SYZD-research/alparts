@@ -25,6 +25,23 @@ APKは `packages/android/app/build/outputs/apk/debug/app-debug.apk` に出力さ
 そのオリジンで `/api` と `/socket.io` を提供し、そのオリジンを `CORS_ORIGINS` に含めて
 いる必要があります。暗号化されない通信や、証明書エラーを無視する手段は用意していません。
 
+### Tailscale経由で開発用サーバーに接続する
+
+PC上の開発用サーバーは暗号化されないHTTPで動くため、そのままではアプリから接続できません。
+[Tailscale](https://tailscale.com/) を使うと、端末が信頼する証明書付きのHTTPSで、PCから
+tailnet内に公開できます。
+
+1. PCとAndroid端末の両方にTailscaleをインストールし、同じtailnetにログインします。
+2. Tailscaleの管理画面のDNS設定で、MagicDNSとHTTPS Certificatesを有効にします。
+3. `./dev.sh --tailscale` で開発用サーバーを起動します。`tailscale serve` で
+   `http://127.0.0.1:5173` をtailnet内に公開し、その接続元をこの起動の間だけ許可し
+   （`.env` は変更しません）、`https://your-pc.your-tailnet.ts.net` のようなアドレスを表示します。
+4. アプリの接続画面に、そのアドレスを入力します。
+
+このアドレスに接続できるのは、同じtailnet内の端末だけで、インターネットには公開されません。
+`./dev.sh down` で公開を停止します。デバッグ版は信頼できる証明書のHTTPSサーバーであれば
+接続でき、リリース版は証明書の固定設定に登録したホストだけに接続します。
+
 接続画面とロック画面は、共通クライアントのダークカラーと既存のアルパカのロゴを使います。
 フォームは表示領域が足りない場合にスクロールし、タブレットではカードの幅を一定に保ち、
 システムバーとキーボードを避けて表示します。

@@ -14,6 +14,35 @@ docker compose version >/dev/null 2>&1 || die "docker compose プラグインが
 # pnpm loads into every script, including the application.
 STORAGE_ADMIN_ENV="$PWD/.local/storage-admin.env"
 
+# --tailscale also serves the development client to this tailnet over HTTPS,
+# so an Android device on the same tailnet can use it as its server.
+use_tailscale=0
+if [ "${1:-}" = "--tailscale" ]; then
+  use_tailscale=1
+  shift
+fi
+
+# Prints this machine's tailnet name, e.g. host.tailnet.ts.net, once Tailscale
+# is running and HTTPS certificates are enabled for the tailnet.
+tailscale_host() {
+  tailscale status --json | node -e '
+    let input = "";
+    process.stdin.on("data", (chunk) => { input += chunk; });
+    process.stdin.on("end", () => {
+      const status = JSON.parse(input);
+      if (status.BackendState !== "Running") process.exit(2);
+      const host = String(status.Self?.DNSName ?? "").replace(/\.$/, "");
+      if (!host || !(status.CertDomains ?? []).includes(host)) process.exit(3);
+      process.stdout.write(host);
+    });
+  '
+}
+
+# The serve rule this script adds; ./dev.sh down removes only this one.
+tailscale_serves_dev_client() {
+  command -v tailscale >/dev/null 2>&1 && tailscale serve status --json 2>/dev/null | grep -q '"http://127.0.0.1:5173"'
+}
+
 compose() {
   local env_files=(--env-file "$PWD/.env")
   [ -f "$STORAGE_ADMIN_ENV" ] && env_files+=(--env-file "$STORAGE_ADMIN_ENV")
@@ -28,6 +57,10 @@ compose() {
 if [ "${1:-}" = "down" ]; then
   [ -f .env ] || die ".env がないため、停止対象を安全に特定できません"
   compose down
+  if tailscale_serves_dev_client; then
+    info "Tailscale での公開を停止します"
+    sudo tailscale serve --https=443 off
+  fi
   exit 0
 fi
 
@@ -226,9 +259,13 @@ wait_for_postgres() {
   done
 }
 
+# Connect over the container network address: the image trusts loopback
+# connections without a password, so 127.0.0.1 would not check the password
+# the app uses.
 postgres_password_ok() {
-  compose exec -T -e PGPASSWORD="${POSTGRES_PASSWORD}" postgres \
-    psql -h 127.0.0.1 -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -c 'SELECT 1' >/dev/null 2>&1
+  compose exec -T -e PGPASSWORD="${POSTGRES_PASSWORD}" postgres sh -c \
+    'psql -h "$(hostname -i | cut -d " " -f 1)" -U "$1" -d "$2" -c "SELECT 1"' sh "${POSTGRES_USER}" "${POSTGRES_DB}" \
+    >/dev/null 2>&1
 }
 
 start_deps() {
@@ -244,6 +281,24 @@ start_deps() {
 
 if [ "${created_env}" = 1 ]; then
   info "新しい .env を生成しました。既存volumeがある場合も自動削除しません"
+fi
+
+ts_host=""
+if [ "${use_tailscale}" = 1 ]; then
+  command -v tailscale >/dev/null 2>&1 || die "tailscale が見つかりません。Tailscale をインストールしてログインしてください"
+  ts_status=0
+  ts_host="$(tailscale_host)" || ts_status=$?
+  case "${ts_status}" in
+    0) ;;
+    2) die "Tailscale に接続していません。'tailscale up' でログインしてから再実行してください" ;;
+    3) die "この tailnet で HTTPS 証明書が有効になっていません。Tailscale の管理画面の DNS 設定で MagicDNS と HTTPS Certificates を有効にしてください" ;;
+    *) die "Tailscale の状態を確認できませんでした" ;;
+  esac
+  # Only for this run: .env stays as it is. The first origin stays first, since
+  # it also decides where web passkeys are registered.
+  CORS_ORIGINS="${CORS_ORIGINS:-http://localhost:5173},https://${ts_host}"
+  VITE_ALLOWED_HOSTS="${VITE_ALLOWED_HOSTS:+${VITE_ALLOWED_HOSTS},}${ts_host}"
+  export CORS_ORIGINS VITE_ALLOWED_HOSTS
 fi
 
 start_deps
@@ -273,6 +328,12 @@ else
     info "監査記録の移行を実行します"
     pnpm --filter @alparts/server audit:head:init
   fi
+fi
+
+if [ -n "${ts_host}" ]; then
+  info "Tailscale の tailnet 内に https://${ts_host} で公開します"
+  sudo tailscale serve --bg --https=443 http://127.0.0.1:5173 >/dev/null
+  info "Android アプリの接続先には https://${ts_host} を入力してください"
 fi
 
 info "開発サーバーを起動します (client: http://localhost:5173 / 停止: Ctrl+C, 全停止: ./dev.sh down)"
