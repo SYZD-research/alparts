@@ -5,7 +5,7 @@ import type { WsAttentionNotification } from '@alparts/shared';
 import { z } from 'zod';
 import { authMiddleware, type AuthRequest } from '../middleware/auth.js';
 import { requireWorkspaceMembership } from '../middleware/rbac.js';
-import { rateLimit } from '../middleware/rate-limit.js';
+import { rateLimit, requestSource } from '../middleware/rate-limit.js';
 import { reserveKnownLengthBody } from '../middleware/body-admission.js';
 import { displayText } from '../security/display-text.js';
 import { MAX_AVATAR_BYTES, profileBio } from '../security/profile-input.js';
@@ -17,7 +17,7 @@ const uuid = z.string().uuid();
 const perUser = (max: number) => rateLimit({
   windowMs: 60 * 60 * 1000,
   max,
-  key: (req) => (req as AuthRequest).userId || req.ip || 'unknown',
+  key: (req) => (req as AuthRequest).userId || requestSource(req),
 });
 const profileLimit = perUser(30);
 const avatarLimit = perUser(10);

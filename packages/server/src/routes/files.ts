@@ -5,7 +5,7 @@ import { z } from 'zod';
 import { MAX_FILE_SIZE } from '@alparts/shared';
 import * as fileService from '../services/file.service.js';
 import { authMiddleware, type AuthRequest } from '../middleware/auth.js';
-import { rateLimit } from '../middleware/rate-limit.js';
+import { rateLimit, requestSource } from '../middleware/rate-limit.js';
 import { reserveKnownLengthBody } from '../middleware/body-admission.js';
 
 const router = Router();
@@ -37,12 +37,12 @@ const finalizeSchema = z.object({
 const reservationLimit = rateLimit({
   windowMs: 60 * 60 * 1000,
   max: 30,
-  key: (req) => (req as AuthRequest).userId || req.ip || 'unknown',
+  key: (req) => (req as AuthRequest).userId || requestSource(req),
 });
 const chunkLimit = rateLimit({
   windowMs: 60 * 60 * 1000,
   max: 1_000,
-  key: (req) => (req as AuthRequest).userId || req.ip || 'unknown',
+  key: (req) => (req as AuthRequest).userId || requestSource(req),
 });
 const rawChunkParser = express.raw({
   type: 'application/octet-stream',

@@ -39,6 +39,7 @@ import { reserveJsonBody } from './middleware/body-admission.js';
 import { renderPrometheusMetrics } from './observability/metrics.js';
 import { matchesSecret } from './security/cookies.js';
 import { createReadinessCheck } from './security/readiness-cache.js';
+import { reportUntrustedForwarding } from './security/client-address.js';
 
 /**
  * Expected domain failures that individual routes do not translate. They are
@@ -108,6 +109,10 @@ export function createApp() {
   app.set('trust proxy', config.network.trustedProxies.length > 0 ? [...config.network.trustedProxies] : false);
   app.set('io', io);
   app.use(requestContext);
+  app.use((req, _res, next) => {
+    reportUntrustedForwarding(req);
+    next();
+  });
   app.use(helmet({
     contentSecurityPolicy: {
       directives: {

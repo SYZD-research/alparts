@@ -3047,6 +3047,26 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     };
     const ownerKeys = deviceFixture();
     const ownerDevice = await registerDevice(owner, ownerKeys, 'Forum owner device');
+
+    // A flood of anonymous login challenges cannot use up identity
+    // confirmation for a signed-in user (for example to revoke a stolen session).
+    {
+      const { authenticationChallenges } = await import('../db/schema.js');
+      const { MAX_ANONYMOUS_CHALLENGES } = await import('../services/passkey.service.js');
+      const floodIds = Array.from({ length: MAX_ANONYMOUS_CHALLENGES }, () => randomUUID());
+      await db.insert(authenticationChallenges).values(floodIds.map((id) => ({
+        id, purpose: 'login', challenge: 'flood', expiresAt: new Date(Date.now() + 60_000),
+      })));
+      try {
+        assert.equal((await request('/api/auth/passkeys/login/options', { method: 'POST', body: {} })).status, 403);
+        const purpose = `DELETE /api/devices/${ownerDevice.id} ${'A'.repeat(43)}`;
+        assert.equal((await request('/api/auth/step-up/options', {
+          method: 'POST', cookie: owner.cookie, body: { purpose },
+        })).status, 200);
+      } finally {
+        await db.delete(authenticationChallenges).where(inArray(authenticationChallenges.id, floodIds));
+      }
+    }
     const workspace = await json<{ id: string }>(await request('/api/workspaces', {
       method: 'POST', cookie: owner.cookie, body: { name: 'Forum security' },
     }));

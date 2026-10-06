@@ -29,6 +29,12 @@ import {
 
 const MAX_PASSKEYS = 8;
 const challengeTtl = 5 * 60_000;
+// Anonymous login challenges and session-bound ones (identity confirmation,
+// passkey registration) have separate capacity, so a flood of anonymous
+// login requests cannot stop a signed-in user from confirming their identity,
+// for example to revoke a stolen session.
+export const MAX_ANONYMOUS_CHALLENGES = 2048;
+export const MAX_SESSION_CHALLENGES = 4096;
 
 export async function listPasskeys(userId: string) {
   const rows = await db
@@ -57,11 +63,13 @@ async function issueChallenge(
       await tx
         .delete(authenticationChallenges)
         .where(lte(authenticationChallenges.expiresAt, new Date()));
+      const capacity = sessionId ? MAX_SESSION_CHALLENGES : MAX_ANONYMOUS_CHALLENGES;
       const count = await tx
         .select({ id: authenticationChallenges.id })
         .from(authenticationChallenges)
-        .limit(4096);
-      if (count.length >= 4096) throw new Error('AUTHENTICATION_LIMIT');
+        .where(sessionId ? isNotNull(authenticationChallenges.sessionId) : isNull(authenticationChallenges.sessionId))
+        .limit(capacity);
+      if (count.length >= capacity) throw new Error('AUTHENTICATION_LIMIT');
       if (sessionId) {
         await requireLiveSession(tx, userId!, sessionId);
         const pending = await tx

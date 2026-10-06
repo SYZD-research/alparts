@@ -129,7 +129,7 @@ Backups deliberately stop the application to make PostgreSQL and the object stor
 
 `compose.production.yml` packages only the application. PostgreSQL and object storage are explicit dependencies so they can be durable local services or managed endpoints without pretending the Compose project is HA.
 
-The profile requires an immutable image tag, exact HTTPS origin, dependency endpoint, six application secret files, and a seventh separately scoped migration-database secret. It binds the host port to loopback, uses a read-only root filesystem, tmpfs, no Linux capabilities, `no-new-privileges`, PID/memory/CPU limits, nonroot image user, persistent audit checkpoint volume, graceful stop, restart policy, and readiness healthcheck.
+The profile requires an immutable image tag, exact HTTPS origin, dependency endpoint, six application secret files, and a seventh separately scoped migration-database secret. Set `TRUSTED_PROXIES` to the reverse proxy's address as seen by the container (for example the bridge gateway): HTTP and Socket.IO limits are counted per client address (IPv6 per /64), and without it every client shares the proxy's single budget. The server logs `network.forwarded_without_trusted_proxy` once when it receives forwarded requests with the setting empty. It binds the host port to loopback, uses a read-only root filesystem, tmpfs, no Linux capabilities, `no-new-privileges`, PID/memory/CPU limits, nonroot image user, persistent audit checkpoint volume, graceful stop, restart policy, and readiness healthcheck.
 
 Validate before start:
 

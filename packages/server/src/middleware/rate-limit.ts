@@ -1,6 +1,12 @@
 import { normalizeEmail } from '../security/email.js';
 import { createHash } from 'node:crypto';
 import type { Request, RequestHandler } from 'express';
+import { rateLimitSource } from '../security/client-address.js';
+
+/** Where a request comes from, for counting: req.ip (TRUSTED_PROXIES applied), IPv6 per /64. */
+export function requestSource(req: Request): string {
+  return rateLimitSource(req.ip || req.socket.remoteAddress);
+}
 
 interface RateLimitOptions {
   windowMs: number;
@@ -17,7 +23,7 @@ export function rateLimit(options: RateLimitOptions): RequestHandler {
 
   return (req, res, next) => {
     const now = Date.now();
-    const key = options.key?.(req) || req.ip || req.socket.remoteAddress || 'unknown';
+    const key = options.key?.(req) || requestSource(req);
     let counter = counters.get(key);
     if (!counter || counter.resetAt <= now) {
       if (counters.size >= maxEntries) {
@@ -50,7 +56,7 @@ export function rateLimit(options: RateLimitOptions): RequestHandler {
 
 export function credentialRateLimitKey(req: Request): string {
   const emailHash = credentialAccountRateLimitKey(req);
-  return `${req.ip || req.socket.remoteAddress || 'unknown'}:${emailHash}`;
+  return `${requestSource(req)}:${emailHash}`;
 }
 
 /**
