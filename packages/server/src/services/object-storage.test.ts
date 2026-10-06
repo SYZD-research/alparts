@@ -10,6 +10,16 @@ import { after, before, describe, it } from 'node:test';
 // never finishes downloads under stalled/ so they hold their storage slots.
 const uploads: Array<{ headers: IncomingMessage['headers']; body: Buffer }> = [];
 let etagOverride: string | null = null;
+const listingRequests: Record<string, number> = {};
+let pageToken = 0;
+
+function listingPage(contents: string, nextToken: string | null): string {
+  return '<?xml version="1.0" encoding="UTF-8"?>'
+    + '<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Name>alparts</Name><MaxKeys>1000</MaxKeys>'
+    + `<IsTruncated>${nextToken ? 'true' : 'false'}</IsTruncated>`
+    + (nextToken ? `<NextContinuationToken>${nextToken}</NextContinuationToken>` : '')
+    + `${contents}</ListBucketResult>`;
+}
 const server = createServer((req: IncomingMessage, res: ServerResponse) => {
   const chunks: Buffer[] = [];
   req.on('data', (chunk: Buffer) => chunks.push(chunk));
@@ -21,7 +31,28 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
       res.end();
       return;
     }
-    if (req.method === 'GET' && req.url?.includes('list-type=2')) return; // never answer
+    if (req.method === 'GET' && req.url?.includes('list-type=2')) {
+      const prefix = new URL(req.url, 'http://store').searchParams.get('prefix') ?? '';
+      listingRequests[prefix] = (listingRequests[prefix] ?? 0) + 1;
+      res.setHeader('Content-Type', 'application/xml');
+      if (prefix === 'attachments/v1/huge/') {
+        // A valid page padded to five MiB: only its size is wrong.
+        res.write(listingPage('', null).replace('</ListBucketResult>', ''));
+        for (let written = 0; written < 5 * 1024 * 1024; written += 64 * 1024) res.write(' '.repeat(64 * 1024));
+        res.end('</ListBucketResult>');
+        return;
+      }
+      if (prefix === 'attachments/v1/loop/') {
+        res.end(listingPage('', 'same-token'));
+        return;
+      }
+      if (prefix === 'attachments/v1/pages/') {
+        pageToken += 1;
+        res.end(listingPage('', `token-${pageToken}`));
+        return;
+      }
+      return; // never answer
+    }
     if (req.method === 'GET' && req.url?.includes('/sized/')) {
       // /sized/long answers with more bytes than were stored; /sized/chunked
       // gives no length at all.
@@ -144,6 +175,17 @@ describe('object storage writes and listings', () => {
     await assert.rejects(async () => {
       for await (const _chunk of short) { /* drain */ }
     }, /OBJECT_STORAGE_INTEGRITY/);
+  });
+
+  it('refuses a listing page larger than any real page', async () => {
+    await assert.rejects(storage.reconcileStoredUpload('attachments/v1/huge', new Set()), /OBJECT_STORAGE_LIST_LIMIT/);
+  });
+
+  it('stops a listing that repeats its token or never ends', async () => {
+    await storage.reconcileStoredUpload('attachments/v1/loop', new Set());
+    assert.ok(listingRequests['attachments/v1/loop/']! <= 2);
+    await assert.rejects(storage.reconcileStoredUpload('attachments/v1/pages', new Set()), /OBJECT_STORAGE_LIST_LIMIT/);
+    assert.ok(listingRequests['attachments/v1/pages/']! <= 4);
   });
 
   it('reports a listing that outlives its deadline as a storage timeout', async () => {
