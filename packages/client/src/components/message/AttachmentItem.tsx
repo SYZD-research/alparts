@@ -4,7 +4,9 @@ import type { Attachment, Message } from '@alparts/shared';
 import {
   decryptAttachmentFilename,
   isDangerousAttachmentFilename,
+  type AttachmentMessage,
 } from '../../services/attachment-crypto.service';
+import { getMessageCryptoVerificationState } from '../../stores/message-projector';
 import {
   downloadAttachment,
   loadAttachmentImagePreview,
@@ -18,7 +20,7 @@ import {
 
 interface Props {
   attachment: Attachment;
-  message: Pick<Message, 'id' | 'channelId' | 'authorId' | 'keyVersion'>;
+  message: AttachmentMessage;
 }
 
 const EMPTY_PROGRESS: AttachmentDownloadProgress = {
@@ -45,6 +47,8 @@ export function AttachmentItem({ attachment, message }: Props) {
   const controllerRef = useRef<AbortController | null>(null);
   const previewControllerRef = useRef<AbortController | null>(null);
   const attachmentIdentity = attachmentSecurityIdentity(attachment);
+  // A file opens only once the message it belongs to has been verified.
+  const messageVerification = getMessageCryptoVerificationState(message as Message);
 
   useEffect(() => {
     let disposed = false;
@@ -53,20 +57,23 @@ export function AttachmentItem({ attachment, message }: Props) {
     setFilenameError(null);
     setAcknowledged(false);
     setExpanded(false);
-    void decryptAttachmentFilename(message, attachment).then((decrypted) => {
-      if (!disposed) {
-        setMetadataVerified(true);
-        setFilename(decrypted);
-      }
-    }).catch(() => {
-      if (!disposed) setFilenameError('ファイル名を確認できません');
-    });
+    if (messageVerification === false) setFilenameError('ファイル名を確認できません');
+    if (messageVerification === true) {
+      void decryptAttachmentFilename(message, attachment).then((decrypted) => {
+        if (!disposed) {
+          setMetadataVerified(true);
+          setFilename(decrypted);
+        }
+      }).catch(() => {
+        if (!disposed) setFilenameError('ファイル名を確認できません');
+      });
+    }
     return () => {
       disposed = true;
       controllerRef.current?.abort();
       previewControllerRef.current?.abort();
     };
-  }, [attachmentIdentity, message.authorId, message.channelId, message.id, message.keyVersion]);
+  }, [attachmentIdentity, message.authorId, message.channelId, message.id, message.keyVersion, message.idempotencyKey, messageVerification]);
 
   const dangerousFilename = useMemo(
     () => Boolean(filename && isDangerousAttachmentFilename(filename)),

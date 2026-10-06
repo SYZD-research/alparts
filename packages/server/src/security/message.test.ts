@@ -362,6 +362,10 @@ describe('attachment crypto protocol', () => {
       '[2,"attachment","00000000-0000-4000-8000-000000000001","00000000-0000-4000-8000-000000000002","00000000-0000-4000-8000-000000000003","00000000-0000-4000-8000-000000000005","00000000-0000-4000-8000-000000000004",7,"ZmlsZW5hbWU=","application/octet-stream","d3JhcHBlZA==","BwcHBwcHBwc=",5242881,2]',
     );
     assert.equal(
+      serializeAttachmentEnvelope({ ...envelope, messageIdempotencyKey: 'message-key' }),
+      '[3,"attachment","00000000-0000-4000-8000-000000000001","00000000-0000-4000-8000-000000000002","00000000-0000-4000-8000-000000000003","00000000-0000-4000-8000-000000000005","00000000-0000-4000-8000-000000000004",7,"ZmlsZW5hbWU=","application/octet-stream","d3JhcHBlZA==","BwcHBwcHBwc=",5242881,2,"message-key"]',
+    );
+    assert.equal(
       serializeAttachmentFilenameAad(envelope.messageId),
       'alparts-attachment-filename-v1\0' + envelope.messageId,
     );

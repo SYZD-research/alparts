@@ -157,6 +157,39 @@ describe('projectMessageEvents', () => {
     expect(projectMessageEvents([merged])[0].content).toBe('');
   });
 
+  it('quarantines an old signed edit replayed under a new id instead of rolling the message back', () => {
+    const base = event({ id: 'message-1', type: 'message', content: 'v0', createdAt: '2026-01-01T00:00:01.000Z' });
+    const first = event({
+      id: 'edit-1', type: 'edit', refMessageId: base.id, content: 'v1', idempotencyKey: 'edit-key-1',
+      createdAt: '2026-01-01T00:00:02.000Z',
+    });
+    const second = event({
+      id: 'edit-2', type: 'edit', refMessageId: base.id, content: 'v2', idempotencyKey: 'edit-key-2',
+      createdAt: '2026-01-01T00:00:03.000Z',
+    });
+    const replay = { ...first, id: 'edit-3', createdAt: '2026-01-01T00:00:04.000Z' };
+
+    const merged = mergeMessageEvents([base, first, second, replay]);
+    expect(hasAuthenticatedEnvelopeConflict(merged.find((item) => item.id === 'edit-3')!)).toBe(true);
+    expect(merged.filter(hasAuthenticatedEnvelopeConflict).map((item) => item.id)).toEqual(['edit-3']);
+    expect(projectMessageEvents(merged)[0].content).toBe('v2');
+    // The quarantine survives later merges, even without the original.
+    const later = mergeMessageEvents(merged.filter((item) => item.id !== 'edit-1'), [event({ id: 'message-2', type: 'message', createdAt: '2026-01-01T00:00:05.000Z' })]);
+    expect(hasAuthenticatedEnvelopeConflict(later.find((item) => item.id === 'edit-3')!)).toBe(true);
+  });
+
+  it('quarantines a copied message and ignores unverified events that reuse a key', () => {
+    const original = event({ id: 'message-1', type: 'message', content: 'hello', idempotencyKey: 'send-key', createdAt: '2026-01-01T00:00:01.000Z' });
+    const copy = { ...original, id: 'message-9', createdAt: '2026-01-01T00:00:09.000Z' };
+    const merged = mergeMessageEvents([original, copy]);
+    expect(merged.map((item) => hasAuthenticatedEnvelopeConflict(item))).toEqual([false, true]);
+    expect(projectMessageEvents(merged).map((item) => item.content)).toEqual(['hello', '']);
+
+    const forged = retryMessageKeyVerification({ ...original, id: 'message-0', createdAt: '2026-01-01T00:00:00.000Z' });
+    const withForgery = mergeMessageEvents([forged, original]);
+    expect(withForgery.some(hasAuthenticatedEnvelopeConflict)).toBe(false);
+  });
+
   it('keeps immutable attachments when a duplicate socket event has an older empty snapshot', () => {
     const stored = event({
       id: '00000000-0000-4000-8000-000000000010',
