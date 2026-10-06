@@ -64,6 +64,8 @@ export async function sendEmail(message: OutgoingEmail): Promise<void> {
     if (developmentOutbox.length > MAX_DEVELOPMENT_EMAILS) developmentOutbox.shift();
     if (config.nodeEnv === 'development') {
       logInfo('email.development_delivery', { to: message.to, subject: message.subject, text: message.text });
+      // Also readable at a glance in the dev terminal, among the JSON request logs.
+      console.log(`\n===== [dev] mail to ${message.to}: ${message.subject} =====\n${message.text}=====\n`);
     }
     return;
   }

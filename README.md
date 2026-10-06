@@ -95,6 +95,7 @@ The first run generates development credentials and saves them to `.env` (only t
 
 1. Open **Create account** in the web client.
 2. Enter the value of `REGISTRATION_INVITE_SECRET` from `.env` as the **Invitation code**, then set a display name, email address and password. This code can create only the first account on the server.
+   Without SMTP settings, no email is actually sent: the verification code appears in the terminal running `./dev.sh`, under a `[dev] mail to ...` line. To skip the code entirely, add `EMAIL_VERIFICATION=disabled` to `.env`; to send real mail, set the `SMTP_*` values described in [.env.example](.env.example).
 3. After signing in, create a workspace with the **+** button on the left. A first text channel, `general`, is created automatically.
 4. In the workspace management screen, open **Manage invitations** and create invitation codes for members. People who receive a code can use it to create an account and join.
 

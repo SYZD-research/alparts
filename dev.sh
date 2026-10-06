@@ -40,7 +40,7 @@ tailscale_host() {
 
 # The serve rule this script adds; ./dev.sh down removes only this one.
 tailscale_serves_dev_client() {
-  command -v tailscale >/dev/null 2>&1 && tailscale serve status --json 2>/dev/null | grep -q '"http://127.0.0.1:5173"'
+  command -v tailscale >/dev/null 2>&1 && tailscale serve status --json 2>/dev/null | grep -q '"http://localhost:5173"'
 }
 
 compose() {
@@ -121,6 +121,7 @@ is_supported_env_key() {
     PASSWORD_PEPPER|PASSWORD_PEPPER_PREVIOUS|WEBAUTHN_RP_ID|WEBAUTHN_ORIGINS|AUDIT_INTEGRITY_KEY|AUDIT_CHECKPOINT_PATH|AUDIT_CHECKPOINT_REQUIRED|\
     AUDIT_HEAD_BUCKET|AUDIT_HEAD_OBJECT_KEY|AUDIT_WITNESS_REQUIRED|AUDIT_WITNESS_PUBLIC_KEY_FILE|AUDIT_WITNESS_PATH|AUDIT_WITNESS_DEPLOYMENT_ID|\
     METRICS_ENABLED|METRICS_TOKEN|ALLOW_INSECURE_LOOPBACK_DEPENDENCIES|VITE_ALLOWED_HOSTS|\
+    EMAIL_VERIFICATION|SMTP_HOST|SMTP_PORT|SMTP_SECURE|SMTP_FROM|SMTP_USER|SMTP_PASSWORD|SMTP_TIMEOUT_MS|\
     REGISTRATION_INVITE_SECRET|CORS_ORIGIN|CORS_ORIGINS|TRUSTED_PROXIES|VOICE_ICE_SERVERS_JSON|BIND_HOST|PORT)
       return 0 ;;
   esac
@@ -332,7 +333,7 @@ fi
 
 if [ -n "${ts_host}" ]; then
   info "Tailscale の tailnet 内に https://${ts_host} で公開します"
-  sudo tailscale serve --bg --https=443 http://127.0.0.1:5173 >/dev/null
+  sudo tailscale serve --bg --https=443 http://localhost:5173 >/dev/null
   info "Android アプリの接続先には https://${ts_host} を入力してください"
 fi
 
