@@ -29,3 +29,13 @@ const downloads = new DownloadLeaseState();
 export function acquireDownloadLease(userId: string): (() => void) | null {
   return downloads.acquire(userId);
 }
+
+// Avatars are read whole before they are sent, so these bound the memory held
+// for clients that read slowly, not object-storage capacity.
+export const MAX_AVATAR_DOWNLOADS_PER_USER = 4;
+export const MAX_AVATAR_DOWNLOADS = 32;
+const avatarDownloads = new DownloadLeaseState(MAX_AVATAR_DOWNLOADS_PER_USER, MAX_AVATAR_DOWNLOADS);
+
+export function acquireAvatarDownloadLease(userId: string): (() => void) | null {
+  return avatarDownloads.acquire(userId);
+}

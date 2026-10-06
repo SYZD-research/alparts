@@ -22,6 +22,10 @@ export { BoundedAsyncGate } from '../security/bounded-async-gate.js';
 
 export const MAX_CONCURRENT_OBJECT_STORAGE_OPERATIONS = 8;
 export const MAX_PENDING_OBJECT_STORAGE_OPERATIONS = 32;
+// The audit head has its own connections and capacity: downloads hold both
+// while they stream, and must never delay or fail an audit write.
+export const MAX_CONCURRENT_AUDIT_HEAD_OPERATIONS = 2;
+export const MAX_PENDING_AUDIT_HEAD_OPERATIONS = 8;
 const MAX_KEYS_PER_DELETE_REQUEST = 1_000;
 
 /** A URL host component; an IPv6 literal needs brackets. */
@@ -42,25 +46,30 @@ export function objectStorageDeadlineSignal(deadline: number): AbortSignal {
   return controller.signal;
 }
 
-const s3Client = new S3Client({
-  endpoint: objectStorageEndpoint(config.s3.endpoint, config.s3.port, config.s3.useSSL),
-  region: config.s3.region,
-  forcePathStyle: true,
-  credentials: { accessKeyId: config.s3.accessKey, secretAccessKey: config.s3.secretKey },
-  // Retrying is the caller's decision; a retry must not outlive the deadline.
-  maxAttempts: 1,
-  // S3-compatible stores do not all accept the SDK's newer default checksums.
-  requestChecksumCalculation: 'WHEN_REQUIRED',
-  responseChecksumValidation: 'WHEN_REQUIRED',
-  requestHandler: new NodeHttpHandler({
-    connectionTimeout: config.s3.requestTimeoutMs,
-    requestTimeout: config.s3.requestTimeoutMs,
-    // Without this the SDK only logs an idle request instead of failing it.
-    throwOnRequestTimeout: true,
-    httpAgent: new http.Agent({ keepAlive: true, maxSockets: MAX_CONCURRENT_OBJECT_STORAGE_OPERATIONS }),
-    httpsAgent: new https.Agent({ keepAlive: true, maxSockets: MAX_CONCURRENT_OBJECT_STORAGE_OPERATIONS }),
-  }),
-});
+function createS3Client(maxSockets: number): S3Client {
+  return new S3Client({
+    endpoint: objectStorageEndpoint(config.s3.endpoint, config.s3.port, config.s3.useSSL),
+    region: config.s3.region,
+    forcePathStyle: true,
+    credentials: { accessKeyId: config.s3.accessKey, secretAccessKey: config.s3.secretKey },
+    // Retrying is the caller's decision; a retry must not outlive the deadline.
+    maxAttempts: 1,
+    // S3-compatible stores do not all accept the SDK's newer default checksums.
+    requestChecksumCalculation: 'WHEN_REQUIRED',
+    responseChecksumValidation: 'WHEN_REQUIRED',
+    requestHandler: new NodeHttpHandler({
+      connectionTimeout: config.s3.requestTimeoutMs,
+      requestTimeout: config.s3.requestTimeoutMs,
+      // Without this the SDK only logs an idle request instead of failing it.
+      throwOnRequestTimeout: true,
+      httpAgent: new http.Agent({ keepAlive: true, maxSockets }),
+      httpsAgent: new https.Agent({ keepAlive: true, maxSockets }),
+    }),
+  });
+}
+
+const s3Client = createS3Client(MAX_CONCURRENT_OBJECT_STORAGE_OPERATIONS);
+const auditHeadClient = createS3Client(MAX_CONCURRENT_AUDIT_HEAD_OPERATIONS);
 
 /** Run one S3 command under an absolute deadline. */
 async function send<T>(
@@ -103,6 +112,12 @@ const objectStorageGate = new BoundedAsyncGate(
   { busyError: 'OBJECT_STORAGE_BUSY', timeoutError: 'OBJECT_STORAGE_TIMEOUT' },
 );
 
+const auditHeadGate = new BoundedAsyncGate(
+  MAX_CONCURRENT_AUDIT_HEAD_OPERATIONS,
+  MAX_PENDING_AUDIT_HEAD_OPERATIONS,
+  { busyError: 'OBJECT_STORAGE_BUSY', timeoutError: 'OBJECT_STORAGE_TIMEOUT' },
+);
+
 export function objectStorageWorkSnapshot() {
   return objectStorageGate.snapshot();
 }
@@ -120,6 +135,16 @@ async function withObjectStorageDeadline<T>(
   // begins, wait for the transport-enforced timeout/success before returning so
   // a per-upload lock can never release while stale I/O is still running.
   const result = await objectStorageGate.run(operation, deadline);
+  if (Date.now() > deadline) throw new Error('OBJECT_STORAGE_TIMEOUT');
+  return result;
+}
+
+async function withAuditHeadDeadline<T>(
+  operation: () => Promise<T>,
+  deadline = createObjectStorageDeadline(),
+): Promise<T> {
+  if (deadline <= Date.now()) throw new Error('OBJECT_STORAGE_TIMEOUT');
+  const result = await auditHeadGate.run(operation, deadline);
   if (Date.now() > deadline) throw new Error('OBJECT_STORAGE_TIMEOUT');
   return result;
 }
@@ -155,9 +180,9 @@ export async function checkObjectStorage(): Promise<void> {
 export async function provisionAuditHeadBucket(): Promise<void> {
   if (!config.audit.headObjectKey) throw new Error('AUDIT_HEAD_REQUIRED');
   const deadline = createObjectStorageDeadline();
-  await withObjectStorageDeadline(async () => {
-    if (!await bucketExists(config.audit.headBucket, deadline)) {
-      await send((options) => s3Client.send(new CreateBucketCommand({ Bucket: config.audit.headBucket }), options), deadline);
+  await withAuditHeadDeadline(async () => {
+    if (!await bucketExists(config.audit.headBucket, deadline, auditHeadClient)) {
+      await send((options) => auditHeadClient.send(new CreateBucketCommand({ Bucket: config.audit.headBucket }), options), deadline);
     }
   }, deadline);
 }
@@ -165,25 +190,15 @@ export async function provisionAuditHeadBucket(): Promise<void> {
 export async function readStoredAuditHead(): Promise<string | null> {
   if (!config.audit.headObjectKey) throw new Error('AUDIT_HEAD_REQUIRED');
   const deadline = createObjectStorageDeadline();
-  return withObjectStorageDeadline(async () => {
+  return withAuditHeadDeadline(async () => {
     let stream: Readable;
     try {
-      stream = await getObjectStream(config.audit.headBucket, config.audit.headObjectKey!, deadline);
+      stream = await getObjectStream(config.audit.headBucket, config.audit.headObjectKey!, deadline, auditHeadClient);
     } catch (error) {
       if (isNotFound(error)) return null;
       throw error;
     }
-    const chunks: Buffer[] = [];
-    let length = 0;
-    try {
-      for await (const part of stream) {
-        const chunk = Buffer.isBuffer(part) ? part : Buffer.from(part);
-        length += chunk.length;
-        if (length > 16 * 1024) throw new Error('INVALID_AUDIT_HEAD');
-        chunks.push(chunk);
-      }
-      return Buffer.concat(chunks).toString('utf8');
-    } finally { stream.destroy(); }
+    return (await readBounded(stream, 16 * 1024, 'INVALID_AUDIT_HEAD')).toString('utf8');
   }, deadline);
 }
 
@@ -192,8 +207,8 @@ export async function writeStoredAuditHead(serialized: string): Promise<void> {
   const body = Buffer.from(serialized);
   const digests = bodyDigests(body);
   const deadline = createObjectStorageDeadline();
-  await withObjectStorageDeadline(async () => {
-    const result = await send((options) => s3Client.send(new PutObjectCommand({
+  await withAuditHeadDeadline(async () => {
+    const result = await send((options) => auditHeadClient.send(new PutObjectCommand({
       Bucket: config.audit.headBucket,
       Key: config.audit.headObjectKey!,
       Body: body,
@@ -234,9 +249,9 @@ export function putStoredObject(storageKey: string, body: Buffer): Promise<{ eta
   }, deadline);
 }
 
-async function bucketExists(bucket: string, deadline: number): Promise<boolean> {
+async function bucketExists(bucket: string, deadline: number, client = s3Client): Promise<boolean> {
   try {
-    await send((options) => s3Client.send(new HeadBucketCommand({ Bucket: bucket }), options), deadline);
+    await send((options) => client.send(new HeadBucketCommand({ Bucket: bucket }), options), deadline);
     return true;
   } catch (error) {
     if (isNotFound(error)) return false;
@@ -245,8 +260,8 @@ async function bucketExists(bucket: string, deadline: number): Promise<boolean> 
 }
 
 /** The response body stays bound to the deadline after the headers arrive. */
-async function getObjectStream(bucket: string, key: string, deadline: number): Promise<Readable> {
-  const result = await send((options) => s3Client.send(new GetObjectCommand({ Bucket: bucket, Key: key }), options), deadline);
+async function getObjectStream(bucket: string, key: string, deadline: number, client = s3Client): Promise<Readable> {
+  const result = await send((options) => client.send(new GetObjectCommand({ Bucket: bucket, Key: key }), options), deadline);
   if (!(result.Body instanceof Readable)) throw new Error('OBJECT_STORAGE_INVALID_RESPONSE');
   return result.Body;
 }
@@ -262,6 +277,33 @@ async function removeObjects(keys: string[], deadline: number): Promise<boolean>
     if (result.Errors?.length) return false;
   }
   return true;
+}
+
+async function readBounded(stream: Readable, maxBytes: number, oversizeError: string): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let length = 0;
+  try {
+    for await (const part of stream) {
+      const chunk = Buffer.isBuffer(part) ? part : Buffer.from(part);
+      length += chunk.length;
+      if (length > maxBytes) throw new Error(oversizeError);
+      chunks.push(chunk);
+    }
+    return Buffer.concat(chunks);
+  } finally { stream.destroy(); }
+}
+
+/**
+ * Read a small object whole. Its storage slot is released before the bytes
+ * reach the client, so a client that reads slowly cannot hold it.
+ */
+export function readStoredObject(storageKey: string, maxBytes: number): Promise<Buffer> {
+  const deadline = createObjectStorageDeadline();
+  return withObjectStorageDeadline(async () => readBounded(
+    await getObjectStream(config.s3.bucket, storageKey, deadline),
+    maxBytes,
+    'OBJECT_STORAGE_INVALID_RESPONSE',
+  ), deadline);
 }
 
 export async function getStoredObject(storageKey: string): Promise<Readable> {

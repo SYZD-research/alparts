@@ -10,6 +10,7 @@ import { reserveKnownLengthBody } from '../middleware/body-admission.js';
 import { displayText } from '../security/display-text.js';
 import { MAX_AVATAR_BYTES, profileBio } from '../security/profile-input.js';
 import { logError } from '../security/logger.js';
+import { acquireAvatarDownloadLease } from '../security/download-limits.js';
 import * as profileService from '../services/profile.service.js';
 
 const router = Router();
@@ -114,8 +115,14 @@ router.delete('/profile/avatar', authMiddleware, avatarLimit, handle(async (req,
 router.get('/users/:userId/avatar/:version', authMiddleware, handle(async (req, res) => {
   const userId = uuid.parse(req.params.userId);
   const version = uuid.parse(req.params.version);
-  const stream = await profileService.openAvatar(req.userId!, userId, version);
-  if (!stream) {
+  const release = acquireAvatarDownloadLease(req.userId!);
+  if (!release) {
+    res.status(429).json({ error: 'DOWNLOAD_LIMIT_REACHED', message: 'Too many concurrent downloads', statusCode: 429 });
+    return;
+  }
+  res.once('close', release);
+  const image = await profileService.readAvatar(req.userId!, userId, version);
+  if (!image) {
     res.status(404).json({ error: 'NOT_FOUND', message: 'Profile not found', statusCode: 404 });
     return;
   }
@@ -125,11 +132,7 @@ router.get('/users/:userId/avatar/:version', authMiddleware, handle(async (req, 
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
   res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
-  stream.on('error', (error) => {
-    logError('profile.avatar_stream', error);
-    res.destroy(error);
-  });
-  stream.pipe(res);
+  res.end(image);
 }));
 
 // Workspace-scoped profile view and warnings
