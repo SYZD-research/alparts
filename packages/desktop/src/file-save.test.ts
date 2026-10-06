@@ -5,7 +5,6 @@ import path from 'node:path';
 import { afterEach, describe, it } from 'node:test';
 import {
   assertSafeSelectedPath,
-  isDangerousDownloadFilename,
   MAX_NATIVE_SAVE_CHUNK_BYTES,
   NativeFileSaveManager,
   normalizeSuggestedFilename,
@@ -18,12 +17,9 @@ afterEach(async () => {
 });
 
 describe('native attachment saving', () => {
-  it('normalizes names and detects active or disguised extensions', () => {
+  it('normalizes names and accepts only plain absolute target paths', () => {
     assert.equal(normalizeSuggestedFilename('../../CON.exe '), '.._.._CON.exe');
     assert.equal(normalizeSuggestedFilename('....'), 'attachment');
-    assert.equal(isDangerousDownloadFilename('report.txt'), false);
-    assert.equal(isDangerousDownloadFilename('report.pdf.exe'), true);
-    assert.equal(isDangerousDownloadFilename('sample.JS::$DATA'), true);
     assert.equal(assertSafeSelectedPath('/tmp/report.txt'), '/tmp/report.txt');
     assert.throws(() => assertSafeSelectedPath('relative.txt'));
     assert.throws(() => assertSafeSelectedPath('C:\\safe\\report.txt:stream', 'win32'));
@@ -33,14 +29,14 @@ describe('native attachment saving', () => {
   it('streams a bounded file through an opaque handle before publishing it', async () => {
     const directory = await makeTemporaryDirectory();
     const target = path.join(directory, 'saved.bin');
-    let protectedDangerous: boolean | null = null;
+    const protectedFiles: string[] = [];
     const manager = new NativeFileSaveManager(
       async (suggested) => {
         assert.equal(suggested, 'saved.bin');
         return target;
       },
-      async (filename, dangerous) => {
-        protectedDangerous = dangerous;
+      async (filename) => {
+        protectedFiles.push(filename);
         await chmod(filename, 0o600);
       },
     );
@@ -50,7 +46,9 @@ describe('native attachment saving', () => {
     await manager.write(token, Uint8Array.from([4, 5, 6]).buffer);
     assert.equal(await manager.finish(token), true);
     assert.deepEqual([...await readFile(target)], [1, 2, 3, 4, 5, 6]);
-    assert.equal(protectedDangerous, false);
+    // Every file is marked before it appears under its name, not only risky types.
+    assert.equal(protectedFiles.length, 1);
+    assert.match(path.basename(protectedFiles[0]), /^\.saved\.bin\..+\.alparts-partial$/);
     if (process.platform !== 'win32') assert.equal((await stat(target)).mode & 0o777, 0o600);
   });
 
