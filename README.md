@@ -75,7 +75,7 @@ Alpartsは、チャンネルでのチャット、ダイレクトメッセージ�
 ./dev.sh
 ```
 
-初回は開発用の認証情報を生成して`.env`に保存し、PostgreSQLとS3互換ストレージ（SeaweedFS）の起動、依存パッケージのインストール、データベースの移行、監査チェックポイントの初期化を行ってから、WebとAPIを起動します。Dockerの操作には`sudo docker compose`を使用します。
+初回は開発用の認証情報を生成して`.env`に保存し（ストレージの管理者用の認証情報だけは、アプリに渡らないよう`.local/storage-admin.env`に保存します）、PostgreSQLとS3互換ストレージ（SeaweedFS）の起動、依存パッケージのインストール、データベースの移行、監査チェックポイントの初期化を行ってから、WebとAPIを起動します。Dockerの操作には`sudo docker compose`を使用します。
 
 | 接続先 | URL |
 | --- | --- |
