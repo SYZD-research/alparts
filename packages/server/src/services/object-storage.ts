@@ -46,6 +46,23 @@ export function objectStorageDeadlineSignal(deadline: number): AbortSignal {
   return controller.signal;
 }
 
+// A listing page is read whole before it is parsed. A page of 1,000 keys of
+// the longest allowed length is well under this; a larger answer is refused
+// before it can fill memory.
+export const MAX_LISTING_RESPONSE_BYTES = 4 * 1024 * 1024;
+
+/** Bounds the body of listing responses before the SDK reads them into memory. */
+class BoundedListingHttpHandler extends NodeHttpHandler {
+  override async handle(...args: Parameters<NodeHttpHandler['handle']>): ReturnType<NodeHttpHandler['handle']> {
+    const result = await super.handle(...args);
+    const body = result.response.body;
+    if (args[0].query?.['list-type'] === '2' && body instanceof Readable) {
+      result.response.body = limitedStream(body, MAX_LISTING_RESPONSE_BYTES, 'OBJECT_STORAGE_LIST_LIMIT', false);
+    }
+    return result;
+  }
+}
+
 function createS3Client(maxSockets: number): S3Client {
   return new S3Client({
     endpoint: objectStorageEndpoint(config.s3.endpoint, config.s3.port, config.s3.useSSL),
@@ -57,7 +74,7 @@ function createS3Client(maxSockets: number): S3Client {
     // S3-compatible stores do not all accept the SDK's newer default checksums.
     requestChecksumCalculation: 'WHEN_REQUIRED',
     responseChecksumValidation: 'WHEN_REQUIRED',
-    requestHandler: new NodeHttpHandler({
+    requestHandler: new BoundedListingHttpHandler({
       connectionTimeout: config.s3.requestTimeoutMs,
       requestTimeout: config.s3.requestTimeoutMs,
       // Without this the SDK only logs an idle request instead of failing it.
@@ -260,24 +277,29 @@ async function bucketExists(bucket: string, deadline: number, client = s3Client)
 }
 
 /**
- * Passes exactly `bytes` bytes and fails before forwarding any byte beyond
- * them, or at the end when fewer arrived.
+ * Fails before forwarding any byte past `bytes`, and with `exact` also at the
+ * end when fewer arrived.
  */
-export function exactLengthStream(source: Readable, bytes: number): Readable {
+function limitedStream(source: Readable, bytes: number, failure: string, exact: boolean): Readable {
   let seen = 0;
   const limiter = new Transform({
     transform(chunk: Buffer, _encoding, callback) {
       seen += chunk.length;
-      if (seen > bytes) callback(new Error('OBJECT_STORAGE_INTEGRITY'));
+      if (seen > bytes) callback(new Error(failure));
       else callback(null, chunk);
     },
     flush(callback) {
-      callback(seen === bytes ? null : new Error('OBJECT_STORAGE_INTEGRITY'));
+      callback(exact && seen !== bytes ? new Error(failure) : null);
     },
   });
   // A failure on either side destroys both; the reader sees it on the limiter.
   pipeline(source, limiter, () => undefined);
   return limiter;
+}
+
+/** Passes exactly `bytes` bytes; anything else is an integrity failure. */
+export function exactLengthStream(source: Readable, bytes: number): Readable {
+  return limitedStream(source, bytes, 'OBJECT_STORAGE_INTEGRITY', true);
 }
 
 /**
@@ -407,6 +429,7 @@ export function isObjectStorageTimeout(error: unknown): error is Error {
 export const MAX_OBJECTS_PER_UPLOAD_PREFIX = MAX_ATTACHMENT_CHUNKS * 16 + 1;
 export const MAX_OBJECT_KEY_BYTES = 1_024;
 export const MAX_LISTED_OBJECT_KEY_BYTES = MAX_OBJECTS_PER_UPLOAD_PREFIX * MAX_OBJECT_KEY_BYTES;
+const MAX_LISTING_PAGES = Math.ceil(MAX_OBJECTS_PER_UPLOAD_PREFIX / MAX_KEYS_PER_DELETE_REQUEST) + 1;
 
 export function collectBoundedObjectNames(
   stream: NodeJS.EventEmitter & { destroy?: (error?: Error) => unknown },
@@ -466,16 +489,23 @@ export function collectBoundedObjectNames(
   });
 }
 
-/** Page through a listing as a stream, so the bounded collector can stop it early. */
+/**
+ * Page through a listing as a stream, so the bounded collector can stop it
+ * early. A repeated continuation token ends the listing, and a store that
+ * keeps handing out new ones is stopped after the pages a full prefix needs.
+ */
 function listObjectNames(prefix: string, deadline: number): Promise<string[]> {
   const abortSignal = objectStorageDeadlineSignal(deadline);
   const pages = paginateListObjectsV2(
-    { client: s3Client, pageSize: MAX_KEYS_PER_DELETE_REQUEST },
+    { client: s3Client, pageSize: MAX_KEYS_PER_DELETE_REQUEST, stopOnSameToken: true },
     { Bucket: config.s3.bucket, Prefix: prefix },
     { abortSignal },
   );
   const names = Readable.from((async function* () {
+    let pageCount = 0;
     for await (const page of pages) {
+      pageCount += 1;
+      if (pageCount > MAX_LISTING_PAGES) throw new Error('OBJECT_STORAGE_LIST_LIMIT');
       for (const object of page.Contents ?? []) yield { name: object.Key };
     }
   })());
@@ -483,6 +513,10 @@ function listObjectNames(prefix: string, deadline: number): Promise<string[]> {
   // way the caller sees one storage timeout.
   return collectBoundedObjectNames(names, undefined, deadline, prefix).catch((error: unknown) => {
     if (abortSignal.aborted) throw new Error('OBJECT_STORAGE_TIMEOUT');
+    // The SDK appends a hint to errors raised while it reads a response.
+    if (error instanceof Error && error.message.startsWith('OBJECT_STORAGE_LIST_LIMIT')) {
+      throw new Error('OBJECT_STORAGE_LIST_LIMIT');
+    }
     throw error;
   });
 }
