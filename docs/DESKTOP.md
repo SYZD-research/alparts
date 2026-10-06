@@ -1,5 +1,7 @@
 # Desktop client
 
+English | [日本語](DESKTOP.ja.md)
+
 Last verified: 2026-09-04.
 
 The Electron client in `packages/desktop` packages the same Phase 1 client for Windows, macOS, and Linux. The application UI is bundled into the installer. Only API and real-time requests are sent to the deployment selected by the user or operator; JavaScript from that deployment is not loaded into the privileged desktop shell.
@@ -47,17 +49,21 @@ The repository can create unsigned development artifacts. A public release must 
 ## Security boundary
 
 - Renderer processes have Chromium sandboxing, context isolation, and no Node.js, shell, webview, or raw filesystem access.
-- The preload exposes only bounded settings, lock, protected-secret, and streamed-save operations. Every call is restricted to the main top-level bundled frame.
+- The preload exposes only bounded settings, lock, protected-secret, and streamed-save operations, plus a notice of the display language. Every call is restricted to the main top-level bundled frame.
 - Production pages keep the configured deployment’s origin for secure cookies and Socket.IO, while the response body for UI routes comes from the packaged renderer assets.
 - API and real-time routes are data-only: they cannot be loaded as a script, style, frame, or top-level page, and redirects cannot bypass the protocol boundary.
 - CSP blocks remote scripts, frames, objects, workers, and cross-origin network requests. External web links are opened by the operating system.
 - Electron fuses disable `ELECTRON_RUN_AS_NODE`, Node options, CLI inspection, file-protocol privileges, and loading application code outside ASAR. Cookie encryption is enabled.
 - A deployment change clears that origin’s cookies/storage and its protected desktop vault namespace before loading the new deployment.
 - Device private keys and local-state keys are wrapped by Electron `safeStorage`: DPAPI on Windows, Keychain on macOS, and a Secret Service implementation on Linux. The app refuses to start when only unprotected Linux fallback storage is available.
-- OS lock, suspend, the configured idle interval, or “今すぐロック” clears decrypted client state and requires the account password before reopening it. The main process keeps the lock state across renderer reloads.
+- OS lock, suspend, the configured idle interval, or **Lock now** clears decrypted client state and requires the account password before reopening it. The main process keeps the lock state across renderer reloads.
 - Attachments are decrypted in 5 MiB chunks into an opaque native save handle. Partial files are removed on failure or cancellation. Every saved file receives Windows zone information or macOS quarantine metadata, whatever its type, as browsers do; Linux files are saved without execute permission. Risky types additionally need a confirmation in the UI.
 
 The desktop client does not expose diagnostic details in normal UI messages. Development logs and tests hold implementation-level failure information.
+
+## Language
+
+The app is available in English and Japanese. It starts in the operating system's language (English unless that is Japanese), and the language can be changed on the server setup screen or with the 🌐 button in the sidebar. The application menu and native dialogs, such as the save dialog, follow the language chosen in the app.
 
 ## Verification
 
@@ -70,4 +76,4 @@ packages/desktop/node_modules/.bin/electron-fuses read \
   --app packages/desktop/release/linux-unpacked/alparts
 ```
 
-Desktop unit tests cover URL/origin restrictions, bundle path traversal, vault persistence/rotation/deletion, settings validation, attachment streaming, size bounds, cancellation cleanup, and marking of every saved file. Native installer execution, signing, and OS key-store behavior must additionally be checked on each target operating system.
+Desktop unit tests cover URL/origin restrictions, bundle path traversal, vault persistence/rotation/deletion, settings validation, attachment streaming, size bounds, cancellation cleanup, marking of every saved file, and switching the display language. Native installer execution, signing, and OS key-store behavior must additionally be checked on each target operating system.

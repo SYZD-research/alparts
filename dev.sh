@@ -262,13 +262,13 @@ if [ "${created_env}" = 1 ] || [ "${checkpoint_added}" = 1 ]; then
   pnpm --filter @alparts/server audit:checkpoint:init
 else
   # 保存先を追記した回だけでなく、移行が済むまで毎回止める。
-  # 起動時に head を自動作成しないのは意図した動作 (docs/OPERATIONS.md)。
+  # 起動時に head を自動作成しないのは意図した動作 (docs/OPERATIONS.ja.md)。
   head_status="$(pnpm --filter @alparts/server --silent exec tsx src/scripts/audit-head-status.ts)" \
     || die "監査記録の状態を確認できませんでした (オブジェクトストレージの起動状態を確認してください)"
   if [ "${head_status}" = "pending" ]; then
     [ "${head_added}" = 1 ] && info "監査記録の保存先を .env に追加しました"
     if [ "${1:-}" != "audit-head-init" ]; then
-      die "監査記録の移行が済んでいません。docs/OPERATIONS.md の監査 head 移行手順で確認してから './dev.sh audit-head-init' を一度実行してください"
+      die "監査記録の移行が済んでいません。docs/OPERATIONS.ja.md の監査 head 移行手順で確認してから './dev.sh audit-head-init' を一度実行してください"
     fi
     info "監査記録の移行を実行します"
     pnpm --filter @alparts/server audit:head:init

@@ -1,16 +1,21 @@
 # Documentation index
 
+English | [日本語](INDEX.ja.md)
+
 Last verified: 2026-09-29 against the current working tree.
 
 [Account, group security and migration](./security/ACCOUNT_AND_GROUP_SECURITY.md) documents the 2026-09-16 device approval, transparency, MLS epoch, passkey and history-recovery implementation.
 
 This is the navigation root for implementation, architecture, security, operations, and recovery material. Statements marked **implemented** are backed by the linked code or tests. Statements marked **target** are not current guarantees.
 
+The README and the guides for users and operators (desktop, Android, operations, backup and deployment) are available in English and Japanese; the Japanese versions end in `.ja.md`. Design records, audits and other developer material are kept in the language they were written in.
+
 ## Start here
 
 - [Repository overview](../README.md)
 - [System inventory](./SYSTEM_INVENTORY.md)
 - [Desktop client](./DESKTOP.md)
+- [Android client](./ANDROID.md)
 - [Architecture](./policies/ARCHITECTURE.md)
 - [Known limitations](./policies/LIMITATIONS.md)
 - [Risk register](./RISK_REGISTER.md)

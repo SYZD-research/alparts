@@ -1,176 +1,182 @@
 <p align="center">
-  <img src="icon/png/alparts.png" width="120" alt="Alpartsのロゴ">
+  <img src="icon/png/alparts.png" width="120" alt="Alparts logo">
 </p>
 
 # Alparts
 
-**チームの会話を、自分たちのサーバーで。**
+English | [日本語](README.ja.md)
+
+**Your team's conversations, on your own server.**
 
 > [!IMPORTANT]
-> Alpartsは現在開発中です。機能や仕様は、今後予告なく変わることがあります。
+> Alparts is still in development. Features and behavior may change without notice.
 
-Alpartsは、チャンネルでのチャット、ダイレクトメッセージ、ファイル共有、音声通話をひとつにまとめた、セルフホスト型のコミュニケーションアプリです。チームやプロジェクトごとに会話の場所を作り、参加者と公開範囲を自分たちで管理できます。
+Alparts is a self-hosted communication app that brings channel chat, direct messages, file sharing and voice calls together in one place. Create a space for each team or project, and decide for yourself who takes part and who can see what.
 
-メッセージ本文と添付ファイルは、送信前に端末で暗号化するエンドツーエンド暗号化に対応しています。Webブラウザー、Windows・macOS・Linux向けデスクトップアプリ、Androidアプリから同じワークスペースを利用できます。
+Message text and attachments support end-to-end encryption: they are encrypted on the device before they are sent. The same workspace can be used from a web browser, the desktop app for Windows, macOS and Linux, and the Android app.
 
-[主な機能](#主な機能) · [ローカルで始める](#ローカルで始める) · [サーバーの運用](#サーバーの運用) · [ドキュメント](docs/INDEX.md)
+[Features](#features) · [Getting started locally](#getting-started-locally) · [Running a server](#running-a-server) · [Documentation](docs/INDEX.md)
 
-## 主な機能
+## Features
 
-### 話題ごとに会話を整理
+### Organize conversations by topic
 
-ワークスペースの中にカテゴリーとチャンネルを作り、プロジェクト、議題、チームごとに会話を分けられます。ワークスペース内で公開するチャンネルと、参加者を限定する非公開チャンネルに対応。同じワークスペースのメンバーとは、1対1のDMやグループDMでも話せます。
+Create categories and channels inside a workspace to separate conversations by project, subject or team. Channels can be public within the workspace or private to the members you choose. You can also talk with members of the same workspace in one-to-one or group direct messages.
 
-### 日々のやり取りを支えるチャット
+### Chat for everyday work
 
-- Markdown、メンション、返信、スレッド表示、メッセージの編集・削除、リアクション。
-- 大切な投稿のピン留め、保存済みメッセージ、メッセージへのリンク。
-- 未読表示、お気に入り、ミュート、非表示、チャンネルごとの通知設定。
-- 本文・投稿者・チャンネル名での検索。検索はその端末で読み込み済みの履歴を対象とし、検索語をサーバーへ送りません。
-- 端末内に暗号化して保存する下書きと送信待ちメッセージ。テキストはオフラインでも送信待ちにでき、接続が戻ると再送します。
+- Markdown, mentions, replies, threads, editing and deleting messages, and reactions.
+- Pinned posts, saved messages and links to individual messages.
+- Unread markers, favorites, muting, hiding, and notification settings per channel.
+- Search by text, author or channel name. Search covers the history already loaded on that device and never sends search terms to the server.
+- Drafts and unsent messages are stored encrypted on the device. Text can be queued while offline and is sent again when the connection returns.
 
-### 質問や議題をフォーラムで残す
+### Keep questions and topics in forums
 
-フォーラムチャンネルでは、タイトル付きの投稿ごとに返信をまとめられます。投稿の一覧は最新の返信順・新しい投稿順で並べ替えられ、管理者が作ったタグで絞り込めます。ピン留め、解決済みの表示、管理者による返信のロック、新しい返信の表示に対応しています。投稿のタイトル・本文・返信は通常のメッセージと同じく端末で暗号化されます。タグ名はチャンネル名と同じくサーバーから見えるため、知られたくない内容は含めないでください。
+In a forum channel, replies are grouped under each titled post. The post list can be sorted by latest reply or newest post and filtered by tags that administrators create. Posts can be pinned, marked as resolved, and locked against new replies by administrators, and new replies are highlighted. Post titles, text and replies are encrypted on the device just like ordinary messages. Tag names, like channel names, are visible to the server, so do not put anything private in them.
 
-投稿を作成できる人と返信できる人は、ロールとチャンネルごとの権限で分けて設定できます。
+Who may create posts and who may reply can be set separately with roles and per-channel permissions.
 
-### ファイルを共有し、声で話す
+### Share files and talk by voice
 
-添付ファイルは内容とファイル名を暗号化して共有できます。1ファイル最大100 MiB、1メッセージにつき4件まで添付でき、アップロードの中断・再開にも対応しています。添付ファイルの送信にはオンライン接続が必要です。
+Attachments are shared with both their contents and file names encrypted. Each file can be up to 100 MiB, with up to four attachments per message, and uploads can be paused and resumed. Sending attachments requires an online connection.
 
-音声チャンネルでは最大8人で通話できます。ミュート、音声検出、ボタンを押している間だけ話すプッシュトゥトーク、マイクの切り替え、発言者と接続品質の表示を備えています。対応環境では出力先のスピーカーも切り替えられます。
+Voice channels support calls with up to eight people. They include mute, voice activity detection, push-to-talk, microphone selection, and indicators for who is speaking and connection quality. Where supported, the output speaker can be changed too.
 
-### 参加者と権限を管理
+### Manage members and permissions
 
-期限付き・一回限りの招待コードでメンバーを招待できます。ロールの作成と割り当てに加え、カテゴリー・チャンネルごとの閲覧や投稿の権限を設定でき、変更前の確認と、権限が適用される理由の表示にも対応しています。管理画面では招待の取り消しや操作履歴の確認も行えます。
+Invite members with invitation codes that expire or can be used only once. Create and assign roles, and set view and post permissions per category and channel, with a review of the effect before a change and an explanation of why each permission applies. The management screen also lets you revoke invitations and review the activity log.
 
-### 端末を確認し、履歴を引き継ぐ
+### Check devices and carry history over
 
-新しい端末の承認、確認コードの照合、不要になった端末の登録解除、ログインの終了を管理できます。Web版ではパスキーでのログインと重要操作の本人確認に対応しています。
+Approve new devices, compare verification codes, remove devices you no longer use, and end sign-ins. The web version supports signing in with a passkey and confirming important actions with one.
 
-履歴の復元を設定すると、対応するパスキーまたは保管済みの復旧コードで、保存した履歴を別の端末へ引き継げます。デスクトップ・Androidアプリには、端末の保護機能を使った鍵の保存とアプリのロックも備えています。
+Once history restore is set up, you can carry saved history over to another device with a supported passkey or a recovery code you have stored. The desktop and Android apps also store keys with the device's own protection and can lock the app.
 
-## 利用できるクライアント
+### Available in English and Japanese
 
-| クライアント | 対応環境・特徴 | 手順 |
+The interface is available in English and Japanese. By default it follows the language of your browser or operating system (English unless that language is Japanese), and you can change it at any time from the sign-in screen or the 🌐 button in the sidebar. The choice is saved on that device.
+
+## Clients
+
+| Client | Platforms and notes | Guide |
 | --- | --- | --- |
-| Web | ブラウザーから利用。狭い画面ではスワイプでチャンネルと会話を切り替え | [ローカル起動](#ローカルで始める) |
-| デスクトップ | Windows、macOS 13以降、Linux。各OSのx64・ARM64向けパッケージ構成を用意 | [デスクトップガイド](docs/DESKTOP.md) |
-| Android | Android 9以降の開発版。端末の画面ロックとHTTPSの接続先が必要 | [Androidガイド](docs/ANDROID.md) |
+| Web | Runs in a browser. On narrow screens, swipe to move between channels and the conversation | [Run locally](#getting-started-locally) |
+| Desktop | Windows, macOS 13 or later, and Linux, with package configurations for x64 and ARM64 on each | [Desktop guide](docs/DESKTOP.md) |
+| Android | Development builds for Android 9 or later. Needs a screen lock on the device and an HTTPS server | [Android guide](docs/ANDROID.md) |
 
-パスキーの登録・ログイン・本人確認はWeb版で行います。履歴復元の新規設定にはPRF対応のパスキーが必要です。デスクトップ・Android版で履歴を復元する場合は、保管済みの復旧コードを使います。
+Registering passkeys, signing in with them and confirming actions with them is done in the web version. Setting up history restore for the first time requires a passkey that supports PRF. To restore history in the desktop or Android app, use a recovery code you have stored.
 
-## ローカルで始める
+## Getting started locally
 
-### 必要なもの
+### Requirements
 
-- LinuxまたはmacOSのBash環境
-- Node.js **24.8.0以上**、pnpm **11.21.0**
-- 起動済みのDockerとDocker Composeプラグイン
-- OpenSSL、`sudo`でDockerを実行できる権限
+- A Bash environment on Linux or macOS
+- Node.js **24.8.0 or later** and pnpm **11.21.0**
+- Docker, running, with the Docker Compose plugin
+- OpenSSL, and permission to run Docker with `sudo`
 
-### 起動
+### Start
 
-リポジトリのルートで実行します。
+Run this from the repository root.
 
 ```bash
 ./dev.sh
 ```
 
-初回は開発用の認証情報を生成して`.env`に保存し（ストレージの管理者用の認証情報だけは、アプリに渡らないよう`.local/storage-admin.env`に保存します）、PostgreSQLとS3互換ストレージ（SeaweedFS）の起動、依存パッケージのインストール、データベースの移行、監査チェックポイントの初期化を行ってから、WebとAPIを起動します。Dockerの操作には`sudo docker compose`を使用します。
+The first run generates development credentials and saves them to `.env` (only the storage administrator credentials go to `.local/storage-admin.env`, so that they never reach the app). It then starts PostgreSQL and S3-compatible storage (SeaweedFS), installs dependencies, migrates the database and initializes the audit checkpoint, and finally starts the web client and the API. Docker is driven with `sudo docker compose`.
 
-| 接続先 | URL |
+| Service | URL |
 | --- | --- |
 | Web | <http://localhost:5173> |
 | API | <http://localhost:3000> |
 
-### 最初のワークスペースを作る
+### Create your first workspace
 
-1. Web画面で「アカウント作成」を開きます。
-2. `.env`の`REGISTRATION_INVITE_SECRET`の値を「招待コード」に入力し、表示名・メールアドレス・パスワードを設定します。このコードで作成できるのは、そのサーバーの最初のアカウントだけです。
-3. ログイン後、左側の「＋」からワークスペースを作成します。最初のテキストチャンネル`general`が自動で作られます。
-4. ワークスペースの管理画面で「招待を管理」を開き、メンバー用の招待コードを発行します。受け取った人は、そのコードでアカウントを作成して参加できます。
+1. Open **Create account** in the web client.
+2. Enter the value of `REGISTRATION_INVITE_SECRET` from `.env` as the **Invitation code**, then set a display name, email address and password. This code can create only the first account on the server.
+3. After signing in, create a workspace with the **+** button on the left. A first text channel, `general`, is created automatically.
+4. In the workspace management screen, open **Manage invitations** and create invitation codes for members. People who receive a code can use it to create an account and join.
 
-招待メールの自動送信はありません。発行したコードを相手に安全な方法で共有してください。既存アカウントで別のワークスペースへ参加する場合は、管理画面の「招待を受諾」から入力できます。
+Invitations are not emailed automatically. Share the codes you create through a secure channel. To join another workspace with an existing account, enter the code under **Accept invitation** in the management screen.
 
-別のブラウザーやアプリで同じアカウントを使う場合は、以前から使っている端末の「ログイン中の端末」で確認コードを照合して承認するか、設定済みの履歴復元を使って端末を追加します。履歴を引き継ぐための設定も、この画面の「履歴の復元」から行えます。復旧コードは端末とは別の安全な場所に保管してください。
+To use the same account in another browser or app, either approve the new device from **Signed-in devices** on a device you already use, after comparing verification codes, or add it with history restore if you have set that up. History restore itself is set up from **Restore history** on the same screen. Keep your recovery code somewhere safe, away from your devices.
 
-### デスクトップ・Androidで使う
+### Use the desktop and Android apps
 
-デスクトップは、`./dev.sh`を動かしたまま別のターミナルで起動します。
+Start the desktop app in another terminal while `./dev.sh` is running.
 
 ```bash
 pnpm dev:desktop
 ```
 
-初回画面の接続先には`http://localhost:5173`を入力します。アプリの画面は同梱され、ローカルの開発サーバーへ接続します。LinuxではOSの鍵保管サービスが必要です。
+On the first screen, enter `http://localhost:5173` as the server. The app's screens are bundled with it, and it connects to the local development server. On Linux, the operating system's keyring service is required.
 
-Androidは、JDK 21とAndroid SDKなどを[Androidガイド](docs/ANDROID.md)に従って用意し、次のコマンドで開発用APKを作成します。
+For Android, set up JDK 21, the Android SDK and the rest as described in the [Android guide](docs/ANDROID.md), then build a development APK with:
 
 ```bash
 pnpm android:build
 ```
 
-出力先は`packages/android/app/build/outputs/apk/debug/app-debug.apk`です。Androidからは端末が到達できるHTTPSのサーバーへ接続してください。ローカル起動時のHTTPアドレスは利用できません。
+The output is `packages/android/app/build/outputs/apk/debug/app-debug.apk`. From Android, connect to an HTTPS server that the device can reach. The HTTP address used for local development does not work.
 
-### 停止と再開
+### Stop and restart
 
-WebとAPIは実行中のターミナルで`Ctrl+C`を押すと停止します。PostgreSQLとストレージも停止するには次を実行します。
+Press `Ctrl+C` in the terminal that is running the web client and API to stop them. To stop PostgreSQL and storage as well, run:
 
 ```bash
 ./dev.sh down
 ```
 
-再開は`./dev.sh`です。停止時にデータ用のボリュームは削除されません。生成された`.env`と`.local/audit-checkpoint.json`も保持してください。
+Run `./dev.sh` again to restart. Stopping does not delete the data volumes. Keep the generated `.env` and `.local/audit-checkpoint.json` as well.
 
-2026-09-30より前に作った開発環境では、`./dev.sh`が「監査記録の移行が済んでいません」と表示して停止します。[監査 head 移行手順](docs/OPERATIONS.md)を確認してから、次のコマンドを一度だけ実行してください。移行後はそのまま起動します。
+In development environments created before 2026-09-30, `./dev.sh` stops and reports that the audit record migration has not been done. Read the [audit head migration procedure](docs/OPERATIONS.md), then run the following command once. After the migration, the environment starts normally.
 
 ```bash
 ./dev.sh audit-head-init
 ```
 
-## サーバーの運用
+## Running a server
 
-Alpartsのサーバーは、**1つのアプリケーションプロセス、PostgreSQL 16、S3互換オブジェクトストレージ（推奨はSeaweedFS）**で構成します。Webクライアントの配信もサーバーに含まれます。コンテナー向けの[Dockerfile](Dockerfile)・[Compose構成](compose.production.yml)と、Linux向けの[systemdユニット](deploy/alparts.service)を用意しています。
+An Alparts server consists of **one application process, PostgreSQL 16, and S3-compatible object storage (SeaweedFS is recommended)**. The server also serves the web client. A [Dockerfile](Dockerfile) and [Compose configuration](compose.production.yml) are provided for containers, along with a [systemd unit](deploy/alparts.service) for Linux.
 
-`docker-compose.yml`はローカル開発用のPostgreSQLとS3互換ストレージ（SeaweedFS）を起動します。`compose.production.yml`ではアプリケーションと移行処理を定義しており、データベース・ストレージ・HTTPSのリバースプロキシは別途用意します。
+`docker-compose.yml` starts PostgreSQL and S3-compatible storage (SeaweedFS) for local development. `compose.production.yml` defines the application and the migration step; you provide the database, storage and HTTPS reverse proxy separately.
 
-- **接続と認証情報** — 公開するWeb/APIにはHTTPSを使い、`CORS_ORIGINS`に実際の接続元を設定します。認証情報は保護されたファイルから`*_FILE`で渡せます。設定項目は[環境変数の例](.env.example)を参照してください。
-- **音声通話** — 初期状態では外部の通話中継サービスを使いません。異なるネットワーク間での接続には、運用者が管理するSTUN/TURNを`VOICE_ICE_SERVERS_JSON`に設定します。TURNには参加者へ渡してよい短命の認証情報を使います。
-- **更新とバックアップ** — 更新時はアプリを停止し、バックアップと復元確認を行ってからデータベースを移行します。暗号化バックアップ、日次実行用のsystemdタイマー、隔離環境への復元確認ツールを同梱しています。
-- **監視と監査** — 起動・稼働・受付可否の確認用エンドポイント、認証付きメトリクス、操作履歴の整合性検証を備えています。監査チェックポイントは開発環境でも必要です。
-- **アプリの配布** — デスクトップのパッケージ化とAndroidのリリースビルドには、接続先の証明書固定設定が必要です。ビルド時の設定と更新時の注意は[配布・運用の設定ガイド](docs/security/AUDIT_ALPARTS_REMEDIATION.md#接続先のビルド設定)を参照してください。
+- **Connections and credentials** — Serve the public web client and API over HTTPS, and set `CORS_ORIGINS` to the origins actually used. Credentials can be passed from protected files with `*_FILE`. See the [example environment](.env.example) for the settings.
+- **Voice calls** — By default, no external relay service is used for calls. For connections between different networks, set operator-managed STUN/TURN servers in `VOICE_ICE_SERVERS_JSON`. Use short-lived TURN credentials that are safe to hand to participants.
+- **Updates and backups** — When updating, stop the app, take a backup and check that it restores, and then migrate the database. Encrypted backups, a systemd timer for daily runs, and a tool for checking restores in an isolated environment are included.
+- **Monitoring and audit** — Endpoints for start-up, liveness and readiness checks, authenticated metrics, and integrity verification of the activity log are built in. An audit checkpoint is required even in development.
+- **Distributing the apps** — Packaging the desktop app and building Android releases requires certificate pinning for the server. See the [distribution and operations settings guide](docs/security/AUDIT_ALPARTS_REMEDIATION.md#接続先のビルド設定) (Japanese) for build-time settings and what to watch for when updating.
 
-具体的な導入手順は[デプロイガイド](docs/policies/DEPLOYMENT.md)、日常の管理は[運用ガイド](docs/OPERATIONS.md)、データの保全は[バックアップと復元](docs/BACKUP.md)を参照してください。
+For step-by-step setup, see the [deployment guide](docs/policies/DEPLOYMENT.md); for day-to-day administration, the [operations guide](docs/OPERATIONS.md); and for protecting data, [backup and restore](docs/BACKUP.md).
 
-## 暗号化と現在の対応範囲
+## Encryption and current scope
 
-本文、添付ファイルの内容、ファイル名は端末で暗号化します。送信者、参加者、投稿時刻、通信量などの情報はサーバーから確認できます。端末や配信されるWebアプリが侵害された場合まで、暗号化だけで保護できるわけではありません。
+Message text, attachment contents and file names are encrypted on the device. The server can still see information such as senders, participants, posting times and traffic volume. Encryption alone cannot protect you if a device, or the web app delivered to it, is compromised.
 
-端末の承認と参加者の変更に応じた鍵の更新を実装していますが、更新には対象となる承認済み端末すべての確認が必要です。オフラインの端末があると送信を待つ場合があります。また、過去の履歴を読むための鍵を保持するため、メッセージ単位の完全な前方秘匿性は保証していません。
+Device approval and key updates when participants change are implemented, but an update needs confirmation from every approved device it affects. Sending may wait while one of those devices is offline. Because keys for reading past history are kept, full per-message forward secrecy is not guaranteed.
 
-履歴の復元には事前の設定と保存が必要です。使える端末、復元用パスキー、復旧コードをすべて失うと、サーバー管理者でも本文を復元できません。方式と移行手順は[アカウント・端末・履歴の保護](docs/security/ACCOUNT_AND_GROUP_SECURITY.md)と[パスキー・復旧コードの設定](docs/security/AUDIT_ALPARTS_REMEDIATION.md#パスキーと復旧コード)に記載しています。
+History restore must be set up and saved in advance. If you lose every usable device, your restore passkey and your recovery code, not even the server administrator can recover the message text. The design and migration steps are described in [Protecting accounts, devices and history](docs/security/ACCOUNT_AND_GROUP_SECURITY.md) and [Setting up passkeys and recovery codes](docs/security/AUDIT_ALPARTS_REMEDIATION.md#パスキーと復旧コード) (Japanese).
 
-現在は単一サーバー構成が対象です。複数アプリプロセスでの冗長化、自動フェイルオーバー、iOSアプリ、ビデオ通話・画面共有、Bot/Webhook、OIDCによるSSOは未対応です。Androidのバックグラウンド同期・Push通知、ネイティブ版のパスキー連携、自動更新の組み込みも残作業です。
+Only single-server deployments are supported for now. Redundancy across several application processes, automatic failover, an iOS app, video calls and screen sharing, bots and webhooks, and single sign-on with OIDC are not supported yet. Background sync and push notifications on Android, passkeys in the native apps, and built-in automatic updates also remain to be done.
 
-独立した外部セキュリティレビューは未完了です。未公開の脆弱性情報や認証情報など、漏えい時の影響が大きい秘密の共有には使用しないでください。詳しくは[既知の制限](docs/policies/LIMITATIONS.md)と[リスク一覧](docs/RISK_REGISTER.md)を参照してください。
+An independent external security review has not been completed. Do not use Alparts to share secrets whose leak would be serious, such as undisclosed vulnerabilities or credentials. For details, see the [known limitations](docs/policies/LIMITATIONS.md) and the [risk register](docs/RISK_REGISTER.md).
 
-## 開発
+## Development
 
-### コードの構成
+### Code layout
 
-| パス | 内容 |
+| Path | Contents |
 | --- | --- |
-| [packages/client](packages/client) | React・TypeScript・Viteによる共通の画面、暗号化、端末内の状態管理 |
-| [packages/server](packages/server) | Node.js・ExpressのAPI、Socket.IO、認証・権限・監査、DrizzleによるDB管理 |
-| [packages/shared](packages/shared) | クライアントとサーバーで共有する型・定数・通信の定義 |
-| [packages/desktop](packages/desktop) | Electronアプリ、OSの鍵保管、ロック、ファイル保存 |
-| [packages/android](packages/android) | Androidアプリ、同梱画面、端末の鍵保管、ロック、ファイル選択・保存 |
-| [scripts](scripts) / [deploy](deploy) | バックアップ・復元・配布の検証ツール、systemd設定 |
-| [docs](docs) | 設計、運用、セキュリティ、検証記録 |
+| [packages/client](packages/client) | Shared screens, encryption and on-device state, built with React, TypeScript and Vite |
+| [packages/server](packages/server) | Node.js and Express API, Socket.IO, authentication, permissions and audit, and database management with Drizzle |
+| [packages/shared](packages/shared) | Types, constants and protocol definitions shared by the client and server |
+| [packages/desktop](packages/desktop) | Electron app, operating system key storage, locking and file saving |
+| [packages/android](packages/android) | Android app, bundled screens, device key storage, locking, and file picking and saving |
+| [scripts](scripts) / [deploy](deploy) | Tools for verifying backups, restores and distribution, and systemd configuration |
+| [docs](docs) | Design, operations, security and verification records |
 
-### 基本の検証
+### Basic checks
 
 ```bash
 pnpm install --frozen-lockfile
@@ -185,29 +191,33 @@ pnpm audit --prod --audit-level moderate
 git diff --check
 ```
 
-データベースとストレージを使う結合テストは、通常の`pnpm test`とは別に実行します。[CIの構成](.github/workflows/ci.yml)に従って、使い捨てのPostgreSQL・S3互換ストレージと環境変数を用意してください。ストレージは`scripts/ci/start-object-storage.sh`で起動できます。
+Integration tests that use the database and storage run separately from `pnpm test`. Following the [CI configuration](.github/workflows/ci.yml), prepare disposable PostgreSQL and S3-compatible storage and the environment variables. Storage can be started with `scripts/ci/start-object-storage.sh`.
 
 ```bash
 pnpm --filter @alparts/server test:integration
 pnpm --filter @alparts/server test:account-security
 ```
 
-結合テストには既存データを含む環境を使わないでください。Androidのビルドとテストは`pnpm android:build`で実行します。開発時の方針とリリース前の確認事項は[開発ガイド](docs/policies/CONTRIBUTING.md)にまとめています。
+Never run the integration tests against an environment that holds real data. Build and test Android with `pnpm android:build`. Development practices and pre-release checks are collected in the [contributing guide](docs/policies/CONTRIBUTING.md).
 
-## ドキュメント
+### Translations
 
-- [ドキュメント一覧](docs/INDEX.md) — 設計・運用・検証資料の入口
-- [デスクトップ](docs/DESKTOP.md) / [Android](docs/ANDROID.md) — 各クライアントの起動・ビルド
-- [APIとリアルタイム通信](docs/api/README.md) — 開発者向けインターフェース
-- [セキュリティ対応記録](docs/security/AUDIT_ALPARTS_REMEDIATION.md) — 修正内容と導入時の設定
-- [セキュリティポリシー](docs/policies/SECURITY.md) — 脆弱性の報告方法
+All interface text goes through the translator in [packages/client/src/i18n](packages/client/src/i18n). The Japanese text is the message key, and the English catalog (`en.ts`) is typed against those keys, so a missing translation fails the type check. A client test also fails if Japanese text is added without going through `t()`. The desktop menu, Android resources and registration emails have their own small English and Japanese string sets.
 
-## ライセンス
+## Documentation
+
+- [Documentation index](docs/INDEX.md) — Entry point to design, operations and verification documents
+- [Desktop](docs/DESKTOP.md) / [Android](docs/ANDROID.md) — Running and building each client
+- [API and real-time protocol](docs/api/README.md) — Interfaces for developers
+- [Security remediation record](docs/security/AUDIT_ALPARTS_REMEDIATION.md) (Japanese) — What was fixed and the settings needed when deploying
+- [Security policy](docs/policies/SECURITY.md) — How to report vulnerabilities
+
+## License
 
 Copyright (C) 2026 SYZD Research
 
-このプログラムはフリーソフトウェアです。[GNU Affero General Public License version 3](LICENSE)（AGPL-3.0-only）の条件のもとで、再配布や改変ができます。
+This program is free software. You can redistribute and modify it under the terms of the [GNU Affero General Public License version 3](LICENSE) (AGPL-3.0-only).
 
-このプログラムは有用であることを願って配布していますが、**いかなる保証もありません**。商品性や特定目的への適合性の黙示の保証もありません。詳しくは [LICENSE](LICENSE) を参照してください。
+This program is distributed in the hope that it will be useful, but **WITHOUT ANY WARRANTY**, without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See [LICENSE](LICENSE) for details.
 
-改変したものを配布する場合だけでなく、改変したものをネットワーク越しに利用者へ提供する場合（サーバーとして運用する場合など）も、その利用者に同じライセンスで対応するソースコードを提供する必要があります。第三者のコンポーネントには、それぞれのライセンスが適用されます。
+If you offer a modified version to users over a network (for example, by running it as a server), and not only when you distribute it, you must offer those users the corresponding source code under the same license. Third-party components are covered by their own licenses.
