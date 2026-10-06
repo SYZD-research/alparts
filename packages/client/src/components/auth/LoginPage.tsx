@@ -10,15 +10,27 @@ export function LoginPage() {
   const [password, setPassword] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [inviteToken, setInviteToken] = useState('');
+  // Set once a code was mailed for the address and invitation shown.
+  const [codeSent, setCodeSent] = useState(false);
+  const [emailCode, setEmailCode] = useState('');
   const { login, loginPasskey, register, isLoading, error } = useAuthStore();
   const navigate = useNavigate();
   const location = useLocation();
+
+  const resetCode = () => {
+    setCodeSent(false);
+    setEmailCode('');
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
       if (isRegister) {
-        await register(email, password, displayName, inviteToken);
+        const result = await register(email, password, displayName, inviteToken, codeSent ? emailCode : undefined);
+        if (result === 'code-sent') {
+          setCodeSent(true);
+          return;
+        }
       } else {
         await login(email, password);
       }
@@ -79,7 +91,10 @@ export function LoginPage() {
                 <input
                   type="password"
                   value={inviteToken}
-                  onChange={(e) => setInviteToken(e.target.value)}
+                  onChange={(e) => {
+                    setInviteToken(e.target.value);
+                    resetCode();
+                  }}
                   className="w-full px-3 py-2.5 bg-discord-bg rounded text-discord-text outline-none focus:ring-2 focus:ring-discord-accent"
                   required
                   autoComplete="one-time-code"
@@ -95,7 +110,10 @@ export function LoginPage() {
             <input
               type="email"
               value={email}
-              onChange={(e) => setEmail(e.target.value)}
+              onChange={(e) => {
+                setEmail(e.target.value);
+                resetCode();
+              }}
               className="w-full px-3 py-2.5 bg-discord-bg rounded text-discord-text outline-none focus:ring-2 focus:ring-discord-accent"
               required
             />
@@ -116,6 +134,39 @@ export function LoginPage() {
             />
           </div>
 
+          {isRegister && codeSent && (
+            <div>
+              <p role="status" className="mb-2 text-sm text-discord-text">
+                {email} に確認コードを送りました。メールに書かれた6桁のコードを入力してください。
+              </p>
+              <label className="block text-xs font-bold text-discord-muted uppercase mb-2">
+                確認コード
+              </label>
+              <input
+                type="text"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                pattern="[0-9]{6}"
+                maxLength={6}
+                value={emailCode}
+                onChange={(e) => setEmailCode(e.target.value.replace(/[^0-9]/g, ''))}
+                className="w-full px-3 py-2.5 bg-discord-bg rounded text-discord-text outline-none focus:ring-2 focus:ring-discord-accent"
+                required
+              />
+              <button
+                type="button"
+                disabled={isLoading}
+                onClick={() => {
+                  setEmailCode('');
+                  void register(email, password, displayName, inviteToken).catch(() => undefined);
+                }}
+                className="mt-2 text-sm text-discord-accent hover:underline disabled:opacity-50"
+              >
+                コードを送り直す
+              </button>
+            </div>
+          )}
+
           {error && <p className="text-discord-red text-sm">{error}</p>}
 
           <button
@@ -132,6 +183,7 @@ export function LoginPage() {
           <button
             onClick={() => {
               setIsRegister(!isRegister);
+              resetCode();
             }}
             className="text-discord-accent hover:underline ml-1"
           >

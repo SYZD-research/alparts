@@ -49,6 +49,16 @@ services:
       AUDIT_WITNESS_DEPLOYMENT_ID: ${AUDIT_WITNESS_DEPLOYMENT_ID:-}
       CORS_ORIGINS: ${CORS_ORIGINS:?set the exact public HTTPS origin}
       TRUSTED_PROXIES: ${TRUSTED_PROXIES:-}
+      # Registration codes. Without SMTP_HOST, new registrations are refused
+      # unless EMAIL_VERIFICATION=disabled; existing accounts keep working.
+      EMAIL_VERIFICATION: ${EMAIL_VERIFICATION:-required}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_SECURE: ${SMTP_SECURE:-false}
+      SMTP_FROM: ${SMTP_FROM:-}
+      SMTP_USER: ${SMTP_USER:-}
+      # The default empty file means "no SMTP password".
+      SMTP_PASSWORD_FILE: /run/secrets/smtp_password
       ALLOW_INSECURE_LOOPBACK_DEPENDENCIES: ${ALLOW_INSECURE_LOOPBACK_DEPENDENCIES:-false}
       METRICS_ENABLED: ${METRICS_ENABLED:-false}
       # Required by the application only when METRICS_ENABLED=true.
@@ -62,6 +72,7 @@ services:
       - password_pepper_previous
       - audit_integrity_key
       - metrics_token
+      - smtp_password
     volumes:
       - audit_checkpoint:/var/lib/alparts-audit
       - ${AUDIT_WITNESS_DIR:-./deploy/compose-empty}:/run/alparts-witness:ro
@@ -128,6 +139,8 @@ secrets:
     file: ${AUDIT_INTEGRITY_KEY_SECRET_FILE:?set AUDIT_INTEGRITY_KEY_SECRET_FILE}
   metrics_token:
     file: ${METRICS_TOKEN_SECRET_FILE:-./deploy/compose-empty/empty}
+  smtp_password:
+    file: ${SMTP_PASSWORD_SECRET_FILE:-./deploy/compose-empty/empty}
   migration_database_url:
     file: ${MIGRATION_DATABASE_URL_SECRET_FILE:?set MIGRATION_DATABASE_URL_SECRET_FILE}
 

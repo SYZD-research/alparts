@@ -17,7 +17,7 @@ vi.mock('./security-storage', async (original) => ({
 import { api } from './api';
 import { channelKeyScopes } from './channel-key-scope';
 import { readSecurityState, toBase64 } from './security-storage';
-import { deriveMlsDelivery } from './mls.service';
+import { deriveMlsDelivery, nonMlsDeliveryAllowed } from './mls.service';
 
 const channel = '11111111-1111-4111-8111-111111111111';
 const transcript = 'a'.repeat(64);
@@ -68,5 +68,14 @@ describe('authenticated MLS archive and checkpoint reuse', () => {
     expect(await deriveMlsDelivery(channel, 2, transcript, 'retired')).toEqual(raw);
     channelKeyScopes.invalidate(channel);
     await expect(deriveMlsDelivery(channel, 2, transcript, 'retired')).rejects.toThrow();
+  });
+});
+
+describe('channels already on MLS (SEC-01)', () => {
+  it('refuses a non-MLS key for the pinned version or later, but keeps older history', () => {
+    expect(nonMlsDeliveryAllowed(null, 7)).toBe(true);
+    expect(nonMlsDeliveryAllowed(5, 4)).toBe(true);
+    expect(nonMlsDeliveryAllowed(5, 5)).toBe(false);
+    expect(nonMlsDeliveryAllowed(5, 6)).toBe(false);
   });
 });

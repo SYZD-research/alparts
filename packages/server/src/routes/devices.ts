@@ -6,7 +6,7 @@ import { z } from 'zod';
 import * as deviceService from '../services/device.service.js';
 import { authMiddleware, type AuthRequest } from '../middleware/auth.js';
 import { expiredSessionCookie } from '../security/cookies.js';
-import { rateLimit } from '../middleware/rate-limit.js';
+import { rateLimit, requestSource } from '../middleware/rate-limit.js';
 
 const router = Router();
 const registerSchema = z.object({
@@ -27,17 +27,17 @@ const idSchema = z.string().uuid();
 const challengeLimit = rateLimit({
   windowMs: 60_000,
   max: 20,
-  key: (req) => (req as AuthRequest).userId || req.ip || 'unknown',
+  key: (req) => (req as AuthRequest).userId || requestSource(req),
 });
 const enrollmentLimit = rateLimit({
   windowMs: 60 * 60 * 1000,
   max: 10,
-  key: (req) => (req as AuthRequest).userId || req.ip || 'unknown',
+  key: (req) => (req as AuthRequest).userId || requestSource(req),
 });
 const revocationLimit = rateLimit({
   windowMs: 60 * 60 * 1000,
   max: 20,
-  key: (req) => (req as AuthRequest).userId || req.ip || 'unknown',
+  key: (req) => (req as AuthRequest).userId || requestSource(req),
 });
 
 router.post('/challenge', authMiddleware, challengeLimit, (req: AuthRequest, res) => {

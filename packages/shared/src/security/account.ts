@@ -70,15 +70,23 @@ export function canonicalActionBody(value: unknown): string {
     )
     .join(',')}}`;
 }
+/** Drops trailing slashes. A loop, unlike /\/+$/, stays linear on any input. */
+function withoutTrailingSlashes(path: string): string {
+  let end = path.length;
+  while (end > 0 && path[end - 1] === '/') end -= 1;
+  return path.slice(0, end);
+}
+
 export function isSensitiveAction(method: string, path: string): boolean {
   // Express routes accept case variations and a trailing slash. Classify the
   // same route here; the grant still binds the exact original request path.
   method = method.toUpperCase();
-  path = path.toLowerCase().replace(/\/+$/, '');
+  path = withoutTrailingSlashes(path.toLowerCase());
   if (['GET', 'HEAD', 'OPTIONS'].includes(method)) return false;
   return (
     (path.startsWith('/api/devices/') && (method === 'DELETE' || path.endsWith('/approve'))) ||
     (path.startsWith('/api/auth/sessions') && method === 'DELETE') ||
+    ((path === '/api/auth/password' || path === '/api/auth/password-login') && method === 'PUT') ||
     path === '/api/auth/passkeys/register/options' ||
     (path.startsWith('/api/auth/passkeys/') && method === 'DELETE') ||
     (path === '/api/recovery/configure' || path === '/api/recovery/access') ||
@@ -89,4 +97,19 @@ export function isSensitiveAction(method: string, path: string): boolean {
         /\/(roles|members|invitations|permission-overrides)(\/|$)/.test(path)) &&
       !path.endsWith('/preview'))
   );
+}
+
+/**
+ * Like isSensitiveAction, but also for requests that are sensitive because of
+ * what they change. Making a private channel public (or moving a channel to
+ * a category with different permissions) lets new members read what follows,
+ * so it needs the same proof as adding members. The field's presence decides,
+ * so a client sends it only when it changes.
+ */
+export function isSensitiveRequest(method: string, path: string, body: unknown): boolean {
+  if (isSensitiveAction(method, path)) return true;
+  const normalizedPath = withoutTrailingSlashes(path.toLowerCase());
+  if (method.toUpperCase() !== 'PUT' || !/^\/api\/channels\/[^/]+$/.test(normalizedPath)) return false;
+  return body !== null && typeof body === 'object' && !Array.isArray(body)
+    && ['isPrivate', 'categoryId'].some((field) => Object.prototype.hasOwnProperty.call(body, field));
 }

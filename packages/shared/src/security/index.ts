@@ -3,7 +3,9 @@ export const MESSAGE_CRYPTO_VERSION = 3;
 export const FORUM_MESSAGE_CRYPTO_VERSION = 4;
 const LEGACY_MESSAGE_CRYPTO_VERSION = 2;
 
-export const ATTACHMENT_CRYPTO_VERSION = 2;
+export const ATTACHMENT_CRYPTO_VERSION = 3;
+/** Attachments signed before they were bound to their message's idempotency key. */
+const LEGACY_ATTACHMENT_CRYPTO_VERSION = 2;
 export const ATTACHMENT_PLAINTEXT_CHUNK_BYTES = 5 * 1024 * 1024;
 export const ATTACHMENT_GCM_TAG_BYTES = 16;
 export const ATTACHMENT_NONCE_PREFIX_BYTES = 8;
@@ -236,12 +238,18 @@ export interface SignedAttachmentEnvelope {
   noncePrefix: string;
   plaintextSize: number;
   chunkCount: number;
+  /**
+   * The idempotency key signed into the message the file belongs to. The
+   * server assigns message ids, but cannot give another message this key, so
+   * a file cannot be moved to a different message. Absent only in legacy v2
+   * signatures.
+   */
+  messageIdempotencyKey?: string;
 }
 
 /** A deterministic, protocol-versioned representation for attachment signatures. */
 export function serializeAttachmentEnvelope(envelope: SignedAttachmentEnvelope): string {
-  return JSON.stringify([
-    ATTACHMENT_CRYPTO_VERSION,
+  const fields = [
     envelope.type,
     envelope.uploadId,
     envelope.messageId,
@@ -255,7 +263,11 @@ export function serializeAttachmentEnvelope(envelope: SignedAttachmentEnvelope):
     envelope.noncePrefix,
     envelope.plaintextSize,
     envelope.chunkCount,
-  ]);
+  ];
+  if (envelope.messageIdempotencyKey === undefined) {
+    return JSON.stringify([LEGACY_ATTACHMENT_CRYPTO_VERSION, ...fields]);
+  }
+  return JSON.stringify([ATTACHMENT_CRYPTO_VERSION, ...fields, envelope.messageIdempotencyKey]);
 }
 
 export function serializeAttachmentFilenameAad(messageId: string): string {

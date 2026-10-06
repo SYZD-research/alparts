@@ -13,6 +13,7 @@ import {
 } from '@alparts/shared';
 import { api } from './api';
 import { getChannelKeyForVersion, verifyAttachmentSignature } from './crypto.service';
+import { getMessageCryptoVerificationState } from '../stores/message-projector';
 
 export const ATTACHMENT_PLAINTEXT_CHUNK_BYTES = SHARED_ATTACHMENT_PLAINTEXT_CHUNK_BYTES;
 export const ATTACHMENT_GCM_TAG_BYTES = SHARED_ATTACHMENT_GCM_TAG_BYTES;
@@ -30,6 +31,9 @@ type DeviceDirectoryEntry = { deviceId: string; userId: string; identityKey: str
 const directoryCache = new Map<string, { expiresAt: number; entry: DeviceDirectoryEntry | null }>();
 const directoryPromises = new Map<string, Promise<DeviceDirectoryEntry | null>>();
 let directoryCacheGeneration = 0;
+
+/** The base message a file belongs to, as the message store verified it. */
+export type AttachmentMessage = Pick<Message, 'id' | 'channelId' | 'authorId' | 'keyVersion' | 'idempotencyKey'>;
 
 export interface ValidatedAttachmentManifest {
   uploadId: string;
@@ -204,7 +208,7 @@ export async function decryptAttachmentChunk(
 }
 
 export async function unwrapAttachmentFileKey(
-  message: Pick<Message, 'id' | 'channelId' | 'authorId' | 'keyVersion'>,
+  message: AttachmentMessage,
   attachment: Attachment,
 ): Promise<CryptoKey> {
   const envelope = await verifyAttachmentMetadata(message, attachment);
@@ -225,7 +229,7 @@ export async function unwrapAttachmentFileKey(
 }
 
 export async function decryptAttachmentFilename(
-  message: Pick<Message, 'id' | 'channelId' | 'authorId' | 'keyVersion'>,
+  message: AttachmentMessage,
   attachment: Attachment,
 ): Promise<string> {
   validateAttachmentManifest(attachment, message.id);
@@ -241,7 +245,7 @@ export async function decryptAttachmentFilename(
 
 /** Build the exact signed metadata and reject legacy/mismatched DTOs. */
 export function buildSignedAttachmentEnvelope(
-  message: Pick<Message, 'id' | 'channelId' | 'authorId' | 'keyVersion'>,
+  message: AttachmentMessage,
   attachment: Attachment,
 ): SignedAttachmentEnvelope {
   const manifest = validateAttachmentManifest(attachment, message.id);
@@ -278,14 +282,21 @@ export function buildSignedAttachmentEnvelope(
     noncePrefix: attachment.cryptoManifest.noncePrefix,
     plaintextSize: manifest.plaintextSize,
     chunkCount: manifest.chunkCount,
+    ...(message.idempotencyKey ? { messageIdempotencyKey: message.idempotencyKey } : {}),
   };
 }
 
-/** Verify uploader identity before any attachment plaintext is decrypted or saved. */
+/**
+ * Verify uploader identity before any attachment plaintext is decrypted or
+ * saved. A file is accepted only for a verified message, and only if it was
+ * signed for that message's idempotency key; files from before that binding
+ * are still accepted for the server-assigned message id.
+ */
 export async function verifyAttachmentMetadata(
-  message: Pick<Message, 'id' | 'channelId' | 'authorId' | 'keyVersion'>,
+  message: AttachmentMessage,
   attachment: Attachment,
 ): Promise<SignedAttachmentEnvelope> {
+  if (getMessageCryptoVerificationState(message as Message) !== true) throw new Error('メッセージを確認できないため、ファイルを開けません');
   const envelope = buildSignedAttachmentEnvelope(message, attachment);
   let directoryEntry = await getDeviceDirectory(message.channelId, envelope.deviceId, false);
   let identity = directoryEntry?.userId === envelope.authorId ? directoryEntry.identityKey : undefined;
@@ -294,10 +305,10 @@ export async function verifyAttachmentMetadata(
     identity = directoryEntry?.userId === envelope.authorId ? directoryEntry.identityKey : undefined;
   }
   if (!identity || !attachment.signature) throw new Error('ファイルの送信元を確認できません');
-  if (!await verifyAttachmentSignature(envelope, attachment.signature, identity)) {
-    throw new Error('ファイルの内容を検証できませんでした');
-  }
-  return envelope;
+  if (await verifyAttachmentSignature(envelope, attachment.signature, identity)) return envelope;
+  const { messageIdempotencyKey: bound, ...legacy } = envelope;
+  if (bound !== undefined && await verifyAttachmentSignature(legacy, attachment.signature, identity)) return legacy;
+  throw new Error('ファイルの内容を検証できませんでした');
 }
 
 export function clearAttachmentVerificationCache(): void {
@@ -488,7 +499,7 @@ async function getDeviceDirectory(
   if (inFlight) return inFlight;
   if (directoryPromises.size >= DIRECTORY_CACHE_LIMIT) throw new Error('DEVICE_DIRECTORY_CAPACITY');
   const generation = directoryCacheGeneration;
-  const request = api.getChannelDeviceDirectory(channelId, [deviceId]).then((entries) => {
+  const request = api.getChannelDeviceDirectory(channelId, [deviceId], 'approved').then((entries) => {
     const entry = entries.find((candidate) => candidate.deviceId === deviceId) ?? null;
     if (generation === directoryCacheGeneration) {
       directoryCache.delete(cacheKey);

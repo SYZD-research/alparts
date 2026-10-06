@@ -16,3 +16,23 @@ export async function setAccountDisabled(userId: string, disabled: boolean): Pro
     return null;
   }, () => ({ action: disabled ? 'account.disable' : 'account.enable', targetType: 'user', targetId: userId }));
 }
+
+/**
+ * Operator-only recovery for a user who cannot sign in: sets a new password,
+ * turns password login back on and ends every login of the account.
+ */
+export async function resetPassword(userId: string, passwordHash: string): Promise<void> {
+  await auditedTransaction(async (tx) => {
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`passkeys:${userId}`})::bigint)`);
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`sessions:${userId}`})::bigint)`);
+    const [user] = await tx.select({ id: users.id }).from(users).where(eq(users.id, userId)).for('update');
+    if (!user) throw new Error('USER_NOT_FOUND');
+    await tx.update(users)
+      .set({ passwordHash, passwordLoginDisabled: false, updatedAt: new Date() })
+      .where(eq(users.id, userId));
+    await tx.delete(sessions).where(eq(sessions.userId, userId));
+    // Closes the account's open connections, as for a disabled account.
+    await tx.execute(sql`select pg_notify('alparts_account_disabled', ${userId})`);
+    return null;
+  }, () => ({ action: 'account.password.reset', targetType: 'user', targetId: userId }));
+}

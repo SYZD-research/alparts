@@ -1,5 +1,6 @@
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
 import type { AuthRequest } from './auth.js';
+import { requestSource } from './rate-limit.js';
 
 interface BodyBudgetLimits {
   maxBytesTotal: number;
@@ -77,7 +78,7 @@ export function reserveJsonBody(maxBytes: number): RequestHandler {
       res.status(413).json({ error: 'BODY_TOO_LARGE', message: 'JSON body is too large', statusCode: 413 });
       return;
     }
-    const source = req.ip || req.socket.remoteAddress || 'unknown';
+    const source = requestSource(req);
     const release = jsonBodyBudget.acquire(source, bytes);
     if (!release) {
       res.status(503).json({ error: 'BODY_CAPACITY', message: 'Request body capacity is exhausted', statusCode: 503 });

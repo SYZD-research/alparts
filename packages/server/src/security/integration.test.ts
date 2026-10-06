@@ -21,7 +21,7 @@ import { and, eq, inArray, sql } from 'drizzle-orm';
 import pg from 'pg';
 import {
   Permissions,
-  canonicalActionBody, isSensitiveAction, serializeDeviceDecision, serializeGroupKeyPackage, serializeMlsEpoch, type MlsEpoch, type GroupKeyPackage,
+  serializeDeviceDecision, serializeGroupKeyPackage, serializeMlsEpoch, type MlsEpoch, type GroupKeyPackage,
   serializeAttachmentEnvelope,
   serializeChannelKeyAcknowledgement,
   serializeChannelKeyEpochAbort,
@@ -65,7 +65,7 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     const auditModule = await import('../middleware/audit.js');
     const dbModule = await import('../db/index.js');
     closeDb = dbModule.closeDb;
-    assert.equal(await dbModule.checkDatabaseSchema(), 21);
+    assert.equal(await dbModule.checkDatabaseSchema(), 23);
     verifyAuditChain = auditModule.verifyAuditChain;
     await auditModule.provisionAuditCheckpoint();
     const startupAudit = await verifyAuditChain();
@@ -126,15 +126,43 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     });
     assert.equal(reusedInvitation.status, 403);
     const unboundInvitation = await createWorkspaceInvitation(workspace.id, alice.cookie);
+    // Registration needs the code mailed to the address. An existing account
+    // gets the same answer and a notice, but no code to finish with.
+    const { developmentEmails } = await import('../services/email.service.js');
+    const existingCodeRequest = await request('/api/auth/register/code', {
+      method: 'POST', body: { email: 'alice@example.test', inviteToken: unboundInvitation.token },
+    });
+    assert.equal(existingCodeRequest.status, 202);
+    const existingNotice = [...developmentEmails()].reverse().find((message) => message.to === 'alice@example.test');
+    assert.ok(existingNotice && !/\b\d{6}\b/.test(existingNotice.text));
     const existingEmailRegistration = await request('/api/auth/register', {
       method: 'POST',
-      body: { email: 'alice@example.test', password: 'Correct-Horse-Battery-8!', displayName: 'Probe', inviteToken: unboundInvitation.token },
+      body: { email: 'alice@example.test', password: 'Correct-Horse-Battery-8!', displayName: 'Probe', inviteToken: unboundInvitation.token, emailCode: '123456' },
     });
-    assert.equal(existingEmailRegistration.status, invalidInvite.status);
-    assert.equal((await json<{ error: string }>(existingEmailRegistration)).error, 'INVITE_REQUIRED');
-    const unboundRegistration = await request('/api/auth/register', {
+    assert.equal(existingEmailRegistration.status, 400);
+    assert.equal((await json<{ error: string }>(existingEmailRegistration)).error, 'INVALID_EMAIL_CODE');
+    const withoutCode = await request('/api/auth/register', {
       method: 'POST',
       body: { email: 'unbound@example.test', password: 'Correct-Horse-Battery-9!', displayName: 'Unbound', inviteToken: unboundInvitation.token },
+    });
+    assert.equal(withoutCode.status, 400, 'a registration without the mailed code is refused');
+    const verification = await import('../services/email-verification.service.js');
+    const guessedCode = await emailCode('unbound@example.test', unboundInvitation.token);
+    const wrongCode = guessedCode === '000000' ? '000001' : '000000';
+    for (let attempt = 0; attempt < verification.MAX_EMAIL_CODE_ATTEMPTS; attempt += 1) {
+      await assert.rejects(verification.consumeRegistrationCode('unbound@example.test', wrongCode), /INVALID_EMAIL_CODE/);
+    }
+    await assert.rejects(verification.consumeRegistrationCode('unbound@example.test', guessedCode), /INVALID_EMAIL_CODE/,
+      'wrong guesses use the code up');
+    const unboundRegistration = await request('/api/auth/register', {
+      method: 'POST',
+      body: {
+        email: 'unbound@example.test',
+        password: 'Correct-Horse-Battery-9!',
+        displayName: 'Unbound',
+        inviteToken: unboundInvitation.token,
+        emailCode: await emailCode('unbound@example.test', unboundInvitation.token),
+      },
     });
     assert.equal(unboundRegistration.status, 201);
     const retryDeviceInvitation = await createWorkspaceInvitation(workspace.id, alice.cookie, 'device-retry@example.test');
@@ -446,9 +474,12 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     })).status, 403, 'an expired invitation must not admit a registration');
 
     const singleUseInvitation = await createWorkspaceInvitation(workspace.id, alice.cookie);
-    const racingRegistrations = await Promise.all(['race-a@example.test', 'race-b@example.test'].map((email) => request('/api/auth/register', {
+    const raceEmails = ['race-a@example.test', 'race-b@example.test'];
+    const raceCodes: string[] = [];
+    for (const email of raceEmails) raceCodes.push(await emailCode(email, singleUseInvitation.token));
+    const racingRegistrations = await Promise.all(raceEmails.map((email, index) => request('/api/auth/register', {
       method: 'POST',
-      body: { email, password: 'Correct-Horse-Battery-9!', displayName: 'Race', inviteToken: singleUseInvitation.token },
+      body: { email, password: 'Correct-Horse-Battery-9!', displayName: 'Race', inviteToken: singleUseInvitation.token, emailCode: raceCodes[index] },
     })));
     assert.deepEqual(racingRegistrations.map((response) => response.status).sort(), [201, 403],
       'a single-use invitation must be consumed at most once under concurrency');
@@ -1709,6 +1740,34 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     });
     assert.equal(privateBookmarkProbe.status, 404);
 
+    // The workspace log shows activity inside a channel only to viewers who
+    // can see that channel, and never shows anyone's own settings or bookmarks.
+    type AuditRow = { action: string; actorId: string | null; targetId: string | null; details: Record<string, unknown> | null };
+    const readWholeAuditLog = async (cookie: string) => {
+      const rows: AuditRow[] = [];
+      let cursor: string | null = null;
+      for (let page = 0; page < 100; page += 1) {
+        const body: { data: AuditRow[]; hasMore: boolean; cursor: string | null } = await json(await request(
+          `/api/workspaces/${workspace.id}/audit-logs?limit=100${cursor ? `&cursor=${cursor}` : ''}`,
+          { method: 'POST', cookie, body: {} },
+        ));
+        rows.push(...body.data);
+        if (!body.hasMore) return rows;
+        cursor = body.cursor;
+      }
+      throw new Error('audit log did not end');
+    };
+    const insidePrivateChannel = (row: AuditRow) => row.details?.channelId === privateChannel.id
+      || (row.targetId === privateChannel.id && /^(channel\.key|channel\.member)\./.test(row.action));
+    const personal = (row: AuditRow) => /^(channel\.preference|message\.bookmark)\./.test(row.action);
+    const reviewerView = await readWholeAuditLog(bob.cookie);
+    assert.equal(reviewerView.some((row) => row.action === 'channel.create' && row.targetId === privateChannel.id), true);
+    assert.equal(reviewerView.some(insidePrivateChannel), false);
+    assert.equal(reviewerView.some(personal), false);
+    const ownerView = await readWholeAuditLog(alice.cookie);
+    assert.equal(ownerView.some((row) => row.action === 'message.create' && row.details?.channelId === privateChannel.id), true);
+    assert.equal(ownerView.some(personal), false);
+
     const reactionRealtime = onceSocketEvent<Record<string, unknown>>(aliceSocket, 'message:reaction');
     const reactionResponse = await request(`/api/messages/${message.id}/reactions`, {
       method: 'POST', cookie: alice.cookie, body: { emoji: '👍' },
@@ -1913,7 +1972,7 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     assert.equal(completeStatusResponse.status, 200);
     assert.deepEqual((await json<{ uploadedIndexes: number[] }>(completeStatusResponse)).uploadedIndexes, [0, 1]);
 
-    const finalizeBody = signedAttachmentFinalizeBody({
+    const finalizeInput = {
       uploadId: upload.uploadId,
       messageId: message.id,
       channelId,
@@ -1926,19 +1985,28 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
       chunkCount: attachmentChunkCount,
       wrappedKey: wrapKey(attachmentKey, aliceKeys.identityKey),
       cryptoManifest: {
-        version: 1,
-        algorithm: 'AES-256-GCM',
-        nonceStrategy: 'prefix-counter-be32',
+        version: 1 as const,
+        algorithm: 'AES-256-GCM' as const,
+        nonceStrategy: 'prefix-counter-be32' as const,
         noncePrefix: noncePrefix.toString('base64'),
-        aadVersion: 1,
+        aadVersion: 1 as const,
         plaintextSize: attachmentPlaintextSize,
       },
+    };
+    const finalizeBody = signedAttachmentFinalizeBody({
+      ...finalizeInput,
+      messageIdempotencyKey: messageRequest.body.idempotencyKey,
     });
     const forgedAttachmentFinalize = await request(`/api/files/uploads/${upload.uploadId}/finalize`, {
       method: 'POST', cookie: alice.cookie,
       body: { ...finalizeBody, signature: Buffer.alloc(64).toString('base64') },
     });
     assert.equal(forgedAttachmentFinalize.status, 400);
+    const misboundAttachmentFinalize = await request(`/api/files/uploads/${upload.uploadId}/finalize`, {
+      method: 'POST', cookie: alice.cookie,
+      body: signedAttachmentFinalizeBody({ ...finalizeInput, messageIdempotencyKey: randomUUID() }),
+    });
+    assert.equal(misboundAttachmentFinalize.status, 400, 'a file signed for another message is refused');
     let attachmentBroadcastCount = 0;
     const onAttachmentCreated = () => { attachmentBroadcastCount += 1; };
     aliceSocket.on('attachment:created', onAttachmentCreated);
@@ -3047,6 +3115,26 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     };
     const ownerKeys = deviceFixture();
     const ownerDevice = await registerDevice(owner, ownerKeys, 'Forum owner device');
+
+    // A flood of anonymous login challenges cannot use up identity
+    // confirmation for a signed-in user (for example to revoke a stolen session).
+    {
+      const { authenticationChallenges } = await import('../db/schema.js');
+      const { MAX_ANONYMOUS_CHALLENGES } = await import('../services/passkey.service.js');
+      const floodIds = Array.from({ length: MAX_ANONYMOUS_CHALLENGES }, () => randomUUID());
+      await db.insert(authenticationChallenges).values(floodIds.map((id) => ({
+        id, purpose: 'login', challenge: 'flood', expiresAt: new Date(Date.now() + 60_000),
+      })));
+      try {
+        assert.equal((await request('/api/auth/passkeys/login/options', { method: 'POST', body: {} })).status, 403);
+        const purpose = `DELETE /api/devices/${ownerDevice.id} ${'A'.repeat(43)}`;
+        assert.equal((await request('/api/auth/step-up/options', {
+          method: 'POST', cookie: owner.cookie, body: { purpose },
+        })).status, 200);
+      } finally {
+        await db.delete(authenticationChallenges).where(inArray(authenticationChallenges.id, floodIds));
+      }
+    }
     const workspace = await json<{ id: string }>(await request('/api/workspaces', {
       method: 'POST', cookie: owner.cookie, body: { name: 'Forum security' },
     }));
@@ -3414,7 +3502,7 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
       await client.end();
     }
     const { checkDatabaseSchema } = await import('../db/index.js');
-    assert.equal(await checkDatabaseSchema(), 21);
+    assert.equal(await checkDatabaseSchema(), 23);
   });
 
   it('never re-signs a shortened audit chain after the external checkpoint anchor is deleted', async () => {
@@ -3456,9 +3544,20 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     await assert.rejects(auditModule.checkAuditCheckpoint(), /checkpoint|audit/i);
   });
 
+  /** Asks for a registration code and reads it from the development outbox. */
+  async function emailCode(email: string, inviteToken: string): Promise<string> {
+    const response = await request('/api/auth/register/code', { method: 'POST', body: { email, inviteToken } });
+    assert.equal(response.status, 202);
+    assert.deepEqual(await json(response), { required: true });
+    const { developmentEmails } = await import('../services/email.service.js');
+    const code = [...developmentEmails()].reverse().find((message) => message.to === email)?.text.match(/\b(\d{6})\b/)?.[1];
+    assert.ok(code, `no code was mailed to ${email}`);
+    return code;
+  }
+
   async function createAccount(email: string, password: string, displayName: string, inviteToken: string) {
     const registration = await request('/api/auth/register', {
-      method: 'POST', body: { email, password, displayName, inviteToken },
+      method: 'POST', body: { email, password, displayName, inviteToken, emailCode: await emailCode(email, inviteToken) },
     });
     assert.equal(registration.status, 201);
     const login = await request('/api/auth/login', { method: 'POST', body: { email, password } });
@@ -3713,18 +3812,9 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
         options = {...options,body:{head,signature}};
       }
     }
-    if(options.cookie && credentials.has(options.cookie) && isSensitiveAction(options.method ?? 'GET',path.split('?')[0])) {
-      const purpose = `${options.method} ${path.split('?')[0]} ${createHash('sha256').update(canonicalActionBody(options.body)).digest('base64url')}`;
-      const optionsResponse = await request('/api/auth/step-up/options',{method:'POST',cookie:options.cookie,body:{purpose}});
-      if(optionsResponse.status===200) {
-        const challenge = await json<any>(optionsResponse);
-        const verified = await request('/api/auth/step-up/verify',{method:'POST',cookie:options.cookie,body:{id:challenge.id,purpose,password:credentials.get(options.cookie)!.password}});
-        assert.equal(verified.status,200);headers['X-Alparts-Step-Up']=(await json<any>(verified)).token;
-      }
-    }
     const rawBody = Buffer.isBuffer(options.body) ? options.body : null;
     if (options.body !== undefined) headers['Content-Type'] = options.contentType ?? (rawBody ? 'application/octet-stream' : 'application/json');
-    const response = await fetch(`${baseUrl}${path}`, {
+    const send = () => fetch(`${baseUrl}${path}`, {
       method: options.method || 'GET',
       headers,
       body: options.body === undefined
@@ -3733,6 +3823,24 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
           ? new Uint8Array(rawBody)
           : JSON.stringify(options.body),
     });
+    let response = await send();
+    if (response.status === 428 && options.cookie && credentials.has(options.cookie)) {
+      // Like the app: confirm the identity for the purpose the server names, then resend.
+      const required = await response.clone().json().catch(() => null) as { error?: string; purpose?: string } | null;
+      if (required?.error === 'STEP_UP_REQUIRED' && required.purpose) {
+        const purpose = required.purpose;
+        const optionsResponse = await request('/api/auth/step-up/options', { method: 'POST', cookie: options.cookie, body: { purpose } });
+        if (optionsResponse.status === 200) {
+          const challenge = await json<any>(optionsResponse);
+          const verified = await request('/api/auth/step-up/verify', {
+            method: 'POST', cookie: options.cookie, body: { id: challenge.id, purpose, password: credentials.get(options.cookie)!.password },
+          });
+          assert.equal(verified.status, 200);
+          headers['X-Alparts-Step-Up'] = (await json<any>(verified)).token;
+          response = await send();
+        }
+      }
+    }
     if (response.status === 429 && response.headers.get('RateLimit-Limit') === '300') {
       // This long scenario now includes real per-action authentication. Respect
       // the unchanged production source budget rather than bypassing it.
@@ -3940,6 +4048,8 @@ function signedAttachmentFinalizeBody(input: {
     aadVersion: 1;
     plaintextSize: number;
   };
+  /** Omitted for the legacy layout that older clients still sign. */
+  messageIdempotencyKey?: string;
 }) {
   const envelope: SignedAttachmentEnvelope = {
     type: 'attachment',
@@ -3955,6 +4065,7 @@ function signedAttachmentFinalizeBody(input: {
     noncePrefix: input.cryptoManifest.noncePrefix,
     plaintextSize: input.cryptoManifest.plaintextSize,
     chunkCount: input.chunkCount,
+    ...(input.messageIdempotencyKey ? { messageIdempotencyKey: input.messageIdempotencyKey } : {}),
   };
   const signature = sign('sha256', Buffer.from(serializeAttachmentEnvelope(envelope)), {
     key: input.privateKey,

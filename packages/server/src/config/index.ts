@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { isIP } from 'node:net';
 import { parseBindHost, parseBoundedInteger, parseCorsOrigins, parseTrustedProxies, parseVoiceIceServers } from './validation.js';
 import { loadDatabaseRuntimeConfig } from './database.js';
 import { readConfiguredValue } from './source.js';
@@ -97,6 +98,25 @@ export const config = {
     secureCookie: isProduction || env.COOKIE_SECURE === 'true',
   },
 
+  email: {
+    // Registration proves the address with a mailed code unless the operator
+    // explicitly turns that off.
+    verification: env.EMAIL_VERIFICATION?.trim() === 'disabled' ? 'disabled' as const : 'required' as const,
+    smtp: env.SMTP_HOST?.trim()
+      ? {
+          host: env.SMTP_HOST.trim(),
+          port: parseBoundedInteger('SMTP_PORT', env.SMTP_PORT, 587, 1, 65535),
+          // true: TLS from the first byte (usually port 465). Otherwise the
+          // connection upgrades with STARTTLS, which production requires.
+          secure: env.SMTP_SECURE === 'true',
+          user: env.SMTP_USER?.trim() || null,
+          password: value('SMTP_PASSWORD') || null,
+          from: env.SMTP_FROM?.trim() || '',
+          timeoutMs: parseBoundedInteger('SMTP_TIMEOUT_MS', env.SMTP_TIMEOUT_MS, 10_000, 1_000, 60_000),
+        }
+      : null,
+  },
+
   webauthn: {
     rpId: env.WEBAUTHN_RP_ID || new URL(corsOrigins[0]).hostname,
     origins: env.WEBAUTHN_ORIGINS ? parseCorsOrigins(env.WEBAUTHN_ORIGINS, isProduction) : corsOrigins,
@@ -157,6 +177,15 @@ export const config = {
   },
 } as const;
 
+if (env.EMAIL_VERIFICATION?.trim() && !['required', 'disabled'].includes(env.EMAIL_VERIFICATION.trim())) {
+  throw new Error('EMAIL_VERIFICATION must be required or disabled');
+}
+if (config.email.smtp) {
+  if (!/^[^\s@<>"(),;:]+@[^\s@<>"(),;:]+$/.test(config.email.smtp.from)) throw new Error('SMTP_FROM must be an email address');
+  if (Boolean(config.email.smtp.user) !== Boolean(config.email.smtp.password)) {
+    throw new Error('SMTP_USER and SMTP_PASSWORD must be set together');
+  }
+}
 if (config.observability.metricsEnabled && !config.observability.metricsToken) {
   throw new Error('METRICS_TOKEN is required when METRICS_ENABLED=true');
 }
@@ -173,6 +202,21 @@ if ((config.audit.witnessRequired || config.audit.witnessPath || config.audit.wi
     || !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(config.audit.witnessDeploymentId ?? ''))) {
   throw new Error('Audit witness requires its public key, signed witness file and deployment UUID');
 }
+// A scheme, port or path in S3_ENDPOINT would only fail later, obscurely.
+const s3Host = config.s3.endpoint.startsWith('[') && config.s3.endpoint.endsWith(']')
+  ? config.s3.endpoint.slice(1, -1)
+  : config.s3.endpoint;
+if (!isIP(s3Host) && !/^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$/.test(config.s3.endpoint)) {
+  throw new Error('S3_ENDPOINT must be a host name or IP address, without a scheme, port or path');
+}
+if (!/^[a-z0-9][a-z0-9-]{0,31}$/.test(config.s3.region)) throw new Error('S3_REGION must be a region name such as us-east-1');
+for (const [name, bucket] of [['S3_BUCKET', config.s3.bucket], ['AUDIT_HEAD_BUCKET', config.audit.headBucket]] as const) {
+  if (
+    !/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(bucket)
+    || /\.\.|\.-|-\./.test(bucket)
+    || isIP(bucket)
+  ) throw new Error(`${name} must be a DNS-safe bucket name of 3 to 63 lower-case characters`);
+}
 if (config.isProduction && !config.s3.useSSL && (
   env.ALLOW_INSECURE_LOOPBACK_DEPENDENCIES !== 'true'
   || !isLoopbackHost(config.s3.endpoint)
@@ -180,13 +224,14 @@ if (config.isProduction && !config.s3.useSSL && (
   throw new Error('Production object-storage TLS may be disabled only for an explicitly acknowledged loopback endpoint');
 }
 
+// The S3 client resolves any name through DNS, so only literal loopback
+// names count; unlike PostgreSQL there is no Unix-socket form.
 function isLoopbackHost(host: string): boolean {
   const normalized = host.toLowerCase();
   return normalized === 'localhost'
     || normalized === '127.0.0.1'
     || normalized === '[::1]'
-    || normalized === '::1'
-    || normalized === 'unix-socket';
+    || normalized === '::1';
 }
 
 for (const origin of config.webauthn.origins) {

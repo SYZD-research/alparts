@@ -14,11 +14,13 @@
 
    - `/health/startup`: startupが完了したか。
    - `/health/live`: process event loopがHTTPを処理できるか。
-   - `/health/ready`: drain中ではなく、PostgreSQL、設定したオブジェクトストレージのbucket、audit checkpointが利用可能か。
+   - `/health/ready`: drain中ではなく、PostgreSQL、設定したオブジェクトストレージのbucket（起動後に消えていないことを毎回確認する）、audit checkpointが利用可能か。
 
 Processはlisten前にaudit HMAC chainを全件検証する。失敗はsecurity incidentである。起動させる目的でaudit rowやcheckpointを書き換えたり削除したりしない。
 
-Serverのlisten addressはIP literalだけを受理し、`BIND_HOST` 未設定時は `127.0.0.1` に限定する。Example systemd unitもloopbackへ固定する。Container imageの既定もloopbackであり、production Composeだけがcontainer network内で `BIND_HOST=0.0.0.0` を明示し、host側は`127.0.0.1`へpublishする。TLS reverse proxyとnetwork policyを必ず前段に置く。オブジェクトストレージへのrequestは `S3_REQUEST_TIMEOUT_MS`（既定10秒）の絶対期限を持ち、object listingは件数・key byte・prefix grammar・absolute deadlineも制限する。
+Serverのlisten addressはIP literalだけを受理し、`BIND_HOST` 未設定時は `127.0.0.1` に限定する。Example systemd unitもloopbackへ固定する。Container imageの既定もloopbackであり、production Composeだけがcontainer network内で `BIND_HOST=0.0.0.0` を明示し、host側は`127.0.0.1`へpublishする。TLS reverse proxyとnetwork policyを必ず前段に置く。オブジェクトストレージへのrequestは `S3_REQUEST_TIMEOUT_MS`（既定10秒）の絶対期限を持ち、object listingは件数・key byte・prefix grammar・absolute deadlineも制限する。添付のdownloadは、GET応答の長さを保存時のサイズと照合し、そのサイズを超えるbyteはclientへ送らない。
+
+新規登録では、入力されたメールアドレスへ6桁の確認コード（15分有効、誤入力5回で無効）を送り、そのアドレスの持ち主であることを確かめる。送信には `SMTP_HOST`・`SMTP_FROM`（必要なら `SMTP_USER`・`SMTP_PASSWORD_FILE`）を設定する。Productionでは `SMTP_SECURE=true`（最初からTLS）またはSTARTTLSを必須とし、証明書を検証する。Productionで`SMTP_HOST`が未設定の場合、既存accountのloginはそのまま使えるが、新規登録は`EMAIL_VERIFICATION=disabled`で明示的に確認を無効にしない限り拒否され、起動時に`registration.unavailable`の警告を出す。開発環境ではSMTPがなければメールをmemoryに保持してlogへ出す。既に登録済みのアドレスにはコードではなく案内メールを送るため、応答からaccountの有無は分からない。この変更より前に作成されたaccountのメールアドレスは確認されていない。
 
 音声通話は `VOICE_ICE_SERVERS_JSON` に最大4件のoperator-controlled STUN/TURNをJSONで設定できる。既定の空配列は第三者serviceへ接続しない代わりに、direct candidateで到達できないNAT間の通話を保証しない。TURN credentialは通話参加clientへ渡るため、service管理者credentialを流用せず、短命・最小権限のcredentialを発行する。TURNはauthenticated TLS（`turns:`）を優先し、public Internetへ無制限relayとして開放しない。P2P meshは最大8人であり、media serverとして水平scaleする構成ではない。
 
@@ -43,7 +45,7 @@ Newest database audit rowの削除を検出するには、`AUDIT_CHECKPOINT_PATH
 
 Required modeでは空chainを含むcheckpoint欠落、参照row/hashの不一致、rollback、tail切断、checkpoint read/write失敗をstartup/readiness/権威的writeでfail closedにする。Message create/edit/delete/replay、reaction/pin、preference/bookmarkとsecurity/administration mutationはstateとaudit rowを同一transactionへ入れる。Read positionとprovisional upload chunk metadata/cleanupは専用audit eventを増やさないが、同じprocess-local admissionを通る。通常appendとcheckpoint更新は同じPostgreSQL advisory lock内で現在anchorのHMACとDB tailへのdescendant関係を検証し、外部fileは比較対象が変わっていない場合だけatomicに置換する。Integrity failureはprocess内でstickyになり、通常のserver起動やaudit appendは欠落checkpointまたは切断されたsuffixを再作成・再署名しない。欠落時に再provisionすると切断後のchainを新しい正史として承認してしまうため、incident responseで独立保管したcheckpoint/backupと照合するまで実行しない。
 
-State mutationとaudit rowは同じDB transactionでcommitするため、その直後のcheckpoint I/Oだけが失敗した場合、既にcommitしたmutationは成功として一度だけ返す。以後のaudited/guarded authoritative mutationとreadinessはfail closedとなる。Operatorは「500だったからDBもrollbackした」と推測してretryしてはならない。Presenceとdevice activity timestampは認可等に使わないadvisory telemetryとしてgate外であり、欠落を許容する。Readiness失敗後はingressをdrainし、このtelemetry更新をservice write成功と解釈しない。この仕組みはprocess内admissionを使うため、複数application processには対応しない。
+State mutationとaudit rowは同じDB transactionでcommitするため、その直後のcheckpoint I/Oだけが失敗した場合、既にcommitしたmutationは成功として一度だけ返す。以後のaudited/guarded authoritative mutationとreadinessはfail closedとなる。Storageの一時的な障害など、integrity failureでないcheckpoint I/O失敗は、次のmutationまたはreadiness確認の時点で（最短2秒間隔で）同じchain検証付きで書き直し、成功すれば自動的に受付を再開する。Integrity failureは引き続きstickyで、operatorの復旧が必要である。Audit headの読み書きは、利用者のdownloadと共有しない専用のobject storage接続と同時実行枠を使う。Operatorは「500だったからDBもrollbackした」と推測してretryしてはならない。Presenceとdevice activity timestampは認可等に使わないadvisory telemetryとしてgate外であり、欠落を許容する。Readiness失敗後はingressをdrainし、このtelemetry更新をservice write成功と解釈しない。この仕組みはprocess内admissionを使うため、複数application processには対応しない。
 
 Local systemd `StateDirectory` は事故によるDB row削除の検出を改善するが、同一host/operatorがdatabaseとfileを削除できるならoperator separationではない。独立mountを使わない配置で「operator-independent audit」を主張しない。
 
@@ -99,7 +101,7 @@ Shutdownをbackupのquiesce mechanismとして暗黙に扱わない。Database�
 
 ## Automated single-host backup
 
-`deploy/alparts-backup.timer` はdaily + random delay + persistentでoneshot serviceを起動する。`scripts/backup-under-systemd.sh` はflockで重複を拒否し、対象serviceがactiveでなければ状態を変更せず失敗し、stop後だけquiesce assertionを設定する。成功/失敗/signalのtrapはservice再起動を試みる。Backup unitはappを自らstopするため、appへの`Requires=`関係を持たせない。
+`deploy/alparts-backup.timer` はdaily + random delay + persistentでoneshot serviceを起動する。`scripts/backup-under-systemd.sh` はflockで重複を拒否し、対象serviceがactiveでなければ状態を変更せず失敗し、appを止める前に`backup.sh --preflight`で必要なcommand（rclone 1.75.1以上を含む）と設定を確認し、stop後だけquiesce assertionを設定する。成功/失敗/signalのtrapはservice再起動を試みる。Backup unitはappを自らstopするため、appへの`Requires=`関係を持たせない。
 
 Retentionはbackup成功とapp再起動の後にだけ実行する。`scripts/prune-backups.sh` はdefault dry-run、狭い既存directory、exact filename、日数/最低copy数、`BACKUP_PRUNE_ACK=DELETE_EXPIRED_ENCRYPTED_BACKUPS`を要求する。Timer成功だけではDRにならないため、artifactのoff-host/off-region copyとrestore testを別に監視する。
 

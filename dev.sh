@@ -9,10 +9,17 @@ die()  { printf '\033[1;31m[dev]\033[0m %s\n' "$*" >&2; exit 1; }
 command -v docker >/dev/null 2>&1 || die "docker が見つかりません"
 docker compose version >/dev/null 2>&1 || die "docker compose プラグインが見つかりません"
 
+# The object store's administrator credentials reach only its container:
+# docker compose reads them from this file. They are kept out of .env, which
+# pnpm loads into every script, including the application.
+STORAGE_ADMIN_ENV="$PWD/.local/storage-admin.env"
+
 compose() {
+  local env_files=(--env-file "$PWD/.env")
+  [ -f "$STORAGE_ADMIN_ENV" ] && env_files+=(--env-file "$STORAGE_ADMIN_ENV")
   sudo docker compose \
     --project-directory "$PWD" \
-    --env-file "$PWD/.env" \
+    "${env_files[@]}" \
     -f "$PWD/docker-compose.yml" \
     -p alparts \
     "$@"
@@ -42,8 +49,6 @@ DATABASE_URL=postgresql://alparts:${db_pass}@localhost:5433/alparts
 BIND_HOST=127.0.0.1
 DB_SSL=false
 
-S3_ADMIN_ACCESS_KEY=$(rand_hex 12)
-S3_ADMIN_SECRET_KEY=$(rand_hex 32)
 S3_ACCESS_KEY=$(rand_hex 8)
 S3_SECRET_KEY=$(rand_hex 24)
 S3_ENDPOINT=localhost
@@ -77,7 +82,7 @@ fi
 is_supported_env_key() {
   case "$1" in
     POSTGRES_USER|POSTGRES_PASSWORD|POSTGRES_DB|POSTGRES_PORT|DATABASE_URL|DB_SSL|DB_POOL_MAX|DB_CONNECT_TIMEOUT_MS|DB_STATEMENT_TIMEOUT_MS|\
-    S3_ADMIN_ACCESS_KEY|S3_ADMIN_SECRET_KEY|S3_ACCESS_KEY|S3_SECRET_KEY|S3_ENDPOINT|S3_PORT|S3_USE_SSL|S3_REGION|S3_BUCKET|S3_REQUEST_TIMEOUT_MS|\
+    S3_ACCESS_KEY|S3_SECRET_KEY|S3_ENDPOINT|S3_PORT|S3_USE_SSL|S3_REGION|S3_BUCKET|S3_REQUEST_TIMEOUT_MS|\
     STORAGE_QUOTA_BYTES_PER_USER|STORAGE_QUOTA_BYTES_PER_WORKSPACE|STORAGE_QUOTA_BYTES_PER_CHANNEL|\
     JWT_SECRET|JWT_ISSUER|JWT_AUDIENCE|JWT_EXPIRES_IN_SECONDS|COOKIE_SECURE|\
     PASSWORD_PEPPER|PASSWORD_PEPPER_PREVIOUS|WEBAUTHN_RP_ID|WEBAUTHN_ORIGINS|AUDIT_INTEGRITY_KEY|AUDIT_CHECKPOINT_PATH|AUDIT_CHECKPOINT_REQUIRED|\
@@ -123,6 +128,30 @@ if grep -q '^MINIO_' .env; then
   cat -- "$renamed_env" > "$env_target"
   rm -f -- "$renamed_env"
   trap - EXIT
+fi
+
+# Older .env files held the storage administrator's credentials. Move them to
+# their own file, rewriting .env in place as above.
+admin_key_pattern='^S3_ADMIN_(ACCESS|SECRET)_KEY='
+if grep -qE "$admin_key_pattern" .env; then
+  [ -e "$STORAGE_ADMIN_ENV" ] \
+    && die ".env と ${STORAGE_ADMIN_ENV} の両方にストレージ管理者の設定があります。.env の S3_ADMIN_* の行を削除してください"
+  info "ストレージ管理者の認証情報を、アプリに渡らない .local/storage-admin.env へ移します"
+  env_target="$(readlink -f .env)"
+  mkdir -p .local
+  (umask 077 && grep -E "$admin_key_pattern" "$env_target" > "$STORAGE_ADMIN_ENV")
+  remaining_env="$(mktemp "${env_target}.XXXXXX")"
+  trap 'rm -f -- "$remaining_env"' EXIT
+  grep -vE "$admin_key_pattern" "$env_target" > "$remaining_env" || true
+  cat -- "$remaining_env" > "$env_target"
+  rm -f -- "$remaining_env"
+  trap - EXIT
+fi
+if [ ! -f "$STORAGE_ADMIN_ENV" ]; then
+  # The container rebuilds its identities from these at every start, so new
+  # values are safe for existing data too.
+  mkdir -p .local
+  (umask 077 && printf 'S3_ADMIN_ACCESS_KEY=%s\nS3_ADMIN_SECRET_KEY=%s\n' "$(rand_hex 12)" "$(rand_hex 32)" > "$STORAGE_ADMIN_ENV")
 fi
 
 # Treat .env as data, not shell source. This intentionally supports the simple

@@ -141,7 +141,7 @@ export async function proposeMlsEpoch(
   const scope = channelKeyScopes.capture(channelId);
   const save = (name: string, value: unknown) => writeSecurityState(owner, name, value, scope);
   const local = await prepareMlsPackage(channelId, state.nextVersion);
-  await verifyDirectoryDevices(channelId, state.recipients, true);
+  await verifyDirectoryDevices(channelId, state.recipients, 'active');
   const roster = await api.securityRequest<GroupKeyPackage[]>(
     `/channels/${channelId}/mls/packages`,
   );
@@ -383,6 +383,21 @@ export async function deriveMlsDelivery(
     },
   );
 }
+/**
+ * Once this device has pinned an MLS head for a channel, every key from that
+ * version on must come from MLS. Older versions may still be RSA deliveries,
+ * so history from before the move to MLS stays readable.
+ */
+export function nonMlsDeliveryAllowed(pinnedVersion: number | null, version: number): boolean {
+  return pinnedVersion === null || version < pinnedVersion;
+}
+
+/** The MLS head version this device pinned for the channel, if any. */
+export async function pinnedMlsVersion(channelId: string): Promise<number | null> {
+  const pinned = await readSecurityState<{ version: number }>(getActiveDevice(), `mls-head:${channelId}`);
+  return typeof pinned?.version === 'number' ? pinned.version : null;
+}
+
 export function mlsLocator(encryptedKey: string): { version: number; transcript: string } | null {
   try {
     const value = JSON.parse(new TextDecoder().decode(fromBase64(encryptedKey)));

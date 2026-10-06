@@ -27,6 +27,8 @@ export const users = pgTable('users', {
   avatarUrl: text('avatar_url'),
   status: text('status').default('offline').notNull(),
   disabledAt: timestamp('disabled_at', { withTimezone: true }),
+  // Set by the user once a passkey exists; an operator reset clears it.
+  passwordLoginDisabled: boolean('password_login_disabled').default(false).notNull(),
   bio: text('bio'),
   avatarObjectKey: text('avatar_object_key'),
   profileUpdatedAt: timestamp('profile_updated_at', { withTimezone: true }),
@@ -115,6 +117,18 @@ export const authenticationChallenges = pgTable('authentication_challenges', {
 }, (t) => [
   index('authentication_challenges_expiry_idx').on(t.expiresAt),
   index('authentication_challenges_session_idx').on(t.sessionId),
+]);
+
+// One pending registration code per address; the code itself is never stored.
+export const emailVerifications = pgTable('email_verifications', {
+  email: text('email').primaryKey(),
+  codeHash: text('code_hash').notNull(),
+  attempts: integer('attempts').default(0).notNull(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => [
+  index('email_verifications_expires_idx').on(t.expiresAt),
+  check('email_verifications_attempts_check', sql`${t.attempts} >= 0`),
 ]);
 
 export const stepUpGrants = pgTable('step_up_grants', {

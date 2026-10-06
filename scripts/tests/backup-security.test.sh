@@ -59,6 +59,19 @@ export BACKUP_TEST_REAL_JQ="$REAL_JQ"
 PATH="$FAKE_BIN:$PATH"
 export PATH
 
+# Only rclone versions with bounded listings are used.
+RCLONE_VERSION_OUTPUT="$TEST_TMP/rclone-version.txt"
+export BACKUP_TEST_RCLONE_STDOUT="$RCLONE_VERSION_OUTPUT"
+for accepted in 'rclone v1.75.1' 'rclone v1.76.0-beta.9001.abc' 'rclone v2.0.0'; do
+  printf '%s\n- os/version: test\n' "$accepted" > "$RCLONE_VERSION_OUTPUT"
+  ( require_storage_tool ) || fail "rclone version was refused: ${accepted}"
+done
+printf 'rclone v1.75.0\n' > "$RCLONE_VERSION_OUTPUT"
+expect_failure 'rclone 1.75.1 or newer is required' "$TEST_TMP/old-rclone.err" require_storage_tool
+printf 'not rclone\n' > "$RCLONE_VERSION_OUTPUT"
+expect_failure 'Unrecognized rclone version' "$TEST_TMP/odd-rclone.err" require_storage_tool
+unset BACKUP_TEST_RCLONE_STDOUT
+
 PG_SENTINEL='PG_SERVICE_SENTINEL_7f91'
 PG_SERVICE_FILE="$TEST_TMP/pg_service.conf"
 printf '[backup-test]\nhost=db.invalid\ndbname=alparts\nuser=backup-user\npassword=%s\n' \
@@ -213,5 +226,31 @@ expect_failure 'BACKUP_PRUNE_ACK' "$TEST_TMP/prune-ack.err" \
 expect_failure 'Refusing broad backup retention target' "$TEST_TMP/prune-root.err" \
   env BACKUP_OUTPUT_DIR=/ BACKUP_RETENTION_DAYS=30 BACKUP_MINIMUM_COPIES=2 \
     "$REPOSITORY_ROOT/scripts/prune-backups.sh" --dry-run
+
+# The systemd wrapper checks tools and settings before it stops the service.
+PREFLIGHT_BIN="$TEST_TMP/preflight-bin"
+PREFLIGHT_CAPTURE="$TEST_TMP/preflight-capture"
+mkdir -p -- "$PREFLIGHT_BIN" "$PREFLIGHT_CAPTURE" "$TEST_TMP/preflight-output"
+for command_name in age jq rclone psql pg_dump; do
+  ln -s -- "$SCRIPT_DIR/fixtures/capture-command.sh" "$PREFLIGHT_BIN/$command_name"
+done
+run_preflight() {
+  env PATH="$PREFLIGHT_BIN:$PATH" BACKUP_TEST_CAPTURE_DIR="$PREFLIGHT_CAPTURE" \
+    BACKUP_TEST_RCLONE_STDOUT="$RCLONE_VERSION_OUTPUT" \
+    DATABASE_SERVICE_FILE="$PG_SERVICE_FILE" DATABASE_SERVICE=backup-test \
+    S3_URL=https://storage.invalid S3_ACCESS_KEY=preflight-access S3_SECRET_KEY=preflight-secret \
+    S3_BUCKET=alparts BACKUP_AGE_RECIPIENT=age1pq1qqqqqqqq BACKUP_OUTPUT_DIR="$TEST_TMP/preflight-output" \
+    "$REPOSITORY_ROOT/scripts/backup.sh" --preflight
+}
+printf 'rclone v1.75.1\n' > "$RCLONE_VERSION_OUTPUT"
+run_preflight 2> "$TEST_TMP/preflight.err" || fail 'backup preflight failed with valid tools and settings'
+grep -F 'Preflight passed' "$TEST_TMP/preflight.err" >/dev/null || fail 'backup preflight did not report success'
+for command_name in age psql pg_dump; do
+  [[ ! -e "$PREFLIGHT_CAPTURE/${command_name}.argv" ]] || fail "backup preflight ran ${command_name}"
+done
+[[ "$(cat -- "$PREFLIGHT_CAPTURE/rclone.argv")" == version ]] || fail 'backup preflight used the store'
+[[ -z "$(find "$TEST_TMP/preflight-output" -mindepth 1)" ]] || fail 'backup preflight wrote output'
+printf 'rclone v1.74.3\n' > "$RCLONE_VERSION_OUTPUT"
+expect_failure 'rclone 1.75.1 or newer is required' "$TEST_TMP/preflight-old-rclone.err" run_preflight
 
 printf 'backup security tests passed\n'

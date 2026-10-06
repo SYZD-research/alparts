@@ -1,7 +1,8 @@
 import { acquireRuntimeLease } from './security/runtime-lease.js';
 import { createApp } from './app.js';
 import { config } from './config/index.js';
-import { logError, logInfo } from './security/logger.js';
+import { logError, logInfo, logWarning } from './security/logger.js';
+import { emailDelivery } from './services/email.service.js';
 import { cleanupExpiredUploads } from './services/file.service.js';
 import { flushAuditCheckpoint, verifyAuditChain } from './middleware/audit.js';
 import { checkDatabaseSchema, closeDb } from './db/index.js';
@@ -16,6 +17,10 @@ const auditState = await verifyAuditChain();
 if (!auditState.valid) throw new Error('Audit log integrity verification failed');
 logInfo('audit.verified', { entries: auditState.checked, checkpoint: auditState.checkpoint });
 await resetPresenceAfterStartup();
+if (config.email.verification === 'required' && emailDelivery() === 'unavailable') {
+  // Existing users keep working; only new registrations wait for SMTP.
+  logWarning('registration.unavailable', { reason: 'Set SMTP_HOST and SMTP_FROM, or EMAIL_VERIFICATION=disabled' });
+}
 
 const { httpServer, io, beginShutdown } = createApp();
 httpServer.listen(config.port, config.bindHost, () => logInfo('server.started', {

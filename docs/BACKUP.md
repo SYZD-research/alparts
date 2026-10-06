@@ -12,7 +12,7 @@ The scripts in `scripts/` create one recipient-encrypted backup of PostgreSQL an
 - The server's `AUDIT_INTEGRITY_KEY`, external audit checkpoint file, deployment credentials, reverse-proxy configuration, and browser device private keys are not included. Back up the audit key, checkpoint evidence, and deployment configuration as separately encrypted assets with independent access control. Browser device private keys intentionally remain client-held.
 - `age` recipient encryption supplies confidentiality and payload integrity, not proof of who created the backup: anyone with the public recipient can create a different valid artifact. Protect the delivery channel and record the encrypted artifact digest in an independently authenticated system when provenance matters.
 
-Install `pg_dump` matching the source PostgreSQL server major and `pg_restore` matching the verification server major, plus `psql`, [`rclone`](https://rclone.org/), `age`, `jq`, GNU `tar`, and normal GNU core utilities on the backup host. The scripts check the PostgreSQL tool/server major versions before dump or restore; this prevents newer clients from emitting session settings an older target does not understand. Both scripts fail before doing work when a dependency or required setting is missing. Secret values marked as such can be passed as `*_FILE`; those files must have no group/other permission bits.
+Install `pg_dump` matching the source PostgreSQL server major and `pg_restore` matching the verification server major, plus `psql`, [`rclone`](https://rclone.org/) 1.75.1 or newer (earlier versions are refused; 1.75.1 fixed how listings are bounded), `age`, `jq`, GNU `tar`, and normal GNU core utilities on the backup host. The scripts check the PostgreSQL tool/server major versions before dump or restore; this prevents newer clients from emitting session settings an older target does not understand. Both scripts fail before doing work when a dependency or required setting is missing. Secret values marked as such can be passed as `*_FILE`; those files must have no group/other permission bits.
 
 PostgreSQL access uses a mode-`0600` [libpq service file](https://www.postgresql.org/docs/current/libpq-pgservice.html). Only its path and selected section name reach PostgreSQL child processes; the script does not parse a connection URI or put a password in argv or the child environment. Object-store credentials are written by a shell builtin into a mode-`0600` `rclone` configuration inside the trap-cleaned mode-`0700` staging directory; they never appear in argv. Loaded secret settings, and any ambient `RCLONE_*` or `AWS_*` variables, are removed from the inherited child environment, so only that file configures the storage client. Neither script enables shell tracing or prints configured credentials. Use authenticated TLS for remote PostgreSQL and object-store endpoints; plain HTTP object-store URLs are accepted only on loopback. The former `MINIO_*` settings are refused; use the `S3_*` names below.
 
@@ -110,10 +110,11 @@ For the systemd deployment, install `deploy/alparts-backup.service` and `deploy/
 
 1. takes a non-blocking host lock so backups cannot overlap;
 2. refuses to change state unless the configured application service is active;
-3. stops the application and confirms it is inactive;
-4. supplies the exact quiescence acknowledgement to `backup.sh`;
-5. always attempts to restart the application on normal exit, error, HUP, INT, or TERM;
-6. applies retention only after the application is active again.
+3. runs `backup.sh --preflight`, which checks the tools (including the rclone version) and settings without touching the database or the store, so a missing dependency never stops the application;
+4. stops the application and confirms it is inactive;
+5. supplies the exact quiescence acknowledgement to `backup.sh`;
+6. always attempts to restart the application on normal exit, error, HUP, INT, or TERM;
+7. applies retention only after the application is active again.
 
 The timer creates a local artifact; a separate monitored process must copy it to independently controlled off-host/off-region storage. Keep the backup unit free of `Requires=alparts.service`, because the backup intentionally stops that service during its own transaction.
 

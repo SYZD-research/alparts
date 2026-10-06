@@ -10,11 +10,7 @@ import { readSecurityState, writeSecurityState } from './security-storage';
 // Reviewed migration heads are pinned in the application build, never fetched
 // from the directory server whose legacy claims they authenticate.
 import migrationAnchors from '../security/directory-migration-anchors.json';
-import {
-  emptyDirectory,
-  verifyDirectoryEntries,
-  type VerifiedDirectory,
-} from './directory-verifier';
+import { emptyDirectory, verifyDirectoryEntries, type VerifiedDirectory, deviceMeetsPolicy, type DeviceTrustPolicy } from './directory-verifier';
 
 export async function verifiedDirectory(
   userId: string,
@@ -82,7 +78,7 @@ export async function verifiedDirectory(
 export async function verifyDirectoryDevices(
   channelId: string,
   devices: Array<{ deviceId: string; userId: string; identityKey: string }>,
-  requireActive: boolean,
+  policy: DeviceTrustPolicy,
 ) {
   const users = [...new Set(devices.map((d) => d.userId))];
   for (const userId of users) {
@@ -92,7 +88,7 @@ export async function verifyDirectoryDevices(
       if (
         !recorded ||
         recorded.identityKey !== device.identityKey ||
-        (requireActive && (!recorded.approved || recorded.revoked))
+        !deviceMeetsPolicy(recorded, policy)
       )
         throw new Error('DIRECTORY_INVALID');
     }

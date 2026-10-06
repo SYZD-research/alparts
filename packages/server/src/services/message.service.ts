@@ -24,6 +24,7 @@ import {
 import { auditedTransaction, auditGuardedTransaction } from '../middleware/audit.js';
 import { verifyMessageEnvelopeSignature } from '../security/message.js';
 import { getAttachmentsForMessages } from './file.service.js';
+import { scopedIdempotencyKey, signedIdempotencyKey } from './message-idempotency.js';
 import {
   getChannelAuthorizationFromStore,
   getChannelViewerIdsFromStore,
@@ -855,15 +856,8 @@ async function getUserForMessage(userId: string, store: any = db) {
   };
 }
 
-function scopedIdempotencyKey(userId: string, key: string): string {
-  return `${userId}:${key}`;
-}
-
 function formatMessage(message: any, state?: { reactions: ReturnType<typeof summarizeReactions>; isPinned: boolean }) {
-  const prefix = `${message.authorId}:`;
-  const idempotencyKey = typeof message.idempotencyKey === 'string' && message.idempotencyKey.startsWith(prefix)
-    ? message.idempotencyKey.slice(prefix.length)
-    : message.idempotencyKey;
+  const idempotencyKey = signedIdempotencyKey(message);
   return {
     id: message.id,
     channelId: message.channelId,

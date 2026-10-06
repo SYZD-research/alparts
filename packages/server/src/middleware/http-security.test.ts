@@ -97,6 +97,28 @@ describe('in-process rate limiting', () => {
     }
   });
 
+  it('can spend a budget only on refused requests', async () => {
+    const { EventEmitter } = await import('node:events');
+    const { rateLimit } = await import('./rate-limit.js');
+    const middleware = rateLimit({ windowMs: 60_000, max: 2, key: () => 'user-a', failuresOnly: true });
+    const attempt = (finalStatus: number) => {
+      const res = Object.assign(new EventEmitter(), response());
+      let passed = false;
+      middleware({} as any, res as any, () => { passed = true; });
+      if (passed) {
+        res.statusCode = finalStatus;
+        res.emit('finish');
+      }
+      return { passed, status: res.statusCode };
+    };
+
+    for (let index = 0; index < 5; index += 1) assert.equal(attempt(200).passed, true);
+    assert.equal(attempt(403).passed, true);
+    assert.equal(attempt(200).passed, true);
+    assert.equal(attempt(403).passed, true);
+    assert.deepEqual(attempt(200), { passed: false, status: 429 });
+  });
+
   it('normalizes and hashes credential identifiers instead of retaining email text', async () => {
     const { credentialAccountRateLimitKey, credentialRateLimitKey } = await import('./rate-limit.js');
     const first = credentialRateLimitKey({

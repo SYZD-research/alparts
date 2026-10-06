@@ -68,6 +68,7 @@ const API_ERROR_MESSAGES_BY_CODE: Record<string, string> = {
   STALE_OVERRIDE: '他の変更と重なりました。表示を更新してもう一度お試しください。',
   DIRECTORY_CONFLICT: '端末の一覧が更新されました。表示を更新してもう一度お試しください。',
   IDEMPOTENCY_CONFLICT: '同じ操作がすでに行われています。表示を更新してください。',
+  PASSKEY_REQUIRED: 'パスワードでのログインをオフにするには、先にパスキーを追加してください。',
 };
 
 /** Fixed, local wording for an HTTP failure. */
@@ -610,10 +611,18 @@ class ApiService {
   }
 
   // Auth
-  async register(email: string, password: string, displayName: string, inviteToken: string) {
+  /** Mails a code that proves the address; `required` is false when the server asks for none. */
+  async requestRegistrationCode(email: string, inviteToken: string) {
+    return this.request<{ required: boolean }>('/auth/register/code', {
+      method: 'POST',
+      body: JSON.stringify({ email, inviteToken }),
+    });
+  }
+
+  async register(email: string, password: string, displayName: string, inviteToken: string, emailCode?: string) {
     return this.request<User>('/auth/register', {
       method: 'POST',
-      body: JSON.stringify({ email, password, displayName, inviteToken }),
+      body: JSON.stringify({ email, password, displayName, inviteToken, ...(emailCode ? { emailCode } : {}) }),
     });
   }
 
@@ -649,6 +658,26 @@ class ApiService {
 
   async revokeAllSessions() {
     return this.request<SuccessResponse & { revoked: number }>('/auth/sessions', { method: 'DELETE' });
+  }
+
+  /** Needs an identity confirmation; every other login of the account ends. */
+  async changePassword(newPassword: string) {
+    return this.request<SuccessResponse & { revoked: number }>('/auth/password', {
+      method: 'PUT',
+      body: JSON.stringify({ newPassword }),
+    });
+  }
+
+  async getPasswordLogin() {
+    return this.request<{ enabled: boolean }>('/auth/password-login');
+  }
+
+  /** Needs an identity confirmation; turning it off needs a passkey. */
+  async setPasswordLogin(enabled: boolean) {
+    return this.request<SuccessResponse & { enabled: boolean; revoked: number }>('/auth/password-login', {
+      method: 'PUT',
+      body: JSON.stringify({ enabled }),
+    });
   }
 
   // Workspaces
@@ -1264,7 +1293,16 @@ class ApiService {
     return this.request<ChannelKeyRecipientState>(`/channels/${channelId}/key-recipients`);
   }
 
-  async getChannelDeviceDirectory(channelId: string, deviceIds: readonly string[], signal?: AbortSignal) {
+  /**
+   * `approved` (past messages and attachments) or `active` (key distributors
+   * and call signaling); see deviceMeetsPolicy.
+   */
+  async getChannelDeviceDirectory(
+    channelId: string,
+    deviceIds: readonly string[],
+    policy: 'approved' | 'active',
+    signal?: AbortSignal,
+  ) {
     const uniqueIds = [...new Set(deviceIds)];
     if (uniqueIds.length < 1 || uniqueIds.length > 64 || uniqueIds.length !== deviceIds.length) {
       throw new Error('Invalid bounded device-directory request');
@@ -1273,7 +1311,7 @@ class ApiService {
       `/channels/${channelId}/device-directory?ids=${encodeURIComponent(uniqueIds.join(','))}`,
       { signal },
     );
-    await (await import('./directory.service')).verifyDirectoryDevices(channelId, result, false);
+    await (await import('./directory.service')).verifyDirectoryDevices(channelId, result, policy);
     return result;
   }
 

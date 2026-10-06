@@ -1,12 +1,20 @@
 import { normalizeEmail } from '../security/email.js';
 import { createHash } from 'node:crypto';
 import type { Request, RequestHandler } from 'express';
+import { rateLimitSource } from '../security/client-address.js';
+
+/** Where a request comes from, for counting: req.ip (TRUSTED_PROXIES applied), IPv6 per /64. */
+export function requestSource(req: Request): string {
+  return rateLimitSource(req.ip || req.socket.remoteAddress);
+}
 
 interface RateLimitOptions {
   windowMs: number;
   max: number;
   key?: (req: Request) => string;
   onLimit?: RequestHandler;
+  /** Count only requests refused as a client error, such as a wrong password. */
+  failuresOnly?: boolean;
 }
 
 interface Counter { count: number; resetAt: number }
@@ -17,7 +25,7 @@ export function rateLimit(options: RateLimitOptions): RequestHandler {
 
   return (req, res, next) => {
     const now = Date.now();
-    const key = options.key?.(req) || req.ip || req.socket.remoteAddress || 'unknown';
+    const key = options.key?.(req) || requestSource(req);
     let counter = counters.get(key);
     if (!counter || counter.resetAt <= now) {
       if (counters.size >= maxEntries) {
@@ -34,11 +42,20 @@ export function rateLimit(options: RateLimitOptions): RequestHandler {
       counters.set(key, counter);
     }
 
-    counter.count += 1;
+    const counted = counter;
+    if (options.failuresOnly) {
+      res.once('finish', () => {
+        if (res.statusCode >= 400 && res.statusCode < 500 && res.statusCode !== 429) counted.count += 1;
+      });
+    } else {
+      counted.count += 1;
+    }
+    // A failures-only budget is spent once its last failure is recorded.
+    const used = options.failuresOnly ? counted.count + 1 : counted.count;
     res.setHeader('RateLimit-Limit', String(options.max));
-    res.setHeader('RateLimit-Remaining', String(Math.max(0, options.max - counter.count)));
-    res.setHeader('RateLimit-Reset', String(Math.ceil(counter.resetAt / 1000)));
-    if (counter.count > options.max) {
+    res.setHeader('RateLimit-Remaining', String(Math.max(0, options.max - used)));
+    res.setHeader('RateLimit-Reset', String(Math.ceil(counted.resetAt / 1000)));
+    if (used > options.max) {
       if (options.onLimit) { options.onLimit(req, res, next); return; }
       res.setHeader('Retry-After', String(Math.ceil((counter.resetAt - now) / 1000)));
       res.status(429).json({ error: 'RATE_LIMITED', message: 'Too many requests', statusCode: 429 });
@@ -50,7 +67,7 @@ export function rateLimit(options: RateLimitOptions): RequestHandler {
 
 export function credentialRateLimitKey(req: Request): string {
   const emailHash = credentialAccountRateLimitKey(req);
-  return `${req.ip || req.socket.remoteAddress || 'unknown'}:${emailHash}`;
+  return `${requestSource(req)}:${emailHash}`;
 }
 
 /**

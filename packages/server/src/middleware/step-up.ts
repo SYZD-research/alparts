@@ -1,5 +1,5 @@
 import type { NextFunction, Response } from 'express';
-import { isSensitiveAction } from '@alparts/shared';
+import { isSensitiveRequest } from '@alparts/shared';
 import { authMiddleware, type AuthRequest } from './auth.js';
 import { consumeStepUp } from '../services/passkey.service.js';
 
@@ -8,7 +8,7 @@ export { actionPurpose } from '../security/action-purpose.js';
 export async function sensitiveActionBoundary(req: AuthRequest, res: Response, next: NextFunction) {
   // Match the pathname Express routes, including absolute-form request targets.
   const path = req.baseUrl + req.path;
-  if (!isSensitiveAction(req.method, path)) {
+  if (!isSensitiveRequest(req.method, path, req.body)) {
     next();
     return;
   }

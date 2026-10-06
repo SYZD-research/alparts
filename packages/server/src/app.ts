@@ -39,6 +39,7 @@ import { reserveJsonBody } from './middleware/body-admission.js';
 import { renderPrometheusMetrics } from './observability/metrics.js';
 import { matchesSecret } from './security/cookies.js';
 import { createReadinessCheck } from './security/readiness-cache.js';
+import { reportUntrustedForwarding } from './security/client-address.js';
 
 /**
  * Expected domain failures that individual routes do not translate. They are
@@ -52,6 +53,9 @@ const DOMAIN_ERROR_STATUS: Record<string, { status: number; message: string; ret
   DEVICE_CHALLENGE_CAPACITY: { status: 503, message: 'Device verification is temporarily busy', retryAfter: '5' },
   CHANNEL_NOT_FOUND: { status: 404, message: 'Channel not found' },
   NOT_AUTHORIZED: { status: 403, message: 'Not authorized' },
+  OBJECT_STORAGE_BUSY: { status: 503, message: 'Storage is temporarily busy', retryAfter: '5' },
+  OBJECT_STORAGE_TIMEOUT: { status: 503, message: 'Storage did not respond in time', retryAfter: '5' },
+  RUNTIME_LEASE_UNCONFIRMED: { status: 503, message: 'Service is temporarily unavailable', retryAfter: '5' },
 };
 
 export function createApp() {
@@ -108,6 +112,10 @@ export function createApp() {
   app.set('trust proxy', config.network.trustedProxies.length > 0 ? [...config.network.trustedProxies] : false);
   app.set('io', io);
   app.use(requestContext);
+  app.use((req, _res, next) => {
+    reportUntrustedForwarding(req);
+    next();
+  });
   app.use(helmet({
     contentSecurityPolicy: {
       directives: {

@@ -6,7 +6,7 @@ import {
   type DirectoryEntry,
   type DirectoryEvent,
 } from '@alparts/shared';
-import { emptyDirectory, verifyDirectoryEntries } from './directory-verifier';
+import { deviceMeetsPolicy, emptyDirectory, verifyDirectoryEntries } from './directory-verifier';
 import { sha256, toBase64 } from './security-storage';
 const userId = '54fc8aa4-9549-4598-859c-747969b241f9';
 async function identity() {
@@ -211,4 +211,47 @@ it('bounds checkpoint growth and fits the largest supported directory in encrypt
   await expect(verifyDirectoryEntries({ ...state, head: { ...state.head, sequence: 8193 } }, [])).rejects.toThrow('DIRECTORY_INVALID');
   state.devices['extra'] = state.devices[String(0).padStart(36, '0')];
   await expect(verifyDirectoryEntries(state, [])).rejects.toThrow('DIRECTORY_INVALID');
+});
+
+describe('which devices may sign (SEC-01)', () => {
+  it('never trusts a device that registered itself without approval', async () => {
+    const owner = await identity();
+    const bootstrapChallenge = 'bootstrap-challenge';
+    const start = emptyDirectory(userId);
+    const bootstrap = await append(start, {
+      kind: 'bootstrap',
+      deviceId: 'owner',
+      actorDeviceId: 'owner',
+      identityKey: owner.identityKey,
+      challenge: bootstrapChallenge,
+      signature: await sign(owner.key.privateKey, serializeDeviceChallengeProof(userId, bootstrapChallenge)),
+    });
+    const afterBootstrap = await verifyDirectoryEntries(start, [bootstrap]);
+    // Anyone holding a fresh key (for example a compromised server) can append this.
+    const injected = await identity();
+    const registerChallenge = 'register-challenge';
+    const register = await append(afterBootstrap, {
+      kind: 'register',
+      deviceId: 'injected',
+      actorDeviceId: 'injected',
+      identityKey: injected.identityKey,
+      challenge: registerChallenge,
+      signature: await sign(injected.key.privateKey, serializeDeviceChallengeProof(userId, registerChallenge)),
+    });
+    const state = await verifyDirectoryEntries(afterBootstrap, [register]);
+
+    expect(state.devices.injected).toBeDefined();
+    expect(deviceMeetsPolicy(state.devices.injected!, 'approved')).toBe(false);
+    expect(deviceMeetsPolicy(state.devices.injected!, 'active')).toBe(false);
+    expect(deviceMeetsPolicy(state.devices.owner!, 'approved')).toBe(true);
+    expect(deviceMeetsPolicy(state.devices.owner!, 'active')).toBe(true);
+  });
+
+  it('keeps past signatures of a later-revoked device but not new ones', () => {
+    const revoked = { approved: true, revoked: true, approvedSequence: 1, revokedSequence: 4 };
+    expect(deviceMeetsPolicy(revoked, 'approved')).toBe(true);
+    expect(deviceMeetsPolicy(revoked, 'active')).toBe(false);
+    // Devices from before the transparency log carry their approval sequence.
+    expect(deviceMeetsPolicy({ approved: false, revoked: false, approvedSequence: 3 }, 'approved')).toBe(true);
+  });
 });

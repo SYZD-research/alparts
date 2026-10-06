@@ -26,6 +26,7 @@ import {
   auditGuardedTransaction,
 } from '../middleware/audit.js';
 import { verifyAttachmentEnvelopeSignature } from '../security/message.js';
+import { signedIdempotencyKey } from './message-idempotency.js';
 import { acquireDownloadLease } from '../security/download-limits.js';
 import {
   MAX_PENDING_UPLOADS_PER_USER,
@@ -625,7 +626,7 @@ export async function getAuthorizedAttachmentChunk(
       const deadline = createObjectStorageDeadline();
       const stat = await statStoredObject(authorized.storageKey, deadline);
       if (stat.size !== authorized.expectedSizeBytes) throw new Error('ATTACHMENT_NOT_FOUND');
-      const stream = await getStoredObject(authorized.storageKey);
+      const stream = await getStoredObject(authorized.storageKey, authorized.expectedSizeBytes);
       const release = () => releaseDownload();
       stream.once('end', release);
       stream.once('close', release);
@@ -793,7 +794,14 @@ async function loadFinalizationSnapshot(
     plaintextSize: input.cryptoManifest.plaintextSize,
     chunkCount: input.chunkCount,
   };
-  if (!verifyAttachmentEnvelopeSignature(device.identityKey, envelope, input.signature)) {
+  // Current clients bind the file to the message's signed idempotency key;
+  // older clients still sign the legacy layout, which readers also accept.
+  const messageIdempotencyKey = signedIdempotencyKey(context.message);
+  const bound = messageIdempotencyKey ? { ...envelope, messageIdempotencyKey } : null;
+  if (
+    !(bound && verifyAttachmentEnvelopeSignature(device.identityKey, bound, input.signature))
+    && !verifyAttachmentEnvelopeSignature(device.identityKey, envelope, input.signature)
+  ) {
     throw new Error('INVALID_SIGNATURE');
   }
   const chunkRows = await store.query.attachmentUploadChunks.findMany({

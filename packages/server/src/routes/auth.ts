@@ -10,6 +10,7 @@ import {
   credentialAccountRateLimitKey,
   credentialRateLimitKey,
   rateLimit,
+  requestSource,
 } from '../middleware/rate-limit.js';
 import { config } from '../config/index.js';
 import { expiredSessionCookie, sessionCookie } from '../security/cookies.js';
@@ -21,6 +22,11 @@ const registerSchema = z.object({
   email: z.string().max(254).transform(normalizeEmail).pipe(z.string().email().max(254)),
   password,
   displayName: displayText(),
+  inviteToken: z.string().min(1).max(512),
+  emailCode: z.string().regex(/^\d{6}$/).optional(),
+}).strict();
+const registrationCodeSchema = z.object({
+  email: z.string().max(254).transform(normalizeEmail).pipe(z.string().email().max(254)),
   inviteToken: z.string().min(1).max(512),
 }).strict();
 const loginSchema = z.object({
@@ -35,6 +41,8 @@ const loginSchema = z.object({
   }).strict().optional(),
 }).strict();
 const reauthenticateSchema = z.object({ password: loginPassword }).strict();
+const changePasswordSchema = z.object({ newPassword: password }).strict();
+const passwordLoginSchema = z.object({ enabled: z.boolean() }).strict();
 
 const registrationLimit = rateLimit({ windowMs: 60 * 60 * 1000, max: 5, key: credentialRateLimitKey });
 const loginLimit = rateLimit({ windowMs: 15 * 60 * 1000, max: 8, key: credentialRateLimitKey });
@@ -48,24 +56,66 @@ const loginAccountLimit = rateLimit({
   },
 });
 const registrationIpLimit = rateLimit({ windowMs: 60 * 60 * 1000, max: 30 });
+// Each request mails someone, so both the source and the address are limited.
+const registrationCodeIpLimit = rateLimit({ windowMs: 60 * 60 * 1000, max: 30 });
+const registrationCodeLimit = rateLimit({ windowMs: 60 * 60 * 1000, max: 5, key: credentialRateLimitKey });
+const registrationCodeAccountLimit = rateLimit({ windowMs: 60 * 60 * 1000, max: 10, key: credentialAccountRateLimitKey });
 const loginIpLimit = rateLimit({ windowMs: 15 * 60 * 1000, max: 100 });
 const reauthenticateLimit = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 8,
-  key: (req) => (req as AuthRequest).userId || req.ip || req.socket.remoteAddress || 'unknown',
+  key: (req) => (req as AuthRequest).userId || requestSource(req),
+});
+const passwordSettingsLimit = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 10,
+  key: (req) => (req as AuthRequest).userId || requestSource(req),
 });
 const sessionIdSchema = z.string().uuid();
+
+function disconnectSessions(req: AuthRequest, sessionIds: string[]): void {
+  const io = req.app.get('io') as SocketServer | undefined;
+  for (const sessionId of sessionIds) io?.in(`session:${sessionId}`).disconnectSockets(true);
+}
+
+function sendRegistrationError(res: import('express').Response, error: any): boolean {
+  if (error.message === 'INVALID_INVITATION' || error.message === 'EMAIL_EXISTS') {
+    res.status(403).json({ error: 'INVITE_REQUIRED', message: 'A valid invitation is required', statusCode: 403 });
+    return true;
+  }
+  if (error.message === 'INVALID_EMAIL_CODE') {
+    res.status(400).json({ error: 'INVALID_EMAIL_CODE', message: 'The email code is wrong or expired', statusCode: 400 });
+    return true;
+  }
+  if (['REGISTRATION_UNAVAILABLE', 'REGISTRATION_BUSY', 'EMAIL_UNAVAILABLE'].includes(error.message)) {
+    res.setHeader('Retry-After', '60');
+    res.status(503).json({ error: error.message, message: 'Registration is temporarily unavailable', statusCode: 503 });
+    return true;
+  }
+  return false;
+}
+
+router.post('/register/code', registrationCodeIpLimit, registrationCodeLimit, registrationCodeAccountLimit, async (req, res) => {
+  try {
+    const body = registrationCodeSchema.parse(req.body);
+    res.status(202).json({ required: await authService.requestRegistrationCode(body.email, body.inviteToken) });
+  } catch (error: any) {
+    if (sendRegistrationError(res, error)) return;
+    if (error.name === 'ZodError') {
+      res.status(400).json({ error: 'VALIDATION', message: 'Invalid registration data', statusCode: 400 });
+      return;
+    }
+    throw error;
+  }
+});
 
 router.post('/register', registrationIpLimit, registrationLimit, async (req, res) => {
   try {
     const body = registerSchema.parse(req.body);
-    const user = await authService.register(body.email, body.password, body.displayName, body.inviteToken);
+    const user = await authService.register(body.email, body.password, body.displayName, body.inviteToken, body.emailCode);
     res.status(201).json(user);
   } catch (error: any) {
-    if (error.message === 'INVALID_INVITATION' || error.message === 'EMAIL_EXISTS') {
-      res.status(403).json({ error: 'INVITE_REQUIRED', message: 'A valid invitation is required', statusCode: 403 });
-      return;
-    }
+    if (sendRegistrationError(res, error)) return;
     if (error.name === 'ZodError' || error.message === 'INVALID_PASSWORD_LENGTH') {
       res.status(400).json({ error: 'VALIDATION', message: 'Invalid registration data', statusCode: 400 });
       return;
@@ -130,6 +180,56 @@ router.post('/reauthenticate', authMiddleware, reauthenticateLimit, async (req: 
   }
 });
 
+// Both password settings need a step-up confirmation (isSensitiveAction).
+router.put('/password', authMiddleware, passwordSettingsLimit, async (req: AuthRequest, res) => {
+  try {
+    const body = changePasswordSchema.parse(req.body);
+    const revoked = await authService.changePassword(req.userId!, req.sessionId!, body.newPassword);
+    disconnectSessions(req, revoked);
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ success: true, revoked: revoked.length });
+  } catch (error: any) {
+    if (error.name === 'ZodError' || error.message === 'INVALID_PASSWORD_LENGTH') {
+      res.status(400).json({ error: 'VALIDATION', message: 'Invalid password data', statusCode: 400 });
+      return;
+    }
+    if (error.message === 'INVALID_CREDENTIALS') {
+      res.status(403).json({ error: 'FORBIDDEN', message: 'Not allowed', statusCode: 403 });
+      return;
+    }
+    throw error;
+  }
+});
+
+router.get('/password-login', authMiddleware, async (req: AuthRequest, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ enabled: await authService.isPasswordLoginEnabled(req.userId!) });
+});
+
+router.put('/password-login', authMiddleware, passwordSettingsLimit, async (req: AuthRequest, res) => {
+  try {
+    const body = passwordLoginSchema.parse(req.body);
+    const revoked = await authService.setPasswordLogin(req.userId!, req.sessionId!, body.enabled);
+    disconnectSessions(req, revoked);
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ success: true, enabled: body.enabled, revoked: revoked.length });
+  } catch (error: any) {
+    if (error.name === 'ZodError') {
+      res.status(400).json({ error: 'VALIDATION', message: 'Invalid setting', statusCode: 400 });
+      return;
+    }
+    if (error.message === 'PASSKEY_REQUIRED') {
+      res.status(409).json({ error: 'PASSKEY_REQUIRED', message: 'Add a passkey first', statusCode: 409 });
+      return;
+    }
+    if (error.message === 'INVALID_CREDENTIALS') {
+      res.status(403).json({ error: 'FORBIDDEN', message: 'Not allowed', statusCode: 403 });
+      return;
+    }
+    throw error;
+  }
+});
+
 router.get('/me', authMiddleware, async (req: AuthRequest, res) => {
   const user = await authService.getUserById(req.userId!);
   if (!user) {
@@ -158,8 +258,7 @@ router.delete('/sessions/:id', authMiddleware, async (req: AuthRequest, res) => 
 
 router.delete('/sessions', authMiddleware, async (req: AuthRequest, res) => {
   const sessionIds = await authService.revokeAllSessions(req.userId!);
-  const io = req.app.get('io') as SocketServer | undefined;
-  for (const sessionId of sessionIds) io?.in(`session:${sessionId}`).disconnectSockets(true);
+  disconnectSessions(req, sessionIds);
   res.setHeader('Set-Cookie', expiredSessionCookie());
   res.json({ success: true, revoked: sessionIds.length });
 });
