@@ -65,7 +65,7 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     const auditModule = await import('../middleware/audit.js');
     const dbModule = await import('../db/index.js');
     closeDb = dbModule.closeDb;
-    assert.equal(await dbModule.checkDatabaseSchema(), 22);
+    assert.equal(await dbModule.checkDatabaseSchema(), 23);
     verifyAuditChain = auditModule.verifyAuditChain;
     await auditModule.provisionAuditCheckpoint();
     const startupAudit = await verifyAuditChain();
@@ -126,15 +126,43 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     });
     assert.equal(reusedInvitation.status, 403);
     const unboundInvitation = await createWorkspaceInvitation(workspace.id, alice.cookie);
+    // Registration needs the code mailed to the address. An existing account
+    // gets the same answer and a notice, but no code to finish with.
+    const { developmentEmails } = await import('../services/email.service.js');
+    const existingCodeRequest = await request('/api/auth/register/code', {
+      method: 'POST', body: { email: 'alice@example.test', inviteToken: unboundInvitation.token },
+    });
+    assert.equal(existingCodeRequest.status, 202);
+    const existingNotice = [...developmentEmails()].reverse().find((message) => message.to === 'alice@example.test');
+    assert.ok(existingNotice && !/\b\d{6}\b/.test(existingNotice.text));
     const existingEmailRegistration = await request('/api/auth/register', {
       method: 'POST',
-      body: { email: 'alice@example.test', password: 'Correct-Horse-Battery-8!', displayName: 'Probe', inviteToken: unboundInvitation.token },
+      body: { email: 'alice@example.test', password: 'Correct-Horse-Battery-8!', displayName: 'Probe', inviteToken: unboundInvitation.token, emailCode: '123456' },
     });
-    assert.equal(existingEmailRegistration.status, invalidInvite.status);
-    assert.equal((await json<{ error: string }>(existingEmailRegistration)).error, 'INVITE_REQUIRED');
-    const unboundRegistration = await request('/api/auth/register', {
+    assert.equal(existingEmailRegistration.status, 400);
+    assert.equal((await json<{ error: string }>(existingEmailRegistration)).error, 'INVALID_EMAIL_CODE');
+    const withoutCode = await request('/api/auth/register', {
       method: 'POST',
       body: { email: 'unbound@example.test', password: 'Correct-Horse-Battery-9!', displayName: 'Unbound', inviteToken: unboundInvitation.token },
+    });
+    assert.equal(withoutCode.status, 400, 'a registration without the mailed code is refused');
+    const verification = await import('../services/email-verification.service.js');
+    const guessedCode = await emailCode('unbound@example.test', unboundInvitation.token);
+    const wrongCode = guessedCode === '000000' ? '000001' : '000000';
+    for (let attempt = 0; attempt < verification.MAX_EMAIL_CODE_ATTEMPTS; attempt += 1) {
+      await assert.rejects(verification.consumeRegistrationCode('unbound@example.test', wrongCode), /INVALID_EMAIL_CODE/);
+    }
+    await assert.rejects(verification.consumeRegistrationCode('unbound@example.test', guessedCode), /INVALID_EMAIL_CODE/,
+      'wrong guesses use the code up');
+    const unboundRegistration = await request('/api/auth/register', {
+      method: 'POST',
+      body: {
+        email: 'unbound@example.test',
+        password: 'Correct-Horse-Battery-9!',
+        displayName: 'Unbound',
+        inviteToken: unboundInvitation.token,
+        emailCode: await emailCode('unbound@example.test', unboundInvitation.token),
+      },
     });
     assert.equal(unboundRegistration.status, 201);
     const retryDeviceInvitation = await createWorkspaceInvitation(workspace.id, alice.cookie, 'device-retry@example.test');
@@ -446,9 +474,12 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     })).status, 403, 'an expired invitation must not admit a registration');
 
     const singleUseInvitation = await createWorkspaceInvitation(workspace.id, alice.cookie);
-    const racingRegistrations = await Promise.all(['race-a@example.test', 'race-b@example.test'].map((email) => request('/api/auth/register', {
+    const raceEmails = ['race-a@example.test', 'race-b@example.test'];
+    const raceCodes: string[] = [];
+    for (const email of raceEmails) raceCodes.push(await emailCode(email, singleUseInvitation.token));
+    const racingRegistrations = await Promise.all(raceEmails.map((email, index) => request('/api/auth/register', {
       method: 'POST',
-      body: { email, password: 'Correct-Horse-Battery-9!', displayName: 'Race', inviteToken: singleUseInvitation.token },
+      body: { email, password: 'Correct-Horse-Battery-9!', displayName: 'Race', inviteToken: singleUseInvitation.token, emailCode: raceCodes[index] },
     })));
     assert.deepEqual(racingRegistrations.map((response) => response.status).sort(), [201, 403],
       'a single-use invitation must be consumed at most once under concurrency');
@@ -3471,7 +3502,7 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
       await client.end();
     }
     const { checkDatabaseSchema } = await import('../db/index.js');
-    assert.equal(await checkDatabaseSchema(), 22);
+    assert.equal(await checkDatabaseSchema(), 23);
   });
 
   it('never re-signs a shortened audit chain after the external checkpoint anchor is deleted', async () => {
@@ -3513,9 +3544,20 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     await assert.rejects(auditModule.checkAuditCheckpoint(), /checkpoint|audit/i);
   });
 
+  /** Asks for a registration code and reads it from the development outbox. */
+  async function emailCode(email: string, inviteToken: string): Promise<string> {
+    const response = await request('/api/auth/register/code', { method: 'POST', body: { email, inviteToken } });
+    assert.equal(response.status, 202);
+    assert.deepEqual(await json(response), { required: true });
+    const { developmentEmails } = await import('../services/email.service.js');
+    const code = [...developmentEmails()].reverse().find((message) => message.to === email)?.text.match(/\b(\d{6})\b/)?.[1];
+    assert.ok(code, `no code was mailed to ${email}`);
+    return code;
+  }
+
   async function createAccount(email: string, password: string, displayName: string, inviteToken: string) {
     const registration = await request('/api/auth/register', {
-      method: 'POST', body: { email, password, displayName, inviteToken },
+      method: 'POST', body: { email, password, displayName, inviteToken, emailCode: await emailCode(email, inviteToken) },
     });
     assert.equal(registration.status, 201);
     const login = await request('/api/auth/login', { method: 'POST', body: { email, password } });

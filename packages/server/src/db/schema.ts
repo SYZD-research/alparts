@@ -119,6 +119,18 @@ export const authenticationChallenges = pgTable('authentication_challenges', {
   index('authentication_challenges_session_idx').on(t.sessionId),
 ]);
 
+// One pending registration code per address; the code itself is never stored.
+export const emailVerifications = pgTable('email_verifications', {
+  email: text('email').primaryKey(),
+  codeHash: text('code_hash').notNull(),
+  attempts: integer('attempts').default(0).notNull(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => [
+  index('email_verifications_expires_idx').on(t.expiresAt),
+  check('email_verifications_attempts_check', sql`${t.attempts} >= 0`),
+]);
+
 export const stepUpGrants = pgTable('step_up_grants', {
   tokenHash: text('token_hash').primaryKey(),
   sessionId: uuid('session_id').notNull().references(() => sessions.id, { onDelete: 'cascade' }),

@@ -97,6 +97,25 @@ export const config = {
     secureCookie: isProduction || env.COOKIE_SECURE === 'true',
   },
 
+  email: {
+    // Registration proves the address with a mailed code unless the operator
+    // explicitly turns that off.
+    verification: env.EMAIL_VERIFICATION?.trim() === 'disabled' ? 'disabled' as const : 'required' as const,
+    smtp: env.SMTP_HOST?.trim()
+      ? {
+          host: env.SMTP_HOST.trim(),
+          port: parseBoundedInteger('SMTP_PORT', env.SMTP_PORT, 587, 1, 65535),
+          // true: TLS from the first byte (usually port 465). Otherwise the
+          // connection upgrades with STARTTLS, which production requires.
+          secure: env.SMTP_SECURE === 'true',
+          user: env.SMTP_USER?.trim() || null,
+          password: value('SMTP_PASSWORD') || null,
+          from: env.SMTP_FROM?.trim() || '',
+          timeoutMs: parseBoundedInteger('SMTP_TIMEOUT_MS', env.SMTP_TIMEOUT_MS, 10_000, 1_000, 60_000),
+        }
+      : null,
+  },
+
   webauthn: {
     rpId: env.WEBAUTHN_RP_ID || new URL(corsOrigins[0]).hostname,
     origins: env.WEBAUTHN_ORIGINS ? parseCorsOrigins(env.WEBAUTHN_ORIGINS, isProduction) : corsOrigins,
@@ -157,6 +176,15 @@ export const config = {
   },
 } as const;
 
+if (env.EMAIL_VERIFICATION?.trim() && !['required', 'disabled'].includes(env.EMAIL_VERIFICATION.trim())) {
+  throw new Error('EMAIL_VERIFICATION must be required or disabled');
+}
+if (config.email.smtp) {
+  if (!/^[^\s@<>"(),;:]+@[^\s@<>"(),;:]+$/.test(config.email.smtp.from)) throw new Error('SMTP_FROM must be an email address');
+  if (Boolean(config.email.smtp.user) !== Boolean(config.email.smtp.password)) {
+    throw new Error('SMTP_USER and SMTP_PASSWORD must be set together');
+  }
+}
 if (config.observability.metricsEnabled && !config.observability.metricsToken) {
   throw new Error('METRICS_TOKEN is required when METRICS_ENABLED=true');
 }

@@ -611,10 +611,18 @@ class ApiService {
   }
 
   // Auth
-  async register(email: string, password: string, displayName: string, inviteToken: string) {
+  /** Mails a code that proves the address; `required` is false when the server asks for none. */
+  async requestRegistrationCode(email: string, inviteToken: string) {
+    return this.request<{ required: boolean }>('/auth/register/code', {
+      method: 'POST',
+      body: JSON.stringify({ email, inviteToken }),
+    });
+  }
+
+  async register(email: string, password: string, displayName: string, inviteToken: string, emailCode?: string) {
     return this.request<User>('/auth/register', {
       method: 'POST',
-      body: JSON.stringify({ email, password, displayName, inviteToken }),
+      body: JSON.stringify({ email, password, displayName, inviteToken, ...(emailCode ? { emailCode } : {}) }),
     });
   }
 

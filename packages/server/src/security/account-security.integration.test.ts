@@ -256,6 +256,14 @@ describe('account security end to end', { skip: !enabled }, () => {
   async function sensitive(path: string, body?: unknown, method = 'POST', auth = cookie) {
     return request(path, body, auth, method, await stepUp(path, body, method, auth));
   }
+  /** Asks for a registration code and reads it from the development outbox. */
+  async function emailCode(email: string, inviteToken: string): Promise<string> {
+    assert.deepEqual(await json(await request('/api/auth/register/code', { email, inviteToken }, ''), 202), { required: true });
+    const { developmentEmails } = await import('../services/email.service.js');
+    const code = [...developmentEmails()].reverse().find((message) => message.to === email)?.text.match(/\b(\d{6})\b/)?.[1];
+    assert.ok(code, `no code was mailed to ${email}`);
+    return code;
+  }
   async function head() {
     return (await json(await request(`/api/directory/${userId}?after=0`))).head;
   }
@@ -410,7 +418,7 @@ process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
     process.env.AUDIT_HEAD_OBJECT_KEY = `test-${randomUUID()}`;
     const database = await import('../db/index.js');
     closeDb = database.closeDb;
-    assert.equal(await database.checkDatabaseSchema(), 22);
+    assert.equal(await database.checkDatabaseSchema(), 23);
     const audit = await import('../middleware/audit.js');
     await audit.provisionAuditCheckpoint();
     const app = await import('../app.js');
@@ -494,6 +502,7 @@ process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
           password,
           displayName: 'Security test',
           inviteToken: registrationInvitation,
+          emailCode: await emailCode(email, registrationInvitation),
         },
         '',
       ),
@@ -1385,6 +1394,7 @@ process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
           password,
           displayName: 'First device',
           inviteToken: invitation.token,
+          emailCode: await emailCode(email, invitation.token),
         },
         '',
       ),
