@@ -165,7 +165,7 @@ export function assessRuntime(release, now, warningDays = RUNTIME_WARNING_DAYS) 
 }
 
 function cell(text) {
-  return String(text).replace(/\|/g, '\\|').replace(/\r?\n/g, ' ');
+  return String(text).replace(/[\\|]/g, '\\$&').replace(/\r?\n/g, ' ');
 }
 
 function describe(finding) {
@@ -294,7 +294,7 @@ export async function collectReport(root, now) {
   }
   const names = [...new Set([...installed.values()].map((entry) => entry.name))].sort();
   const docs = new Map(await mapLimited(names, FETCH_CONCURRENCY, async (name) =>
-    [name, await fetchJson(`https://registry.npmjs.org/${name.replace('/', '%2f')}`)]));
+    [name, await fetchJson(`https://registry.npmjs.org/${encodeURIComponent(name)}`)]));
   const packages = [];
   for (const entry of [...installed.values()].sort((a, b) => a.name.localeCompare(b.name))) {
     const finding = assessPackage(docs.get(entry.name), entry.version, now);

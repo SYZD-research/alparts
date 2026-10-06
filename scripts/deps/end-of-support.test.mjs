@@ -146,13 +146,13 @@ test('renderReport lists findings and escapes table cells', () => {
       finding: { kind: 'runtime-ended', eolFrom: '2026-04-30' } }],
     packages: [{ name: 'react', version: '18.3.1', importers: ['packages/client'],
       finding: { kind: 'stale-line', line: '18.x', lastVersion: '18.3.1', lastPublished: '2024-04-26', latest: '19.3.0' } }],
-    indirect: [{ name: 'glob', version: '7.2.3', message: 'unsupported | update' }],
+    indirect: [{ name: 'glob', version: '7.2.3', message: 'unsupported | update \\| C:\\path' }],
   };
   const markdown = renderReport(report, NOW);
   assert.match(markdown, new RegExp(`^<!-- end-of-support:${fingerprint(report)} -->`));
   assert.match(markdown, /\| Node\.js \| 22 \| 2026-04-30 にサポート終了 \| Dockerfile \|/);
   assert.match(markdown, /\| react \| 18\.3\.1 \| 18\.x の最終リリースは 2024-04-26（18\.3\.1）。最新は 19\.3\.0 \| packages\/client \|/);
-  assert.match(markdown, /\| glob@7\.2\.3 \| 非推奨: unsupported \\\| update \|/);
+  assert.ok(markdown.includes('| glob@7.2.3 | 非推奨: unsupported \\| update \\\\\\| C:\\\\path |'));
   assert.equal(countFindings(report), 3);
 });
 
