@@ -626,7 +626,7 @@ export async function getAuthorizedAttachmentChunk(
       const deadline = createObjectStorageDeadline();
       const stat = await statStoredObject(authorized.storageKey, deadline);
       if (stat.size !== authorized.expectedSizeBytes) throw new Error('ATTACHMENT_NOT_FOUND');
-      const stream = await getStoredObject(authorized.storageKey);
+      const stream = await getStoredObject(authorized.storageKey, authorized.expectedSizeBytes);
       const release = () => releaseDownload();
       stream.once('end', release);
       stream.once('close', release);

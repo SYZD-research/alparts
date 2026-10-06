@@ -220,6 +220,9 @@ router.get('/:id/chunks/:index', authMiddleware, async (req: AuthRequest, res) =
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Content-Security-Policy', "sandbox; default-src 'none'");
+    // The stream already stops at the stored length; this also refuses to
+    // finish a response whose body and Content-Length disagree.
+    res.strictContentLength = true;
     await pipeline(chunk.stream, res);
   } catch (error) {
     if (!res.headersSent && sendFileError(error, res)) return;
