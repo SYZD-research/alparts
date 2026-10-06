@@ -70,11 +70,18 @@ export function canonicalActionBody(value: unknown): string {
     )
     .join(',')}}`;
 }
+/** Drops trailing slashes. A loop, unlike /\/+$/, stays linear on any input. */
+function withoutTrailingSlashes(path: string): string {
+  let end = path.length;
+  while (end > 0 && path[end - 1] === '/') end -= 1;
+  return path.slice(0, end);
+}
+
 export function isSensitiveAction(method: string, path: string): boolean {
   // Express routes accept case variations and a trailing slash. Classify the
   // same route here; the grant still binds the exact original request path.
   method = method.toUpperCase();
-  path = path.toLowerCase().replace(/\/+$/, '');
+  path = withoutTrailingSlashes(path.toLowerCase());
   if (['GET', 'HEAD', 'OPTIONS'].includes(method)) return false;
   return (
     (path.startsWith('/api/devices/') && (method === 'DELETE' || path.endsWith('/approve'))) ||
@@ -101,7 +108,7 @@ export function isSensitiveAction(method: string, path: string): boolean {
  */
 export function isSensitiveRequest(method: string, path: string, body: unknown): boolean {
   if (isSensitiveAction(method, path)) return true;
-  const normalizedPath = path.toLowerCase().replace(/\/+$/, '');
+  const normalizedPath = withoutTrailingSlashes(path.toLowerCase());
   if (method.toUpperCase() !== 'PUT' || !/^\/api\/channels\/[^/]+$/.test(normalizedPath)) return false;
   return body !== null && typeof body === 'object' && !Array.isArray(body)
     && ['isPrivate', 'categoryId'].some((field) => Object.prototype.hasOwnProperty.call(body, field));

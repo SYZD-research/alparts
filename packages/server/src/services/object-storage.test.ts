@@ -10,7 +10,7 @@ import { after, before, describe, it } from 'node:test';
 // never finishes downloads under stalled/ so they hold their storage slots.
 const uploads: Array<{ headers: IncomingMessage['headers']; body: Buffer }> = [];
 let etagOverride: string | null = null;
-const listingRequests: Record<string, number> = {};
+const listingRequests = new Map<string, number>();
 let bucketPresent = true;
 let pageToken = 0;
 
@@ -39,7 +39,7 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     }
     if (req.method === 'GET' && req.url?.includes('list-type=2')) {
       const prefix = new URL(req.url, 'http://store').searchParams.get('prefix') ?? '';
-      listingRequests[prefix] = (listingRequests[prefix] ?? 0) + 1;
+      listingRequests.set(prefix, (listingRequests.get(prefix) ?? 0) + 1);
       res.setHeader('Content-Type', 'application/xml');
       if (prefix === 'attachments/v1/huge/') {
         // A valid page padded to five MiB: only its size is wrong.
@@ -192,9 +192,9 @@ describe('object storage writes and listings', () => {
 
   it('stops a listing that repeats its token or never ends', async () => {
     await storage.reconcileStoredUpload('attachments/v1/loop', new Set());
-    assert.ok(listingRequests['attachments/v1/loop/']! <= 2);
+    assert.ok(listingRequests.get('attachments/v1/loop/')! <= 2);
     await assert.rejects(storage.reconcileStoredUpload('attachments/v1/pages', new Set()), /OBJECT_STORAGE_LIST_LIMIT/);
-    assert.ok(listingRequests['attachments/v1/pages/']! <= 4);
+    assert.ok(listingRequests.get('attachments/v1/pages/')! <= 4);
   });
 
   it('fails readiness once the bucket is gone, not only at startup', async () => {
