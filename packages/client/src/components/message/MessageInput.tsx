@@ -93,7 +93,7 @@ export function MessageInput({ channelId, sendDisabled = false, postId, placehol
   const dismissUpload = useAttachmentStore((state) => state.dismissUpload);
   const workspaceMembers = useWorkspaceStore((state) => state.members);
   const presenceStatuses = usePresenceStore((state) => state.statuses);
-  const typingTimeout = useRef<ReturnType<typeof setTimeout>>();
+  const typingTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastTypingSent = useRef<number>(0);
   const dragDepth = useRef(0);
   const content = editTarget ? editContent : draft;
