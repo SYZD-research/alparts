@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { isIP } from 'node:net';
 import { parseBindHost, parseBoundedInteger, parseCorsOrigins, parseTrustedProxies, parseVoiceIceServers } from './validation.js';
 import { loadDatabaseRuntimeConfig } from './database.js';
 import { readConfiguredValue } from './source.js';
@@ -201,6 +202,21 @@ if ((config.audit.witnessRequired || config.audit.witnessPath || config.audit.wi
     || !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(config.audit.witnessDeploymentId ?? ''))) {
   throw new Error('Audit witness requires its public key, signed witness file and deployment UUID');
 }
+// A scheme, port or path in S3_ENDPOINT would only fail later, obscurely.
+const s3Host = config.s3.endpoint.startsWith('[') && config.s3.endpoint.endsWith(']')
+  ? config.s3.endpoint.slice(1, -1)
+  : config.s3.endpoint;
+if (!isIP(s3Host) && !/^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$/.test(config.s3.endpoint)) {
+  throw new Error('S3_ENDPOINT must be a host name or IP address, without a scheme, port or path');
+}
+if (!/^[a-z0-9][a-z0-9-]{0,31}$/.test(config.s3.region)) throw new Error('S3_REGION must be a region name such as us-east-1');
+for (const [name, bucket] of [['S3_BUCKET', config.s3.bucket], ['AUDIT_HEAD_BUCKET', config.audit.headBucket]] as const) {
+  if (
+    !/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(bucket)
+    || /\.\.|\.-|-\./.test(bucket)
+    || isIP(bucket)
+  ) throw new Error(`${name} must be a DNS-safe bucket name of 3 to 63 lower-case characters`);
+}
 if (config.isProduction && !config.s3.useSSL && (
   env.ALLOW_INSECURE_LOOPBACK_DEPENDENCIES !== 'true'
   || !isLoopbackHost(config.s3.endpoint)
@@ -208,13 +224,14 @@ if (config.isProduction && !config.s3.useSSL && (
   throw new Error('Production object-storage TLS may be disabled only for an explicitly acknowledged loopback endpoint');
 }
 
+// The S3 client resolves any name through DNS, so only literal loopback
+// names count; unlike PostgreSQL there is no Unix-socket form.
 function isLoopbackHost(host: string): boolean {
   const normalized = host.toLowerCase();
   return normalized === 'localhost'
     || normalized === '127.0.0.1'
     || normalized === '[::1]'
-    || normalized === '::1'
-    || normalized === 'unix-socket';
+    || normalized === '::1';
 }
 
 for (const origin of config.webauthn.origins) {

@@ -71,6 +71,10 @@ function createS3Client(maxSockets: number): S3Client {
     credentials: { accessKeyId: config.s3.accessKey, secretAccessKey: config.s3.secretKey },
     // Retrying is the caller's decision; a retry must not outlive the deadline.
     maxAttempts: 1,
+    // The endpoint is exact; AWS_USE_FIPS_ENDPOINT or AWS_USE_DUALSTACK_ENDPOINT
+    // in the environment must not rewrite it.
+    useFipsEndpoint: false,
+    useDualstackEndpoint: false,
     // S3-compatible stores do not all accept the SDK's newer default checksums.
     requestChecksumCalculation: 'WHEN_REQUIRED',
     responseChecksumValidation: 'WHEN_REQUIRED',
@@ -185,12 +189,13 @@ export async function ensureObjectStorageBucket(): Promise<void> {
   await bucketPromise;
 }
 
+/** Readiness: the bucket must still exist now, not only at startup. */
 export async function checkObjectStorage(): Promise<void> {
   await ensureObjectStorageBucket();
-  await statStoredObject('.alparts-healthcheck').catch((error: unknown) => {
-    // A missing sentinel proves the bucket is reachable without mutating it.
-    if (!isNotFound(error)) throw error;
-  });
+  const deadline = createObjectStorageDeadline();
+  await withObjectStorageDeadline(async () => {
+    if (!await bucketExists(config.s3.bucket, deadline)) throw new Error('OBJECT_STORAGE_BUCKET_MISSING');
+  }, deadline);
 }
 
 /** Operator-only provisioning; normal audit reads/writes never recreate a missing head. */
