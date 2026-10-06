@@ -24,7 +24,7 @@ import type {
   WorkspaceMember,
 } from '@alparts/shared';
 import { withExpectedAuthorizationRevision } from './role-authorization-revision';
-import { msg, t, type MessageKey } from '../i18n';
+import { currentLocale, msg, t, type MessageKey } from '../i18n';
 
 const API_BASE = '/api';
 export const API_REQUEST_DEADLINE_MS = 60_000;
@@ -548,6 +548,8 @@ class ApiService {
     if (options.body !== undefined && !headers.has('Content-Type')) {
       headers.set('Content-Type', 'application/json');
     }
+    // Lets the server write emails in the language chosen in the app.
+    if (!headers.has('Accept-Language')) headers.set('Accept-Language', currentLocale());
     let response: Response;
     try {
       response = await fetch(`${API_BASE}${path}`, {

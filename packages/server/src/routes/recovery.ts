@@ -38,7 +38,7 @@ const handler =
       }
       res.status(403).json({
         error: 'RECOVERY_FAILED',
-        message: '履歴を復元できませんでした。入力内容を確認してお試しください。',
+        message: 'History could not be restored. Check the input and try again.',
       });
     }
   };

@@ -120,7 +120,7 @@ router.put('/channels/:id', authMiddleware, requireChannelPermission(Permissions
     res.json(result.channel);
   } catch (error: any) {
     if (error.message === 'MEMBER_HIERARCHY') {
-      res.status(403).json({ error: 'MEMBER_HIERARCHY', message: '上位メンバーが利用できなくなる変更はできません。', statusCode: 403 });
+      res.status(403).json({ error: 'MEMBER_HIERARCHY', message: 'This change would remove access for a higher-ranked member.', statusCode: 403 });
       return;
     }
     if (error.name === 'ZodError' || error.message === 'INVALID_CATEGORY') {
@@ -156,7 +156,7 @@ router.delete('/channels/:id', authMiddleware, requireChannelPermission(Permissi
     res.json({ success: true });
   } catch (error: any) {
     if (error.message === 'MEMBER_HIERARCHY') {
-      res.status(403).json({ error: 'MEMBER_HIERARCHY', message: '上位メンバーが利用できなくなる変更はできません。', statusCode: 403 });
+      res.status(403).json({ error: 'MEMBER_HIERARCHY', message: 'This change would remove access for a higher-ranked member.', statusCode: 403 });
       return;
     }
     if (error.message === 'CHANNEL_NOT_FOUND') {
@@ -326,7 +326,7 @@ router.delete('/workspaces/:wid/categories/:categoryId', authMiddleware, require
     res.json(result);
   } catch (error: any) {
     if (error.message === 'MEMBER_HIERARCHY') {
-      res.status(403).json({ error: 'MEMBER_HIERARCHY', message: '上位メンバーが利用できなくなる変更はできません。', statusCode: 403 });
+      res.status(403).json({ error: 'MEMBER_HIERARCHY', message: 'This change would remove access for a higher-ranked member.', statusCode: 403 });
       return;
     }
     if (['CATEGORY_NOT_FOUND', 'WORKSPACE_NOT_FOUND'].includes(error.message)) {

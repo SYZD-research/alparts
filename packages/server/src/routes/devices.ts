@@ -149,7 +149,7 @@ router.delete('/:id', authMiddleware, revocationLimit, async (req: AuthRequest, 
     res.json({ success: true });
   } catch (error: any) {
     if (error.name === 'ZodError') {
-      res.status(400).json({ error: 'VALIDATION', message: '入力内容を確認してください。', statusCode: 400 });
+      res.status(400).json({ error: 'VALIDATION', message: 'Check the input.', statusCode: 400 });
       return;
     }
     if (error.message === 'DEVICE_NOT_FOUND') {
@@ -178,7 +178,7 @@ router.post('/:id/approve', authMiddleware, enrollmentLimit, async (req: AuthReq
     res.json({ success: true });
   } catch (error: any) {
     if (!isAccountSecurityError(error)) { next(error); return; }
-    res.status(error.message === 'DIRECTORY_CONFLICT' ? 409 : 403).json({ error: error.message === 'DIRECTORY_CONFLICT' ? 'DIRECTORY_CONFLICT' : 'DEVICE_APPROVAL_REQUIRED', message: '端末を確認できませんでした。表示を更新してお試しください。' });
+    res.status(error.message === 'DIRECTORY_CONFLICT' ? 409 : 403).json({ error: error.message === 'DIRECTORY_CONFLICT' ? 'DIRECTORY_CONFLICT' : 'DEVICE_APPROVAL_REQUIRED', message: 'The device could not be verified. Refresh and try again.' });
   }
 });
 

@@ -36,3 +36,11 @@ test('publishes an immutable bridge and splits a full attachment chunk into boun
   const decoded = Buffer.concat(requests.map((request) => Buffer.from(request.args.chunk, 'base64')));
   assert.ok(decoded.equals(Buffer.from(chunk)));
 });
+test('reports errors in the language the app shows', async () => {
+  for (const [lang, expected] of [['ja', /アプリの設定/], ['en', /app settings/]]) {
+    const window = { alpartsNative: { onmessage: null, postMessage() {} } };
+    const document = { documentElement: { lang } };
+    runInNewContext(source, { window, document, setTimeout, clearTimeout, Uint8Array });
+    await assert.rejects(window.alpartsDesktop.configureServer('https://chat.example.com'), expected);
+  }
+});

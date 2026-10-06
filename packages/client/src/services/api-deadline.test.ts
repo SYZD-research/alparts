@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { api, API_REQUEST_DEADLINE_MS, createApiRequestDeadline } from './api';
+import { useLocaleStore } from '../i18n';
 
 describe('API request deadline', () => {
   it('propagates caller cancellation and detaches cleanly', () => {
@@ -41,4 +42,19 @@ it('keeps an untrusted message cursor in one query parameter', async () => {
     expect([...url.searchParams.keys()]).toEqual(['cursor']);
     expect(url.hash).toBe('');
   } finally { vi.unstubAllGlobals(); }
+});
+
+it('tells the server which language the app is shown in', async () => {
+  const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify({ required: true }), { status: 202 }));
+  vi.stubGlobal('fetch', fetchMock);
+  try {
+    for (const locale of ['en', 'ja'] as const) {
+      useLocaleStore.setState({ locale });
+      await api.requestRegistrationCode('person@example.test', 'invitation');
+      expect(new Headers(fetchMock.mock.lastCall?.[1]?.headers).get('Accept-Language')).toBe(locale);
+    }
+  } finally {
+    vi.unstubAllGlobals();
+    useLocaleStore.setState({ locale: 'ja' });
+  }
 });

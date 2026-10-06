@@ -5,6 +5,10 @@
   if (!native) return;
   let nextId = 0;
   const pending = new Map();
+  // Errors follow the language the app shows, which it sets on <html lang>.
+  const text = (japanese, english) => (
+    typeof document !== 'undefined' && document.documentElement.lang === 'ja' ? japanese : english
+  );
   native.onmessage = ({ data }) => {
     const message = JSON.parse(data);
     const request = pending.get(message.id);
@@ -15,15 +19,15 @@
     else request.resolve(message.result);
   };
   const call = (method, args = {}) => new Promise((resolve, reject) => {
-    if (pending.size >= 64) return reject(new Error('操作が混み合っています。'));
+    if (pending.size >= 64) return reject(new Error(text('操作が混み合っています。', 'Too many actions at once.')));
     const id = ++nextId;
-    const timer = setTimeout(() => { pending.delete(id); reject(new Error('操作が完了しませんでした。')); }, method === 'beginSave' ? 300000 : 30000);
+    const timer = setTimeout(() => { pending.delete(id); reject(new Error(text('操作が完了しませんでした。', 'The action did not finish.'))); }, method === 'beginSave' ? 300000 : 30000);
     pending.set(id, { resolve, reject, timer });
     native.postMessage(JSON.stringify({ id, method, args }));
   });
   const bridge = Object.freeze({
     getInfo: () => call('info'),
-    configureServer: () => Promise.reject(new Error('接続先はアプリの設定から変更してください。')),
+    configureServer: () => Promise.reject(new Error(text('接続先はアプリの設定から変更してください。', 'Change the server in the app settings.'))),
     setIdleLockMinutes: (minutes) => call('idle', { minutes }),
     lockNow: () => call('lock'),
     unlockComplete: () => call('unlock'),

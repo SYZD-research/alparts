@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld('alpartsDesktop', Object.freeze({
   clearHttpCache: () => ipcRenderer.invoke('desktop:clear-http-cache'),
   unlockComplete: () => ipcRenderer.invoke('desktop:unlock-complete'),
   showConnectionSettings: () => ipcRenderer.invoke('desktop:show-connection-settings'),
+  setLanguage: (locale: string) => ipcRenderer.invoke('desktop:set-language', locale),
   secrets: Object.freeze({
     get: (name: string) => ipcRenderer.invoke('desktop:secret-get', name),
     set: (name: string, value: string) => ipcRenderer.invoke('desktop:secret-set', name, value),

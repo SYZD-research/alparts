@@ -3,7 +3,7 @@ import type { User } from '@alparts/shared';
 import type { AlpartsDesktopInfo } from '../../types/desktop';
 import { getDesktopBridge } from '../../services/desktop.service';
 import { lockAuthenticatedClient, unlockAuthenticatedClient, useAuthStore } from '../../stores/auth.store';
-import { useT } from '../../i18n';
+import { useLocale, useT } from '../../i18n';
 import { LanguageSelect } from '../settings/LanguageSelect';
 
 type BoundaryState =
@@ -13,6 +13,7 @@ type BoundaryState =
 
 export function DesktopBoundary({ children }: { children: React.ReactNode }) {
   const t = useT();
+  const locale = useLocale();
   const bridge = getDesktopBridge();
   const [state, setState] = useState<BoundaryState>(bridge ? { kind: 'loading' } : {
     kind: 'ready',
@@ -51,6 +52,10 @@ export function DesktopBoundary({ children }: { children: React.ReactNode }) {
       stopSettings();
     };
   }, [bridge]);
+
+  useEffect(() => {
+    void bridge?.setLanguage?.(locale).catch(() => undefined);
+  }, [bridge, locale]);
 
   if (!bridge) return <>{children}</>;
   if (state.kind === 'loading') return <FullPageStatus message={t('アプリを準備しています…')} />;

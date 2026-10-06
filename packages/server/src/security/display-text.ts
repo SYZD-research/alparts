@@ -9,8 +9,8 @@ const UNSAFE_DISPLAY_TEXT = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\u034f\u115f\u1160\u17b4\u
 // spaces and combining marks alone would render as an invisible identity.
 const VISIBLE_DISPLAY_TEXT = /[\p{L}\p{N}\p{P}\p{S}]/u;
 export function displayText(maxLength = 100, allowEmpty = false) {
-  return z.string().refine((text) => !UNSAFE_DISPLAY_TEXT.test(text), '名前に使用できない文字が含まれています。')
+  return z.string().refine((text) => !UNSAFE_DISPLAY_TEXT.test(text), 'The name contains characters that cannot be used.')
     .transform((text) => text.normalize('NFC').trim())
     .pipe(z.string().min(allowEmpty ? 0 : 1).max(maxLength))
-    .refine((text) => text.length === 0 || VISIBLE_DISPLAY_TEXT.test(text), '名前に表示できる文字を含めてください。');
+    .refine((text) => text.length === 0 || VISIBLE_DISPLAY_TEXT.test(text), 'The name must contain visible characters.');
 }

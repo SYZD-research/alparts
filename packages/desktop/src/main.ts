@@ -35,6 +35,7 @@ import {
 import { SettingsStore, type DesktopSettings } from './settings.js';
 import { SecretVault, type VaultCrypto } from './vault.js';
 import { NativeFileSaveManager } from './file-save.js';
+import { desktopLocale, desktopStrings, normalizeDesktopLocale, type DesktopLocale } from './strings.js';
 
 const PARTITION = 'persist:alparts';
 const MAX_WINDOW_DIMENSION = 16_384;
@@ -67,6 +68,8 @@ let idleTimer: NodeJS.Timeout | null = null;
 let quitAfterCleanup = false;
 let runtimeReady = false;
 let transportPins: TransportPins = {};
+// The system language until the app reports the language the user chose.
+let locale: DesktopLocale = 'en';
 
 const singleInstance = app.requestSingleInstanceLock();
 if (!singleInstance) app.quit();
@@ -99,6 +102,7 @@ app.on('activate', () => {
 
 if (singleInstance) {
   void app.whenReady().then(async () => {
+    locale = desktopLocale(app.getPreferredSystemLanguages());
     DEVELOPMENT_URL = readDevelopmentUrl();
     transportPins = parseTransportPins(JSON.parse(await readFile(new URL('./transport-pins.json', import.meta.url), 'utf8')), app.isPackaged);
     MANAGED_SERVER_URL = readManagedServerUrl();
@@ -122,9 +126,9 @@ if (singleInstance) {
     fileSaves = new NativeFileSaveManager(async (suggestedName) => {
       if (!mainWindow || mainWindow.isDestroyed()) return null;
       const result = await dialog.showSaveDialog(mainWindow, {
-        title: '添付ファイルを保存',
+        title: desktopStrings(locale).saveAttachmentTitle,
         defaultPath: suggestedName,
-        buttonLabel: '保存',
+        buttonLabel: desktopStrings(locale).saveButton,
         properties: ['showOverwriteConfirmation', 'createDirectory'],
       });
       return result.canceled || !result.filePath ? null : result.filePath;
@@ -139,10 +143,8 @@ if (singleInstance) {
     await createWindow();
   }).catch((error: unknown) => {
     if (!app.isPackaged) console.error(error);
-    dialog.showErrorBox(
-      'alpartsを開始できません',
-      'アプリを開始できませんでした。アプリを終了し、もう一度起動してください。',
-    );
+    const text = desktopStrings(locale);
+    dialog.showErrorBox(text.startFailedTitle, text.startFailedMessage);
     app.exit(1);
   });
 }
@@ -386,6 +388,14 @@ function registerIpcHandlers(): void {
     lockTriggered = false;
     return true;
   }));
+  ipcMain.handle('desktop:set-language', checked(async (_event, value: unknown) => {
+    const next = normalizeDesktopLocale(value);
+    if (next !== locale) {
+      locale = next;
+      installApplicationMenu();
+    }
+    return true;
+  }));
   ipcMain.handle('desktop:show-connection-settings', checked(async () => {
     mainWindow?.webContents.send('desktop:show-connection-settings');
     return true;
@@ -485,6 +495,7 @@ function triggerLock(): void {
 }
 
 function installApplicationMenu(): void {
+  const text = desktopStrings(locale);
   const template: Electron.MenuItemConstructorOptions[] = [
     ...(process.platform === 'darwin' ? [{
       label: app.name,
@@ -499,11 +510,11 @@ function installApplicationMenu(): void {
       ],
     }] : []),
     {
-      label: 'アプリ',
+      label: text.appMenu,
       submenu: [
-        { label: 'ロック', accelerator: 'CmdOrCtrl+Shift+L', click: triggerLock },
+        { label: text.lock, accelerator: 'CmdOrCtrl+Shift+L', click: triggerLock },
         {
-          label: '接続先を変更',
+          label: text.changeServer,
           enabled: !MANAGED_SERVER_URL,
           click: () => mainWindow?.webContents.send('desktop:show-connection-settings'),
         },
@@ -511,9 +522,9 @@ function installApplicationMenu(): void {
         process.platform === 'darwin' ? { role: 'close' } : { role: 'quit' },
       ],
     },
-    { label: '編集', submenu: [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] },
-    { label: '表示', submenu: [{ role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }, { role: 'togglefullscreen' }] },
-    { label: 'ウィンドウ', submenu: [{ role: 'minimize' }, { role: 'close' }] },
+    { label: text.editMenu, submenu: [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] },
+    { label: text.viewMenu, submenu: [{ role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }, { role: 'togglefullscreen' }] },
+    { label: text.windowMenu, submenu: [{ role: 'minimize' }, { role: 'close' }] },
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }

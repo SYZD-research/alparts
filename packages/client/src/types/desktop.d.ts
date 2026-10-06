@@ -18,6 +18,8 @@ export interface AlpartsDesktopBridge {
   clearHttpCache(): Promise<boolean>;
   unlockComplete(): Promise<boolean>;
   showConnectionSettings(): Promise<boolean>;
+  /** Native menus and dialogs follow the language chosen in the app. */
+  setLanguage?(locale: 'ja' | 'en'): Promise<boolean>;
   secrets: {
     get(name: string): Promise<string | null>;
     set(name: string, value: string): Promise<boolean>;

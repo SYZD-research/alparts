@@ -27,7 +27,7 @@ export async function sensitiveActionBoundary(req: AuthRequest, res: Response, n
         res.status(428).json({
           error: 'STEP_UP_REQUIRED',
           purpose,
-          message: '続けるには本人確認が必要です。',
+          message: 'Confirm your identity to continue.',
         });
         return;
       }
