@@ -1709,6 +1709,34 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     });
     assert.equal(privateBookmarkProbe.status, 404);
 
+    // The workspace log shows activity inside a channel only to viewers who
+    // can see that channel, and never shows anyone's own settings or bookmarks.
+    type AuditRow = { action: string; actorId: string | null; targetId: string | null; details: Record<string, unknown> | null };
+    const readWholeAuditLog = async (cookie: string) => {
+      const rows: AuditRow[] = [];
+      let cursor: string | null = null;
+      for (let page = 0; page < 100; page += 1) {
+        const body: { data: AuditRow[]; hasMore: boolean; cursor: string | null } = await json(await request(
+          `/api/workspaces/${workspace.id}/audit-logs?limit=100${cursor ? `&cursor=${cursor}` : ''}`,
+          { method: 'POST', cookie, body: {} },
+        ));
+        rows.push(...body.data);
+        if (!body.hasMore) return rows;
+        cursor = body.cursor;
+      }
+      throw new Error('audit log did not end');
+    };
+    const insidePrivateChannel = (row: AuditRow) => row.details?.channelId === privateChannel.id
+      || (row.targetId === privateChannel.id && /^(channel\.key|channel\.member)\./.test(row.action));
+    const personal = (row: AuditRow) => /^(channel\.preference|message\.bookmark)\./.test(row.action);
+    const reviewerView = await readWholeAuditLog(bob.cookie);
+    assert.equal(reviewerView.some((row) => row.action === 'channel.create' && row.targetId === privateChannel.id), true);
+    assert.equal(reviewerView.some(insidePrivateChannel), false);
+    assert.equal(reviewerView.some(personal), false);
+    const ownerView = await readWholeAuditLog(alice.cookie);
+    assert.equal(ownerView.some((row) => row.action === 'message.create' && row.details?.channelId === privateChannel.id), true);
+    assert.equal(ownerView.some(personal), false);
+
     const reactionRealtime = onceSocketEvent<Record<string, unknown>>(aliceSocket, 'message:reaction');
     const reactionResponse = await request(`/api/messages/${message.id}/reactions`, {
       method: 'POST', cookie: alice.cookie, body: { emoji: '👍' },
