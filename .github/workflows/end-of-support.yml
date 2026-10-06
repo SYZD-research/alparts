@@ -1,0 +1,80 @@
+name: End of support
+
+# Weekly check for runtimes past (or near) their published end-of-life and
+# npm packages that are deprecated or stuck on an unmaintained release line.
+# Findings are kept in one labelled issue: opening it or a change in what is
+# found notifies the repository's watchers (and the optional assignee set in
+# the END_OF_SUPPORT_ASSIGNEE repository variable). Closing the issue by hand
+# silences the same findings until they change.
+
+on:
+  schedule:
+    - cron: "37 0 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: end-of-support
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24.8.0"
+      - name: Check dependencies
+        id: check
+        run: node scripts/deps/end-of-support.mjs --output "$RUNNER_TEMP/end-of-support.md"
+      - name: Open, update or close the tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          FINDINGS: ${{ steps.check.outputs.findings }}
+          FINGERPRINT: ${{ steps.check.outputs.fingerprint }}
+          ASSIGNEE: ${{ vars.END_OF_SUPPORT_ASSIGNEE }}
+        run: |
+          set -euo pipefail
+          report="$RUNNER_TEMP/end-of-support.md"
+          label=end-of-support
+          marker="end-of-support:$FINGERPRINT"
+          gh label create "$label" --color B60205 \
+            --description "サポートが終了した依存関係" --force >/dev/null
+
+          open=$(gh issue list --label "$label" --state open --limit 1 --json number --jq '.[0].number // empty')
+          if [ "$FINDINGS" = 0 ]; then
+            if [ -n "$open" ]; then
+              # Replace the body first so its marker cannot later be mistaken
+              # for findings someone closed by hand.
+              gh issue edit "$open" --body-file "$report" >/dev/null
+              gh issue close "$open" --comment "該当する依存関係がなくなったため閉じます。"
+            fi
+            exit 0
+          fi
+
+          if [ -n "$open" ]; then
+            previous=$(gh issue view "$open" --json body --jq .body)
+            gh issue edit "$open" --body-file "$report" >/dev/null
+            if ! grep -qF "$marker" <<<"$previous"; then
+              gh issue comment "$open" --body "検出内容が変わりました。最新の一覧は本文を確認してください。"
+            fi
+            exit 0
+          fi
+
+          dismissed=$(gh issue list --label "$label" --state closed --limit 1 --json body --jq '.[0].body // empty')
+          if grep -qF "$marker" <<<"$dismissed"; then
+            echo "The same findings were closed by hand; not reopening."
+            exit 0
+          fi
+          gh issue create --title "サポート終了・保守停止の依存関係" --label "$label" \
+            --body-file "$report" ${ASSIGNEE:+--assignee "$ASSIGNEE"}
