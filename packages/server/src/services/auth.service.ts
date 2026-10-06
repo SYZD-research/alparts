@@ -16,6 +16,7 @@ import {
   lockInvitationForConsumption,
   preflightRegistrationInvitation,
 } from './invitation.service.js';
+import { consumeRegistrationCode, emailVerificationRequired, sendRegistrationCode } from './email-verification.service.js';
 
 const SALT_ROUNDS = 12;
 const DUMMY_PASSWORD_HASH = protectPasswordHash('$2b$12$DuhNW97PNP4tI0drdrcUqexxVq.nFCoTXyiFW3mvHNmBgkM7guOJq');
@@ -31,17 +32,34 @@ export async function hashNewPassword(password: string): Promise<string> {
   return hashPassword(password, SALT_ROUNDS);
 }
 
+/**
+ * First registration step: checks the invitation, then mails a code that
+ * proves the address. Returns false when this deployment does not ask for one.
+ */
+export async function requestRegistrationCode(email: string, inviteToken: string): Promise<boolean> {
+  if (!emailVerificationRequired()) return false;
+  const normalizedEmail = normalizeEmail(email);
+  const bootstrap = matchesSecret(inviteToken, config.auth.registrationInviteSecret);
+  await preflightRegistrationInvitation(normalizedEmail, inviteToken, bootstrap);
+  await sendRegistrationCode(normalizedEmail);
+  return true;
+}
+
 export async function register(
   email: string,
   password: string,
   displayName: string,
   inviteToken: string,
+  emailCode?: string,
 ) {
   return runPublicAuthentication(async () => {
     assertPasswordSupported(password);
     const normalizedEmail = normalizeEmail(email);
     const bootstrap = matchesSecret(inviteToken, config.auth.registrationInviteSecret);
     await preflightRegistrationInvitation(normalizedEmail, inviteToken, bootstrap);
+    // Only the owner of the address can finish, so a leaked invitation cannot
+    // claim someone else's address.
+    await consumeRegistrationCode(normalizedEmail, emailCode);
     const passwordHash = await hashPassword(password, SALT_ROUNDS);
     let result;
     try {

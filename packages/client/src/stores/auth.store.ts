@@ -15,7 +15,8 @@ interface AuthState {
   error: string | null;
   loginPasskey: () => Promise<void>;
   login: (email: string, password: string) => Promise<void>;
-  register: (email: string, password: string, displayName: string, inviteToken: string) => Promise<void>;
+  /** Without emailCode, mails a code first; resolves 'code-sent' when one is needed. */
+  register: (email: string, password: string, displayName: string, inviteToken: string, emailCode?: string) => Promise<'code-sent' | 'registered'>;
   logout: () => Promise<void>;
   loadUser: () => Promise<void>;
 }
@@ -91,13 +92,18 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     }
   },
 
-  register: async (email, password, displayName, inviteToken) => {
+  register: async (email, password, displayName, inviteToken, emailCode) => {
     const generation = authenticationGeneration;
     set({ isLoading: true, error: null });
     try {
-      await api.register(email, password, displayName, inviteToken);
-      if (generation !== authenticationGeneration) return;
+      if (!emailCode && (await api.requestRegistrationCode(email, inviteToken)).required) {
+        if (generation === authenticationGeneration) set({ isLoading: false });
+        return 'code-sent';
+      }
+      await api.register(email, password, displayName, inviteToken, emailCode);
+      if (generation !== authenticationGeneration) return 'registered';
       await get().login(email, password);
+      return 'registered';
     } catch (error) {
       if (generation !== authenticationGeneration) throw error;
       set({ error: authErrorMessage(error, 'register'), isLoading: false, isInitialized: true });
