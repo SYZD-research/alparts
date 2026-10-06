@@ -62,6 +62,7 @@ BACKUP_FILE="$1"
 for dependency in age awk chmod cmp cut find grep jq mkdir mktemp pg_restore psql rclone rm sed sha256sum sort stat tar uniq wc; do
   require_command "$dependency"
 done
+require_storage_tool
 
 reject_legacy_storage_settings
 [[ "${ALPARTS_RESTORE_ACK-}" == 'RESTORE_TO_EMPTY_DISPOSABLE_TARGETS' ]] \

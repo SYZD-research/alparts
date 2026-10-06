@@ -206,9 +206,11 @@ jobs:
             postgresql "$DATABASE_USER" "$DATABASE_PASSWORD" 127.0.0.1 5432 "$DATABASE_NAME"
           export DATABASE_URL
           container_name=alparts-ci-oci-smoke
+          audit_volume=alparts-ci-oci-audit
           cleanup() {
             docker rm --force "$container_name" >/dev/null 2>&1 || true
             docker rm --force alparts-ci-supply-s3 >/dev/null 2>&1 || true
+            docker volume rm --force "$audit_volume" >/dev/null 2>&1 || true
           }
           trap cleanup EXIT
 
@@ -273,14 +275,19 @@ jobs:
             --security-opt no-new-privileges "${migration_env[@]}" "$IMAGE_REF" \
             node packages/server/dist/scripts/migrate-runtime.js
 
+          # Provision the checkpoint in a volume, then start the image's own
+          # command, so the production Node permission flags are exercised.
+          docker volume create "$audit_volume" >/dev/null
+          docker run --rm --network host --read-only \
+            --tmpfs /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777 \
+            --volume "$audit_volume:/var/lib/alparts-audit" \
+            --cap-drop ALL --security-opt no-new-privileges "${runtime_env[@]}" "$IMAGE_REF" \
+            node packages/server/dist/scripts/initialize-audit-checkpoint.js
           docker run --detach --name "$container_name" --network host --read-only \
             --tmpfs /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777 \
-            --tmpfs /var/lib/alparts-audit:rw,noexec,nosuid,nodev,uid=1000,gid=1000,mode=0700 \
+            --volume "$audit_volume:/var/lib/alparts-audit" \
             --cap-drop ALL --security-opt no-new-privileges --pids-limit 256 \
-            --memory 1g --cpus 2 "${runtime_env[@]}" "$IMAGE_REF" sh -ec '
-              node packages/server/dist/scripts/initialize-audit-checkpoint.js
-              exec node packages/server/dist/index.js
-            '
+            --memory 1g --cpus 2 "${runtime_env[@]}" "$IMAGE_REF"
 
           ready=false
           for attempt in {1..30}; do

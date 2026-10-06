@@ -14,7 +14,7 @@
 
    - `/health/startup`: startupが完了したか。
    - `/health/live`: process event loopがHTTPを処理できるか。
-   - `/health/ready`: drain中ではなく、PostgreSQL、設定したオブジェクトストレージのbucket、audit checkpointが利用可能か。
+   - `/health/ready`: drain中ではなく、PostgreSQL、設定したオブジェクトストレージのbucket（起動後に消えていないことを毎回確認する）、audit checkpointが利用可能か。
 
 Processはlisten前にaudit HMAC chainを全件検証する。失敗はsecurity incidentである。起動させる目的でaudit rowやcheckpointを書き換えたり削除したりしない。
 
@@ -101,7 +101,7 @@ Shutdownをbackupのquiesce mechanismとして暗黙に扱わない。Database�
 
 ## Automated single-host backup
 
-`deploy/alparts-backup.timer` はdaily + random delay + persistentでoneshot serviceを起動する。`scripts/backup-under-systemd.sh` はflockで重複を拒否し、対象serviceがactiveでなければ状態を変更せず失敗し、stop後だけquiesce assertionを設定する。成功/失敗/signalのtrapはservice再起動を試みる。Backup unitはappを自らstopするため、appへの`Requires=`関係を持たせない。
+`deploy/alparts-backup.timer` はdaily + random delay + persistentでoneshot serviceを起動する。`scripts/backup-under-systemd.sh` はflockで重複を拒否し、対象serviceがactiveでなければ状態を変更せず失敗し、appを止める前に`backup.sh --preflight`で必要なcommand（rclone 1.75.1以上を含む）と設定を確認し、stop後だけquiesce assertionを設定する。成功/失敗/signalのtrapはservice再起動を試みる。Backup unitはappを自らstopするため、appへの`Requires=`関係を持たせない。
 
 Retentionはbackup成功とapp再起動の後にだけ実行する。`scripts/prune-backups.sh` はdefault dry-run、狭い既存directory、exact filename、日数/最低copy数、`BACKUP_PRUNE_ACK=DELETE_EXPIRED_ENCRYPTED_BACKUPS`を要求する。Timer成功だけではDRにならないため、artifactのoff-host/off-region copyとrestore testを別に監視する。
 

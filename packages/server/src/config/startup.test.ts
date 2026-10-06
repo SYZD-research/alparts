@@ -104,6 +104,33 @@ describe('production startup configuration', () => {
     assert.equal(loadConfiguration(productionEnvironment()).stdout, 'loaded');
   });
 
+  it('accepts only a plain host for object storage and valid region and bucket names', () => {
+    for (const [overrides, message] of [
+      [{ S3_ENDPOINT: 'https://objects.example.test' }, /S3_ENDPOINT must be a host name or IP address/],
+      [{ S3_ENDPOINT: 'objects.example.test:9000' }, /S3_ENDPOINT must be a host name or IP address/],
+      [{ S3_REGION: 'US East 1' }, /S3_REGION must be a region name/],
+      [{ S3_BUCKET: 'Alparts_Files' }, /S3_BUCKET must be a DNS-safe bucket name/],
+      [{ AUDIT_HEAD_BUCKET: 'a..b' }, /AUDIT_HEAD_BUCKET must be a DNS-safe bucket name/],
+    ] as const) {
+      const result = loadConfiguration(productionEnvironment(overrides));
+      assert.notEqual(result.status, 0, JSON.stringify(overrides));
+      assert.match(result.stderr, message);
+    }
+    for (const endpoint of ['192.0.2.10', '[2001:db8::1]', '2001:db8::1']) {
+      assert.equal(loadConfiguration(productionEnvironment({ S3_ENDPOINT: endpoint })).status, 0, endpoint);
+    }
+  });
+
+  it('does not treat the PostgreSQL Unix-socket name as a loopback object store', () => {
+    const result = loadConfiguration(productionEnvironment({
+      S3_ENDPOINT: 'unix-socket',
+      S3_USE_SSL: 'false',
+      ALLOW_INSECURE_LOOPBACK_DEPENDENCIES: 'true',
+    }));
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /object-storage TLS may be disabled only/);
+  });
+
   it('rejects weak object-storage secrets in production', () => {
     const result = loadConfiguration(productionEnvironment({ S3_SECRET_KEY: 'short' }));
     assert.notEqual(result.status, 0);

@@ -11,6 +11,7 @@ import { after, before, describe, it } from 'node:test';
 const uploads: Array<{ headers: IncomingMessage['headers']; body: Buffer }> = [];
 let etagOverride: string | null = null;
 const listingRequests: Record<string, number> = {};
+let bucketPresent = true;
 let pageToken = 0;
 
 function listingPage(contents: string, nextToken: string | null): string {
@@ -24,6 +25,11 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
   const chunks: Buffer[] = [];
   req.on('data', (chunk: Buffer) => chunks.push(chunk));
   req.on('end', () => {
+    if (req.method === 'HEAD' && (req.url === '/alparts' || req.url === '/alparts/')) {
+      res.statusCode = bucketPresent ? 200 : 404;
+      res.end();
+      return;
+    }
     if (req.method === 'PUT') {
       const body = Buffer.concat(chunks);
       uploads.push({ headers: req.headers, body });
@@ -93,6 +99,9 @@ before(async () => {
   process.env.S3_ACCESS_KEY = 'test-access-key';
   process.env.S3_SECRET_KEY = 'test-secret-key';
   process.env.S3_REQUEST_TIMEOUT_MS = '1000';
+  // Ambient SDK endpoint switches must not redirect the configured endpoint.
+  process.env.AWS_USE_FIPS_ENDPOINT = 'true';
+  process.env.AWS_USE_DUALSTACK_ENDPOINT = 'true';
   process.env.AUDIT_HEAD_OBJECT_KEY = 'test-audit-head';
   storage = await import('./object-storage.js');
 });
@@ -186,6 +195,17 @@ describe('object storage writes and listings', () => {
     assert.ok(listingRequests['attachments/v1/loop/']! <= 2);
     await assert.rejects(storage.reconcileStoredUpload('attachments/v1/pages', new Set()), /OBJECT_STORAGE_LIST_LIMIT/);
     assert.ok(listingRequests['attachments/v1/pages/']! <= 4);
+  });
+
+  it('fails readiness once the bucket is gone, not only at startup', async () => {
+    await storage.checkObjectStorage();
+    bucketPresent = false;
+    try {
+      await assert.rejects(storage.checkObjectStorage(), /OBJECT_STORAGE_BUCKET_MISSING/);
+    } finally {
+      bucketPresent = true;
+    }
+    await storage.checkObjectStorage();
   });
 
   it('reports a listing that outlives its deadline as a storage timeout', async () => {

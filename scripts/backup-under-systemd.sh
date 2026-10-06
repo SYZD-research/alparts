@@ -31,6 +31,9 @@ systemctl is-active --quiet "$SERVICE_NAME" || {
   exit 1
 }
 
+# A missing tool or setting must fail before the application stops, not after.
+"$SCRIPT_DIR/backup.sh" --preflight
+
 restart_required=false
 restart_application() {
   local status=$?

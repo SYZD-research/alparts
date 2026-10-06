@@ -23,6 +23,8 @@ The implementation has two sources, in this order:
 
 There is no general config file, external secret-provider API, or runtime override layer. Docker secrets and systemd credentials are adapters into `NAME_FILE`. Supplying both `NAME` and `NAME_FILE` is an error. Invalid types/ranges, weak required secrets, unsafe bind/origins, missing production audit witness, or insecure non-loopback dependencies abort startup.
 
+`S3_ENDPOINT` is a bare host name or IP address (no scheme, port or path; use `S3_PORT` and `S3_USE_SSL`), and `S3_REGION`, `S3_BUCKET` and `AUDIT_HEAD_BUCKET` must be valid region and DNS-safe bucket names; anything else stops startup. Plaintext object storage is allowed only for a literal loopback address. The S3 client ignores the ambient `AWS_USE_FIPS_ENDPOINT` and `AWS_USE_DUALSTACK_ENDPOINT` switches.
+
 Registration mails a code to the address being registered. Configure `SMTP_HOST`, `SMTP_FROM`, optionally `SMTP_USER` with `SMTP_PASSWORD_FILE`, and `SMTP_SECURE=true` for TLS from the first byte; otherwise production requires STARTTLS. Without SMTP, production keeps serving existing accounts but refuses new registrations, logging `registration.unavailable` at startup, unless `EMAIL_VERIFICATION=disabled` explicitly turns the check off.
 
 The service does not silently auto-detect capabilities. Operators select an explicit reviewed mode; absence of Kubernetes/KMS/HA never disables authentication, authorization, TLS requirements, or audit integrity.
