@@ -271,7 +271,7 @@ try {
     const f = await fixture();
     const { hashPassword } = await import('../../packages/server/src/security/password-work.ts');
     const { actionPurpose } = await import('../../packages/server/src/security/action-purpose.ts');
-    const { isSensitiveAction } = await import('../../packages/shared/src/index.ts');
+    const { isSensitiveRequest } = await import('../../packages/shared/src/index.ts');
     const password = randomUUID() + randomUUID();
     await db.update(schema.users).set({ passwordHash: await hashPassword(password, 12) }).where(eq(schema.users.id, f.manager));
     const manager = await register(f.manager);
@@ -292,7 +292,7 @@ try {
         ['PUT', `/channels/${f.channelId}`, { name: 'Safe rename' }, 200],
       ] as const) {
         const headers: Record<string, string> = { Cookie: manager.cookie, Origin: 'http://localhost:5173', 'Content-Type': 'application/json' };
-        if (isSensitiveAction(method, `/api${path}`)) {
+        if (isSensitiveRequest(method, `/api${path}`, body)) {
           const purpose = actionPurpose(method, `/api${path}`, body);
           const options = await fetch(`http://127.0.0.1:${address.port}/api/auth/step-up/options`, {
             method: 'POST', headers, body: JSON.stringify({ purpose }), signal: AbortSignal.timeout(10_000),

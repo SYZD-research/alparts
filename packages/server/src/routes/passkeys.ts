@@ -11,13 +11,24 @@ import { config } from '../config/index.js';
 
 const router = Router();
 router.use('/passkeys', rateLimit({ windowMs: 15 * 60_000, max: 40 }));
+// Each sensitive action takes one options and one verify request. Wrong
+// passwords and failed passkey checks have their own, much smaller budget.
 router.use(
   '/step-up',
   authMiddleware,
   rateLimit({
     windowMs: 15 * 60_000,
-    max: 120,
+    max: 240,
     key: (req) => (req as AuthRequest).userId!,
+  }),
+);
+router.use(
+  '/step-up/verify',
+  rateLimit({
+    windowMs: 15 * 60_000,
+    max: 10,
+    key: (req) => (req as AuthRequest).userId!,
+    failuresOnly: true,
   }),
 );
 const responseSchema = z
