@@ -36,6 +36,8 @@ const loginSchema = z.object({
   }).strict().optional(),
 }).strict();
 const reauthenticateSchema = z.object({ password: loginPassword }).strict();
+const changePasswordSchema = z.object({ newPassword: password }).strict();
+const passwordLoginSchema = z.object({ enabled: z.boolean() }).strict();
 
 const registrationLimit = rateLimit({ windowMs: 60 * 60 * 1000, max: 5, key: credentialRateLimitKey });
 const loginLimit = rateLimit({ windowMs: 15 * 60 * 1000, max: 8, key: credentialRateLimitKey });
@@ -55,7 +57,17 @@ const reauthenticateLimit = rateLimit({
   max: 8,
   key: (req) => (req as AuthRequest).userId || requestSource(req),
 });
+const passwordSettingsLimit = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 10,
+  key: (req) => (req as AuthRequest).userId || requestSource(req),
+});
 const sessionIdSchema = z.string().uuid();
+
+function disconnectSessions(req: AuthRequest, sessionIds: string[]): void {
+  const io = req.app.get('io') as SocketServer | undefined;
+  for (const sessionId of sessionIds) io?.in(`session:${sessionId}`).disconnectSockets(true);
+}
 
 router.post('/register', registrationIpLimit, registrationLimit, async (req, res) => {
   try {
@@ -131,6 +143,56 @@ router.post('/reauthenticate', authMiddleware, reauthenticateLimit, async (req: 
   }
 });
 
+// Both password settings need a step-up confirmation (isSensitiveAction).
+router.put('/password', authMiddleware, passwordSettingsLimit, async (req: AuthRequest, res) => {
+  try {
+    const body = changePasswordSchema.parse(req.body);
+    const revoked = await authService.changePassword(req.userId!, req.sessionId!, body.newPassword);
+    disconnectSessions(req, revoked);
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ success: true, revoked: revoked.length });
+  } catch (error: any) {
+    if (error.name === 'ZodError' || error.message === 'INVALID_PASSWORD_LENGTH') {
+      res.status(400).json({ error: 'VALIDATION', message: 'Invalid password data', statusCode: 400 });
+      return;
+    }
+    if (error.message === 'INVALID_CREDENTIALS') {
+      res.status(403).json({ error: 'FORBIDDEN', message: 'Not allowed', statusCode: 403 });
+      return;
+    }
+    throw error;
+  }
+});
+
+router.get('/password-login', authMiddleware, async (req: AuthRequest, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ enabled: await authService.isPasswordLoginEnabled(req.userId!) });
+});
+
+router.put('/password-login', authMiddleware, passwordSettingsLimit, async (req: AuthRequest, res) => {
+  try {
+    const body = passwordLoginSchema.parse(req.body);
+    const revoked = await authService.setPasswordLogin(req.userId!, req.sessionId!, body.enabled);
+    disconnectSessions(req, revoked);
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ success: true, enabled: body.enabled, revoked: revoked.length });
+  } catch (error: any) {
+    if (error.name === 'ZodError') {
+      res.status(400).json({ error: 'VALIDATION', message: 'Invalid setting', statusCode: 400 });
+      return;
+    }
+    if (error.message === 'PASSKEY_REQUIRED') {
+      res.status(409).json({ error: 'PASSKEY_REQUIRED', message: 'Add a passkey first', statusCode: 409 });
+      return;
+    }
+    if (error.message === 'INVALID_CREDENTIALS') {
+      res.status(403).json({ error: 'FORBIDDEN', message: 'Not allowed', statusCode: 403 });
+      return;
+    }
+    throw error;
+  }
+});
+
 router.get('/me', authMiddleware, async (req: AuthRequest, res) => {
   const user = await authService.getUserById(req.userId!);
   if (!user) {
@@ -159,8 +221,7 @@ router.delete('/sessions/:id', authMiddleware, async (req: AuthRequest, res) => 
 
 router.delete('/sessions', authMiddleware, async (req: AuthRequest, res) => {
   const sessionIds = await authService.revokeAllSessions(req.userId!);
-  const io = req.app.get('io') as SocketServer | undefined;
-  for (const sessionId of sessionIds) io?.in(`session:${sessionId}`).disconnectSockets(true);
+  disconnectSessions(req, sessionIds);
   res.setHeader('Set-Cookie', expiredSessionCookie());
   res.json({ success: true, revoked: sessionIds.length });
 });

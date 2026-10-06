@@ -27,6 +27,8 @@ export const users = pgTable('users', {
   avatarUrl: text('avatar_url'),
   status: text('status').default('offline').notNull(),
   disabledAt: timestamp('disabled_at', { withTimezone: true }),
+  // Set by the user once a passkey exists; an operator reset clears it.
+  passwordLoginDisabled: boolean('password_login_disabled').default(false).notNull(),
   bio: text('bio'),
   avatarObjectKey: text('avatar_object_key'),
   profileUpdatedAt: timestamp('profile_updated_at', { withTimezone: true }),

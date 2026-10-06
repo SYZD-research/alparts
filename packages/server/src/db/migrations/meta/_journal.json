@@ -148,6 +148,13 @@
       "when": 1791154800000,
       "tag": "0020_forum",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1791241200000,
+      "tag": "0021_password_login",
+      "breakpoints": true
     }
   ]
 }

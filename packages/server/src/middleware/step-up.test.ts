@@ -21,3 +21,11 @@ describe('identity confirmation for channel changes (SEC-02)', () => {
     assert.equal(isSensitiveRequest('DELETE', '/api/channels/c1', undefined), true);
   });
 });
+
+describe('identity confirmation for password settings (SEC-06)', () => {
+  it('requires it to change the password or the password login setting', () => {
+    assert.equal(isSensitiveRequest('PUT', '/api/auth/password', { newPassword: 'x' }), true);
+    assert.equal(isSensitiveRequest('PUT', '/api/auth/password-login', { enabled: false }), true);
+    assert.equal(isSensitiveRequest('GET', '/api/auth/password-login', undefined), false);
+  });
+});

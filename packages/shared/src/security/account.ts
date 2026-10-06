@@ -79,6 +79,7 @@ export function isSensitiveAction(method: string, path: string): boolean {
   return (
     (path.startsWith('/api/devices/') && (method === 'DELETE' || path.endsWith('/approve'))) ||
     (path.startsWith('/api/auth/sessions') && method === 'DELETE') ||
+    ((path === '/api/auth/password' || path === '/api/auth/password-login') && method === 'PUT') ||
     path === '/api/auth/passkeys/register/options' ||
     (path.startsWith('/api/auth/passkeys/') && method === 'DELETE') ||
     (path === '/api/recovery/configure' || path === '/api/recovery/access') ||

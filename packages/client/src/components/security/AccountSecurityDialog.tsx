@@ -4,6 +4,7 @@ import { canUsePasskeys, registerPasskey } from '../../services/passkey.service'
 import { deviceDecision } from '../../services/directory.service';
 import { sha256 } from '../../services/security-storage';
 import { HistoryRecoverySettings } from './HistoryRecoverySettings';
+import { PasswordSettings } from './PasswordSettings';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { Device } from '@alparts/shared';
 import { ApiError, api, type AuthSession } from '../../services/api';
@@ -408,6 +409,14 @@ export function AccountSecurityDialog() {
             </p>
           )}
         </section>
+        {open && (
+          <PasswordSettings
+            hasPasskey={passkeys.length > 0}
+            onChanged={() => {
+              void loadSecurityState();
+            }}
+          />
+        )}
         <DirectoryCheckpoint />
         <HistoryRecoverySettings />
         <DesktopSecuritySettings />
