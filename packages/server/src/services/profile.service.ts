@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto';
-import type { Readable } from 'node:stream';
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { Permissions, type MemberProfile, type OwnProfile, type ProfileAppealStatus, type ProfileFlagEntry } from '@alparts/shared';
 import { db } from '../db/index.js';
@@ -13,7 +12,7 @@ import {
   lockWorkspaceForAuthorization,
   type WorkspaceAuthorizationSnapshot,
 } from './authorization.service.js';
-import { getStoredObject, putStoredObject, removeStoredObjectBestEffort } from './object-storage.js';
+import { putStoredObject, readStoredObject, removeStoredObjectBestEffort } from './object-storage.js';
 
 function avatarPath(userId: string, version: string): string {
   return `/api/users/${userId}/avatar/${version}`;
@@ -67,17 +66,10 @@ async function isCurrentAvatar(userId: string, image: Buffer, store = db): Promi
   if (!user) throw new Error('USER_NOT_FOUND');
   if (!user.avatarObjectKey || !user.avatarUrl) return null;
   try {
-    const chunks: Buffer[] = [];
-    let size = 0;
-    for await (const part of await getStoredObject(user.avatarObjectKey)) {
-      const buffer = Buffer.isBuffer(part) ? part : Buffer.from(part);
-      size += buffer.length;
-      if (size > MAX_AVATAR_BYTES) return null;
-      chunks.push(buffer);
-    }
+    const stored = await readStoredObject(user.avatarObjectKey, MAX_AVATAR_BYTES);
     // Previously stored avatars may use different PNG row filters. Compare
     // canonical pixels for those too, without requiring a storage migration.
-    return sanitizeAvatarPng(Buffer.concat(chunks)).equals(image) ? user.avatarUrl : null;
+    return sanitizeAvatarPng(stored).equals(image) ? user.avatarUrl : null;
   } catch {
     return null;
   }
@@ -159,11 +151,11 @@ export async function removeAvatar(userId: string) {
 }
 
 /** Avatars are visible to the user and to anyone sharing a workspace with them. */
-export async function openAvatar(requesterId: string, userId: string, version: string): Promise<Readable | null> {
+export async function readAvatar(requesterId: string, userId: string, version: string): Promise<Buffer | null> {
   const user = await db.query.users.findFirst({ columns: { avatarObjectKey: true }, where: eq(users.id, userId) });
   if (!user?.avatarObjectKey || user.avatarObjectKey !== `avatars/v1/${userId}/${version}`) return null;
   if (requesterId !== userId && !await sharesWorkspace(requesterId, userId)) return null;
-  return getStoredObject(user.avatarObjectKey);
+  return readStoredObject(user.avatarObjectKey, MAX_AVATAR_BYTES);
 }
 
 async function sharesWorkspace(left: string, right: string): Promise<boolean> {

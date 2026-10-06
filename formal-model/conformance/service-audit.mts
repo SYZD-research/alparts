@@ -442,11 +442,9 @@ try {
     try {
       const result = await profiles.setAvatar(f.subject, samePixelsPng(0));
       assert.ok(injected, 'fault injection must actually fire');
-      const stream = await profiles.openAvatar(f.subject, f.subject, result.avatarUrl.split('/').at(-1)!);
-      assert.ok(stream);
-      const chunks: Buffer[] = [];
-      for await (const data of stream) chunks.push(Buffer.from(data));
-      assert.ok(Buffer.concat(chunks).equals(sanitizeAvatarPng(samePixelsPng(0))));
+      const image = await profiles.readAvatar(f.subject, f.subject, result.avatarUrl.split('/').at(-1)!);
+      assert.ok(image);
+      assert.ok(image.equals(sanitizeAvatarPng(samePixelsPng(0))));
     } finally { db.transaction = original; }
   });
 

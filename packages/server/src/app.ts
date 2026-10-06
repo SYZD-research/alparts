@@ -53,6 +53,9 @@ const DOMAIN_ERROR_STATUS: Record<string, { status: number; message: string; ret
   DEVICE_CHALLENGE_CAPACITY: { status: 503, message: 'Device verification is temporarily busy', retryAfter: '5' },
   CHANNEL_NOT_FOUND: { status: 404, message: 'Channel not found' },
   NOT_AUTHORIZED: { status: 403, message: 'Not authorized' },
+  OBJECT_STORAGE_BUSY: { status: 503, message: 'Storage is temporarily busy', retryAfter: '5' },
+  OBJECT_STORAGE_TIMEOUT: { status: 503, message: 'Storage did not respond in time', retryAfter: '5' },
+  RUNTIME_LEASE_UNCONFIRMED: { status: 503, message: 'Service is temporarily unavailable', retryAfter: '5' },
 };
 
 export function createApp() {

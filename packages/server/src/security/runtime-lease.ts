@@ -5,6 +5,10 @@ import { db } from '../db/index.js';
 
 const OWNER_LOCK = 1095520341;
 const DRAIN_LOCK = 1095520342;
+const OWNER_LOCK_HELD = `select 1 from pg_locks
+  where locktype = 'advisory' and pid = $1 and classid = 0
+  and objid = $2 and objsubid = 1 and granted
+  and database = (select oid from pg_database where datname = current_database())`;
 let current: RuntimeLease | undefined;
 
 /** A dedicated, non-reconnecting PostgreSQL session enforces the supported
@@ -12,6 +16,7 @@ let current: RuntimeLease | undefined;
  * persistence, so a replacement waits for already-admitted work to finish. */
 export class RuntimeLease {
   private valid = true;
+  private pendingCheck: Promise<void> | null = null;
   private listeners = new Set<() => void>();
   private disabledListeners = new Set<(userId: string) => void>();
   constructor(
@@ -41,15 +46,43 @@ export class RuntimeLease {
     this.listeners.add(listener);
     if (!this.valid) listener();
   }
-  async check(store: any = db): Promise<void> {
+  /** Without a store, the check asks the lease's own session, so a busy
+   * connection pool is never mistaken for a lost lease. Concurrent callers
+   * share one query. */
+  async check(store?: any): Promise<void> {
     if (!this.valid) throw new Error('RUNTIME_LEASE_LOST');
+    if (store) return this.checkWithin(store);
+    this.pendingCheck ??= this.checkSession().finally(() => {
+      this.pendingCheck = null;
+    });
+    return this.pendingCheck;
+  }
+  private async checkSession(): Promise<void> {
+    let held = false;
+    try {
+      held = (await this.client.query(OWNER_LOCK_HELD, [this.pid, OWNER_LOCK])).rows.length > 0;
+    } catch {
+      // This session is the lease; if it cannot answer, the lease is gone.
+    }
+    if (!held || !this.valid) {
+      this.invalidate();
+      throw new Error('RUNTIME_LEASE_LOST');
+    }
+  }
+  private async checkWithin(store: any): Promise<void> {
+    let held: boolean;
     try {
       const result = await store.execute(sql`select 1 from pg_locks
         where locktype = 'advisory' and pid = ${this.pid} and classid = 0
         and objid = ${OWNER_LOCK} and objsubid = 1 and granted
         and database = (select oid from pg_database where datname = current_database())`);
-      if (!result.rows.length || !this.valid) throw new Error('RUNTIME_LEASE_LOST');
+      held = result.rows.length > 0;
     } catch {
+      // A failed query on another connection says nothing about the lease;
+      // refuse this operation without giving up the process.
+      throw new Error('RUNTIME_LEASE_UNCONFIRMED');
+    }
+    if (!held || !this.valid) {
       this.invalidate();
       throw new Error('RUNTIME_LEASE_LOST');
     }
