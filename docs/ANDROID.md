@@ -25,6 +25,27 @@ The first launch requires a configured device screen lock and an HTTPS deploymen
 origin. The backend must serve `/api` and `/socket.io` at that origin and include
 it in `CORS_ORIGINS`. No cleartext or certificate-error bypass is provided.
 
+### Connecting to a development server over Tailscale
+
+The development server runs on plain HTTP on your PC, which the app does not
+accept. With [Tailscale](https://tailscale.com/), the PC can serve it to your
+tailnet over HTTPS with a certificate the device trusts:
+
+1. Install Tailscale on the PC and the Android device and sign both in to the
+   same tailnet.
+2. In the Tailscale admin console, under DNS, turn on MagicDNS and HTTPS
+   Certificates.
+3. Start the development server with `./dev.sh --tailscale`. It serves
+   `http://127.0.0.1:5173` to the tailnet with `tailscale serve`, allows that
+   origin for this run only (`.env` is not changed), and prints the address,
+   such as `https://your-pc.your-tailnet.ts.net`.
+4. Enter that address on the app's connection screen.
+
+The address is reachable only from devices in your tailnet; it is not
+published to the Internet. `./dev.sh down` stops serving it. A debug build
+accepts any HTTPS server with a trusted certificate; a release build accepts only
+the hosts pinned in the transport pin registry.
+
 The connection and lock screens use the shared client's dark palette and the
 existing alpaca logo. The form scrolls when space is limited, keeps a bounded
 card width on tablets, and respects the system bars and keyboard.

@@ -118,7 +118,7 @@ For Android, set up JDK 21, the Android SDK and the rest as described in the [An
 pnpm android:build
 ```
 
-The output is `packages/android/app/build/outputs/apk/debug/app-debug.apk`. From Android, connect to an HTTPS server that the device can reach. The HTTP address used for local development does not work.
+The output is `packages/android/app/build/outputs/apk/debug/app-debug.apk`. From Android, connect to an HTTPS server that the device can reach. The HTTP address used for local development does not work; to use your PC's development server from a device, start it with `./dev.sh --tailscale` (see [Connecting over Tailscale](docs/ANDROID.md#connecting-to-a-development-server-over-tailscale)).
 
 ### Stop and restart
 
