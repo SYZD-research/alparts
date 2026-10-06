@@ -21,7 +21,7 @@ import { and, eq, inArray, sql } from 'drizzle-orm';
 import pg from 'pg';
 import {
   Permissions,
-  canonicalActionBody, isSensitiveRequest, serializeDeviceDecision, serializeGroupKeyPackage, serializeMlsEpoch, type MlsEpoch, type GroupKeyPackage,
+  serializeDeviceDecision, serializeGroupKeyPackage, serializeMlsEpoch, type MlsEpoch, type GroupKeyPackage,
   serializeAttachmentEnvelope,
   serializeChannelKeyAcknowledgement,
   serializeChannelKeyEpochAbort,
@@ -3812,18 +3812,9 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
         options = {...options,body:{head,signature}};
       }
     }
-    if(options.cookie && credentials.has(options.cookie) && isSensitiveRequest(options.method ?? 'GET',path.split('?')[0],options.body)) {
-      const purpose = `${options.method} ${path.split('?')[0]} ${createHash('sha256').update(canonicalActionBody(options.body)).digest('base64url')}`;
-      const optionsResponse = await request('/api/auth/step-up/options',{method:'POST',cookie:options.cookie,body:{purpose}});
-      if(optionsResponse.status===200) {
-        const challenge = await json<any>(optionsResponse);
-        const verified = await request('/api/auth/step-up/verify',{method:'POST',cookie:options.cookie,body:{id:challenge.id,purpose,password:credentials.get(options.cookie)!.password}});
-        assert.equal(verified.status,200);headers['X-Alparts-Step-Up']=(await json<any>(verified)).token;
-      }
-    }
     const rawBody = Buffer.isBuffer(options.body) ? options.body : null;
     if (options.body !== undefined) headers['Content-Type'] = options.contentType ?? (rawBody ? 'application/octet-stream' : 'application/json');
-    const response = await fetch(`${baseUrl}${path}`, {
+    const send = () => fetch(`${baseUrl}${path}`, {
       method: options.method || 'GET',
       headers,
       body: options.body === undefined
@@ -3832,6 +3823,24 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
           ? new Uint8Array(rawBody)
           : JSON.stringify(options.body),
     });
+    let response = await send();
+    if (response.status === 428 && options.cookie && credentials.has(options.cookie)) {
+      // Like the app: confirm the identity for the purpose the server names, then resend.
+      const required = await response.clone().json().catch(() => null) as { error?: string; purpose?: string } | null;
+      if (required?.error === 'STEP_UP_REQUIRED' && required.purpose) {
+        const purpose = required.purpose;
+        const optionsResponse = await request('/api/auth/step-up/options', { method: 'POST', cookie: options.cookie, body: { purpose } });
+        if (optionsResponse.status === 200) {
+          const challenge = await json<any>(optionsResponse);
+          const verified = await request('/api/auth/step-up/verify', {
+            method: 'POST', cookie: options.cookie, body: { id: challenge.id, purpose, password: credentials.get(options.cookie)!.password },
+          });
+          assert.equal(verified.status, 200);
+          headers['X-Alparts-Step-Up'] = (await json<any>(verified)).token;
+          response = await send();
+        }
+      }
+    }
     if (response.status === 429 && response.headers.get('RateLimit-Limit') === '300') {
       // This long scenario now includes real per-action authentication. Respect
       // the unchanged production source budget rather than bypassing it.

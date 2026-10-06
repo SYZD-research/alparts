@@ -29,3 +29,13 @@ describe('identity confirmation for password settings (SEC-06)', () => {
     assert.equal(isSensitiveRequest('GET', '/api/auth/password-login', undefined), false);
   });
 });
+
+describe('step-up purposes', () => {
+  it('bind every field except passwords, which must not end up in a fast digest', async () => {
+    const { purposeFields } = await import('../security/action-purpose.js');
+    assert.deepEqual(purposeFields({ newPassword: 'typed by the user', enabled: true }), { enabled: true });
+    assert.deepEqual(purposeFields({ password: 'a', currentPassword: 'b', isPrivate: false }), { isPrivate: false });
+    assert.equal(purposeFields(null), null);
+    assert.deepEqual(purposeFields(['kept']), ['kept']);
+  });
+});

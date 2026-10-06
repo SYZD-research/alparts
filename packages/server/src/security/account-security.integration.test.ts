@@ -242,7 +242,9 @@ describe('account security end to end', { skip: !enabled }, () => {
     return data;
   }
   async function stepUp(path: string, body: unknown, method = 'POST', auth = cookie) {
-    const purpose = `${method} ${path} ${hash(canonicalActionBody(body)).toString('base64url')}`;
+    return stepUpFor(`${method} ${path} ${hash(canonicalActionBody(body)).toString('base64url')}`, auth);
+  }
+  async function stepUpFor(purpose: string, auth = cookie) {
     const options = await json(await request('/api/auth/step-up/options', { purpose }, auth));
     const proof = options.passwordAllowed
       ? { password }
@@ -255,6 +257,13 @@ describe('account security end to end', { skip: !enabled }, () => {
   }
   async function sensitive(path: string, body?: unknown, method = 'POST', auth = cookie) {
     return request(path, body, auth, method, await stepUp(path, body, method, auth));
+  }
+  /** Like the app: send, then confirm the identity for the purpose the server names. */
+  async function confirmedRequest(path: string, body: unknown, method = 'POST', auth = cookie) {
+    const first = await request(path, body, auth, method);
+    if (first.status !== 428) return first;
+    const { purpose } = await first.json() as { purpose: string };
+    return request(path, body, auth, method, await stepUpFor(purpose, auth));
   }
   /** Asks for a registration code and reads it from the development outbox. */
   async function emailCode(email: string, inviteToken: string): Promise<string> {
@@ -1487,8 +1496,8 @@ process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
     const other = await login(password);
     const newPassword = 'Changed-Account-Security-Password!';
     assert.equal((await request('/api/auth/password', { newPassword }, cookie, 'PUT')).status, 428);
-    assert.equal((await sensitive('/api/auth/password', { newPassword: 'short' }, 'PUT')).status, 400);
-    assert.ok((await json(await sensitive('/api/auth/password', { newPassword }, 'PUT'))).revoked >= 1);
+    assert.equal((await confirmedRequest('/api/auth/password', { newPassword: 'short' }, 'PUT')).status, 400);
+    assert.ok((await json(await confirmedRequest('/api/auth/password', { newPassword }, 'PUT'))).revoked >= 1);
     assert.equal((await request('/api/auth/me', undefined, other)).status, 401);
     assert.equal((await request('/api/auth/me')).status, 200, 'the login that changed it stays');
     await assert.rejects(login(password), /INVALID_CREDENTIALS/);
