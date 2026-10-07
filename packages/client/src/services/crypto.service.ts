@@ -3,6 +3,8 @@ import { padMessage, unpadMessage } from './message-padding';
 import { prepareMlsPackage, proposeMlsEpoch, deriveMlsDelivery, mlsLocator, nonMlsDeliveryAllowed, pinnedMlsVersion } from './mls.service';
 import { verifyDirectoryDevices, verifiedDirectory } from './directory.service';
 import {
+  MAX_KEY_RECIPIENTS,
+  MAX_WORKSPACE_MEMBERS,
   serializeAttachmentEnvelope,
   serializeDeviceChallengeProof,
   serializeChannelKeyAcknowledgement,
@@ -725,15 +727,12 @@ function hasAdjacentEpochStatus(
   ));
 }
 
-// Mirrors the server bounds: 50 members with at most 8 active devices each.
-const MAX_KEY_RECIPIENT_USERS = 50;
-const MAX_KEY_RECIPIENTS = MAX_KEY_RECIPIENT_USERS * 8;
 
 function assertKeyRecipientState(state: ChannelKeyRecipientState): void {
   if (
     !Array.isArray(state.recipients)
     || state.recipients.length > MAX_KEY_RECIPIENTS
-    || new Set(state.recipients.map((recipient) => recipient.userId)).size > MAX_KEY_RECIPIENT_USERS
+    || new Set(state.recipients.map((recipient) => recipient.userId)).size > MAX_WORKSPACE_MEMBERS
   ) {
     throw new Error('Server returned an unbounded channel key recipient set');
   }

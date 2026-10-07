@@ -1,4 +1,5 @@
 import {
+  MAX_KEY_RECIPIENTS,
   serializeChannelKeyFreshStart,
   serializeChannelKeyWrap,
   serializeGroupKeyPackage,
@@ -96,7 +97,7 @@ async function pruneOlderMlsPackages(owner: { userId: string; deviceId: string }
 async function validateRoster(epoch: MlsEpoch) {
   if (
     epoch.roster.length < 1 ||
-    epoch.roster.length > 400 ||
+    epoch.roster.length > MAX_KEY_RECIPIENTS ||
     new Set(epoch.roster.map((p) => p.deviceId)).size !== epoch.roster.length
   )
     throw new Error('INVALID_MLS_ROSTER');

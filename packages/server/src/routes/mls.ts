@@ -2,59 +2,13 @@ import { randomUUID } from 'node:crypto';
 import { Router, type NextFunction } from 'express';
 import type { WsAttentionNotification } from '@alparts/shared';
 import { isAccountSecurityError } from '../security/account-errors.js';
-import { z } from 'zod';
 import { authMiddleware, type AuthRequest } from '../middleware/auth.js';
 import { requireChannelAccess } from '../middleware/rbac.js';
 import { rateLimit } from '../middleware/rate-limit.js';
 import * as service from '../services/mls.service.js';
 import { proposeMlsChannelEpoch } from '../services/key.service.js';
+import { mlsEpochProposal, mlsPackage, mlsVersion } from './mls-schema.js';
 const router = Router();
-const encoded = z
-  .string()
-  .min(1)
-  .regex(/^[A-Za-z0-9+/]+={0,2}$/);
-const signature = encoded.length(88);
-const version = z.number().int().min(1).max(1_000_000);
-const pkg = z
-  .object({
-    packageId: z.string().uuid(),
-    keyPackage: encoded.max(4096),
-    signature,
-  })
-  .strict();
-const member = pkg
-  .extend({
-    deviceId: z.string().uuid(),
-    userId: z.string().uuid(),
-    identityKey: z.string().max(16_384),
-  })
-  .strict();
-const epoch = z
-  .object({
-    channelId: z.string().uuid(),
-    version,
-    previousVersion: z.number().int().min(0).max(1_000_000),
-    previousTranscript: z.string().regex(/^[a-f0-9]{64}$/),
-    keyCommitment: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
-    welcome: z.string().max(512_000),
-    commit: encoded.max(128_000),
-    roster: z.array(member).min(1).max(400),
-    directoryHeads: z
-      .array(
-        z
-          .object({
-            userId: z.string().uuid(),
-            sequence: z.number().int().min(1).max(8192),
-            hash: z.string().regex(/^[a-f0-9]{64}$/),
-          })
-          .strict(),
-      )
-      .min(1)
-      .max(50),
-    distributorDeviceId: z.string().uuid(),
-    signature,
-  })
-  .strict();
 router.use(
   '/channels/:id/mls',
   authMiddleware,
@@ -100,7 +54,7 @@ router.get(
 router.post(
   '/channels/:id/mls/packages',
   handle(async (req, res) => {
-    const body = pkg.extend({ version }).parse(req.body);
+    const body = mlsPackage.extend({ version: mlsVersion }).parse(req.body);
     const created = await service.publishKeyPackage(
       req.params.id,
       req.userId!,
@@ -128,7 +82,7 @@ router.get(
         req.params.id,
         req.userId!,
         req.deviceId!,
-        version.parse(Number(req.params.version)),
+        mlsVersion.parse(Number(req.params.version)),
       ),
     );
   }),
@@ -136,25 +90,7 @@ router.get(
 router.post(
   ['/channels/:id/mls/epochs', '/channels/:id/mls/epochs/fresh-start'],
   handle(async (req, res) => {
-    const body = z
-      .object({
-        epoch,
-        freshStartSignature: signature.optional(),
-        keys: z
-          .array(
-            z
-              .object({
-                deviceId: z.string().uuid(),
-                encryptedKey: encoded.max(2048),
-                signature,
-              })
-              .strict(),
-          )
-          .min(1)
-          .max(400),
-      })
-      .strict()
-      .parse(req.body);
+    const body = mlsEpochProposal.parse(req.body);
     if (body.epoch.channelId !== req.params.id) {
       res.sendStatus(400);
       return;

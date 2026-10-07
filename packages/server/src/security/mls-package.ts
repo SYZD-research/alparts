@@ -1,7 +1,7 @@
 import { decodeMlsMessage, getCiphersuiteFromName, getCiphersuiteImpl } from 'ts-mls';
 import { verifyKeyPackage } from 'ts-mls/keyPackage.js';
 import { verifyLeafNodeSignatureKeyPackage } from 'ts-mls/leafNode.js';
-import { MLS_CIPHERSUITE } from '@alparts/shared';
+import { MAX_MLS_KEY_PACKAGE_LENGTH, MLS_CIPHERSUITE } from '@alparts/shared';
 
 const suite = getCiphersuiteImpl(getCiphersuiteFromName(MLS_CIPHERSUITE));
 
@@ -12,7 +12,7 @@ export async function validateMlsKeyPackage(
   now = Date.now(),
 ): Promise<void> {
   try {
-    if (encoded.length > 16_384) throw new Error();
+    if (encoded.length > MAX_MLS_KEY_PACKAGE_LENGTH) throw new Error();
     const bytes = Buffer.from(encoded, 'base64');
     if (bytes.toString('base64') !== encoded) throw new Error();
     const decoded = decodeMlsMessage(bytes, 0);

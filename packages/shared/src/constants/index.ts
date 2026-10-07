@@ -74,6 +74,11 @@ export const UserStatus = {
   OFFLINE: 'offline',
 } as const;
 
+/** Group bounds shared by the server limits and the client's checks. */
+export const MAX_WORKSPACE_MEMBERS = 50;
+export const MAX_ACTIVE_DEVICES_PER_USER = 8;
+export const MAX_KEY_RECIPIENTS = MAX_ACTIVE_DEVICES_PER_USER * MAX_WORKSPACE_MEMBERS;
+
 export const MAX_MESSAGE_LENGTH = 4000;
 export const MAX_PADDED_MESSAGE_BYTES = 16_384;
 export const MAX_DIRECT_MENTION_RECIPIENTS_PER_MESSAGE = 50;

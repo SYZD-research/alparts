@@ -15,6 +15,7 @@ import { verifyDevicePayloadSignature } from '../security/message.js';
 import { lockWorkspaceForAuthorization } from './authorization.service.js';
 import { channels } from '../db/schema.js';
 import { directoryHead } from './directory.service.js';
+import { MAX_KEY_RECIPIENTS } from '../security/limits.js';
 
 export async function publishKeyPackage(
   channelId: string,
@@ -113,7 +114,7 @@ export async function groupPackages(channelId: string, userId: string, deviceId:
           ),
         )
         .orderBy(asc(mlsKeyPackages.deviceId))
-        .limit(400)
+        .limit(MAX_KEY_RECIPIENTS)
     : [];
   return rows.map((row) => {
     const device = state.recipients.find((r) => r.deviceId === row.deviceId)!;
@@ -166,7 +167,7 @@ export async function validateAndStoreMlsEpoch(
     .where(
       and(eq(mlsKeyPackages.channelId, epoch.channelId), eq(mlsKeyPackages.version, epoch.version)),
     )
-    .limit(401);
+    .limit(MAX_KEY_RECIPIENTS + 1);
   for (const member of eligible) {
     const supplied = epoch.roster.find((p) => p.deviceId === member.id);
     const published = packages.find((p: any) => p.deviceId === member.id);

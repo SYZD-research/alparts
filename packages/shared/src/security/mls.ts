@@ -1,6 +1,13 @@
 import type { DirectoryHead } from './account.js';
+import { MAX_KEY_RECIPIENTS } from '../constants/index.js';
 export const GROUP_PROTOCOL_VERSION = 3;
 export const MLS_CIPHERSUITE = 'MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519';
+/** A key package for the fixed suite is about 412 base64 characters. */
+export const MAX_MLS_KEY_PACKAGE_LENGTH = 1024;
+/** Each added device contributes one Add proposal carrying its key package. */
+export const MAX_MLS_COMMIT_LENGTH = MAX_KEY_RECIPIENTS * (MAX_MLS_KEY_PACKAGE_LENGTH + 16) + 8192;
+/** Each added device contributes one encrypted group secret and one tree leaf. */
+export const MAX_MLS_WELCOME_LENGTH = MAX_KEY_RECIPIENTS * (MAX_MLS_KEY_PACKAGE_LENGTH + 512) + 16_384;
 export interface GroupKeyPackage {
   deviceId: string;
   userId: string;

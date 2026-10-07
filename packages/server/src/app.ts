@@ -36,6 +36,7 @@ import { checkObjectStorage } from './services/object-storage.js';
 import { requestContext } from './middleware/request-context.js';
 import { checkAuditCheckpoint } from './middleware/audit.js';
 import { reserveJsonBody } from './middleware/body-admission.js';
+import { MLS_EPOCH_BODY_BYTES } from './routes/mls-schema.js';
 import { renderPrometheusMetrics } from './observability/metrics.js';
 import { matchesSecret } from './security/cookies.js';
 import { createReadinessCheck } from './security/readiness-cache.js';
@@ -168,11 +169,11 @@ export function createApp() {
     });
   });
 
-  // Signed group proposals include up to 400 public packages and the Welcome.
-  // Keep their bounded allowance separate from ordinary JSON requests.
-  const groupBody = reserveJsonBody(2 * 1024 * 1024);
+  // Signed group proposals include every member's public package and the
+  // Welcome. Keep their bounded allowance separate from ordinary JSON requests.
+  const groupBody = reserveJsonBody(MLS_EPOCH_BODY_BYTES);
   const normalBody = reserveJsonBody(512 * 1024);
-  const groupParser = express.json({ limit: '2mb', strict: true, type: 'application/json' });
+  const groupParser = express.json({ limit: MLS_EPOCH_BODY_BYTES, strict: true, type: 'application/json' });
   const normalParser = express.json({ limit: '512kb', strict: true, type: 'application/json' });
   app.use((req, res, next) => (/^\/api\/channels\/[^/]+\/mls\/epochs(?:\/fresh-start)?$/.test(req.path) ? groupBody : normalBody)(req, res, next));
   app.use((req, res, next) => (/^\/api\/channels\/[^/]+\/mls\/epochs(?:\/fresh-start)?$/.test(req.path) ? groupParser : normalParser)(req, res, next));
