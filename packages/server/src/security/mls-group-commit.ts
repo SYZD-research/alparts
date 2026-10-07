@@ -8,9 +8,18 @@ import {
 import { makeKeyPackageRef } from 'ts-mls/keyPackage.js';
 import { verifyLeafNodeSignature } from 'ts-mls/leafNode.js';
 import { MLS_CIPHERSUITE } from '@alparts/shared';
+import { MAX_KEY_RECIPIENTS } from './limits.js';
 import { validateMlsKeyPackage } from './mls-package.js';
 
 const suite = getCiphersuiteImpl(getCiphersuiteFromName(MLS_CIPHERSUITE));
+
+/**
+ * A tree never holds more leaves than members at once, so its depth, and
+ * the length of any UpdatePath, is at most ceil(log2(MAX_KEY_RECIPIENTS)).
+ * Every path key costs a trial encapsulation; a longer path is refused
+ * before any of them runs.
+ */
+export const MAX_UPDATE_PATH_NODES = Math.ceil(Math.log2(MAX_KEY_RECIPIENTS));
 const base64 = (bytes: Uint8Array) => Buffer.from(bytes).toString('base64');
 
 /** Public keys and lifetime of a validated member package. */
@@ -141,6 +150,7 @@ export async function decodeGroupCommit(encoded: string): Promise<DecodedGroupCo
   const senderLeafIndex = content.sender.leafIndex;
   const addPackages: string[] = [];
   const removedLeaves: number[] = [];
+  if (content.commit.proposals.length > 2 * MAX_KEY_RECIPIENTS) throw new Error('INVALID_MLS');
   for (const entry of content.commit.proposals) {
     if (entry.proposalOrRefType !== 'proposal') throw new Error('INVALID_MLS');
     const proposal = entry.proposal;
@@ -159,6 +169,11 @@ export async function decodeGroupCommit(encoded: string): Promise<DecodedGroupCo
   let path: DecodedGroupCommit['path'] = null;
   const updatePath = content.commit.path;
   if (updatePath) {
+    // No other leaf receives more than one path secret.
+    if (
+      updatePath.nodes.length > MAX_UPDATE_PATH_NODES
+      || updatePath.nodes.reduce((total, node) => total + node.encryptedPathSecret.length, 0) > MAX_KEY_RECIPIENTS
+    ) throw new Error('INVALID_MLS');
     const leaf = updatePath.leafNode;
     if (
       leaf.leafNodeSource !== 'commit'

@@ -75,6 +75,7 @@ import {
   isValidMemberPackage,
   packageKeyConflicts,
   planCommitAdmission,
+  precheckCreateRoute,
 } from './mls-group-rules.js';
 
 /** One commits page stays well below the response budget. */
@@ -356,17 +357,17 @@ async function precheckGroupState(commit: MlsGroupCommit, route: 'commit' | 'fre
     if (!member) throw new Error('MLS_CONFLICT');
     return;
   }
+  // Read after the version check: a group created in between shows up here
+  // with the version this commit wanted.
   const active = await db.query.channelKeyEpochs.findFirst({
-    columns: { protocolVersion: true },
+    columns: { version: true, protocolVersion: true },
     where: and(eq(channelKeyEpochs.channelId, commit.channelId), eq(channelKeyEpochs.status, 'active')),
   });
   const group = await db.query.mlsGroups.findFirst({
     columns: { genesisVersion: true },
     where: eq(mlsGroups.channelId, commit.channelId),
   });
-  const hasGroup = Boolean(active && active.protocolVersion >= 4 && group?.genesisVersion);
-  if (route === 'commit' && hasGroup) throw new Error('KEY_FRESH_START_REQUIRED');
-  if (route === 'fresh-start' && !hasGroup) throw new Error('KEY_FRESH_START_NOT_REQUIRED');
+  precheckCreateRoute(commit, route, active ?? null, group?.genesisVersion ?? null);
 }
 
 /**

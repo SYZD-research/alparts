@@ -34,6 +34,11 @@ const handle =
       }
       await fn(req, res);
     } catch (error: any) {
+      // A version this device may not read is as unknown as one that does not exist.
+      if (error instanceof Error && (error.message === 'MLS_NOT_FOUND' || error.message === 'CHANNEL_NOT_FOUND')) {
+        res.status(404).json({ error: 'NOT_FOUND', message: 'Not found', statusCode: 404 });
+        return;
+      }
       if (!isAccountSecurityError(error)) {
         next(error);
         return;

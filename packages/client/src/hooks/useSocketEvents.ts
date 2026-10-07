@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import type { Attachment, Device, Message, Reaction, ReadPosition, UserStatusType } from '@alparts/shared';
 import { getActiveDevice } from '../services/crypto.service';
 import { onChannelGroupAdvanced, scheduleGroupMaintenance } from '../services/mls-group.service';
+import { handleChannelKeyStateEvent, handleChannelMemberAddedEvent } from './channel-key-events';
 import { getSocket } from '../services/socket';
 import type { DirectMessageConversation } from '../services/api';
 import { api } from '../services/api';
@@ -324,17 +325,13 @@ export function useSocketEvents() {
         }
       });
     };
-    const onChannelRecipientsChanged = (value: unknown) => {
-      if (typeof value !== 'object' || value === null) return;
-      const channelId = (value as { channelId?: unknown }).channelId;
-      if (typeof channelId === 'string') {
-        useUiStore.getState().noteAuthorizationChange();
-        // Channels of every workspace: publish this device's package, or add
-        // devices that are waiting, without loading any messages.
-        scheduleGroupMaintenance();
-        scheduleKeySync([channelId]);
-      }
+    const channelKeyEventActions = {
+      noteAuthorizationChange: () => useUiStore.getState().noteAuthorizationChange(),
+      scheduleGroupMaintenance: () => scheduleGroupMaintenance(),
+      scheduleKeySync,
     };
+    const onChannelMemberAdded = (value: unknown) => handleChannelMemberAddedEvent(value, channelKeyEventActions);
+    const onChannelKeyStateChanged = (value: unknown) => handleChannelKeyStateEvent(value, channelKeyEventActions);
     const onPresenceChanged = (data: { userId: string; status: UserStatusType }) => setStatus(data.userId, data.status);
     // Profile (name, picture, self-introduction) or warning changes: refresh
     // the member list of the workspace being shown.
@@ -435,8 +432,8 @@ export function useSocketEvents() {
     socket.on('channel:permissions-updated', onChannelPermissionsUpdated);
     socket.on('channel:access-revoked', onChannelAccessRemoved);
     socket.on('channel:deleted', onChannelAccessRemoved);
-    socket.on('channel:member-added', onChannelRecipientsChanged);
-    socket.on('channel:key-rotation-required', onChannelRecipientsChanged);
+    socket.on('channel:member-added', onChannelMemberAdded);
+    socket.on('channel:key-rotation-required', onChannelKeyStateChanged);
     const unsubscribeChannelList = useChannelStore.subscribe((state, previous) => {
       if (
         state.workspaceId
@@ -501,8 +498,8 @@ export function useSocketEvents() {
       socket.off('channel:permissions-updated', onChannelPermissionsUpdated);
       socket.off('channel:access-revoked', onChannelAccessRemoved);
       socket.off('channel:deleted', onChannelAccessRemoved);
-      socket.off('channel:member-added', onChannelRecipientsChanged);
-      socket.off('channel:key-rotation-required', onChannelRecipientsChanged);
+      socket.off('channel:member-added', onChannelMemberAdded);
+      socket.off('channel:key-rotation-required', onChannelKeyStateChanged);
       unsubscribeChannelList();
       unsubscribeGroupAdvance();
       if (outboxFlushTimer) clearTimeout(outboxFlushTimer);

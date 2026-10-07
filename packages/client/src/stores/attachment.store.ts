@@ -523,7 +523,7 @@ export const useAttachmentStore = create<AttachmentState>((set, get) => ({
 
   retryUpload: (taskId) => {
     const runtime = runtimes.get(taskId);
-    if (!runtime) return;
+    if (!runtime || get().tasks[taskId]?.resendRequired) return;
     runtime.cancelled = false;
     runtime.expiryAutoRetries = 0;
     void runUpload(taskId);
@@ -534,8 +534,10 @@ export const useAttachmentStore = create<AttachmentState>((set, get) => ({
     resuming = true;
     void (async () => {
       try {
+        // An upload refused because the members changed since its message
+        // never succeeds again; only sending the file anew does.
         const taskIds = Object.values(get().tasks)
-          .filter((task) => task.status === 'failed' && runtimes.has(task.id))
+          .filter((task) => task.status === 'failed' && !task.resendRequired && runtimes.has(task.id))
           .map((task) => task.id);
         for (const taskId of taskIds) await runUpload(taskId);
       } finally {

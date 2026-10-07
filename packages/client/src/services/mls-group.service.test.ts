@@ -100,6 +100,8 @@ vi.mock('./mls-crypto', async (importOriginal) => {
     ...actual,
     commitChannelGroup: vi.fn(actual.commitChannelGroup),
     createChannelGroup: vi.fn(actual.createChannelGroup),
+    decodeChannelGroupState: vi.fn(actual.decodeChannelGroupState),
+    eraseMlsSecrets: vi.fn(actual.eraseMlsSecrets),
   };
 });
 
@@ -148,6 +150,8 @@ import {
   commitChannelGroup,
   createChannelGroup,
   createEpochGroup,
+  decodeChannelGroupState,
+  eraseMlsSecrets,
   generateEpochKeyPackage,
   generateMemberPackage,
   type EpochKeyPackage,
@@ -163,7 +167,7 @@ import {
   syncChannelGroup,
   type ChannelKeyPurpose,
 } from './mls-group.service';
-import { computeGroupKeyCommitment, rosterUsers } from './mls-group-model';
+import { OWN_ENVELOPE_IN_FLIGHT_MS, computeGroupKeyCommitment, rosterUsers } from './mls-group-model';
 import { fromBase64, sha256, toBase64 } from './security-storage';
 
 
@@ -720,7 +724,8 @@ describe('continuous channel groups across devices', () => {
     };
     expect(await commitChannelGroupChanges(channelId, aliceState, channelKeyScopes.capture(channelId)))
       .toEqual({ status: 'conflict', reason: 'MLS_CONFLICT' });
-    expect(record(alice, `mls-group-pending:${channelId}`)).toMatchObject({ version: 3 });
+    // The server answered: this envelope can no longer be accepted.
+    expect(record(alice, `mls-group-pending:${channelId}`)).toBeNull();
     expect(await ensure(alice)).toEqual({ status: 'ready', version: 3 });
     expect(record(alice, `mls-group-pending:${channelId}`)).toBeNull();
     expect(await ensure(bob)).toEqual({ status: 'ready', version: 3 });
@@ -944,7 +949,7 @@ describe('envelopes that contradict verified history', () => {
     expect(await ensure(alice)).toEqual({ status: 'ready', version: 3 });
   });
 
-  it('refuses to seal for a member its own directory shows as revoked', async () => {
+  it('refuses to seal for a member its own directory shows as revoked, and to read while the server hides it', async () => {
     const { alice, bob } = await refreshedGroup();
     server.directoryEvent(bob.userId, bob.deviceId, 'revoke');
     use(alice);
@@ -952,12 +957,31 @@ describe('envelopes that contradict verified history', () => {
     server.readDirectory(bob.userId);
     expect(await revokedGroupMembers(channelId)).toEqual([bob.deviceId]);
     await expect(ensure(alice)).rejects.toThrow('DIRECTORY_INVALID');
+    await expect(ensure(alice, 'read')).rejects.toThrow('DIRECTORY_INVALID');
     // The server lists the removal but claims Alice may not commit it.
     server.stateOverride = (state) => ({ ...state, requiredRemoveDeviceIds: [bob.deviceId], canCommit: false });
     await expect(ensure(alice)).rejects.toThrow('DIRECTORY_INVALID');
-    server.stateOverride = null;
-    // Reading needs no key for sealing and goes on.
+    // Reading needs no key for sealing and goes on while the removal is due.
     expect(await ensure(alice, 'read')).toEqual({ status: 'ready', version: 3 });
+    server.stateOverride = null;
+  });
+
+  it('stops reading after a commit that keeps a member with a directory head older than the one it verified', async () => {
+    const { alice, bob, carol } = await threeMembers();
+    // Bob's device is revoked; the server keeps it eligible and lists no removal.
+    server.directoryEvent(bob.userId, bob.deviceId, 'revoke');
+    use(alice);
+    server.readDirectory(bob.userId);
+    // Carol signs a refresh that keeps Bob, with the heads of version 2 (Bob's from before the revocation).
+    const heads = server.latest()!.envelope.directoryHeads;
+    server.rewrite = (envelope) => resign(carol, envelope, { directoryHeads: heads });
+    server.updateRequired = true;
+    use(carol);
+    expect(await commitChannelGroupChanges(channelId, await server.getKeyRecipients(), channelKeyScopes.capture(channelId)))
+      .toEqual({ status: 'committed', version: 3 });
+    server.rewrite = null;
+    expect(server.latest()!.envelope.members.map((member) => member.deviceId)).toContain(bob.deviceId);
+    await expect(ensure(alice, 'read')).rejects.toThrow('DIRECTORY_INVALID');
   });
 
   it('never accepts "no change needed" for a removal the same state asks for', async () => {
@@ -1034,6 +1058,56 @@ describe('envelopes that contradict verified history', () => {
 });
 
 describe('background maintenance', () => {
+  it('stops sending packages for the rest of a run when the server asks to slow down, and goes on after the wait', async () => {
+    const alice = await newDevice('alice');
+    await ensure(alice);
+    const bob = await newDevice('bob');
+    use(bob);
+    const channels = [channelId, ...[2, 3, 4].map((index) => `11111111-1111-4111-8111-11111111111${index}`)];
+    server.pendingWork = { needPackage: channels, needCommit: [] };
+    let refusals = 1;
+    server.publishFault = () => (postsOf(bob).length === 2 && refusals-- > 0
+      ? new ApiError('slow down', 429, 'RATE_LIMITED', 1)
+      : null);
+    const work = vi.spyOn(server, 'getPendingGroupWork');
+    scheduleGroupMaintenance(0);
+    await vi.waitFor(() => expect(postsOf(bob)).toHaveLength(2));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    // The channels after the refused one were not tried in that run.
+    expect(postsOf(bob)).toHaveLength(2);
+    expect(work).toHaveBeenCalledTimes(1);
+    // After the time the server named, a new run publishes the rest.
+    await vi.waitFor(() => expect(postsOf(bob).length).toBeGreaterThanOrEqual(2 + channels.length), { timeout: 5_000 });
+    expect(work).toHaveBeenCalledTimes(2);
+  });
+
+  it('adds waiting devices and devices that asked to rejoin in the background, only while it may commit', async () => {
+    const { alice, bob, carol } = await threeMembers();
+    // The shortest random delay before a background commit (2 s).
+    vi.spyOn(Math, 'random').mockReturnValue(0);
+    const dave = await newDevice('dave');
+    expect(await ensure(dave)).toEqual({ status: 'waiting', rejoining: false });
+    deleteRecord(bob, `mls-group:${channelId}`);
+    expect(await ensure(bob)).toEqual({ status: 'waiting', rejoining: true });
+    use(alice);
+    server.pendingWork = { needPackage: [], needCommit: [channelId] };
+    scheduleGroupMaintenance(0);
+    await vi.waitFor(() => expect(server.latest()!.version).toBe(3), { timeout: 8_000, interval: 50 });
+    expect(server.latest()!.envelope).toMatchObject({ committerDeviceId: alice.deviceId, removed: [bob.deviceId] });
+    expect(server.latest()!.envelope.added.map((entry) => entry.deviceId).sort()).toEqual([bob.deviceId, dave.deviceId].sort());
+    expect(await ensure(dave)).toEqual({ status: 'ready', version: 3 });
+    expect(await ensure(bob)).toEqual({ status: 'ready', version: 3 });
+    // A device that may not commit (the server says so) leaves the addition to others.
+    const eve = await newDevice('eve');
+    expect(await ensure(eve)).toEqual({ status: 'waiting', rejoining: false });
+    server.stateOverride = (state) => (env.current?.deviceId === carol.deviceId ? { ...state, canCommit: false } : state);
+    use(carol);
+    scheduleGroupMaintenance(0);
+    await new Promise((resolve) => setTimeout(resolve, 2_600));
+    expect(server.latest()!.version).toBe(3);
+    server.stateOverride = null;
+  });
+
   it('publishes a package for channels the server lists', async () => {
     const alice = await newDevice('alice');
     await ensure(alice);
@@ -1309,7 +1383,7 @@ describe('own envelopes', () => {
     use(alice);
     await expect(createChannelGroupVersion(channelId, aliceState, channelKeyScopes.capture(channelId)))
       .rejects.toMatchObject({ status: 409 });
-    expect(record(alice, `mls-group-pending:${channelId}`)).toMatchObject({ kind: 'create', version: 1 });
+    expect(record(alice, `mls-group-pending:${channelId}`)).toBeNull();
     expect(await ensure(alice)).toEqual({ status: 'waiting', rejoining: false });
     expect(record(alice, `mls-group-pending:${channelId}`)).toBeNull();
   });
@@ -1321,6 +1395,137 @@ describe('own envelopes', () => {
     });
     expect(await ensure(alice)).toEqual({ status: 'ready', version: 2 });
     expect(record(alice, `mls-group-pending:${channelId}`)).toBeNull();
+  });
+});
+
+describe('own envelopes without an answer', () => {
+  const conflict = () => new ApiError('conflict', 409, 'GROUP_STATE_CHANGED', undefined, { reason: 'MLS_CONFLICT' });
+
+  /** The first own envelope stalls on the server; it is accepted only just before the next request arrives. */
+  function stallFirstSend(committer: TestDevice) {
+    const admit = server.admit.bind(server);
+    const sent: string[] = [];
+    let stalled: MlsGroupCommit | null = null;
+    let released = false;
+    vi.spyOn(server, 'admit').mockImplementation(async (envelope: MlsGroupCommit, fresh: boolean) => {
+      if (envelope.committerDeviceId === committer.deviceId) {
+        sent.push(await sha256(serializeMlsGroupCommit(envelope)));
+        if (!stalled) {
+          stalled = structuredClone(envelope);
+          throw new ApiConnectionError();
+        }
+        if (!released) {
+          released = true;
+          await admit(stalled, fresh);
+        }
+      }
+      return admit(envelope, fresh);
+    });
+    return sent;
+  }
+
+  it('sends its commit again unchanged, so a first request accepted late is still its own', async () => {
+    const { alice, bob, carol } = await threeMembers();
+    server.updateRequired = true;
+    const sent = stallFirstSend(alice);
+    await expect(ensure(alice)).rejects.toThrow(ApiConnectionError);
+    expect(record(alice, `mls-group-pending:${channelId}`)).toMatchObject({ version: 3, unsettledAt: expect.any(Number) });
+    expect(await ensure(alice)).toEqual({ status: 'ready', version: 3 });
+    expect(new Set(sent).size).toBe(1);
+    expect(server.latest()!.transcript).toBe(sent[0]);
+    expect(record(alice, `mls-group-pending:${channelId}`)).toBeNull();
+    expect(await ensure(bob)).toEqual({ status: 'ready', version: 3 });
+    expect(await ensure(carol)).toEqual({ status: 'ready', version: 3 });
+    await expectSameKey([alice, bob, carol], 3);
+  });
+
+  it('sends its first group again unchanged instead of making another one', async () => {
+    const [alice, bob] = [await newDevice('alice'), await newDevice('bob')];
+    use(bob);
+    await server.publishMemberPackage(channelId, await bobPackage(bob));
+    const sent = stallFirstSend(alice);
+    await expect(ensure(alice)).rejects.toThrow(ApiConnectionError);
+    expect(record(alice, `mls-group-pending:${channelId}`)).toMatchObject({ kind: 'create', version: 1 });
+    expect(await ensure(alice)).toEqual({ status: 'ready', version: 1 });
+    expect(new Set(sent).size).toBe(1);
+    expect(await ensure(bob)).toEqual({ status: 'ready', version: 1 });
+    await expectSameKey([alice, bob], 1);
+  });
+
+  it('keeps an unanswered envelope while the server may still accept it, and replaces it only after that', async () => {
+    const { alice } = await threeMembers();
+    server.updateRequired = true;
+    const admit = vi.spyOn(server, 'admit');
+    admit.mockRejectedValueOnce(new ApiConnectionError());
+    await expect(ensure(alice)).rejects.toThrow(ApiConnectionError);
+    const first = record<{ transcript: string }>(alice, `mls-group-pending:${channelId}`)!.transcript;
+    // Refused soon after: the first request may still be accepted.
+    use(alice);
+    const commit = async () => commitChannelGroupChanges(channelId, await server.getKeyRecipients(), channelKeyScopes.capture(channelId));
+    admit.mockRejectedValueOnce(conflict());
+    expect(await commit()).toEqual({ status: 'conflict', reason: 'MLS_CONFLICT' });
+    expect(record(alice, `mls-group-pending:${channelId}`)).toMatchObject({ transcript: first });
+    // Refused once no request can still be in progress: it lost, and the next commit is a new one.
+    const now = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now + OWN_ENVELOPE_IN_FLIGHT_MS);
+    admit.mockRejectedValueOnce(conflict());
+    expect(await commit()).toEqual({ status: 'conflict', reason: 'MLS_CONFLICT' });
+    expect(record(alice, `mls-group-pending:${channelId}`)).toBeNull();
+    clock.mockRestore();
+    expect(await ensure(alice)).toEqual({ status: 'ready', version: 3 });
+    expect(server.latest()!.transcript).not.toBe(first);
+  });
+
+  it('erases the decoded group and the secrets a commit replaced however the commit ends', async () => {
+    const { alice } = await threeMembers();
+    vi.mocked(decodeChannelGroupState).mockClear();
+    vi.mocked(eraseMlsSecrets).mockClear();
+    vi.mocked(commitChannelGroup).mockClear();
+    use(alice);
+    const commit = async () => commitChannelGroupChanges(channelId, await server.getKeyRecipients(), channelKeyScopes.capture(channelId));
+    expect(await commit()).toEqual({ status: 'noop' });
+    server.updateRequired = true;
+    vi.spyOn(server, 'admit').mockRejectedValueOnce(conflict());
+    expect(await commit()).toEqual({ status: 'conflict', reason: 'MLS_CONFLICT' });
+    expect(await commit()).toEqual({ status: 'committed', version: 3 });
+    const decoded = vi.mocked(decodeChannelGroupState).mock.results.map((result) => result.value);
+    expect(decoded.length).toBeGreaterThanOrEqual(3);
+    const erased = new Set(vi.mocked(eraseMlsSecrets).mock.calls.map(([state]) => state));
+    for (const state of decoded) expect(erased.has(state)).toBe(true);
+    const results = await Promise.all(vi.mocked(commitChannelGroup).mock.results.map((result) => result.value));
+    expect(results).toHaveLength(2);
+    for (const result of results) {
+      expect(result.consumed.length).toBeGreaterThan(0);
+      for (const bytes of result.consumed) expect(bytes.every((byte: number) => byte === 0)).toBe(true);
+    }
+  });
+});
+
+describe('directory checks against a lying server', () => {
+  it('stops at a commit whose members are not all active at its directory heads', async () => {
+    const { alice, bob, carol } = await threeMembers();
+    // The directory revokes Bob; the server keeps him eligible and lists no removal.
+    server.directoryEvent(bob.userId, bob.deviceId, 'revoke');
+    server.updateRequired = true;
+    use(alice);
+    // Alice's refresh keeps Bob and carries his current head, which shows the revocation.
+    expect(await commitChannelGroupChanges(channelId, await server.getKeyRecipients(), channelKeyScopes.capture(channelId)))
+      .toEqual({ status: 'committed', version: 3 });
+    expect(server.latest()!.envelope.members.map((member) => member.deviceId)).toContain(bob.deviceId);
+    use(carol);
+    await expect(syncChannelGroup(channelId, await server.getKeyRecipients(), channelKeyScopes.capture(channelId)))
+      .rejects.toThrow('DIRECTORY_INVALID');
+  });
+
+  it('never adds a device its own directory shows as revoked, whatever the server lists', async () => {
+    const { alice } = await threeMembers();
+    const dave = await newDevice('dave');
+    expect(await ensure(dave)).toEqual({ status: 'waiting', rejoining: false });
+    server.directoryEvent(dave.userId, dave.deviceId, 'revoke');
+    use(alice);
+    expect((await server.getKeyRecipients()).pendingAddDeviceIds).toEqual([dave.deviceId]);
+    expect(await addPending(alice)).toEqual({ status: 'noop' });
+    expect(server.latest()!.version).toBe(2);
   });
 });
 
@@ -1493,6 +1698,39 @@ describe('history from before continuous groups', () => {
     use(bob);
     const { deriveMlsDelivery } = await import('./mls.service');
     expect(await deriveMlsDelivery(channelId, 5, epoch.transcript, 'retired')).toEqual(epoch.raw);
+  });
+
+  it('drops v3 packages after the active v3 version as soon as it sees the channel without a group', async () => {
+    const bob = await newDevice('bob');
+    server.legacy = { version: 5, transcript: 'e'.repeat(64) };
+    for (const version of [5, 6]) {
+      setRecord(bob, `mls-package:${channelId}:${version}`, { packageId: crypto.randomUUID(), material: {}, createdAt: Date.now() });
+    }
+    setRecord(bob, `mls-proposal:${channelId}:6`, { raw: toBase64(new Uint8Array(32)), transcript: 'd'.repeat(64) });
+    // Bob cannot make the first group himself; he only waits.
+    server.stateOverride = (state) => ({ ...state, canCreate: false });
+    expect(await ensure(bob, 'read')).toEqual({ status: 'waiting', rejoining: false });
+    server.stateOverride = null;
+    expect(record(bob, `mls-package:${channelId}:5`)).not.toBeNull();
+    expect(record(bob, `mls-package:${channelId}:6`)).toBeNull();
+    expect(record(bob, `mls-proposal:${channelId}:6`)).toBeNull();
+  });
+
+  it('reads the last v3 transcript only when it makes the first group, and waits when the server asks to slow down', async () => {
+    const [alice, bob] = [await newDevice('alice'), await newDevice('bob')];
+    server.legacy = { version: 3, transcript: 'c'.repeat(64) };
+    server.genesisWaiting = [alice.deviceId];
+    const legacyReads = vi.spyOn(server, 'getLegacyEpochTranscript');
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      expect(await ensure(bob, 'read')).toEqual({ status: 'genesis-waiting' });
+    }
+    expect(legacyReads).not.toHaveBeenCalled();
+    server.genesisWaiting = [];
+    legacyReads.mockRejectedValueOnce(new ApiError('slow down', 429, 'RATE_LIMITED', 30));
+    expect(await ensure(bob, 'read')).toEqual({ status: 'genesis-waiting' });
+    expect(await ensure(bob)).toEqual({ status: 'ready', version: 4 });
+    expect(legacyReads).toHaveBeenCalledTimes(2);
+    expect(server.latest()!.envelope).toMatchObject({ previousVersion: 3, previousTranscript: 'c'.repeat(64) });
   });
 
   it('links the first group to the newest v3 version verified here, also one read late', async () => {

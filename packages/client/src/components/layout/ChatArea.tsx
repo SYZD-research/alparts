@@ -100,8 +100,11 @@ export function ChatArea({ visible = true }: { visible?: boolean }) {
     }
   }, [activeChannelId, loadMessages]);
 
+  // The retry loop depends on why the channel waits, not on the state
+  // object, which each attempt may replace.
+  const pendingReason = channelKeyPending?.reason ?? null;
   useEffect(() => {
-    if (!activeChannelId || !channelKeyPending) return;
+    if (!activeChannelId || !pendingReason) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const retry = async () => {
@@ -115,7 +118,7 @@ export function ChatArea({ visible = true }: { visible?: boolean }) {
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [activeChannelId, channelKeyPending, retryChannelPreparation]);
+  }, [activeChannelId, pendingReason, retryChannelPreparation]);
 
   if (!activeChannelId) return null;
 

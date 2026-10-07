@@ -31,6 +31,7 @@ import {
   type MlsGroupMember,
 } from '@alparts/shared';
 import {
+  MAX_UPDATE_PATH_NODES,
   decodeGroupCommit,
   decodeGroupWelcome,
   readMemberPackage,
@@ -55,6 +56,7 @@ import {
   nextRoster,
   packageKeyConflicts,
   planCommitAdmission,
+  precheckCreateRoute,
   type AdmissionPlan,
   type AdmissionState,
   type EligibleDevice,
@@ -520,6 +522,38 @@ describe('continuous group admission rules', () => {
     await rejects(model.admit(removal.commit), 'MLS_CONFLICT');
   });
 
+  it('refuses removing a device that asked to rejoin unless the same commit adds it again', async () => {
+    const { model, a, b } = await twoMemberGroup();
+    b.pkg = await newPackage(b.deviceId);
+    model.publish(b, true);
+    model.rejoinRequests.push({ deviceId: b.deviceId, requestedAt: new Date(model.now), version: model.latestVersion });
+    await rejects(model.admit((await model.commit(a, { remove: [b] })).commit), 'MLS_CONFLICT');
+    assert.deepEqual((await model.admit((await model.commit(a, { remove: [b], add: [b] })).commit)).rejoinedDeviceIds, [b.deviceId]);
+  });
+
+  it('refuses a Remove of another leaf than the envelope names, with a roster that matches the envelope', async () => {
+    const model = new ServerModel();
+    const [a, b, c] = await Promise.all([newDevice(), newDevice(), newDevice()]);
+    for (const device of [a, b, c]) {
+      model.enroll(device);
+      model.publish(device);
+    }
+    await model.accept(await model.genesis(a, [b, c]), [b, c]);
+    model.revoke(b);
+    // A's MLS commit removes C, which stays eligible; the envelope claims it removes the revoked B.
+    const { commit } = await model.commit(a, { remove: [c] });
+    const current = model.members.map(({ deviceId, userId, leafIndex }) => ({ deviceId, userId, leafIndex }));
+    const members = nextRoster(current, [b.deviceId], []);
+    const forged: MlsGroupCommit = {
+      ...commit,
+      removed: [b.deviceId],
+      members,
+      directoryHeads: [...new Set(members.map((member) => member.userId))].sort().map((userId) => model.heads.get(userId)!),
+    };
+    await rejects(model.admit(forged), 'INVALID_MLS');
+    assert.deepEqual((await model.admit((await model.commit(a, { remove: [b] })).commit)).removedDeviceIds, [b.deviceId]);
+  });
+
   it('accepts an empty commit only when the group or the committer leaf is due', async () => {
     const { model, a } = await twoMemberGroup();
     const empty = await model.commit(a);
@@ -656,6 +690,65 @@ describe('continuous group admission rules', () => {
     await rejects(decodeGroupCommit(encodeWith({ ...path, leafNode })), 'INVALID_MLS');
   });
 
+  it('refuses an UpdatePath longer than any tree of the roster bound before checking its keys', async () => {
+    const { model, a } = await twoMemberGroup();
+    const state = model.states.get(a.deviceId)!;
+    const { commit: message } = await createCommit({ state, cipherSuite: cs }, { wireAsPublicMessage: true });
+    const publicMessage = (message as unknown as MlsPublicMessage).publicMessage;
+    const content = publicMessage.content as typeof publicMessage.content & { contentType: 'commit' };
+    const path = content.commit.path!;
+    const withNodes = (count: number, secretsPerNode = 0) => base64(encodeMlsMessage({
+      ...message,
+      publicMessage: {
+        ...publicMessage,
+        content: {
+          ...content,
+          commit: {
+            ...content.commit,
+            path: {
+              ...path,
+              nodes: Array.from({ length: count }, () => ({
+                hpkePublicKey: crypto.getRandomValues(new Uint8Array(32)),
+                encryptedPathSecret: Array.from({ length: secretsPerNode }, () => path.nodes[0].encryptedPathSecret[0]),
+              })),
+            },
+          },
+        },
+      },
+    } as typeof message));
+    // 400 leaves need a tree of depth 9.
+    assert.equal(MAX_UPDATE_PATH_NODES, 9);
+    assert.equal((await decodeGroupCommit(withNodes(MAX_UPDATE_PATH_NODES))).path!.nodeKeys.length, MAX_UPDATE_PATH_NODES);
+    await rejects(decodeGroupCommit(withNodes(MAX_UPDATE_PATH_NODES + 1)), 'INVALID_MLS');
+    // A path of thousands of nodes fits the commit size limit; it is refused
+    // without a trial encapsulation per node.
+    const huge = withNodes(9_000);
+    const started = performance.now();
+    await rejects(decodeGroupCommit(huge), 'INVALID_MLS');
+    assert.ok(performance.now() - started < 1_000);
+    // No leaf receives more than one path secret.
+    await rejects(decodeGroupCommit(withNodes(2, 201)), 'INVALID_MLS');
+    // Nor does a commit carry more proposals than one removal and one addition per member.
+    const withRemoves = (count: number) => base64(encodeMlsMessage({
+      ...message,
+      publicMessage: {
+        ...publicMessage,
+        content: {
+          ...content,
+          commit: {
+            ...content.commit,
+            proposals: Array.from({ length: count }, (_, removed) => ({
+              proposalOrRefType: 'proposal' as const,
+              proposal: { proposalType: 'remove' as const, remove: { removed } },
+            })),
+          },
+        },
+      },
+    } as typeof message));
+    assert.equal((await decodeGroupCommit(withRemoves(800))).removedLeaves.length, 800);
+    await rejects(decodeGroupCommit(withRemoves(801)), 'INVALID_MLS');
+  });
+
   it('binds each Welcome secret to the added package in order', async () => {
     const { model, a } = await twoMemberGroup();
     const [c, d] = [await newDevice(), await newDevice()];
@@ -747,6 +840,28 @@ describe('continuous group admission rules', () => {
     assert.equal(plan.closeOldGroup, true);
     assert.equal(plan.genesisVersion, 2);
     await rejects(model.admit({ ...restart.commit, kind: 'commit' }, 'fresh-start', { freshStartPermitted: true }), 'INVALID_MLS');
+  });
+
+  it('answers a create that lost the race for the first group with a version conflict', () => {
+    const code = (run: () => void) => {
+      try {
+        run();
+        return null;
+      } catch (error) {
+        return (error as Error).message;
+      }
+    };
+    // The other create was committed after this request's version check:
+    // the lock-free read already shows its group at the requested version.
+    assert.equal(code(() => precheckCreateRoute({ version: 4 }, 'commit', { version: 4, protocolVersion: 4 }, 4)), 'MLS_CONFLICT');
+    assert.equal(code(() => precheckCreateRoute({ version: 4 }, 'fresh-start', { version: 4, protocolVersion: 4 }, 4)), 'MLS_CONFLICT');
+    // A group that existed before: a create belongs to fresh start.
+    assert.equal(code(() => precheckCreateRoute({ version: 5 }, 'commit', { version: 4, protocolVersion: 4 }, 4)), 'KEY_FRESH_START_REQUIRED');
+    assert.equal(code(() => precheckCreateRoute({ version: 5 }, 'fresh-start', { version: 4, protocolVersion: 4 }, 4)), null);
+    // No group yet, also on a migrated channel that waits for its first one.
+    assert.equal(code(() => precheckCreateRoute({ version: 1 }, 'commit', null, null)), null);
+    assert.equal(code(() => precheckCreateRoute({ version: 4 }, 'commit', { version: 3, protocolVersion: 3 }, null)), null);
+    assert.equal(code(() => precheckCreateRoute({ version: 4 }, 'fresh-start', { version: 3, protocolVersion: 3 }, null)), 'KEY_FRESH_START_NOT_REQUIRED');
   });
 
   it('waits for the earlier epoch recipients before the first group of a migrated channel', async () => {

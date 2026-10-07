@@ -60,7 +60,11 @@ export interface ChainRecord {
   left?: boolean;
 }
 
-/** `mls-group-pending:{channelId}`: an own envelope saved before it was sent. */
+/**
+ * `mls-group-pending:{channelId}`: an own envelope saved before it was sent.
+ * Until the server's envelope at `version` settles it, the same envelope is
+ * only sent again, never replaced by another one for that version.
+ */
 export interface PendingGroupRecord {
   kind: 'create' | 'commit';
   genesisVersion: number;
@@ -69,6 +73,24 @@ export interface PendingGroupRecord {
   newState: string;
   /** base64 key of `version`. */
   raw: string;
+  /** The signed envelope as it was sent. */
+  envelope?: MlsGroupCommit;
+  /** Sent as a fresh start (a new group replacing the current one). */
+  freshStart?: boolean;
+  /** When a send of it last ended without an answer; the server may still accept it. */
+  unsettledAt?: number;
+}
+
+/**
+ * How long after a send that got no answer the server may still accept it.
+ * A request outlives neither the server's request and database timeouts nor
+ * its audit queue by this much.
+ */
+export const OWN_ENVELOPE_IN_FLIGHT_MS = 5 * 60_000;
+
+/** An earlier send of this envelope may still be accepted. */
+export function ownEnvelopeInFlight(pending: Pick<PendingGroupRecord, 'unsettledAt'>, now: number): boolean {
+  return typeof pending.unsettledAt === 'number' && now - pending.unsettledAt < OWN_ENVELOPE_IN_FLIGHT_MS;
 }
 
 /** Previous verified view a new envelope must continue. */

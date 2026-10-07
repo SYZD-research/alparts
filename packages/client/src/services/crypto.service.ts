@@ -1,4 +1,10 @@
-import { deleteChannelSecurityState, readSecurityState, writeSecurityState, fromBase64 } from './security-storage';
+import {
+  deleteChannelSecurityState,
+  fromBase64,
+  listSecurityStateNames,
+  readSecurityState,
+  writeSecurityState,
+} from './security-storage';
 import { padMessage, unpadMessage } from './message-padding';
 import { deriveMlsDelivery, mlsLocator, nonMlsDeliveryAllowed, pinnedMlsVersion } from './mls.service';
 import {
@@ -436,6 +442,20 @@ function currentChannelKey(channelId: string, scope: ChannelKeyScopeToken, purpo
     purpose,
     loadKey: (version) => loadGroupVersionKey(channelId, version, scope),
   });
+}
+
+/**
+ * Whether this device holds the key of any version of the channel, derived
+ * or delivered here (each has its key commitment) or restored from the
+ * account's history backup. Such a device can show earlier messages while
+ * it waits to be added to the channel's current group.
+ */
+export async function hasChannelHistoryKeys(channelId: string): Promise<boolean> {
+  const device = getActiveDevice();
+  for (const prefix of [`key-commitment:${channelId}:`, `recovered:${channelId}:`]) {
+    if ((await listSecurityStateNames(device, prefix, 1)).length > 0) return true;
+  }
+  return false;
 }
 
 /**

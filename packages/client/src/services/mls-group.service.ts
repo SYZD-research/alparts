@@ -58,6 +58,7 @@ import {
   groupGenesis,
   isGroupEquivocation,
   nextRoster,
+  ownEnvelopeInFlight,
   recentRejoins,
   rosterUsers,
   usersToVerify,
@@ -253,7 +254,9 @@ async function readChain(work: GroupWork): Promise<ChainRecord | null> {
  * never activated. They are deleted so that nobody can build a v3 epoch
  * for a v4 version from them [sec-7]. Older ones stay until the epoch they
  * belong to is derived, so v3 history this device has not read yet stays
- * readable.
+ * readable. The last v3 version is the active one while the channel has no
+ * group yet; a device that never saw that time uses the genesis of the
+ * first group it sees (docs/policies/LIMITATIONS.md).
  */
 async function dropLegacyPackages(work: GroupWork, lastLegacyVersion: number): Promise<void> {
   for (const prefix of [`mls-package:${work.channelId}:`, `mls-proposal:${work.channelId}:`]) {
@@ -400,7 +403,10 @@ type PublishOutcome = 'published' | 'member' | 'consumed' | 'ineligible' | 'defe
  * again while it is younger than six days and unconsumed; its private part
  * is kept until a join from it succeeded. `fresh` asks for a new one.
  */
-async function publishPackage(work: GroupWork, options: { rejoin: boolean; fresh?: boolean }): Promise<PublishOutcome> {
+async function publishPackage(
+  work: GroupWork,
+  options: { rejoin: boolean; fresh?: boolean; onDeferred?: (retryAfterMs: number) => void },
+): Promise<PublishOutcome> {
   const record = await readPackages(work);
   let fresh = Boolean(options.fresh);
   for (let attempt = 0; attempt < 2; attempt++) {
@@ -437,7 +443,10 @@ async function publishPackage(work: GroupWork, options: { rejoin: boolean; fresh
     } catch (error) {
       channelKeyScopes.assertCurrent(work.scope);
       if (!(error instanceof ApiError)) throw error;
-      if (error.status === 429) return 'deferred';
+      if (error.status === 429) {
+        options.onDeferred?.((error.retryAfterSeconds ?? 60) * 1000);
+        return 'deferred';
+      }
       if (error.status === 409 && error.reason === 'ALREADY_MEMBER') return 'member';
       if (error.status === 409 && error.reason === 'PACKAGE_CONSUMED') {
         current.consumed = true;
@@ -644,34 +653,49 @@ async function settleOwnCreate(
   return settlePending(work, pending, await fetchRecord(work, pending.version), null, chain);
 }
 
-async function submitOwnEnvelope(
+/** The server answered this request about these bytes: it holds another version, or refused them. */
+function isAnsweredRefusal(error: unknown): error is ApiError {
+  return error instanceof ApiError && error.status >= 400 && error.status < 500 && error.status !== 408;
+}
+
+type SentPendingRecord = PendingGroupRecord & { envelope: MlsGroupCommit };
+
+/**
+ * Send an own envelope, or send it again unchanged: the server answers the
+ * same bytes as a replay once it holds them. On acceptance the state saved
+ * with it is adopted. A refusal settles the record, unless an earlier send
+ * that got no answer may still be accepted. A send without an answer leaves
+ * the record to be sent again; it is never replaced by another envelope for
+ * the same version, which could lose to it [live-1].
+ */
+async function sendOwnEnvelope(
   work: GroupWork,
-  built: { envelope: MlsGroupCommit; transcript: string; result: ChannelGroupCommitResult; raw: Uint8Array },
+  pending: SentPendingRecord,
   chain: ChainRecord | null,
-  freshStart: boolean,
 ): Promise<{ local: LocalGroupRecord; chain: ChainRecord }> {
-  const { envelope, transcript, result, raw } = built;
-  const pending: PendingGroupRecord = {
-    kind: envelope.kind,
-    genesisVersion: groupGenesis(envelope),
-    version: envelope.version,
-    transcript,
-    newState: encodeChannelGroupState(result.newState),
-    raw: toBase64(raw),
-  };
-  // Saved before sending: after a lost response the accepted envelope is
-  // recognized by its transcript and this exact state is adopted.
-  await save(work, names.pending(work.channelId), pending);
-  if (freshStart) {
-    const freshStartSignature = await signDevicePayload(serializeChannelKeyFreshStart({
+  const { envelope } = pending;
+  const freshStartSignature = pending.freshStart
+    ? await signDevicePayload(serializeChannelKeyFreshStart({
       channelId: work.channelId,
       keyVersion: envelope.version,
       keyCommitment: envelope.keyCommitment,
       deviceId: work.owner.deviceId,
-    }));
-    await api.submitGroupFreshStart(work.channelId, envelope, freshStartSignature);
-  } else {
-    await api.submitGroupCommit(work.channelId, envelope);
+    }))
+    : null;
+  try {
+    if (freshStartSignature !== null) {
+      await api.submitGroupFreshStart(work.channelId, envelope, freshStartSignature);
+    } else {
+      await api.submitGroupCommit(work.channelId, envelope);
+    }
+  } catch (error) {
+    channelKeyScopes.assertCurrent(work.scope);
+    if (!isAnsweredRefusal(error)) {
+      await save(work, names.pending(work.channelId), { ...pending, unsettledAt: Date.now() });
+    } else if (!ownEnvelopeInFlight(pending, Date.now())) {
+      await deleteSecurityState(work.owner, names.pending(work.channelId));
+    }
+    throw error;
   }
   channelKeyScopes.assertCurrent(work.scope);
   const next: LocalGroupRecord = {
@@ -679,16 +703,43 @@ async function submitOwnEnvelope(
     groupId: envelope.groupId,
     version: envelope.version,
     epoch: envelope.epoch,
-    transcript,
+    transcript: pending.transcript,
     members: envelope.members,
     directoryHeads: envelope.directoryHeads,
     state: pending.newState,
   };
-  const nextChain = await adoptVersion(work, next, raw, envelope.keyCommitment, chain);
-  await deleteSecurityState(work.owner, names.pending(work.channelId));
-  // The previous state's secrets are erased only now that the new state is kept.
-  result.consumed.forEach((bytes) => bytes.fill(0));
-  return { local: next, chain: nextChain };
+  const raw = fromBase64(pending.raw);
+  try {
+    const nextChain = await adoptVersion(work, next, raw, envelope.keyCommitment, chain);
+    await deleteSecurityState(work.owner, names.pending(work.channelId));
+    return { local: next, chain: nextChain };
+  } finally {
+    raw.fill(0);
+  }
+}
+
+/** Save an own envelope with the state it leads to, then send it. */
+async function submitOwnEnvelope(
+  work: GroupWork,
+  built: { envelope: MlsGroupCommit; transcript: string; result: ChannelGroupCommitResult; raw: Uint8Array },
+  chain: ChainRecord | null,
+  freshStart: boolean,
+): Promise<{ local: LocalGroupRecord; chain: ChainRecord }> {
+  const { envelope, transcript, result, raw } = built;
+  const pending: SentPendingRecord = {
+    kind: envelope.kind,
+    genesisVersion: groupGenesis(envelope),
+    version: envelope.version,
+    transcript,
+    newState: encodeChannelGroupState(result.newState),
+    raw: toBase64(raw),
+    envelope,
+    ...(freshStart ? { freshStart: true } : {}),
+  };
+  // Saved before sending: after a lost response the accepted envelope is
+  // recognized by its transcript and this exact state is adopted.
+  await save(work, names.pending(work.channelId), pending);
+  return sendOwnEnvelope(work, pending, chain);
 }
 
 async function signEnvelope(
@@ -773,6 +824,8 @@ async function createLocked(work: GroupWork, state: ChannelKeyRecipientState, fr
   const { local, chain } = await loadGroupView(work);
   const version = state.nextVersion;
   const previousVersion = state.currentVersion;
+  // A migrated channel's first group continues its last v3 envelope.
+  const continuesLegacy = !freshStart && previousVersion > 0 && state.protocolVersion === 3;
   let previousTranscript = EMPTY_TRANSCRIPT;
   if (freshStart) {
     if (!state.group) throw new Error('INVALID_MLS_GROUP');
@@ -785,10 +838,6 @@ async function createLocked(work: GroupWork, state: ChannelKeyRecipientState, fr
   } else {
     // A device that verified a continuous group never goes back to none.
     if (local || chain?.v4Start != null) throw new Error('MLS_DOWNGRADE');
-    if (previousVersion > 0 && state.protocolVersion === 3) {
-      previousTranscript = await api.getLegacyEpochTranscript(work.channelId, previousVersion);
-      channelKeyScopes.assertCurrent(work.scope);
-    }
     // The active version is the last one before group protocol 4.
     await dropLegacyPackages(work, previousVersion);
   }
@@ -796,8 +845,30 @@ async function createLocked(work: GroupWork, state: ChannelKeyRecipientState, fr
     throw new Error('INVALID_MLS_TRANSCRIPT');
   }
   // A new genesis continues the history this device verified.
-  assertChainLink(chain, { version, previousVersion, previousTranscript });
+  if (!continuesLegacy) assertChainLink(chain, { version, previousVersion, previousTranscript });
   if (local && local.version > previousVersion) throw new Error('INVALID_MLS_TRANSCRIPT');
+
+  // An own create for this version that is not settled yet is sent again as
+  // it is; another genesis for the same version could lose to it [live-1].
+  const pending = await read<PendingGroupRecord>(work, names.pending(work.channelId));
+  if (pending && pending.version > state.currentVersion) {
+    if (
+      pending.envelope
+      && pending.kind === 'create'
+      && pending.version === version
+      && Boolean(pending.freshStart) === freshStart
+      && pending.envelope.previousVersion === previousVersion
+    ) {
+      assertChainLink(chain, pending.envelope);
+      await sendOwnEnvelope(work, pending as SentPendingRecord, chain);
+      await forgetPackage(work, pending.envelope.added[0].packageId);
+      return version;
+    }
+    if (ownEnvelopeInFlight(pending, Date.now())) {
+      throw freshStart ? new ChannelGroupChangedError() : new ChannelGroupNotReadyError();
+    }
+    await deleteSecurityState(work.owner, names.pending(work.channelId));
+  }
 
   // A member asks to be added again only when it holds no usable group.
   const rejoin = Boolean(state.ownMembership) && !local;
@@ -827,6 +898,13 @@ async function createLocked(work: GroupWork, state: ChannelKeyRecipientState, fr
   const ownEntry = ownListed();
   // The server does not count this device's package as valid yet.
   if (!ownEntry || !own) throw new ChannelGroupNotReadyError();
+  if (continuesLegacy) {
+    // Read only once the group can be made: a channel that waits never asks.
+    previousTranscript = await api.getLegacyEpochTranscript(work.channelId, previousVersion);
+    channelKeyScopes.assertCurrent(work.scope);
+    if (!/^[a-f0-9]{64}$/.test(previousTranscript)) throw new Error('INVALID_MLS_TRANSCRIPT');
+    assertChainLink(chain, { version, previousVersion, previousTranscript });
+  }
   const ownInfo = readMemberPackage(own.material.publicPackage);
   const others = await addableCandidates(
     work,
@@ -873,8 +951,10 @@ async function createLocked(work: GroupWork, state: ChannelKeyRecipientState, fr
     return version;
   } finally {
     raw?.fill(0);
-    // Kept only as the encoded record (adopted, or pending until a sync settles it).
+    // Kept only as the encoded record (adopted, or pending until it is
+    // settled); nothing in memory outlives this attempt.
     eraseMlsSecrets(result.newState);
+    result.consumed.forEach((bytes) => bytes.fill(0));
   }
 }
 
@@ -896,66 +976,90 @@ async function commitLocked(work: GroupWork, state: ChannelKeyRecipientState): P
   if (!memberLeaf.has(work.owner.deviceId) || state.requiredRemoveDeviceIds.some((id) => !memberLeaf.has(id))) {
     return { status: 'stale' };
   }
+  // An own commit for the next version that is not settled yet is sent
+  // again as it is. A new one for the same version could lose to it, and
+  // this device cannot process its own path commit afterwards [live-1].
+  const pending = await read<PendingGroupRecord>(work, names.pending(work.channelId));
+  if (pending) {
+    if (
+      pending.envelope
+      && pending.kind === 'commit'
+      && pending.version === local.version + 1
+      && pending.genesisVersion === local.genesisVersion
+      && pending.envelope.previousTranscript === local.transcript
+    ) {
+      try {
+        await sendOwnEnvelope(work, pending as SentPendingRecord, chain);
+      } catch (error) {
+        channelKeyScopes.assertCurrent(work.scope);
+        if (error instanceof ApiError && error.status === 409) return { status: 'conflict', reason: error.reason };
+        throw error;
+      }
+      return { status: 'committed', version: pending.version };
+    }
+    if (ownEnvelopeInFlight(pending, Date.now())) return { status: 'stale' };
+    await deleteSecurityState(work.owner, names.pending(work.channelId));
+  }
   const groupState = decodeChannelGroupState(local.state);
-  // Additions are optional: packages that cannot be read or verified now
-  // wait for a later commit and never hold up a removal [live-4].
-  const pendingIds = new Set(state.pendingAddDeviceIds);
-  let candidates: MlsMemberPackage[] = [];
-  if (pendingIds.size > 0) {
-    try {
-      const listed = (await api.getPendingMemberPackages(work.channelId)).filter((entry) => pendingIds.has(entry.deviceId));
-      channelKeyScopes.assertCurrent(work.scope);
-      candidates = await addableCandidates(work, listed, groupState);
-    } catch (error) {
-      channelKeyScopes.assertCurrent(work.scope);
-      logGroupEvent('channel_group.additions_unavailable', {
-        channelId: work.channelId,
-        error: error instanceof Error ? error.message : 'unknown',
-      });
-    }
-  }
-  const refreshDue = state.updateRequired || state.ownLeafRefreshDue;
-  let added: MlsMemberPackage[] = [];
-  let removed: string[] = [];
   let result: ChannelGroupCommitResult | null = null;
-  let authMap = new Map<string, string>();
-  for (const withAdditions of [true, false]) {
-    // A member that asked to be added again leaves and returns in one commit.
-    const rejoining = withAdditions
-      ? candidates.filter((entry) => memberLeaf.has(entry.deviceId)).map((entry) => entry.deviceId)
-      : [];
-    removed = [...new Set([...state.requiredRemoveDeviceIds, ...rejoining])].sort();
-    // An Add-only commit carries no path and refreshes nothing: when a
-    // refresh is due and nobody leaves, the empty commit goes first and the
-    // additions follow in the next one.
-    added = withAdditions && !(removed.length === 0 && refreshDue) ? candidates : [];
-    if (added.length === 0 && removed.length === 0 && !refreshDue) return { status: 'noop' };
-    const removeLeaves = removed.map((id) => memberLeaf.get(id)!);
-    authMap = treeAuthMap(groupState, removeLeaves);
-    for (const entry of added) authMap.set(entry.deviceId, readMemberPackage(entry.keyPackage).signatureKey);
-    try {
-      result = await commitChannelGroup(groupState, {
-        add: added.map((entry) => entry.keyPackage),
-        removeLeaves,
-        authMap,
-      });
-      break;
-    } catch (error) {
-      if (added.length === 0) throw error;
-      // ts-mls refused a package the checks here let through (its lifetime
-      // ran out meanwhile, or anything else): commit what is due without
-      // additions; a later commit adds them.
-      logGroupEvent('channel_group.additions_refused', {
-        channelId: work.channelId,
-        error: error instanceof Error ? error.name : 'unknown',
-      });
-    }
-  }
-  if (!result) return { status: 'noop' };
-  const version = local.version + 1;
-  const epoch = local.epoch + 1;
   let raw: Uint8Array | null = null;
   try {
+    // Additions are optional: packages that cannot be read or verified now
+    // wait for a later commit and never hold up a removal [live-4].
+    const pendingIds = new Set(state.pendingAddDeviceIds);
+    let candidates: MlsMemberPackage[] = [];
+    if (pendingIds.size > 0) {
+      try {
+        const listed = (await api.getPendingMemberPackages(work.channelId)).filter((entry) => pendingIds.has(entry.deviceId));
+        channelKeyScopes.assertCurrent(work.scope);
+        candidates = await addableCandidates(work, listed, groupState);
+      } catch (error) {
+        channelKeyScopes.assertCurrent(work.scope);
+        logGroupEvent('channel_group.additions_unavailable', {
+          channelId: work.channelId,
+          error: error instanceof Error ? error.message : 'unknown',
+        });
+      }
+    }
+    const refreshDue = state.updateRequired || state.ownLeafRefreshDue;
+    let added: MlsMemberPackage[] = [];
+    let removed: string[] = [];
+    let authMap = new Map<string, string>();
+    for (const withAdditions of [true, false]) {
+      // A member that asked to be added again leaves and returns in one commit.
+      const rejoining = withAdditions
+        ? candidates.filter((entry) => memberLeaf.has(entry.deviceId)).map((entry) => entry.deviceId)
+        : [];
+      removed = [...new Set([...state.requiredRemoveDeviceIds, ...rejoining])].sort();
+      // An Add-only commit carries no path and refreshes nothing: when a
+      // refresh is due and nobody leaves, the empty commit goes first and the
+      // additions follow in the next one.
+      added = withAdditions && !(removed.length === 0 && refreshDue) ? candidates : [];
+      if (added.length === 0 && removed.length === 0 && !refreshDue) return { status: 'noop' };
+      const removeLeaves = removed.map((id) => memberLeaf.get(id)!);
+      authMap = treeAuthMap(groupState, removeLeaves);
+      for (const entry of added) authMap.set(entry.deviceId, readMemberPackage(entry.keyPackage).signatureKey);
+      try {
+        result = await commitChannelGroup(groupState, {
+          add: added.map((entry) => entry.keyPackage),
+          removeLeaves,
+          authMap,
+        });
+        break;
+      } catch (error) {
+        if (added.length === 0) throw error;
+        // ts-mls refused a package the checks here let through (its lifetime
+        // ran out meanwhile, or anything else): commit what is due without
+        // additions; a later commit adds them.
+        logGroupEvent('channel_group.additions_refused', {
+          channelId: work.channelId,
+          error: error instanceof Error ? error.name : 'unknown',
+        });
+      }
+    }
+    if (!result) return { status: 'noop' };
+    const version = local.version + 1;
+    const epoch = local.epoch + 1;
     raw = await exportChannelKey(result.newState, local.groupId, version);
     const members = nextRoster(local.members, removed, added);
     assertChannelGroup(result.newState, local.groupId, epoch);
@@ -986,10 +1090,15 @@ async function commitLocked(work: GroupWork, state: ChannelKeyRecipientState): P
     }
     return { status: 'committed', version };
   } finally {
+    // The group lives on only as encoded records (the stored state, the
+    // adopted one, or the one pending until it is settled); the decoded
+    // states and the secrets the commit replaced are erased on every path.
     raw?.fill(0);
-    // The new state lives on only as the encoded record (adopted, or pending
-    // until a sync settles it); `consumed` is erased once it is adopted.
-    eraseMlsSecrets(result.newState);
+    eraseMlsSecrets(groupState);
+    if (result) {
+      eraseMlsSecrets(result.newState);
+      result.consumed.forEach((bytes) => bytes.fill(0));
+    }
   }
 }
 
@@ -1403,12 +1512,22 @@ async function keyVersionAttempt(
     // A device that verified a continuous group never goes back to none.
     if ((await localGroupView(channelId)).v4Start !== null) throw new Error('MLS_DOWNGRADE');
     channelKeyScopes.assertCurrent(scope);
+    // No version after the active v3 one can be a v3 version any more [sec-7].
+    if (state.protocolVersion === 3 && state.currentVersion > 0) {
+      const work = groupWork(channelId, scope);
+      await withGroupLock(work, () => dropLegacyPackages(work, state.currentVersion));
+    }
     if (!state.canCreate) throw new ChannelKeyDeliveryPendingError('waiting');
     try {
       await createChannelGroupVersion(channelId, state, scope);
     } catch (error) {
       channelKeyScopes.assertCurrent(scope);
-      if (error instanceof ChannelGroupNotReadyError || isGroupStateConflict(error, 'GENESIS_WAITING')) {
+      // The server asked to slow down: the first group waits like for other devices.
+      if (
+        error instanceof ChannelGroupNotReadyError
+        || isGroupStateConflict(error, 'GENESIS_WAITING')
+        || (error instanceof ApiError && error.status === 429)
+      ) {
         throw new ChannelKeyDeliveryPendingError('genesis-waiting');
       }
       if (!(error instanceof ChannelGroupChangedError || isGroupStateConflict(error))) throw error;
@@ -1424,6 +1543,18 @@ async function keyVersionAttempt(
   // Another tab may have moved the group on: decide on a fresh state, so
   // nothing is sealed for an older version or checked against old lists.
   if (synced.status !== 'ready' || synced.version !== state.currentVersion) return null;
+  // A member this device's own directory shows as revoked is no longer
+  // eligible, so the server must ask for its removal. A roster that keeps it
+  // without that came with an older directory head than this device
+  // verified [sec-3]: reading stops too. The state is read again first, in
+  // case the revocation happened after it was read.
+  const unlisted = (await revokedGroupMembers(channelId))
+    .filter((deviceId) => !state.requiredRemoveDeviceIds.includes(deviceId));
+  channelKeyScopes.assertCurrent(scope);
+  if (unlisted.length > 0) {
+    if (lastAttempt) throw new Error('DIRECTORY_INVALID');
+    return null;
+  }
   if (purpose === 'read') return state.currentVersion;
 
   // Writes wait for these; additions never do and are committed in the background.
@@ -1558,6 +1689,8 @@ export function cancelGroupMaintenance(): void {
 async function runMaintenance(): Promise<void> {
   if (maintenanceRunning) return;
   maintenanceRequested = false;
+  /** Set when the server asked to slow down: the next run waits this long. */
+  let deferredMs: number | null = null;
   maintenanceRunning = (async () => {
     let deviceId: string;
     try {
@@ -1574,6 +1707,9 @@ async function runMaintenance(): Promise<void> {
         logGroupEvent('channel_group.maintenance_failed', { error: error instanceof Error ? error.message : 'unknown' });
         return;
       }
+      const deferred = (retryAfterMs: number) => {
+        deferredMs = Math.max(deferredMs ?? 0, retryAfterMs);
+      };
       for (const channelId of work.needPackage) {
         try {
           if (getActiveDevice().deviceId !== deviceId) return;
@@ -1581,8 +1717,8 @@ async function runMaintenance(): Promise<void> {
           await withGroupLock(groupWorkItem, async () => {
             // A package the server reports as used added this device before;
             // the channel still needs a new one now.
-            if (await publishPackage(groupWorkItem, { rejoin: false }) === 'consumed') {
-              await publishPackage(groupWorkItem, { rejoin: false });
+            if (await publishPackage(groupWorkItem, { rejoin: false, onDeferred: deferred }) === 'consumed') {
+              await publishPackage(groupWorkItem, { rejoin: false, onDeferred: deferred });
             }
           });
         } catch (error) {
@@ -1591,14 +1727,19 @@ async function runMaintenance(): Promise<void> {
             error: error instanceof Error ? error.message : 'unknown',
           });
         }
+        // The server asked to slow down: the remaining channels follow in a
+        // later run instead of sending requests it refuses.
+        if (deferredMs !== null) break;
       }
       for (const channelId of work.needCommit) scheduleAdditions(channelId, deviceId);
+      if (deferredMs !== null) break;
       cursor = work.cursor;
       if (!cursor) break;
     }
   })().finally(() => {
     maintenanceRunning = null;
-    if (maintenanceRequested) scheduleGroupMaintenance();
+    if (deferredMs !== null) scheduleGroupMaintenance(deferredMs);
+    else if (maintenanceRequested) scheduleGroupMaintenance();
   });
   await maintenanceRunning;
 }

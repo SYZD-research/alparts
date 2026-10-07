@@ -175,4 +175,16 @@ describe('finalizing after the members of the channel changed', () => {
     expect(onlyTask().resendRequired).toBe(true);
     expect(attachmentTaskActions('failed', true).resume).toBe(false);
   });
+
+  it('is not resumed on reconnect or by a retry once the server refused it for the changed members', async () => {
+    mocks.api.finalizeAttachmentUpload.mockRejectedValue(refused());
+    await useAttachmentStore.getState().startUploads(message, [new File(['hello'], 'a.txt')]);
+    await until(() => onlyTask().status === 'failed');
+    const finalized = mocks.api.finalizeAttachmentUpload.mock.calls.length;
+    useAttachmentStore.getState().resumeFailedUploads();
+    useAttachmentStore.getState().retryUpload(onlyTask().id);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(mocks.api.finalizeAttachmentUpload).toHaveBeenCalledTimes(finalized);
+    expect(onlyTask()).toMatchObject({ status: 'failed', resendRequired: true });
+  });
 });

@@ -481,6 +481,26 @@ export function isV4Group(state: Pick<AdmissionState, 'active' | 'group'>): bool
 }
 
 /**
+ * The route of a create, checked before the locks (§5.3): a channel with a
+ * group starts a new one only by fresh start, and fresh start needs a group.
+ * The state is read without a lock after the version check, so a group
+ * another device created meanwhile can already be visible. When that group
+ * took this version, the commit lost a race: a version conflict (409), not
+ * a wrong route.
+ */
+export function precheckCreateRoute(
+  commit: Pick<MlsGroupCommit, 'version'>,
+  route: 'commit' | 'fresh-start',
+  active: { version: number; protocolVersion: number } | null,
+  genesisVersion: number | null,
+): void {
+  const hasGroup = Boolean(active && active.protocolVersion >= 4 && genesisVersion);
+  if (hasGroup && active!.version >= commit.version) throw new Error('MLS_CONFLICT');
+  if (route === 'commit' && hasGroup) throw new Error('KEY_FRESH_START_REQUIRED');
+  if (route === 'fresh-start' && !hasGroup) throw new Error('KEY_FRESH_START_NOT_REQUIRED');
+}
+
+/**
  * Admission rules under the key-protocol, workspace and channel locks
  * (§5.3). Returns what the accepted commit changes, or throws the code to
  * report. The version compare-and-swap is checked first by the caller.

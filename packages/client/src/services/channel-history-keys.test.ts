@@ -60,6 +60,12 @@ vi.mock('./security-storage', async (importOriginal) => {
     deleteSecurityState: async (owner: { userId: string; deviceId: string }, name: string) => {
       mocks.storage.delete(id(owner, name));
     },
+    listSecurityStateNames: async (owner: { userId: string; deviceId: string }, prefix: string, limit: number) => (
+      [...mocks.storage.keys()]
+        .filter((name) => name.startsWith(id(owner, prefix)))
+        .slice(0, limit)
+        .map((name) => name.slice(id(owner, '').length))
+    ),
   };
 });
 
@@ -71,6 +77,7 @@ import {
   exportHistoryKey,
   getActiveDevice,
   getChannelKeysForVersions,
+  hasChannelHistoryKeys,
   saveRecoveredChannelKey,
 } from './crypto.service';
 import { localGroupView, syncChannelGroup } from './mls-group.service';
@@ -228,6 +235,20 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.mocked(localGroupView).mockReset();
+});
+
+describe('keys this device holds for a channel', () => {
+  it('counts every key it derived, received or restored, of that channel only', async () => {
+    expect(await hasChannelHistoryKeys(channelId)).toBe(false);
+    put(`key-commitment:44444444-4444-4444-8444-444444444444:2`, 'c'.repeat(43));
+    put(`mls-group:${channelId}`, {});
+    expect(await hasChannelHistoryKeys(channelId)).toBe(false);
+    put(`key-commitment:${channelId}:2`, 'c'.repeat(43));
+    expect(await hasChannelHistoryKeys(channelId)).toBe(true);
+    mocks.storage.clear();
+    put(`recovered:${channelId}:5`, { raw: toBase64(key(5)) });
+    expect(await hasChannelHistoryKeys(channelId)).toBe(true);
+  });
 });
 
 describe('version keys of continuous groups', () => {

@@ -15,6 +15,7 @@ import {
   ensureChannelKey,
   getActiveDevice,
   getChannelKeysForVersions,
+  hasChannelHistoryKeys,
   signMessageEnvelope,
   startChannelWithoutHistory as establishFreshChannel,
   verifyMessageSignature,
@@ -315,6 +316,27 @@ function requireLocallySignedMessageResponse(
   return markMessageCryptoVerification(event, true);
 }
 
+/**
+ * Waiting to be added hides the messages only on a device that never had a
+ * key of the channel. A device removed from the group (for example by a
+ * fresh start) keeps showing what it can read until it is added again.
+ */
+async function waitHidesHistory(channelId: string, wait: ChannelKeyWait): Promise<boolean> {
+  if (wait.reason !== 'waiting') return false;
+  try {
+    return !await hasChannelHistoryKeys(channelId);
+  } catch {
+    return true;
+  }
+}
+
+/** An unchanged waiting state keeps its object, so views that depend on it do not start over. */
+function sameWait(current: ChannelKeyWait | null | undefined, next: ChannelKeyWait | null): ChannelKeyWait | null {
+  return current && next && current.reason === next.reason && current.freshStartAvailable === next.freshStartAvailable
+    ? current
+    : next;
+}
+
 export const useMessageStore = create<MessageState>((set, get) => ({
   eventsByChannel: {},
   messagesByChannel: {},
@@ -348,9 +370,9 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         } catch (error) {
           const wait = channelKeyWait(error);
           // A device that already reads this channel keeps its history while
-          // it waits (a first group, or being added again); writes stay off
-          // until it has the current key.
-          if (!wait || wait.reason === 'waiting') throw error;
+          // it waits (a first group, being added again, or added back after
+          // it left the group); writes stay off until it has the current key.
+          if (!wait || await waitHidesHistory(channelId, wait)) throw error;
           keyPending = wait;
         }
         const result = await api.getMessages(channelId);
@@ -360,7 +382,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
           hasMore: { ...state.hasMore, [channelId]: result.hasMore },
           cursors: { ...state.cursors, [channelId]: result.cursor },
           securityErrors: { ...state.securityErrors, [channelId]: null },
-          channelKeyPending: { ...state.channelKeyPending, [channelId]: keyPending },
+          channelKeyPending: { ...state.channelKeyPending, [channelId]: sameWait(state.channelKeyPending[channelId], keyPending) },
           channelRecoveryPending: { ...state.channelRecoveryPending, [channelId]: false },
           loadingByChannel: { ...state.loadingByChannel, [channelId]: false },
           isLoading: Object.entries(state.loadingByChannel).some(([id, loading]) => id !== channelId && loading),
@@ -376,7 +398,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
             ...state.securityErrors,
             [channelId]: wait ? null : errorMessage(error, 'Secure channel initialization failed'),
           },
-          channelKeyPending: { ...state.channelKeyPending, [channelId]: wait },
+          channelKeyPending: { ...state.channelKeyPending, [channelId]: sameWait(state.channelKeyPending[channelId], wait) },
           channelRecoveryPending: { ...state.channelRecoveryPending, [channelId]: wait !== null },
         }));
       }
@@ -462,11 +484,13 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         if (!isMessageContextCurrent(channelId, generation, channelEpoch)) return false;
         const wait = channelKeyWait(error);
         if (wait) {
+          // Waiting to be added shows the waiting screen; a device that
+          // already reads the channel keeps showing its messages.
+          const hidesHistory = await waitHidesHistory(channelId, wait);
+          if (!isMessageContextCurrent(channelId, generation, channelEpoch)) return false;
           set((state) => ({
-            channelKeyPending: { ...state.channelKeyPending, [channelId]: wait },
-            // Waiting to be added shows the waiting screen; a device that
-            // already reads the channel keeps showing its messages.
-            channelRecoveryPending: { ...state.channelRecoveryPending, [channelId]: wait.reason === 'waiting' },
+            channelKeyPending: { ...state.channelKeyPending, [channelId]: sameWait(state.channelKeyPending[channelId], wait) },
+            channelRecoveryPending: { ...state.channelRecoveryPending, [channelId]: hidesHistory },
             securityErrors: { ...state.securityErrors, [channelId]: null },
           }));
         } else {

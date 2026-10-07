@@ -3476,8 +3476,12 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
         keyService.distributeChannelKeys(channelId, owner.user.id, o1.id, 2, 'n'.repeat(43), [nextWrap]),
         /GROUP_PROTOCOL_REQUIRED/,
       );
-      // The per-epoch read route serves only earlier protocols.
-      assert.equal((await request(`/api/channels/${channelId}/mls/epochs/1`, { cookie: owner.cookie })).status, 403);
+      // The per-epoch read route serves only earlier protocols; a group
+      // version is as unknown there as a version that does not exist.
+      for (const version of [1, 99]) {
+        const missing = await request(`/api/channels/${channelId}/mls/epochs/${version}`, { cookie: owner.cookie });
+        assert.deepEqual([missing.status, (await json<{ error: string }>(missing)).error], [404, 'NOT_FOUND']);
+      }
 
       // The log and rosters are for members only.
       assert.deepEqual(await json(await request(`/api/channels/${channelId}/mls/group/commits?after=0`, { cookie: carol.cookie })), []);
@@ -3649,7 +3653,22 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
       response = await postCommit(b1, restart.commit, true);
       assert.deepEqual([response.status, (await json<{ code: string }>(response)).code], [409, 'KEY_FRESH_START_NOT_REQUIRED']);
       // Nobody usable has been online for three days.
-      await db.execute(sql`update mls_group_members set last_seen_at = now() - interval '73 hours' where channel_id = ${channelId}`);
+      const idle = () => db.execute(sql`update mls_group_members set last_seen_at = now() - interval '73 hours' where channel_id = ${channelId}`);
+      await idle();
+      assert.equal((await groupState(bob, channelId)).historyRecoveryRequired, true);
+      // A usable member that reads the state, or the commit log, is online again.
+      const seenSeconds = async (device: GroupDevice) => Number((await db.execute(sql`select extract(epoch from now() - last_seen_at)::int as "age"
+        from mls_group_members where channel_id = ${channelId} and device_id = ${device.id} and removed_version is null`)).rows[0].age);
+      await groupState(owner, channelId);
+      assert.ok(await seenSeconds(o1) < 60, 'reading the state records the member as online');
+      assert.equal((await groupState(bob, channelId)).historyRecoveryRequired, false);
+      response = await postCommit(b1, restart.commit, true);
+      assert.deepEqual([response.status, (await json<{ code: string }>(response)).code], [409, 'KEY_FRESH_START_NOT_REQUIRED']);
+      await idle();
+      assert.equal((await request(`/api/channels/${channelId}/mls/group/commits?after=0`, { cookie: carol.cookie })).status, 200);
+      assert.ok(await seenSeconds(c1) < 60, 'reading the commit log records the member as online');
+      assert.equal((await groupState(bob, channelId)).historyRecoveryRequired, false);
+      await idle();
       assert.equal((await groupState(bob, channelId)).historyRecoveryRequired, true);
       response = await postCommit(b1, restart.commit, true);
       assert.equal(response.status, 201);
@@ -3791,7 +3810,181 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
       assert.deepEqual(stored.keys.filter((entry) => entry.channelId === channelId).map((entry) => entry.version), [1, 3]);
     });
 
+    it('waits for the earlier recipients of a migrated channel, then links its first group to the active v3 envelope', async () => {
+      const { db } = await import('../db/index.js');
+      const ownerMember = asGroupMember(owner.cookie, owner.user.id, o1.keys, o1);
+      const bobMember = asGroupMember(bob.cookie, bob.user.id, b1.keys, b1);
+      const carolMember = asGroupMember(carol.cookie, carol.user.id, c1.keys, c1);
+      const channelId = await groupChannel('migrated');
+      // What migration 0023 leaves of a group protocol 3 channel: the active
+      // version with its signed envelope and recipients, an aborted successor,
+      // and writes stopped until the first group.
+      const legacyTranscript = randomBytes(32).toString('hex');
+      await db.execute(sql`insert into channel_key_epochs
+        (channel_id, version, protocol_version, status, key_commitment, distributor_device_id, activated_at, aborted_at)
+        values (${channelId}, 1, 3, 'active', ${'L'.repeat(43)}, ${o1.id}, now(), null),
+          (${channelId}, 2, 3, 'aborted', ${'M'.repeat(43)}, ${o1.id}, null, now())`);
+      await db.execute(sql`insert into mls_epochs (channel_id, version, transcript, envelope)
+        values (${channelId}, 1, ${legacyTranscript}, ${JSON.stringify({ channelId, version: 1 })}::jsonb)`);
+      await db.execute(sql`insert into channel_key_epoch_recipients (channel_id, version, device_id, user_id)
+        values (${channelId}, 1, ${o1.id}, ${owner.user.id}), (${channelId}, 1, ${b1.id}, ${bob.user.id}),
+          (${channelId}, 1, ${c1.id}, ${carol.user.id})`);
+      await db.execute(sql`update channels set key_rotation_required = true where id = ${channelId}`);
+      const group = new ChannelGroup(channelId);
+      let state = await group.state(ownerMember);
+      assert.deepEqual(
+        pick(state, ['group', 'protocolVersion', 'currentVersion', 'nextVersion', 'canCreate']),
+        { group: null, protocolVersion: 3, currentVersion: 1, nextVersion: 3, canCreate: true },
+      );
+      assert.deepEqual(state.genesisWaiting, [o1.id, b1.id, c1.id].sort());
+      assert.deepEqual(await refusal(await groupMessage(ownerMember, channelId, randomBytes(32), 1)), [400, 'KEY_ROTATION_REQUIRED']);
+
+      // The wait starts with the first package and is not moved by later ones.
+      const waitRow = async () => (await db.execute(sql`select genesis_requested_at as "requestedAt", genesis_version as "genesisVersion"
+        from mls_groups where channel_id = ${channelId}`)).rows[0] as { requestedAt: Date | null; genesisVersion: number | null } | undefined;
+      assert.equal(await waitRow(), undefined);
+      assert.equal((await group.publish(ownerMember)).status, 201);
+      const started = await waitRow();
+      assert.ok(started?.requestedAt, 'the first package starts the wait');
+      assert.equal(started.genesisVersion, null);
+      assert.equal((await group.publish(bobMember)).status, 201);
+      assert.deepEqual((await waitRow())!.requestedAt, started.requestedAt);
+      state = await group.state(ownerMember);
+      assert.deepEqual(state.genesisWaiting, [c1.id]);
+      assert.equal(state.canCreate, true);
+
+      // Carol's device was a recipient and has published nothing yet.
+      let created = await group.create(ownerMember, [bobMember]);
+      assert.deepEqual(
+        [created.envelope.version, created.envelope.previousVersion, created.envelope.previousTranscript],
+        [3, 1, legacyTranscript],
+      );
+      assert.deepEqual(await refusal(created.response!), [409, 'GENESIS_WAITING']);
+      // After 24 hours the first group goes ahead without it.
+      await db.execute(sql`update mls_groups set genesis_requested_at = genesis_requested_at - interval '24 hours'
+        where channel_id = ${channelId}`);
+      assert.deepEqual((await group.state(ownerMember)).genesisWaiting, []);
+      created = await group.create(ownerMember, [bobMember]);
+      assert.equal(created.response!.status, 201);
+      assert.equal(created.outcomes.get(b1.id), 'current', 'Bob joins from the Welcome with the same key');
+      assert.deepEqual((await db.execute(sql`select version, status, protocol_version as "protocolVersion"
+        from channel_key_epochs where channel_id = ${channelId} order by version`)).rows, [
+        { version: 1, status: 'retired', protocolVersion: 3 },
+        { version: 2, status: 'aborted', protocolVersion: 3 },
+        { version: 3, status: 'active', protocolVersion: 4 },
+      ]);
+      assert.equal((await waitRow())!.genesisVersion, 3);
+      assert.equal((await groupMessage(bobMember, channelId, group.key(3), 3)).status, 201);
+      assert.deepEqual(await refusal(await groupMessage(bobMember, channelId, group.key(3), 1)), [400, 'KEY_VERSION_STALE']);
+
+      // Carol comes online later and is added like any new device.
+      assert.equal((await group.publish(carolMember)).status, 201);
+      const addition = await group.commit(bobMember, { add: [carolMember] });
+      assert.equal(addition.response!.status, 201);
+      assert.equal(addition.outcomes.get(c1.id), 'current');
+      assert.equal((await groupMessage(carolMember, channelId, group.key(4), 4)).status, 201);
+    });
+
+    it('counts add-only and empty commits from the log for the hourly limit, but never delays a removal', async () => {
+      const { db } = await import('../db/index.js');
+      const ownerMember = asGroupMember(owner.cookie, owner.user.id, o1.keys, o1);
+      const bobMember = asGroupMember(bob.cookie, bob.user.id, b1.keys, b1);
+      const extra = await secondDevice(owner, 'group-owner@example.test', 'O-rate');
+      const channelId = await groupChannel('commit-rate');
+      const group = new ChannelGroup(channelId);
+      assert.equal((await group.create(bobMember, [ownerMember, extra])).response!.status, 201);
+      group.offline.add(extra.id);
+      const due = () => db.execute(sql`update mls_groups set path_refreshed_at = now() - interval '25 hours' where channel_id = ${channelId}`);
+      // Two committers stay below the per-device request limit.
+      for (let index = 0; index < 60; index += 1) {
+        await due();
+        const refresh = await group.commit(index % 2 === 0 ? bobMember : ownerMember);
+        assert.equal(refresh.response!.status, 201, `refresh ${index + 1}`);
+      }
+      await due();
+      const limited = await group.commit(bobMember);
+      assert.deepEqual(await refusal(limited.response!), [409, 'COMMIT_RATE_LIMITED']);
+      // A removal goes through at once.
+      assert.equal((await request(`/api/devices/${extra.id}`, { method: 'DELETE', cookie: extra.cookie })).status, 200);
+      const removal = await group.commit(ownerMember, { remove: [extra] });
+      assert.equal(removal.response!.status, 201);
+      // Commits older than an hour no longer count.
+      await db.execute(sql`update channel_key_epochs set created_at = created_at - interval '61 minutes' where channel_id = ${channelId}`);
+      await due();
+      assert.equal((await group.commit(bobMember)).response!.status, 201);
+    });
+
+    it('orders a write after a revocation that committed while the write waited, and one of two commits for a version', async () => {
+      const { db } = await import('../db/index.js');
+      const ownerMember = asGroupMember(owner.cookie, owner.user.id, o1.keys, o1);
+      const bobMember = asGroupMember(bob.cookie, bob.user.id, b1.keys, b1);
+      const extra = await secondDevice(owner, 'group-owner@example.test', 'O-race');
+      const channelId = await groupChannel('revocation-race');
+      const group = new ChannelGroup(channelId);
+      assert.equal((await group.create(bobMember, [ownerMember, extra])).response!.status, 201);
+      group.offline.add(extra.id);
+
+      // Two members commit for the same version at once: one is accepted, the
+      // other is a version conflict.
+      await db.execute(sql`update mls_groups set path_refreshed_at = now() - interval '25 hours' where channel_id = ${channelId}`);
+      const contenders = [await group.commit(bobMember, {}, { post: false }), await group.commit(ownerMember, {}, { post: false })];
+      assert.equal(contenders[0].envelope.version, contenders[1].envelope.version);
+      const responses = await Promise.all(contenders.map((contender) => group.send(contender.committer, contender.envelope)));
+      const outcomes = await Promise.all(responses.map(refusal));
+      assert.deepEqual(outcomes.map(([status]) => status).sort(), [201, 409]);
+      assert.deepEqual(outcomes.find(([status]) => status === 409), [409, 'MLS_CONFLICT']);
+      const winner = contenders[outcomes.findIndex(([status]) => status === 201)];
+      await group.accepted(winner);
+      assert.equal(group.version, 2);
+
+      // A revocation holds the device row (as revokeDevice does) while a
+      // member writes; the write waits for it and is judged after it.
+      const holder = new pg.Client({ connectionString: process.env.DATABASE_URL });
+      const observer = new pg.Client({ connectionString: process.env.DATABASE_URL });
+      await holder.connect();
+      await observer.connect();
+      try {
+        await holder.query('begin');
+        try {
+          await holder.query('select id from devices where id = $1 for update', [extra.id]);
+          await holder.query('update devices set revoked_at = now() where id = $1', [extra.id]);
+          const pending = groupMessage(bobMember, channelId, group.key(), group.version);
+          let waiting = false;
+          for (let attempt = 0; attempt < 100 && !waiting; attempt += 1) {
+            const { rows } = await observer.query<{ waiting: number }>(`
+              select count(*)::int as waiting from pg_stat_activity
+              where datname = current_database() and wait_event_type = 'Lock' and pid <> $1
+            `, [(holder as unknown as { processID: number }).processID]);
+            waiting = rows[0]!.waiting > 0;
+            if (!waiting) await delay(20);
+          }
+          assert.equal(waiting, true, 'the write never waited for the revoked device row');
+          await holder.query('commit');
+          assert.deepEqual(await refusal(await pending), [400, 'KEY_ROTATION_REQUIRED']);
+        } catch (error) {
+          await holder.query('rollback').catch(() => undefined);
+          throw error;
+        }
+      } finally {
+        await holder.end();
+        await observer.end();
+      }
+      assert.deepEqual((await group.state(bobMember)).requiredRemoveDeviceIds, [extra.id]);
+      assert.equal((await group.commit(bobMember, { remove: [extra] })).response!.status, 201);
+      assert.equal((await groupMessage(bobMember, channelId, group.key(), group.version)).status, 201);
+    });
+
     // === helpers ===
+
+    /** Another device of `account`, with a session of its own. */
+    async function secondDevice(account: Account, email: string, name: string): Promise<MemberDevice> {
+      const login = await request('/api/auth/login', { method: 'POST', body: { email, password: account.password } });
+      assert.equal(login.status, 200);
+      const cookie = login.headers.get('set-cookie')!.split(';', 1)[0];
+      const keys = deviceFixture();
+      const device = await registerDevice({ ...account, cookie }, keys, name);
+      return asGroupMember(cookie, account.user.id, keys, device);
+    }
 
     async function groupDevice(account: Account, name: string): Promise<GroupDevice> {
       const keys = deviceFixture();
@@ -4420,11 +4613,19 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
       const members = model.genesisRoster(added);
       mls.assertChannelGroup(result.newState, groupId, 1);
       model.assertTreeMatchesRoster(mls.groupLeaves(result.newState), members, authMap);
+      // As the client links a migrated channel's first group: to the signed
+      // envelope of the active group protocol 3 version.
+      let previousTranscript: string = state.group?.transcript ?? '0'.repeat(64);
+      if (!state.group && state.protocolVersion === 3 && state.currentVersion > 0) {
+        const legacy = await request(`/api/channels/${this.channelId}/mls/epochs/${state.currentVersion}`, { cookie: creator.cookie });
+        assert.equal(legacy.status, 200);
+        previousTranscript = (await json<{ transcript: string }>(legacy)).transcript;
+      }
       return this.submit(creator, result, {
         channelId: this.channelId,
         version,
         previousVersion: state.currentVersion,
-        previousTranscript: state.group?.transcript ?? '0'.repeat(64),
+        previousTranscript,
         groupId,
         epoch: 1,
         kind: 'create',
