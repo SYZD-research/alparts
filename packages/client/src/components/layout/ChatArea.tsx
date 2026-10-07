@@ -11,7 +11,6 @@ import { useAuthStore } from '../../stores/auth.store';
 import { directMessageTitle } from '../../stores/dm-model';
 import { useUiStore } from '../../stores/ui.store';
 import { ApiError } from '../../services/api';
-import { CHANNEL_HISTORY_UNAVAILABLE } from '../../services/crypto.service';
 import { Dialog } from '../ui/Dialog';
 import { ForumView } from '../forum/ForumView';
 import { useT } from '../../i18n';
@@ -65,7 +64,10 @@ export function ChatArea({ visible = true }: { visible?: boolean }) {
         setFreshStartError(t('パスワードが正しくありません。'));
       } else if (error instanceof ApiError && error.status === 403) {
         setFreshStartError(t('この操作を行う権限がありません。チャンネルの管理者へ依頼してください。'));
-      } else if (error instanceof ApiError && error.status === 409) {
+      } else if (
+        (error instanceof ApiError && error.status === 409)
+        || (error as { code?: unknown } | null)?.code === 'CHANNEL_GROUP_CHANGED'
+      ) {
         setFreshStartError(t('チャンネルの状態が変わりました。閉じてから、もう一度お試しください。'));
       } else {
         setFreshStartError(t('新しいメッセージを開始できませんでした。もう一度お試しください。'));
@@ -104,9 +106,9 @@ export function ChatArea({ visible = true }: { visible?: boolean }) {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const retry = async () => {
       await retryChannelPreparation(activeChannelId);
-      if (!cancelled && useMessageStore.getState().channelKeyPending[activeChannelId]) {
-        timer = setTimeout(() => { void retry(); }, 5_000);
-      }
+      const pending = useMessageStore.getState().channelKeyPending[activeChannelId];
+      // A device that may no longer ask to be added again checks rarely.
+      if (!cancelled && pending) timer = setTimeout(() => { void retry(); }, pending.reason === 'unavailable' ? 60_000 : 5_000);
     };
     timer = setTimeout(() => { void retry(); }, 2_000);
     return () => {
@@ -139,6 +141,9 @@ export function ChatArea({ visible = true }: { visible?: boolean }) {
         >
           <p className="rounded border border-discord-red/60 bg-discord-red/10 p-3 text-sm text-discord-text">
             {t('チャンネルは新しいメッセージから再開されます。この操作は元に戻せません。')}
+          </p>
+          <p className="text-sm text-discord-text">
+            {t('ほかのメンバーの端末は、それぞれがオンラインになるまで新しいメッセージを読めません。それまでに送られたメッセージは、その端末では読めないままになります。')}
           </p>
           {freshStartError && (
             <p role="alert" className="rounded bg-discord-red/15 px-3 py-2 text-sm text-discord-red">
@@ -185,16 +190,13 @@ export function ChatArea({ visible = true }: { visible?: boolean }) {
         </div>
       ) : channelRecoveryPending ? (
         <div role="status" className="flex flex-1 flex-col items-center justify-center gap-3 px-8 text-center text-discord-muted">
-          {channelKeyPending === CHANNEL_HISTORY_UNAVAILABLE ? (
-            <>
-              <p className="text-discord-text">{t('このチャンネルのメッセージを表示できる端末が残っていません。')}</p>
-              <p className="max-w-lg text-sm">{t('待っても表示されるようにはなりません。新しいメッセージから開始すると、メンバー全員が再び送信できるようになります。以前のメッセージは表示できないままです。')}</p>
-            </>
-          ) : (
-            <>
-              <p className="text-discord-text">{t('この端末でメッセージを表示する準備をしています。')}</p>
-              <p className="max-w-lg text-sm">{t('以前使っていた端末でalpartsを開いたままにしてください。準備が終わると自動で表示されます。')}</p>
-            </>
+          <p className="max-w-lg text-discord-text">
+            {channelKeyPending?.reason === 'rejoining'
+              ? t('この端末でこの会話を読み込めませんでした。参加し直しています。しばらくたっても読めない場合は、会話の管理者に連絡してください。')
+              : t('この会話に参加しているほかの端末がオンラインになると、この端末でもメッセージを読み書きできるようになります。')}
+          </p>
+          {channelKeyPending?.freshStartAvailable && (
+            <p className="max-w-lg text-sm">{t('待っても読めるようにならない場合は、過去のメッセージを使わずに会話を始め直せます。')}</p>
           )}
           <button
             type="button"
@@ -207,16 +209,18 @@ export function ChatArea({ visible = true }: { visible?: boolean }) {
           >
             {isRetryingKey ? t('再試行中…') : t('再試行')}
           </button>
-          <button
-            type="button"
-            onClick={() => {
-              setFreshStartError(null);
-              setShowFreshStart(true);
-            }}
-            className="rounded px-3 py-2 text-sm text-discord-red underline hover:bg-discord-red/10"
-          >
-            {t('過去のメッセージを使わず開始')}
-          </button>
+          {channelKeyPending?.freshStartAvailable && (
+            <button
+              type="button"
+              onClick={() => {
+                setFreshStartError(null);
+                setShowFreshStart(true);
+              }}
+              className="rounded px-3 py-2 text-sm text-discord-red underline hover:bg-discord-red/10"
+            >
+              {t('過去のメッセージを使わず開始')}
+            </button>
+          )}
         </div>
       ) : (
         <>
@@ -225,7 +229,15 @@ export function ChatArea({ visible = true }: { visible?: boolean }) {
             : <MessageList channelId={activeChannelId} visible={visible} />}
           {channelKeyPending && (
             <div role="status" className="mx-4 mb-2 flex items-center justify-between gap-3 rounded border border-discord-yellow/40 bg-discord-yellow/10 px-3 py-2 text-sm text-discord-yellow">
-              <span>{t('メッセージを送信できるよう準備しています。しばらくお待ちください。')}</span>
+              <span>
+                {channelKeyPending.reason === 'rejoining'
+                  ? t('この端末でこの会話を読み込めませんでした。参加し直しています。しばらくたっても読めない場合は、会話の管理者に連絡してください。')
+                  : channelKeyPending.reason === 'unavailable'
+                    ? t('この端末ではこの会話を読み込めなくなりました。会話の管理者に連絡してください。')
+                    : channelKeyPending.reason === 'genesis-waiting'
+                      ? t('ほかのメンバーの端末がオンラインになると、メッセージを送信できるようになります。')
+                      : t('この会話に参加しているほかの端末がオンラインになると、この端末でもメッセージを読み書きできるようになります。')}
+              </span>
               <div className="flex shrink-0 items-center gap-2">
                 <button
                   type="button"
@@ -238,16 +250,18 @@ export function ChatArea({ visible = true }: { visible?: boolean }) {
                 >
                   {isRetryingKey ? t('再試行中…') : t('再試行')}
                 </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setFreshStartError(null);
-                    setShowFreshStart(true);
-                  }}
-                  className="rounded px-2 py-1 text-discord-red underline hover:bg-discord-red/10"
-                >
-                  {t('過去を使わず開始')}
-                </button>
+                {channelKeyPending.freshStartAvailable && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFreshStartError(null);
+                      setShowFreshStart(true);
+                    }}
+                    className="rounded px-2 py-1 text-discord-red underline hover:bg-discord-red/10"
+                  >
+                    {t('過去を使わず開始')}
+                  </button>
+                )}
               </div>
             </div>
           )}

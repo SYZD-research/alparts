@@ -1,12 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { serializeChannelKeyAcknowledgement } from '@alparts/shared';
-import type { ChannelKeyDelivery } from './api';
+import { mlsGroupId, serializeChannelKeyAcknowledgement } from '@alparts/shared';
+import type { ChannelKeyDelivery, ChannelKeyRecipientState } from './api';
 import {
-  ChannelKeyActivationPendingError,
+  assertKeyRecipientState,
+  channelKeyWait,
   ChannelKeyDeliveryPendingError,
-  hasActiveEpochAuthority,
   isDecryptableChannelKeyEpoch,
-  isChannelKeyActivationPendingError,
   isChannelKeyDeliveryPendingError,
   orderChannelKeyDeliveries,
   tryChannelKeyDeliveries,
@@ -27,7 +26,7 @@ function delivery(deliveryId: string, epochStatus: ChannelKeyDelivery['epochStat
   };
 }
 
-describe('two-phase channel-key delivery selection', () => {
+describe('history key deliveries from before continuous groups', () => {
   it('tries immutable candidates in delivery-id order and skips invalid candidates', async () => {
     const attempted: string[] = [];
     const result = await tryChannelKeyDeliveries([
@@ -63,31 +62,6 @@ describe('two-phase channel-key delivery selection', () => {
     expect(isDecryptableChannelKeyEpoch('retired')).toBe(true);
   });
 
-  it('classifies recipient acknowledgement waiting as availability rather than a security failure', () => {
-    const pending = new ChannelKeyActivationPendingError(2);
-    expect(isChannelKeyActivationPendingError(pending)).toBe(true);
-    expect(pending.message).toContain('あと2台');
-    expect(isChannelKeyActivationPendingError(new Error('invalid signature'))).toBe(false);
-  });
-
-  it('classifies new-device delivery waiting as recoverable availability', () => {
-    const pending = new ChannelKeyDeliveryPendingError();
-    expect(isChannelKeyDeliveryPendingError(pending)).toBe(true);
-    expect(isChannelKeyDeliveryPendingError({ code: pending.code })).toBe(true);
-    expect(isChannelKeyDeliveryPendingError(new Error('invalid signature'))).toBe(false);
-  });
-
-  it('permits pending cleanup after total active-holder loss without claiming old-key access', () => {
-    const state = {
-      currentVersion: 7,
-      historyRecoveryRequired: true,
-      distributedDeviceIds: ['revoked-device'],
-    };
-    expect(hasActiveEpochAuthority(state, 'fresh-device', false)).toBe(true);
-    expect(hasActiveEpochAuthority({ ...state, historyRecoveryRequired: false }, 'fresh-device', false)).toBe(false);
-    expect(hasActiveEpochAuthority({ ...state, historyRecoveryRequired: false }, 'revoked-device', true)).toBe(true);
-  });
-
   it('binds an acknowledgement to the exact delivery and distributor', () => {
     const envelope = {
       deliveryId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
@@ -108,5 +82,90 @@ describe('two-phase channel-key delivery selection', () => {
       ...envelope,
       distributorDeviceId: '55555555-5555-4555-8555-555555555555',
     })).not.toBe(serialized);
+  });
+});
+
+describe('waiting for a channel group', () => {
+  it('classifies waiting to be added as recoverable availability, with its reason', () => {
+    const waiting = new ChannelKeyDeliveryPendingError();
+    expect(isChannelKeyDeliveryPendingError(waiting)).toBe(true);
+    expect(isChannelKeyDeliveryPendingError({ code: waiting.code })).toBe(true);
+    expect(isChannelKeyDeliveryPendingError(new Error('invalid signature'))).toBe(false);
+    expect(channelKeyWait(waiting)).toEqual({ reason: 'waiting', freshStartAvailable: false });
+    expect(channelKeyWait(new ChannelKeyDeliveryPendingError('rejoining', true)))
+      .toEqual({ reason: 'rejoining', freshStartAvailable: true });
+    expect(channelKeyWait(new ChannelKeyDeliveryPendingError('genesis-waiting')))
+      .toEqual({ reason: 'genesis-waiting', freshStartAvailable: false });
+    expect(channelKeyWait(new Error('INVALID_MLS_TRANSCRIPT'))).toBeNull();
+  });
+
+  it('never shows a device count or a technical term in the waiting state', () => {
+    // The UI picks its own plain text from the reason; the error carries no text.
+    expect(new ChannelKeyDeliveryPendingError('waiting').message).toBe('CHANNEL_KEY_DELIVERY_PENDING');
+  });
+});
+
+describe('server key state of continuous groups', () => {
+  const channelId = '22222222-2222-4222-8222-222222222222';
+  const device = '33333333-3333-4333-8333-333333333333';
+  const user = '44444444-4444-4444-8444-444444444444';
+  const base = (): ChannelKeyRecipientState => ({
+    protocolVersion: 4,
+    pendingProtocolVersion: null,
+    currentVersion: 7,
+    keyCommitment: 'c'.repeat(43),
+    pendingVersion: null,
+    pendingKeyCommitment: null,
+    pendingInvalid: false,
+    nextVersion: 8,
+    rotationRequired: false,
+    historyRecoveryRequired: false,
+    canRotate: true,
+    canAbortPending: false,
+    distributedDeviceIds: [device],
+    pendingAcknowledgedDeviceIds: [],
+    pendingRequiredDeviceIds: [],
+    recipients: [{ deviceId: device, userId: user, identityKey: '{}' }],
+    group: {
+      genesisVersion: 5,
+      groupId: mlsGroupId(channelId, 5),
+      epoch: 3,
+      transcript: 'a'.repeat(64),
+      members: [{ deviceId: device, userId: user, leafIndex: 0 }],
+    },
+    ownMembership: { joinedVersion: 5, leafIndex: 0, rejoinRequested: false },
+    pendingAddDeviceIds: [],
+    requiredRemoveDeviceIds: [],
+    updateRequired: false,
+    ownLeafRefreshDue: false,
+    canCommit: true,
+    canCreate: false,
+    genesisWaiting: [],
+  });
+
+  it('accepts a consistent group state', () => {
+    expect(() => assertKeyRecipientState(channelId, base())).not.toThrow();
+    expect(() => assertKeyRecipientState(channelId, {
+      ...base(),
+      group: null,
+      ownMembership: null,
+      canCommit: false,
+      canCreate: true,
+      currentVersion: 0,
+      keyCommitment: null,
+      nextVersion: 1,
+    })).not.toThrow();
+  });
+
+  it('refuses a group named for another channel, a wrong epoch, pending versions and impossible memberships', () => {
+    const state = base();
+    expect(() => assertKeyRecipientState(channelId, { ...state, group: { ...state.group!, groupId: mlsGroupId(device, 5) } })).toThrow();
+    expect(() => assertKeyRecipientState(channelId, { ...state, group: { ...state.group!, epoch: 2 } })).toThrow();
+    expect(() => assertKeyRecipientState(channelId, { ...state, pendingVersion: 8, pendingKeyCommitment: 'x' })).toThrow();
+    expect(() => assertKeyRecipientState(channelId, { ...state, ownMembership: { joinedVersion: 9, leafIndex: 0, rejoinRequested: false } })).toThrow();
+    expect(() => assertKeyRecipientState(channelId, { ...state, ownMembership: { joinedVersion: 5, leafIndex: 0, rejoinRequested: true } })).toThrow();
+    expect(() => assertKeyRecipientState(channelId, { ...state, canCreate: true })).toThrow();
+    expect(() => assertKeyRecipientState(channelId, { ...state, group: null, ownMembership: null, canCommit: false, historyRecoveryRequired: true })).toThrow();
+    expect(() => assertKeyRecipientState(channelId, { ...state, pendingAddDeviceIds: [device, device] })).toThrow();
   });
 });

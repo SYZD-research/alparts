@@ -66,6 +66,12 @@ const ACTION_LABELS: Record<string, MessageKey> = {
   'channel.key.delivery.add': msg('チャンネルの利用準備を更新'),
   'channel.key.acknowledge': msg('チャンネルの利用準備を確認'),
   'channel.key.epoch.abort': msg('チャンネルの利用準備を中止'),
+  'channel.key.group.create': msg('チャンネルの利用準備を開始'),
+  'channel.key.group.commit': msg('チャンネルの利用準備を更新'),
+  // A resent group change (`channel.key.group.replay`) names no kind.
+  'channel.key.group': msg('チャンネルの利用準備を更新'),
+  'channel.key.group.fresh_start': msg('過去のメッセージを使わずチャンネルを再開'),
+  'channel.mls.member_package': msg('チャンネルへの参加を準備'),
   'dm.create': msg('ダイレクトメッセージを作成'),
   'dm.reuse': msg('ダイレクトメッセージを開く'),
   'message.create': msg('メッセージを送信'),

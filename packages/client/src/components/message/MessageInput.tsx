@@ -576,7 +576,7 @@ export function MessageInput({ channelId, sendDisabled = false, postId, placehol
                   {attachmentTaskActions(task.status).cancel && (
                     <button type="button" onClick={() => cancelUpload(task.id)} className="underline">{t('取消')}</button>
                   )}
-                  {attachmentTaskActions(task.status).resume && (
+                  {attachmentTaskActions(task.status, task.resendRequired).resume && (
                     <button type="button" onClick={() => retryUpload(task.id)} disabled={!isOnline} className="underline disabled:opacity-50">
                       {t('再開')}
                     </button>
@@ -592,7 +592,13 @@ export function MessageInput({ channelId, sendDisabled = false, postId, placehol
                 aria-label={t('{name} アップロード進捗 {percent}%', { name: task.fileName, percent: task.progress })}
                 className={`h-1 w-full overflow-hidden rounded ${task.status === 'failed' ? 'accent-discord-red' : 'accent-discord-accent'}`}
               />
-              {task.error && <p role="alert" className="text-discord-red">{t('ファイルを送信できませんでした。再試行してください')}</p>}
+              {task.error && (
+                <p role="alert" className="text-discord-red">
+                  {task.resendRequired
+                    ? t('この会話のメンバーが変わったため、ファイルを送信できませんでした。もう一度送信してください。')
+                    : t('ファイルを送信できませんでした。再試行してください')}
+                </p>
+              )}
             </div>
           ))}
         </div>

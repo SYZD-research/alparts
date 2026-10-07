@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import type { Attachment, Device, Message, Reaction, ReadPosition, UserStatusType } from '@alparts/shared';
 import { getActiveDevice } from '../services/crypto.service';
+import { onChannelGroupAdvanced, scheduleGroupMaintenance } from '../services/mls-group.service';
 import { getSocket } from '../services/socket';
 import type { DirectMessageConversation } from '../services/api';
 import { api } from '../services/api';
@@ -108,10 +109,8 @@ export function useSocketEvents() {
 
     const scheduleKeySync = (channelIds: string[]) => {
       for (const channelId of channelIds) {
-        // DM recipients must acknowledge a newly proposed key even before they
-        // open that conversation. Otherwise both online users can deadlock with
-        // the proposer waiting forever for a recipient that never sees the
-        // channel as "loaded".
+        // Channels of the shown workspace catch up even before they are
+        // opened, so sending later does not wait for it.
         if (isAuthorizedKeySyncChannel(channelId)) pendingKeySyncIds.add(channelId);
       }
       if (keySyncRunning || pendingKeySyncIds.size === 0) return;
@@ -124,7 +123,7 @@ export function useSocketEvents() {
           try {
             await useMessageStore.getState().retryChannelPreparation(channelId);
           } catch {
-            // Another device may complete distribution. Missing/revoked keys
+            // Another device may add this one later. Missing or revoked keys
             // remain fail-closed and surface through the message flow.
           }
         }
@@ -291,7 +290,9 @@ export function useSocketEvents() {
     };
     const onWorkspaceKeyStateDirty = (value: unknown) => {
       const data = parseWorkspaceAuthorizationRefresh(value);
-      if (data) syncLoadedWorkspaceKeys(data.workspaceId);
+      if (!data) return;
+      scheduleGroupMaintenance();
+      syncLoadedWorkspaceKeys(data.workspaceId);
     };
     const onWorkspaceAccessRevoked = (value: unknown) => {
       const data = parseWorkspaceAccessRevokedEvent(value);
@@ -328,6 +329,9 @@ export function useSocketEvents() {
       const channelId = (value as { channelId?: unknown }).channelId;
       if (typeof channelId === 'string') {
         useUiStore.getState().noteAuthorizationChange();
+        // Channels of every workspace: publish this device's package, or add
+        // devices that are waiting, without loading any messages.
+        scheduleGroupMaintenance();
         scheduleKeySync([channelId]);
       }
     };
@@ -394,6 +398,7 @@ export function useSocketEvents() {
         enqueueAuthorizationWork(async () => {
           if (!await reconcileWorkspaceMembership()) return;
           rejoinActiveChannel();
+          scheduleGroupMaintenance();
           await flushOutbox();
           resumeFailedUploads();
         });
@@ -436,7 +441,26 @@ export function useSocketEvents() {
       if (
         state.workspaceId
         && (state.workspaceId !== previous.workspaceId || state.channels !== previous.channels)
-      ) syncLoadedWorkspaceKeys(state.workspaceId);
+      ) {
+        // A loaded channel list may show channels this device has no package
+        // for yet, in any workspace.
+        scheduleGroupMaintenance();
+        syncLoadedWorkspaceKeys(state.workspaceId);
+      }
+    });
+    // Messages of a channel refused for an older key go out once this device
+    // has a newer one; other refusals wait for a retry or a reconnect.
+    let outboxFlushTimer: ReturnType<typeof setTimeout> | undefined;
+    const advancedChannels = new Set<string>();
+    const unsubscribeGroupAdvance = onChannelGroupAdvanced((channelId) => {
+      advancedChannels.add(channelId);
+      if (outboxFlushTimer) return;
+      outboxFlushTimer = setTimeout(() => {
+        outboxFlushTimer = undefined;
+        const channelIds = [...advancedChannels];
+        advancedChannels.clear();
+        if (!disposed) void useOutboxStore.getState().flushKeyRefusals(channelIds);
+      }, 250);
     });
     // Authentication initializes the socket just before this protected layout
     // mounts. If the handshake already completed, run the same reconciliation
@@ -480,6 +504,8 @@ export function useSocketEvents() {
       socket.off('channel:member-added', onChannelRecipientsChanged);
       socket.off('channel:key-rotation-required', onChannelRecipientsChanged);
       unsubscribeChannelList();
+      unsubscribeGroupAdvance();
+      if (outboxFlushTimer) clearTimeout(outboxFlushTimer);
     };
   }, [addAttention, addMessages, applyAttachment, applyPinUpdate, applyReactionUpdate, applySocketReadPosition,
     flushOutbox, loadChannels, loadMembers, loadMessages, loadWorkspaces, loadWorkspaceState,

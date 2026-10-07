@@ -29,6 +29,7 @@ import {
   withTransientAttachmentRetry,
 } from '../services/attachment-transfer.service';
 import {
+  ensureChannelKey,
   getActiveDevice,
   getChannelKeyForVersion,
   signAttachmentEnvelope,
@@ -57,6 +58,8 @@ export interface AttachmentUploadTask {
   uploadedChunks: number;
   totalChunks: number;
   error: string | null;
+  /** Refused because the conversation's members changed: only sending the file again helps. */
+  resendRequired?: boolean;
   attachmentId: string | null;
 }
 
@@ -116,8 +119,15 @@ const MAX_LOCAL_ATTACHMENT_TASK_HISTORY = 64;
 let attachmentGeneration = 0;
 let resuming = false;
 
+function isMembershipRefusal(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 400 && error.reason === 'KEY_ROTATION_REQUIRED';
+}
+
 function taskErrorMessage(error: unknown): string {
   if (error instanceof ApiError) {
+    if (isMembershipRefusal(error)) {
+      return t('この会話のメンバーが変わったため、ファイルを送信できませんでした。もう一度送信してください。');
+    }
     if (error.status === 403) return t('このチャンネルで添付ファイルを送信する権限がありません');
     if (error.status === 413) return t('ストレージ容量またはファイルサイズの上限を超えました');
     if (error.status === 410 && error.code === 'UPLOAD_EXPIRED') return t('アップロードの有効期限が切れました。自動的にやり直します');
@@ -350,26 +360,40 @@ async function runUpload(taskId: string): Promise<void> {
       messageIdempotencyKey: runtime.message.idempotencyKey,
     };
     const signature = await signAttachmentEnvelope(signedEnvelope);
+    const finalize = () => withTransientAttachmentRetry(
+      () => api.finalizeAttachmentUpload(prepared.reservation.uploadId, {
+        deviceId: device.deviceId,
+        keyVersion: runtime.message.keyVersion,
+        signature,
+        chunkCount: prepared.chunkCount,
+        wrappedKey: prepared.wrappedKey,
+        cryptoManifest: {
+          version: 1,
+          algorithm: 'AES-256-GCM',
+          nonceStrategy: 'prefix-counter-be32',
+          noncePrefix,
+          aadVersion: 1,
+          plaintextSize: runtime.file.size,
+        },
+      }, controller.signal),
+      controller.signal,
+    );
     let attachment: Attachment;
     try {
-      attachment = await withTransientAttachmentRetry(
-        () => api.finalizeAttachmentUpload(prepared.reservation.uploadId, {
-          deviceId: device.deviceId,
-          keyVersion: runtime.message.keyVersion,
-          signature,
-          chunkCount: prepared.chunkCount,
-          wrappedKey: prepared.wrappedKey,
-          cryptoManifest: {
-            version: 1,
-            algorithm: 'AES-256-GCM',
-            nonceStrategy: 'prefix-counter-be32',
-            noncePrefix,
-            aadVersion: 1,
-            plaintextSize: runtime.file.size,
-          },
-        }, controller.signal),
-        controller.signal,
-      );
+      try {
+        attachment = await finalize();
+      } catch (error) {
+        if (!isMembershipRefusal(error)) throw error;
+        // A removal or a key refresh may be due first. Bring the channel up
+        // to date once, then finalize again; a refusal after that stays.
+        try {
+          await ensureChannelKey(runtime.message.channelId, { purpose: 'write' });
+        } catch {
+          throw error;
+        }
+        if (!isCurrentRuntime(taskId, runtime, generation)) return;
+        attachment = await finalize();
+      }
     } catch (error) {
       if (error instanceof ApiError && error.code === 'UPLOAD_ALREADY_COMPLETED') {
         const recovered = await recoverCompletedAttachment(runtime, prepared);
@@ -433,7 +457,7 @@ async function runUpload(taskId: string): Promise<void> {
       ? { status: 'cancelled', error: t('アップロードをキャンセルしました') }
       : retryAfterExpiry
         ? { status: 'queued', error: null, progress: 0, uploadedChunks: 0 }
-        : { status: 'failed', error: taskErrorMessage(error) });
+        : { status: 'failed', error: taskErrorMessage(error), resendRequired: isMembershipRefusal(error) });
   } finally {
     runtime.running = false;
     runtime.controller = undefined;
@@ -615,11 +639,15 @@ async function settleFinalizingCancellation(taskId: string, runtime: UploadRunti
 }
 
 /** What the viewer can do with an upload in each state. */
-export function attachmentTaskActions(status: AttachmentUploadStatus): { cancel: boolean; resume: boolean; dismiss: boolean } {
+export function attachmentTaskActions(
+  status: AttachmentUploadStatus,
+  resendRequired = false,
+): { cancel: boolean; resume: boolean; dismiss: boolean } {
   return {
     cancel: status === 'preparing' || status === 'uploading' || status === 'finalizing',
-    // A cancelled upload has released its file; only a failed one can resume.
-    resume: status === 'failed',
+    // A cancelled upload has released its file; only a failed one can resume,
+    // unless the conversation's members changed since its message was sent.
+    resume: status === 'failed' && !resendRequired,
     dismiss: status === 'completed' || status === 'failed' || status === 'cancelled',
   };
 }

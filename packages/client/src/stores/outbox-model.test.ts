@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   createOutboxCommand,
+  isKeyRefusal,
   outboxItemFromCommand,
   parseOutboxCommand,
   transitionOutboxItem,
@@ -39,6 +40,17 @@ describe('outbox command', () => {
       mentionedUserIds: ['not-a-user-id'],
       createdAt: '2026-01-01T00:00:00.000Z',
     })).toBeNull();
+  });
+
+  it('keeps the last refusal reason and tells refusals a newer key resolves', () => {
+    const command = createOutboxCommand({ channelId: 'channel-1', content: 'hello' });
+    expect(parseOutboxCommand({ ...command, lastRefusal: 'KEY_VERSION_STALE' })?.lastRefusal).toBe('KEY_VERSION_STALE');
+    expect(outboxItemFromCommand({ ...command, lastRefusal: 'KEY_VERSION_STALE' }).lastRefusal).toBe('KEY_VERSION_STALE');
+    expect(parseOutboxCommand({ ...command, lastRefusal: 'not a reason' })).toBeNull();
+    expect(isKeyRefusal('KEY_VERSION_STALE')).toBe(true);
+    expect(isKeyRefusal('KEY_ROTATION_REQUIRED')).toBe(true);
+    expect(isKeyRefusal('INVALID_KEY_VERSION')).toBe(false);
+    expect(isKeyRefusal(undefined)).toBe(false);
   });
 
   it('keeps the optimistic preview while moving through queued, sending, and failed states', () => {

@@ -75,6 +75,12 @@ export async function verifiedDirectory(
   );
 }
 
+/** This device's latest verified directory of a user, without contacting the server. */
+export async function cachedDirectory(userId: string): Promise<VerifiedDirectory | null> {
+  const state = await readSecurityState<VerifiedDirectory>(getActiveDevice(), `directory:${userId}`);
+  return state?.verificationVersion === 2 ? state : null;
+}
+
 export async function verifyDirectoryDevices(
   channelId: string,
   devices: Array<{ deviceId: string; userId: string; identityKey: string }>,

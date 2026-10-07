@@ -15,6 +15,9 @@ import type {
   ForumViewerCapabilities,
   Message,
   MessageBookmark,
+  MlsGroupCommit,
+  MlsGroupMember,
+  MlsMemberPackage,
   NotificationLevel,
   ReadPosition,
   Reaction,
@@ -56,6 +59,9 @@ interface ApiErrorPayload {
   error?: string;
   message?: string;
   statusCode?: number;
+  /** Key-state reason of a refused write or group change. */
+  code?: unknown;
+  currentVersion?: unknown;
 }
 
 const API_ERROR_MESSAGES_BY_CODE: Record<string, MessageKey> = {
@@ -92,12 +98,28 @@ export function apiErrorMessage(status: number, code?: string): string {
 export class ApiError extends Error {
   readonly status: number;
   readonly code: string | null;
+  /**
+   * The narrower reason some refusals carry next to `code`: why a group
+   * change conflicted (GROUP_STATE_CHANGED), or why an encrypted write was
+   * refused (KEY_VERSION_STALE, KEY_ROTATION_REQUIRED, INVALID_KEY_VERSION).
+   */
+  readonly reason: string | null;
+  /** With KEY_VERSION_STALE: the version the server writes now. */
+  readonly currentVersion: number | null;
 
-  constructor(message: string, status: number, code?: string, readonly retryAfterSeconds?: number) {
+  constructor(
+    message: string,
+    status: number,
+    code?: string,
+    readonly retryAfterSeconds?: number,
+    details: { reason?: string; currentVersion?: number } = {},
+  ) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
     this.code = code || null;
+    this.reason = details.reason || null;
+    this.currentVersion = details.currentVersion ?? null;
   }
 }
 
@@ -211,24 +233,65 @@ export interface ChannelKeyDelivery {
 export interface ChannelKeyRecipientState {
   protocolVersion?: number;
   pendingProtocolVersion?: number | null;
-  /** Currently active, writable epoch. Zero means no active epoch exists. */
+  /** Currently active, writable version. Zero means no active version exists. */
   currentVersion: number;
   keyCommitment: string | null;
-  /** A pending epoch is never writable until the server activates it. */
+  /** Always empty since group protocol 4; kept for the response shape. */
   pendingVersion: number | null;
   pendingKeyCommitment: string | null;
   pendingInvalid: boolean;
   nextVersion: number;
   rotationRequired: boolean;
-  /** No authorized non-revoked device can decrypt the old active epoch. */
+  /** This device may start the conversation again without its history. */
   historyRecoveryRequired: boolean;
   canRotate: boolean;
   canAbortPending: boolean;
   distributedDeviceIds: string[];
   pendingAcknowledgedDeviceIds: string[];
-  /** Omitted by older servers, where every pending recipient was required. */
   pendingRequiredDeviceIds?: string[];
   recipients: Array<{ deviceId: string; userId: string; identityKey: string }>;
+  /** The channel's continuous group, once it has one. */
+  group: ChannelGroupSummary | null;
+  ownMembership: { joinedVersion: number; leafIndex: number; rejoinRequested: boolean } | null;
+  /** Eligible devices a member can add now, and members that asked to be added again. */
+  pendingAddDeviceIds: string[];
+  /** Members that are no longer eligible; writes wait until a commit removes them. */
+  requiredRemoveDeviceIds: string[];
+  /** No commit refreshed the group key for 24 hours (server time). */
+  updateRequired: boolean;
+  /** This device's own leaf was last refreshed 7 days ago or earlier. */
+  ownLeafRefreshDue: boolean;
+  canCommit: boolean;
+  canCreate: boolean;
+  /** Devices whose package a first group still waits for. */
+  genesisWaiting: string[];
+}
+
+export interface ChannelGroupSummary {
+  genesisVersion: number;
+  groupId: string;
+  epoch: number;
+  transcript: string;
+  members: MlsGroupMember[];
+}
+
+export interface MlsGroupCommitRecord {
+  version: number;
+  transcript: string;
+  envelope: MlsGroupCommit;
+}
+
+/** A member at a version with the package that added it. */
+export interface MlsGroupMemberPackage extends MlsMemberPackage {
+  leafIndex: number;
+  joinedVersion: number;
+  joinedDirectorySequence: number;
+}
+
+export interface PendingGroupWork {
+  needPackage: string[];
+  needCommit: string[];
+  cursor: string | null;
 }
 
 export interface PermissionReason {
@@ -587,6 +650,10 @@ class ApiService {
         response.status,
         code,
         Number(response.headers.get('Retry-After')) || undefined,
+        {
+          ...(typeof error.code === 'string' && /^[A-Z_]{1,64}$/.test(error.code) ? { reason: error.code } : {}),
+          ...(Number.isSafeInteger(error.currentVersion) ? { currentVersion: error.currentVersion as number } : {}),
+        },
       );
     }
 
@@ -1318,18 +1385,6 @@ class ApiService {
     return result;
   }
 
-  async distributeChannelKeys(
-    channelId: string,
-    version: number,
-    keyCommitment: string,
-    keys: Array<{ deviceId: string; encryptedKey: string; signature: string }>,
-  ) {
-    return this.request(`/channels/${channelId}/keys`, {
-      method: 'POST',
-      body: JSON.stringify({ version, keyCommitment, keys }),
-    });
-  }
-
   async acknowledgeChannelKey(
     channelId: string,
     deliveryId: string,
@@ -1346,16 +1401,57 @@ class ApiService {
     });
   }
 
-  async abortChannelKeyEpoch(
+  // Continuous channel groups
+
+  async publishMemberPackage(
     channelId: string,
-    version: number,
-    keyCommitment: string,
-    signature: string,
+    body: { packageId: string; keyPackage: string; signature: string; rejoin?: boolean },
   ) {
-    return this.request<{ version: number; status: 'aborted' }>(`/channels/${channelId}/keys/abort`, {
+    return this.request<{ success: true }>(`/channels/${channelId}/mls/group/packages`, {
       method: 'POST',
-      body: JSON.stringify({ version, keyCommitment, signature }),
+      body: JSON.stringify(body),
     });
+  }
+
+  async getPendingMemberPackages(channelId: string) {
+    return this.request<MlsMemberPackage[]>(`/channels/${channelId}/mls/group/packages`);
+  }
+
+  async getGroupCommits(channelId: string, after: number, limit: number) {
+    const query = `?after=${encodeURIComponent(String(after))}&limit=${encodeURIComponent(String(limit))}`;
+    return this.request<MlsGroupCommitRecord[]>(`/channels/${channelId}/mls/group/commits${query}`);
+  }
+
+  async getGroupMembers(channelId: string, version: number) {
+    return this.request<MlsGroupMemberPackage[]>(
+      `/channels/${channelId}/mls/group/members?version=${encodeURIComponent(String(version))}`,
+    );
+  }
+
+  async submitGroupCommit(channelId: string, commit: MlsGroupCommit) {
+    return this.request<{ version: number; epoch: number; replay?: true }>(`/channels/${channelId}/mls/group/commits`, {
+      method: 'POST',
+      body: JSON.stringify({ commit }),
+    });
+  }
+
+  /** Requires identity confirmation; the step-up handler asks for it. */
+  async submitGroupFreshStart(channelId: string, commit: MlsGroupCommit, freshStartSignature: string) {
+    return this.request<{ version: number; epoch: number; replay?: true }>(`/channels/${channelId}/mls/group/fresh-start`, {
+      method: 'POST',
+      body: JSON.stringify({ commit, freshStartSignature }),
+    });
+  }
+
+  async getPendingGroupWork(cursor?: string | null) {
+    return this.request<PendingGroupWork>(
+      `/mls/group/pending${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`,
+    );
+  }
+
+  /** Transcript of a group-protocol-3 version, which a first group links to. */
+  async getLegacyEpochTranscript(channelId: string, version: number) {
+    return (await this.request<{ transcript: string }>(`/channels/${channelId}/mls/epochs/${version}`)).transcript;
   }
 }
 

@@ -69,7 +69,7 @@ describe('new-device channel preparation', () => {
 
     expect(getMessages).not.toHaveBeenCalled();
     expect(useMessageStore.getState().channelRecoveryPending[channelId]).toBe(true);
-    expect(useMessageStore.getState().channelKeyPending[channelId]).toBeTruthy();
+    expect(useMessageStore.getState().channelKeyPending[channelId]).toEqual({ reason: 'waiting', freshStartAvailable: false });
     expect(useMessageStore.getState().securityErrors[channelId]).toBeNull();
 
     await expect(useMessageStore.getState().retryChannelPreparation(channelId)).resolves.toBe(true);
@@ -78,6 +78,48 @@ describe('new-device channel preparation', () => {
     expect(useMessageStore.getState().eventsByChannel[channelId]).toEqual([]);
     expect(useMessageStore.getState().channelRecoveryPending[channelId]).toBe(false);
     expect(useMessageStore.getState().channelKeyPending[channelId]).toBeNull();
+  });
+
+  it('keeps showing history while the device asks to be added again or a first group waits', async () => {
+    const getMessages = vi.spyOn(api, 'getMessages').mockResolvedValue({ data: [], hasMore: false, cursor: null });
+    vi.mocked(ensureChannelKey).mockRejectedValueOnce(new ChannelKeyDeliveryPendingError('rejoining'));
+    await useMessageStore.getState().loadMessages(channelId);
+    expect(getMessages).toHaveBeenCalledOnce();
+    expect(useMessageStore.getState().channelRecoveryPending[channelId]).toBe(false);
+    expect(useMessageStore.getState().channelKeyPending[channelId]).toEqual({ reason: 'rejoining', freshStartAvailable: false });
+
+    vi.mocked(ensureChannelKey).mockRejectedValueOnce(new ChannelKeyDeliveryPendingError('genesis-waiting'));
+    expect(await useMessageStore.getState().reconcileChannelKey(channelId)).toBe(false);
+    expect(useMessageStore.getState().channelRecoveryPending[channelId]).toBe(false);
+    expect(useMessageStore.getState().channelKeyPending[channelId]).toEqual({ reason: 'genesis-waiting', freshStartAvailable: false });
+    expect(useMessageStore.getState().securityErrors[channelId]).toBeNull();
+
+    vi.mocked(ensureChannelKey).mockResolvedValue({ key: {} as CryptoKey, version: 3 });
+    expect(await useMessageStore.getState().reconcileChannelKey(channelId)).toBe(true);
+    expect(useMessageStore.getState().channelKeyPending[channelId]).toBeNull();
+  });
+
+  it('keeps history and only stops sending when the device may no longer ask to be added again', async () => {
+    const getMessages = vi.spyOn(api, 'getMessages').mockResolvedValue({ data: [], hasMore: false, cursor: null });
+    vi.mocked(ensureChannelKey).mockRejectedValueOnce(new ChannelKeyDeliveryPendingError('unavailable', true));
+    await useMessageStore.getState().loadMessages(channelId);
+    // Loading only reads: due removals and refreshes are left to writers.
+    expect(ensureChannelKey).toHaveBeenCalledWith(channelId, { purpose: 'read' });
+    expect(getMessages).toHaveBeenCalledOnce();
+    expect(useMessageStore.getState().channelRecoveryPending[channelId]).toBe(false);
+    expect(useMessageStore.getState().securityErrors[channelId]).toBeNull();
+    expect(useMessageStore.getState().channelKeyPending[channelId]).toEqual({ reason: 'unavailable', freshStartAvailable: true });
+  });
+
+  it('loads messages once a device that was waiting to be added is asked to rejoin instead', async () => {
+    const getMessages = vi.spyOn(api, 'getMessages').mockResolvedValue({ data: [], hasMore: false, cursor: null });
+    vi.mocked(ensureChannelKey).mockRejectedValueOnce(new ChannelKeyDeliveryPendingError('waiting'));
+    await useMessageStore.getState().loadMessages(channelId);
+    expect(getMessages).not.toHaveBeenCalled();
+    vi.mocked(ensureChannelKey).mockRejectedValue(new ChannelKeyDeliveryPendingError('rejoining'));
+    expect(await useMessageStore.getState().retryChannelPreparation(channelId)).toBe(false);
+    expect(getMessages).toHaveBeenCalledOnce();
+    expect(useMessageStore.getState().channelRecoveryPending[channelId]).toBe(false);
   });
 
   it('clears a transient preparation failure after a verified reconciliation', async () => {
@@ -91,7 +133,7 @@ describe('new-device channel preparation', () => {
 
   it('clears the waiting state and reloads after starting without history', async () => {
     useMessageStore.setState({
-      channelKeyPending: { [channelId]: 'waiting' },
+      channelKeyPending: { [channelId]: { reason: 'waiting', freshStartAvailable: true } },
       channelRecoveryPending: { [channelId]: true },
       securityErrors: { [channelId]: null },
     });
