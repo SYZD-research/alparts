@@ -5,7 +5,9 @@ import {
   randomUUID,
   generateKeyPairSync,
   createHash,
+  createPublicKey,
   sign,
+  verify,
   type KeyObject,
 } from 'node:crypto';
 import { after, before, describe, it } from 'node:test';
@@ -14,16 +16,19 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   canonicalActionBody,
+  mlsGroupId,
+  serializeChannelKeyFreshStart,
   serializeDeviceChallengeProof,
   serializeDeviceDecision,
-  serializeGroupKeyPackage,
-  serializeMlsEpoch,
   serializeChannelKeyWrap,
-  serializeChannelKeyAcknowledgement,
   serializeMessageEnvelope,
   serializeMessageAad,
-  type MlsEpoch,
-  type GroupKeyPackage,
+  serializeMlsGroupCommit,
+  serializeMlsMemberPackage,
+  type DirectoryHead,
+  type MlsGroupCommit,
+  type MlsGroupMember,
+  type MlsMemberPackage,
 } from '@alparts/shared';
 
 const enabled = process.env.RUN_ACCOUNT_SECURITY_INTEGRATION === '1';
@@ -36,6 +41,22 @@ const signature = (key: KeyObject, value: string) =>
     key,
     dsaEncoding: 'ieee-p1363',
   }).toString('base64');
+/** Whether the device with this identity key signed `value`. */
+const signedBy = (identityKey: string, value: string, signed: string) =>
+  verify(
+    'sha256',
+    Buffer.from(value),
+    { key: createPublicKey({ key: JSON.parse(identityKey).signingKey, format: 'jwk' }), dsaEncoding: 'ieee-p1363' },
+    Buffer.from(signed, 'base64'),
+  );
+/** base64url(SHA-256(key)): how envelopes and recovery records name a key. */
+const keyCommitmentOf = (raw: Uint8Array) => hash(raw).toString('base64url');
+/** The transcript that names an accepted group version. */
+const groupTranscript = (envelope: Omit<MlsGroupCommit, 'signature'>) =>
+  hash(serializeMlsGroupCommit(envelope)).toString('hex');
+// The client's own group adapter and envelope rules drive every group change.
+const clientMls = () => import('../../../client/src/services/' + 'mls-crypto.ts');
+const clientGroupModel = () => import('../../../client/src/services/' + 'mls-group-model.ts');
 function deviceKeys() {
   const encryption = generateKeyPairSync('rsa', { modulusLength: 2048 });
   const signing = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
@@ -177,6 +198,8 @@ describe('account security end to end', { skip: !enabled }, () => {
   let second: any;
   const firstKeys = deviceKeys();
   const secondKeys = deviceKeys();
+  // The channel's active group version, its key and that key's commitment.
+  // Tests run in order and each continues from the version the last one left.
   let key: Uint8Array;
   let version: number;
   let commitment: string;
@@ -191,6 +214,54 @@ describe('account security end to end', { skip: !enabled }, () => {
   const legacyRole = randomUUID();
   const registrationInvitation = randomBytes(32).toString('base64url');
   const legacyChannel = randomUUID();
+  // Group protocol 3 channels as 0023 (continuous groups) finds them.
+  const migratedChannel = randomUUID();
+  const pendingOnlyChannel = randomUUID();
+  let legacyBeforeGroups: { epochs: unknown[]; keyRotationRequired: boolean };
+
+  // === The channel's continuous group as each device's client holds it ===
+
+  /** A device with its own session and signing key. */
+  interface GroupDevice {
+    id: string;
+    userId: string;
+    identityKey: string;
+    signingKey: KeyObject;
+    auth: string;
+  }
+  /** `mls-group:{channelId}` of one device, plus every key it derived. */
+  interface LocalGroup {
+    genesisVersion: number;
+    groupId: string;
+    version: number;
+    epoch: number;
+    transcript: string;
+    members: MlsGroupMember[];
+    directoryHeads: DirectoryHead[];
+    state: string;
+    keys: Map<number, Uint8Array>;
+  }
+  interface GroupRecord {
+    version: number;
+    transcript: string;
+    envelope: MlsGroupCommit;
+  }
+  /** A signed envelope and what its committer keeps once the server accepts it. */
+  interface SealedCommit {
+    envelope: MlsGroupCommit;
+    raw: Uint8Array;
+    local: LocalGroup;
+  }
+  const localGroups = new Map<string, LocalGroup>();
+  /** Each device's latest published, not yet used package (private material included). */
+  const publishedPackages = new Map<string, { packageId: string; material: any }>();
+  const identityKeys = new Map<string, string>();
+  function groupDevice(device: { id: string; identityKey: string }, owner: string, keys: KeyObject, auth: string): GroupDevice {
+    identityKeys.set(device.id, device.identityKey);
+    return { id: device.id, userId: owner, identityKey: device.identityKey, signingKey: keys, auth };
+  }
+  const firstMember = () => groupDevice(first, userId, firstKeys.privateKey, cookie);
+  const secondMember = () => groupDevice(second, userId, secondKeys.privateKey, secondCookie);
   async function request(
     path: string,
     body?: unknown,
@@ -293,12 +364,16 @@ describe('account security end to end', { skip: !enabled }, () => {
       201,
     );
   }
-  async function encryptedMessage() {
+  /** A message from `device` (the first device by default) under the active version's key unless told otherwise. */
+  async function encryptedMessage(
+    options: { device?: GroupDevice; keyVersion?: number; rawKey?: Uint8Array } = {},
+  ) {
+    const device = options.device ?? firstMember();
     const envelope = {
       channelId,
-      authorId: userId,
-      deviceId: first.id,
-      keyVersion: version,
+      authorId: device.userId,
+      deviceId: device.id,
+      keyVersion: options.keyVersion ?? version,
       idempotencyKey: randomUUID(),
       refMessageId: null,
       broadcastMention: false,
@@ -307,7 +382,7 @@ describe('account security end to end', { skip: !enabled }, () => {
     const nonce = randomBytes(12);
     const cryptoKey = await crypto.subtle.importKey(
       'raw',
-      key as Uint8Array<ArrayBuffer>,
+      (options.rawKey ?? key) as Uint8Array<ArrayBuffer>,
       'AES-GCM',
       false,
       ['encrypt'],
@@ -335,8 +410,238 @@ describe('account security end to end', { skip: !enabled }, () => {
     } = body;
     return {
       ...input,
-      signature: signature(firstKeys.privateKey, serializeMessageEnvelope(body)),
+      signature: signature(device.signingKey, serializeMessageEnvelope(body)),
     };
+  }
+  /** Status and refusal code of a response. */
+  async function refusal(response: Response): Promise<[number, string | undefined]> {
+    return [response.status, ((await response.json().catch(() => ({}))) as { code?: string }).code];
+  }
+  /** The body of POST /mls/group/packages: a package signed by its device for this channel. */
+  function memberPackageBody(device: GroupDevice, keyPackage: string, packageId: string = randomUUID()) {
+    return {
+      packageId,
+      keyPackage,
+      signature: signature(
+        device.signingKey,
+        serializeMlsMemberPackage(channelId, { deviceId: device.id, packageId, keyPackage }),
+      ),
+    };
+  }
+  /** Publish a fresh package made by the client, so a member can add this device. */
+  async function publishPackage(device: GroupDevice) {
+    const material = await (await clientMls()).generateMemberPackage(device.id);
+    const body = memberPackageBody(device, material.publicPackage);
+    const response = await request(`/api/channels/${channelId}/mls/group/packages`, body, device.auth);
+    if (response.status === 201) publishedPackages.set(device.id, { packageId: body.packageId, material });
+    return response;
+  }
+  /** The signature key of a package, after checking that its device signed it for this channel. */
+  async function verifiedPackageKey(
+    entry: Pick<MlsMemberPackage, 'deviceId' | 'identityKey' | 'packageId' | 'keyPackage' | 'signature'>,
+  ): Promise<string> {
+    const known = identityKeys.get(entry.deviceId);
+    if (known) assert.equal(entry.identityKey, known);
+    assert.equal(signedBy(entry.identityKey, serializeMlsMemberPackage(channelId, entry), entry.signature), true);
+    const info = (await clientMls()).readMemberPackage(entry.keyPackage);
+    assert.equal(info.identity, entry.deviceId);
+    return info.signatureKey;
+  }
+  /** Packages to add, as GET /mls/group/packages lists them: exactly what each device published. */
+  async function listedPackages(viewer: GroupDevice, devices: readonly GroupDevice[]): Promise<MlsMemberPackage[]> {
+    const listed = (await json(
+      await request(`/api/channels/${channelId}/mls/group/packages`, undefined, viewer.auth),
+    )) as MlsMemberPackage[];
+    return devices.map((device) => {
+      const entry = listed.find((candidate) => candidate.deviceId === device.id);
+      assert.ok(entry, `${device.id} waits to be added`);
+      assert.equal(entry.packageId, publishedPackages.get(device.id)?.packageId);
+      return entry;
+    });
+  }
+  /** Sign an envelope for a commit the committer made, and what it keeps once accepted. */
+  async function sealCommit(
+    committer: GroupDevice,
+    result: { newState: unknown; commit: string; welcome: string },
+    fields: Omit<MlsGroupCommit, 'keyCommitment' | 'commit' | 'welcome' | 'directoryHeads' | 'committerDeviceId' | 'signature'>,
+    earlierKeys: ReadonlyMap<number, Uint8Array> = new Map(),
+  ): Promise<SealedCommit> {
+    const mls = await clientMls();
+    const model = await clientGroupModel();
+    const { db } = await import('../db/index.js');
+    const { directoryHead } = await import('../services/directory.service.js');
+    const raw = new Uint8Array(await mls.exportChannelKey(result.newState, fields.groupId, fields.version));
+    const unsigned = {
+      ...fields,
+      keyCommitment: keyCommitmentOf(raw),
+      commit: result.commit,
+      welcome: result.welcome,
+      directoryHeads: await Promise.all(model.rosterUsers(fields.members).map((id: string) => directoryHead(db, id))),
+      committerDeviceId: committer.id,
+    };
+    const envelope = { ...unsigned, signature: signature(committer.signingKey, serializeMlsGroupCommit(unsigned)) };
+    return {
+      envelope,
+      raw,
+      local: {
+        genesisVersion: envelope.version - envelope.epoch + 1,
+        groupId: envelope.groupId,
+        version: envelope.version,
+        epoch: envelope.epoch,
+        transcript: groupTranscript(envelope),
+        members: envelope.members,
+        directoryHeads: envelope.directoryHeads,
+        state: mls.encodeChannelGroupState(result.newState),
+        keys: new Map([...earlierKeys, [envelope.version, raw]]),
+      },
+    };
+  }
+  /** A commit by a member from its own state: add, remove, or with neither refresh the group key. */
+  async function groupCommit(
+    committer: GroupDevice,
+    change: { add?: GroupDevice[]; remove?: string[] } = {},
+  ): Promise<SealedCommit> {
+    const mls = await clientMls();
+    const model = await clientGroupModel();
+    const own = localGroups.get(committer.id);
+    assert.ok(own, 'the committer holds the group');
+    const added = change.add?.length ? await listedPackages(committer, change.add) : [];
+    const removed = [...(change.remove ?? [])].sort();
+    const leafOf = new Map(own.members.map((member) => [member.deviceId, member.leafIndex]));
+    const removeLeaves = removed.map((deviceId) => leafOf.get(deviceId)!);
+    const state = mls.decodeChannelGroupState(own.state);
+    const authMap = mls.treeAuthMap(state, removeLeaves);
+    for (const entry of added) authMap.set(entry.deviceId, await verifiedPackageKey(entry));
+    const result = await mls.commitChannelGroup(state, {
+      add: added.map((entry) => entry.keyPackage),
+      removeLeaves,
+      authMap,
+    });
+    const members = model.nextRoster(own.members, removed, added);
+    mls.assertChannelGroup(result.newState, own.groupId, own.epoch + 1);
+    model.assertTreeMatchesRoster(mls.groupLeaves(result.newState), members, authMap);
+    return sealCommit(committer, result, {
+      channelId,
+      version: own.version + 1,
+      previousVersion: own.version,
+      previousTranscript: own.transcript,
+      groupId: own.groupId,
+      epoch: own.epoch + 1,
+      kind: 'commit',
+      added,
+      removed,
+      members,
+    }, own.keys);
+  }
+  /** Send a sealed commit with the committer's session; on acceptance it adopts its new state. */
+  async function submitCommit(committer: GroupDevice, sealed: SealedCommit) {
+    const response = await request(
+      `/api/channels/${channelId}/mls/group/commits`,
+      { commit: sealed.envelope },
+      committer.auth,
+    );
+    if (response.status === 201) localGroups.set(committer.id, sealed.local);
+    return response;
+  }
+  /** The active version moves to an accepted commit. */
+  function activate(sealed: SealedCommit) {
+    version = sealed.envelope.version;
+    key = sealed.raw;
+    commitment = sealed.envelope.keyCommitment;
+  }
+  /** A record from the commit log, checked like a client checks it before using it. */
+  function assertAcceptedRecord(record: GroupRecord) {
+    const { signature: signed, ...unsigned } = record.envelope;
+    assert.equal(record.version, record.envelope.version);
+    assert.equal(record.transcript, groupTranscript(unsigned));
+    const committerKey = identityKeys.get(record.envelope.committerDeviceId);
+    assert.ok(committerKey, 'the committer is a known device');
+    assert.equal(signedBy(committerKey, serializeMlsGroupCommit(unsigned), signed), true);
+  }
+  /**
+   * What a device that was added does: read the envelope that added it and
+   * that version's roster, verify each member's package, join from the
+   * Welcome and derive the version's key.
+   */
+  async function joinFromLog(device: GroupDevice): Promise<Uint8Array> {
+    const mls = await clientMls();
+    const model = await clientGroupModel();
+    const state = await json(await request(`/api/channels/${channelId}/key-recipients`, undefined, device.auth));
+    const joined: number = state.ownMembership.joinedVersion;
+    const records = (await json(
+      await request(`/api/channels/${channelId}/mls/group/commits?after=${joined - 1}&limit=1`, undefined, device.auth),
+    )) as GroupRecord[];
+    assert.deepEqual(records.map((record) => record.version), [joined]);
+    const [record] = records;
+    assertAcceptedRecord(record);
+    const { envelope } = record;
+    model.assertEnvelopeStructure(channelId, envelope, mls.decodeChannelCommit(envelope.commit), null);
+    const rows = (await json(
+      await request(`/api/channels/${channelId}/mls/group/members?version=${joined}`, undefined, device.auth),
+    )) as Array<MlsMemberPackage & { leafIndex: number }>;
+    assert.deepEqual(
+      rows.map((row) => [row.deviceId, row.userId, row.leafIndex]),
+      envelope.members.map((member) => [member.deviceId, member.userId, member.leafIndex]),
+    );
+    const authMap = new Map<string, string>();
+    for (const row of rows) authMap.set(row.deviceId, await verifiedPackageKey(row));
+    const material = publishedPackages.get(device.id)?.material;
+    assert.equal(envelope.added.find((entry) => entry.deviceId === device.id)?.packageId, publishedPackages.get(device.id)?.packageId);
+    const joinedState = await mls.joinChannelGroup(envelope.welcome, material, authMap);
+    mls.assertChannelGroup(joinedState, envelope.groupId, envelope.epoch);
+    model.assertTreeMatchesRoster(mls.groupLeaves(joinedState), envelope.members, authMap);
+    const raw = new Uint8Array(await mls.exportChannelKey(joinedState, envelope.groupId, envelope.version));
+    assert.equal(keyCommitmentOf(raw), envelope.keyCommitment);
+    publishedPackages.delete(device.id);
+    localGroups.set(device.id, {
+      genesisVersion: envelope.version - envelope.epoch + 1,
+      groupId: envelope.groupId,
+      version: envelope.version,
+      epoch: envelope.epoch,
+      transcript: record.transcript,
+      members: envelope.members,
+      directoryHeads: envelope.directoryHeads,
+      state: mls.encodeChannelGroupState(joinedState),
+      keys: new Map([[envelope.version, raw]]),
+    });
+    return raw;
+  }
+  /** What a member that was offline does: process the log in order from its last version. */
+  async function catchUp(device: GroupDevice): Promise<GroupRecord[]> {
+    const mls = await clientMls();
+    const model = await clientGroupModel();
+    const start = localGroups.get(device.id);
+    assert.ok(start, 'the device holds the group');
+    const records = (await json(
+      await request(`/api/channels/${channelId}/mls/group/commits?after=${start.version}`, undefined, device.auth),
+    )) as GroupRecord[];
+    for (const record of records) {
+      const local = localGroups.get(device.id)!;
+      assertAcceptedRecord(record);
+      const { envelope } = record;
+      const decoded = mls.decodeChannelCommit(envelope.commit);
+      model.assertEnvelopeStructure(channelId, envelope, decoded, local);
+      assert.equal(envelope.removed.includes(device.id), false);
+      const state = mls.decodeChannelGroupState(local.state);
+      const authMap = mls.treeAuthMap(state, decoded.removedLeaves);
+      for (const entry of envelope.added) authMap.set(entry.deviceId, await verifiedPackageKey(entry));
+      const { newState } = await mls.processChannelCommit(state, envelope.commit, decoded, authMap);
+      mls.assertChannelGroup(newState, envelope.groupId, envelope.epoch);
+      model.assertTreeMatchesRoster(mls.groupLeaves(newState), envelope.members, authMap);
+      const raw = new Uint8Array(await mls.exportChannelKey(newState, envelope.groupId, envelope.version));
+      assert.equal(keyCommitmentOf(raw), envelope.keyCommitment);
+      localGroups.set(device.id, {
+        ...local,
+        version: envelope.version,
+        epoch: envelope.epoch,
+        transcript: record.transcript,
+        members: envelope.members,
+        directoryHeads: envelope.directoryHeads,
+        state: mls.encodeChannelGroupState(newState),
+        keys: new Map([...local.keys, [envelope.version, raw]]),
+      });
+    }
+    return records;
   }
   before(async () => {
     assert.match(
@@ -368,7 +673,8 @@ describe('account security end to end', { skip: !enabled }, () => {
         await cp(migrationsFolder, oldBundle, { recursive: true });
         const journalPath = join(oldBundle, 'meta', '_journal.json');
         const journal = JSON.parse(await readFile(journalPath, 'utf8'));
-        journal.entries = journal.entries.slice(0, 14);
+        const entries = journal.entries;
+        journal.entries = entries.slice(0, 14);
         await writeFile(journalPath, JSON.stringify(journal));
         await migrate(drizzle(migrationClient), {
           migrationsFolder: oldBundle,
@@ -408,6 +714,52 @@ describe('account security end to end', { skip: !enabled }, () => {
           "INSERT INTO channel_key_epochs (channel_id,version,status,key_commitment,distributor_device_id,activated_at) VALUES ($1,1,'active',$2,$3,now()), ($1,2,'pending',$2,$3,NULL)",
           [legacyChannel, 'a'.repeat(43), legacyDevice],
         );
+        // Through 0022, the last schema before continuous groups (0023).
+        journal.entries = entries.slice(0, 23);
+        assert.equal(journal.entries.at(-1).tag, '0022_email_verification');
+        await writeFile(journalPath, JSON.stringify(journal));
+        await migrate(drizzle(migrationClient), {
+          migrationsFolder: oldBundle,
+        });
+        legacyBeforeGroups = {
+          epochs: (await migrationClient.query(
+            'SELECT version, status, protocol_version FROM channel_key_epochs WHERE channel_id = $1 ORDER BY version',
+            [legacyChannel],
+          )).rows,
+          keyRotationRequired: (await migrationClient.query(
+            'SELECT key_rotation_required FROM channels WHERE id = $1',
+            [legacyChannel],
+          )).rows[0].key_rotation_required,
+        };
+        // Group protocol 3 state: an active epoch with a pending successor
+        // that one recipient already acknowledged, and a channel whose only
+        // epoch is still pending. Neither channel is flagged yet.
+        await migrationClient.query('INSERT INTO workspace_members (workspace_id,user_id) VALUES ($1,$2)', [
+          legacyWorkspace,
+          legacyUser,
+        ]);
+        await migrationClient.query(
+          'INSERT INTO channels (id,workspace_id,name,key_rotation_required) VALUES ($1,$3,$4,false), ($2,$3,$5,false)',
+          [migratedChannel, pendingOnlyChannel, legacyWorkspace, '移行中', '準備中'],
+        );
+        await migrationClient.query(
+          "INSERT INTO channel_key_epochs (channel_id,version,protocol_version,status,key_commitment,distributor_device_id,activated_at) VALUES ($1,1,3,'active',$3,$4,now()), ($1,2,3,'pending',$3,$4,NULL), ($2,1,3,'pending',$3,$4,NULL)",
+          [migratedChannel, pendingOnlyChannel, 'b'.repeat(43), legacyDevice],
+        );
+        await migrationClient.query(
+          'INSERT INTO channel_key_epoch_recipients (channel_id,version,device_id,user_id) VALUES ($1,1,$3,$4), ($1,2,$3,$4), ($2,1,$3,$4)',
+          [migratedChannel, pendingOnlyChannel, legacyDevice, legacyUser],
+        );
+        const deliveries = await migrationClient.query(
+          "INSERT INTO channel_keys (channel_id,version,device_id,encrypted_key,distributor_device_id,signature) VALUES ($1,1,$3,'test-fixture',$3,'test-fixture'), ($1,2,$3,'test-fixture',$3,'test-fixture'), ($2,1,$3,'test-fixture',$3,'test-fixture') RETURNING id, channel_id, version",
+          [migratedChannel, pendingOnlyChannel, legacyDevice],
+        );
+        for (const delivery of deliveries.rows) {
+          await migrationClient.query(
+            "UPDATE channel_key_epoch_recipients SET accepted_delivery_id = $1, acknowledgement_signature = 'test-fixture', acknowledged_at = now() WHERE channel_id = $2 AND version = $3 AND device_id = $4",
+            [delivery.id, delivery.channel_id, delivery.version, legacyDevice],
+          );
+        }
       } finally {
         await rm(oldBundle, { recursive: true, force: true });
       }
@@ -479,13 +831,18 @@ process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
     );
     assert.equal(verified.devices[legacyDevice].approved, true);
     assert.equal(verified.devices[legacyRevokedDevice].revoked, true);
+    // The account-security migrations did this; later ones keep it.
+    assert.deepEqual(legacyBeforeGroups, {
+      epochs: [
+        { version: 1, status: 'active', protocol_version: 2 },
+        { version: 2, status: 'aborted', protocol_version: 2 },
+      ],
+      keyRotationRequired: true,
+    });
     const epochs = await db.execute(
       sql`SELECT version, status, protocol_version FROM channel_key_epochs WHERE channel_id = ${legacyChannel} ORDER BY version`,
     );
-    assert.deepEqual(epochs.rows, [
-      { version: 1, status: 'active', protocol_version: 2 },
-      { version: 2, status: 'aborted', protocol_version: 2 },
-    ]);
+    assert.deepEqual(epochs.rows, legacyBeforeGroups.epochs);
     const channel = await db.execute(
       sql`SELECT key_rotation_required FROM channels WHERE id = ${legacyChannel}`,
     );
@@ -499,6 +856,62 @@ process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
     await assert.rejects(
       db.execute(sql`TRUNCATE device_directory_events CASCADE`),
       (error: any) => /append-only/.test(error.cause?.message),
+    );
+  });
+  it('aborts pending epochs and requires a continuous group where an earlier key is active', async () => {
+    const { db } = await import('../db/index.js');
+    const { sql } = await import('drizzle-orm');
+    const epochs = async (id: string) => (await db.execute(sql`SELECT version, status, protocol_version,
+      activated_at IS NOT NULL AS activated, aborted_at IS NOT NULL AS aborted
+      FROM channel_key_epochs WHERE channel_id = ${id} ORDER BY version`)).rows;
+    assert.deepEqual(await epochs(migratedChannel), [
+      { version: 1, status: 'active', protocol_version: 3, activated: true, aborted: false },
+      { version: 2, status: 'aborted', protocol_version: 3, activated: false, aborted: true },
+    ]);
+    assert.deepEqual(await epochs(pendingOnlyChannel), [
+      { version: 1, status: 'aborted', protocol_version: 3, activated: false, aborted: true },
+    ]);
+    // Same cleanup as an abort at runtime: an aborted epoch keeps no
+    // acknowledgement, delivery or recipient row. The active one keeps all.
+    const recipients = await db.execute(sql`SELECT channel_id, version, accepted_delivery_id IS NOT NULL AS accepted
+      FROM channel_key_epoch_recipients WHERE channel_id IN (${migratedChannel}, ${pendingOnlyChannel})`);
+    assert.deepEqual(recipients.rows, [{ channel_id: migratedChannel, version: 1, accepted: true }]);
+    const deliveries = await db.execute(sql`SELECT channel_id, version FROM channel_keys
+      WHERE channel_id IN (${migratedChannel}, ${pendingOnlyChannel})`);
+    assert.deepEqual(deliveries.rows, [{ channel_id: migratedChannel, version: 1 }]);
+    // A channel with an earlier active key needs a continuous group before
+    // anyone writes; a channel that never had one starts its group directly.
+    const flags = await db.execute(sql`SELECT id, key_rotation_required FROM channels
+      WHERE id IN (${migratedChannel}, ${pendingOnlyChannel})`);
+    assert.deepEqual(
+      Object.fromEntries(flags.rows.map((row) => [row.id, row.key_rotation_required])),
+      { [migratedChannel]: true, [pendingOnlyChannel]: false },
+    );
+    assert.equal((await db.execute(sql`SELECT count(*)::int AS count FROM mls_groups
+      WHERE channel_id IN (${migratedChannel}, ${pendingOnlyChannel})`)).rows[0].count, 0);
+    const keyService = await import('../services/key.service.js');
+    const migrated = await keyService.getKeyRecipients(migratedChannel, legacyUser, legacyDevice);
+    assert.equal(migrated.group, null);
+    assert.equal(migrated.protocolVersion, 3);
+    assert.equal(migrated.currentVersion, 1);
+    assert.equal(migrated.nextVersion, 3, 'an aborted version is never used again');
+    assert.equal(migrated.rotationRequired, true);
+    assert.equal(migrated.canCreate, true);
+    assert.deepEqual(migrated.genesisWaiting, [legacyDevice], 'the first group waits for the earlier recipient');
+    const unused = await keyService.getKeyRecipients(pendingOnlyChannel, legacyUser, legacyDevice);
+    assert.equal(unused.currentVersion, 0);
+    assert.equal(unused.nextVersion, 2);
+    assert.equal(unused.canCreate, true);
+    assert.deepEqual(unused.genesisWaiting, []);
+    const { authorizeGroupWrite } = await import('../services/mls-group-gate.js');
+    await assert.rejects(
+      db.transaction(async (tx) => {
+        const channel = await tx.query.channels.findFirst({ where: (c, { eq }) => eq(c.id, migratedChannel) });
+        assert.ok(channel);
+        await authorizeGroupWrite(tx, { channel, userId: legacyUser, deviceId: legacyDevice, keyVersion: 1 });
+      }),
+      /KEY_ROTATION_REQUIRED/,
+      'the earlier key stays readable but takes no new writes',
     );
   });
   it('requires existing-device approval and records verifiable decisions', async () => {
@@ -546,6 +959,18 @@ process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
         )
       ).recipients.some((r: any) => r.deviceId === second.id),
       false,
+    );
+    const unapprovedPackage = await (await clientMls()).generateMemberPackage(second.id);
+    assert.equal(
+      (
+        await request(
+          `/api/channels/${channelId}/mls/group/packages`,
+          memberPackageBody(secondMember(), unapprovedPackage.publicPackage),
+          secondCookie,
+        )
+      ).status,
+      403,
+      'an unapproved device cannot offer itself to the group',
     );
     const currentHead = await head();
     const decision = {
@@ -627,6 +1052,8 @@ process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
   it('rejects invalid approval targets, retired recovery routes, and unbound metadata reads', async () => {
     assert.equal((await sensitive('/api/devices/not-a-uuid/approve', {})).status, 404);
     assert.equal((await request(`/api/channels/${channelId}/keys/start-fresh`, {})).status, 410);
+    for (const retired of ['mls/packages', 'mls/epochs'])
+      assert.equal((await request(`/api/channels/${channelId}/${retired}`, {})).status, 410);
     const { db } = await import('../db/index.js');
     const { sql } = await import('drizzle-orm');
     const account = (await db.execute(sql`select email from users where id = ${userId}`)).rows[0];
@@ -653,7 +1080,7 @@ process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
     const { actionPurpose } = await import('./action-purpose.js');
     const { db } = await import('../db/index.js');
     const { sql } = await import('drizzle-orm');
-    const path = `/api/channels/${channelId}/mls/epochs/fresh-start`;
+    const path = `/api/channels/${channelId}/mls/group/fresh-start`;
     const body = { test: 'scope' };
     const purpose = actionPurpose('POST', path, body);
     const session = (
@@ -708,234 +1135,182 @@ process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
       await db.execute(sql`UPDATE users SET password_hash = ${old} WHERE id = ${userId}`);
     }
   });
-  it('establishes a standard MLS group and requires every exact-delivery acknowledgement', async () => {
-    const crypto = await import('../../../client/src/services/' + 'mls-crypto.ts');
-    const state = await json(await request(`/api/channels/${channelId}/key-recipients`));
-    version = state.nextVersion;
-    const firstPackage = await crypto.generateEpochKeyPackage(first.id);
-    const secondPackage = await crypto.generateEpochKeyPackage(second.id);
-    const roster: GroupKeyPackage[] = [];
-    for (const [device, keys, material, auth] of [
-      [first, firstKeys, firstPackage, cookie],
-      [second, secondKeys, secondPackage, secondCookie],
-    ] as const) {
-      const pkg = {
-        deviceId: device.id,
-        userId,
-        identityKey: device.identityKey,
-        packageId: randomUUID(),
-        keyPackage: material.publicPackage,
-      };
-      const signed = {
-        ...pkg,
-        signature: signature(keys.privateKey, serializeGroupKeyPackage(channelId, version, pkg)),
-      };
-      roster.push(signed);
-      await json(
-        await request(
-          `/api/channels/${channelId}/mls/packages`,
-          {
-            version,
-            packageId: pkg.packageId,
-            keyPackage: pkg.keyPackage,
-            signature: signed.signature,
-          },
-          auth,
-        ),
-      );
-    }
-    const publisher = await import('../services/mls.service.js');
-    assert.equal(
-      await publisher.publishKeyPackage(channelId, userId, first.id, version, {
-        packageId: roster[0].packageId,
-        keyPackage: roster[0].keyPackage,
-        signature: signature(
-          firstKeys.privateKey,
-          serializeGroupKeyPackage(channelId, version, roster[0]),
-        ),
-      }),
-      false,
-      're-signing the same package must not emit another roster change',
-    );
-    const groupId = JSON.stringify(['alparts', channelId, version, '0'.repeat(64)]);
-    const material = await crypto.createEpochGroup(
-      groupId,
-      firstPackage,
-      roster.map((p) => p.keyPackage),
-    );
-    key = material.raw;
-    assert.deepEqual(
-      await crypto.joinEpochGroup(
-        groupId,
-        secondPackage,
-        roster.map((p) => p.keyPackage),
-        material.welcome,
-      ),
-      key,
-    );
-    commitment = hash(key).toString('base64url');
-    const unsigned = {
-      channelId,
-      version,
-      previousVersion: 0,
-      previousTranscript: '0'.repeat(64),
-      keyCommitment: commitment,
-      welcome: material.welcome,
-      commit: material.commit,
-      roster,
-      directoryHeads: [await head()],
-      distributorDeviceId: first.id,
-    };
-    const epoch: MlsEpoch = {
-      ...unsigned,
-      signature: signature(firstKeys.privateKey, serializeMlsEpoch(unsigned)),
-    };
-    const encryptedKey = Buffer.from(
-      JSON.stringify({
-        mls: 1,
-        version,
-        transcript: hash(serializeMlsEpoch(epoch)).toString('hex'),
-      }),
-    ).toString('base64');
-    const keys = roster.map((p) => ({
-      deviceId: p.deviceId,
-      encryptedKey,
-      signature: signature(
-        firstKeys.privateKey,
-        serializeChannelKeyWrap({
-          channelId,
-          keyVersion: version,
-          keyCommitment: commitment,
-          recipientDeviceId: p.deviceId,
-          encryptedKey,
-        }),
-      ),
-    }));
+  it('starts a continuous MLS group whose accepted commit is usable at once', async () => {
+    const mls = await clientMls();
+    const model = await clientGroupModel();
+    const groupService = await import('../services/mls-group.service.js');
     const keyService = await import('../services/key.service.js');
-    await assert.rejects(
-      keyService.proposeMlsChannelEpoch(userId, first.id, epoch, keys, 'unverified'),
-      /AUTHENTICATION_FAILED/,
-      'MLS fresh-start cannot be called without a server-created step-up receipt',
-    );
-    await json(await request(`/api/channels/${channelId}/mls/epochs`, { epoch, keys }), 201);
-    assert.notEqual(
-      (await request(`/api/channels/${channelId}/messages`, await encryptedMessage())).status,
-      201,
-      'no writes before all recipients acknowledge',
-    );
-    for (const [device, signing, auth] of [
-      [first, firstKeys, cookie],
-      [second, secondKeys, secondCookie],
-    ] as const) {
-      const deliveries = await json(
-        await request(`/api/channels/${channelId}/keys?scope=current`, undefined, auth),
-      );
-      const delivery = deliveries.find((d: any) => d.version === version);
-      const acknowledgement = signature(
-        signing.privateKey,
-        serializeChannelKeyAcknowledgement({
-          deliveryId: delivery.deliveryId,
-          channelId,
-          keyVersion: version,
-          keyCommitment: commitment,
-          recipientDeviceId: device.id,
-          distributorDeviceId: first.id,
-          encryptedKey,
-        }),
-      );
-      const result = await json(
-        await request(
-          `/api/channels/${channelId}/keys/acknowledge`,
-          { deliveryId: delivery.deliveryId, signature: acknowledgement },
-          auth,
-        ),
-      );
-      assert.equal(result.status, device.id === first.id ? 'pending' : 'active');
-      if (device.id === first.id)
-        assert.notEqual(
-          (await request(`/api/channels/${channelId}/messages`, await encryptedMessage())).status,
-          201,
-        );
-    }
-    assert.equal(
-      (await json(await request(`/api/channels/${channelId}/key-recipients`))).currentVersion,
-      version,
-    );
-    await json(await request(`/api/channels/${channelId}/messages`, await encryptedMessage()), 201);
+    const { authorizeGroupWrite } = await import('../services/mls-group-gate.js');
     const { db } = await import('../db/index.js');
     const { sql } = await import('drizzle-orm');
-    await db.transaction(async (tx) => {
-      await keyService.lockKeyProtocol(tx);
-      const channel = await tx.query.channels.findFirst({
-        where: (c, { eq }) => eq(c.id, channelId),
-      });
-      assert.ok(channel);
-      assert.equal(await keyService.isEpochRosterCurrent(tx, channel, version), true);
-      await tx.execute(sql`UPDATE devices SET approved_at = NULL WHERE id = ${second.id}`);
-      assert.equal(
-        await keyService.isEpochRosterCurrent(tx, channel, version),
-        false,
-        'activation excludes unapproved recipients',
-      );
-      await tx.execute(
-        sql`UPDATE devices SET approved_at = now(), revoked_at = now() WHERE id = ${second.id}`,
-      );
-      assert.equal(
-        await keyService.isEpochRosterCurrent(tx, channel, version),
-        false,
-        'activation excludes revoked recipients',
-      );
-      await tx.execute(sql`UPDATE devices SET revoked_at = NULL WHERE id = ${second.id}`);
-      assert.equal(await keyService.isEpochRosterCurrent(tx, channel, version), true);
+    const firstDevice = firstMember();
+    const secondDevice = secondMember();
+    let state = await json(await request(`/api/channels/${channelId}/key-recipients`));
+    assert.equal(state.group, null);
+    assert.equal(state.canCreate, true);
+    assert.equal(state.rotationRequired, true, 'nothing can be written before the group exists');
+    const genesisVersion: number = state.nextVersion;
+    for (const device of [firstDevice, secondDevice])
+      assert.equal((await publishPackage(device)).status, 201);
+    const own = publishedPackages.get(first.id)!;
+    const resigned = memberPackageBody(firstDevice, own.material.publicPackage, own.packageId);
+    assert.deepEqual(
+      await groupService.publishMemberPackage(channelId, userId, first.id, resigned),
+      { created: false },
+      're-signing the same package must not emit another roster change',
+    );
+    assert.equal((await request(`/api/channels/${channelId}/mls/group/packages`, resigned)).status, 200);
+
+    // The creator adds every device that published a package; each package
+    // is checked against the device that signed it.
+    const added = await listedPackages(firstDevice, [firstDevice, secondDevice]);
+    const authMap = new Map<string, string>();
+    for (const entry of added) authMap.set(entry.deviceId, await verifiedPackageKey(entry));
+    const groupId = mlsGroupId(channelId, genesisVersion);
+    const genesis = await mls.createChannelGroup(groupId, own.material, added.slice(1).map((entry) => entry.keyPackage), authMap);
+    const members = model.genesisRoster(added);
+    mls.assertChannelGroup(genesis.newState, groupId, 1);
+    model.assertTreeMatchesRoster(mls.groupLeaves(genesis.newState), members, authMap);
+    const created = await sealCommit(firstDevice, genesis, {
+      channelId,
+      version: genesisVersion,
+      previousVersion: 0,
+      previousTranscript: '0'.repeat(64),
+      groupId,
+      epoch: 1,
+      kind: 'create',
+      added,
+      removed: [],
+      members,
     });
+    const response = await submitCommit(firstDevice, created);
+    assert.deepEqual(await json(response, 201), { version: genesisVersion, epoch: 1 });
+    publishedPackages.delete(first.id);
+    activate(created);
+    // Accepted means usable: no device has to confirm anything first.
+    await json(await request(`/api/channels/${channelId}/messages`, await encryptedMessage()), 201);
+    // The other device joins from the server's log and derives the same key.
+    assert.deepEqual(await joinFromLog(secondDevice), key);
+    state = await json(await request(`/api/channels/${channelId}/key-recipients`, undefined, secondCookie));
+    assert.equal(state.currentVersion, version);
+    assert.equal(state.rotationRequired, false);
+    assert.equal(state.canCommit, true);
+    assert.deepEqual(state.ownMembership, { joinedVersion: version, leafIndex: 1, rejoinRequested: false });
+    assert.equal(state.group.transcript, created.local.transcript);
+
+    // Every member must still be an approved, unrevoked device of a viewer.
+    const gate = async (tx: any) => {
+      const channel = await tx.query.channels.findFirst({ where: (c: any, { eq }: any) => eq(c.id, channelId) });
+      await authorizeGroupWrite(tx, { channel, userId, deviceId: first.id, keyVersion: version });
+    };
+    await assert.rejects(
+      db.transaction(async (tx) => {
+        await gate(tx);
+        await tx.execute(sql`UPDATE devices SET approved_at = NULL WHERE id = ${second.id}`);
+        await assert.rejects(gate(tx), /KEY_ROTATION_REQUIRED/, 'a member that is not approved blocks writes');
+        let current = await keyService.getKeyRecipientsFromStore(tx as any, channelId, userId, first.id);
+        assert.deepEqual(current.requiredRemoveDeviceIds, [second.id]);
+        assert.equal(current.recipients.some((r) => r.deviceId === second.id), false);
+        await tx.execute(sql`UPDATE devices SET approved_at = now(), revoked_at = now() WHERE id = ${second.id}`);
+        await assert.rejects(gate(tx), /KEY_ROTATION_REQUIRED/, 'a revoked member blocks writes');
+        current = await keyService.getKeyRecipientsFromStore(tx as any, channelId, userId, first.id);
+        assert.deepEqual(current.requiredRemoveDeviceIds, [second.id]);
+        assert.equal(current.rotationRequired, true);
+        throw new Error('ROLLBACK_FIXTURE');
+      }),
+      /ROLLBACK_FIXTURE/,
+    );
+    await db.transaction(gate);
+
+    // A group key not refreshed by a path for 24 hours takes no writes, even
+    // through a raw API request. Before that, a refresh is not accepted.
+    const refresh = await groupCommit(firstDevice);
+    assert.deepEqual(await refusal(await submitCommit(firstDevice, refresh)), [409, 'KEY_ROTATION_NOT_REQUIRED']);
     await db.execute(
-      sql`UPDATE channel_key_epochs SET activated_at = now() - interval '25 hours', created_at = now() - interval '25 hours' WHERE channel_id = ${channelId} AND version = ${version}`,
+      sql`UPDATE mls_groups SET path_refreshed_at = now() - interval '25 hours' WHERE channel_id = ${channelId}`,
     );
-    assert.notEqual(
-      (await request(`/api/channels/${channelId}/messages`, await encryptedMessage())).status,
-      201,
-      'expired epochs cannot be used through a raw API request',
+    assert.deepEqual(
+      await refusal(await request(`/api/channels/${channelId}/messages`, await encryptedMessage())),
+      [400, 'KEY_ROTATION_REQUIRED'],
+      'a group key older than a day cannot be used through a raw API request',
     );
-    await db.execute(
-      sql`UPDATE channel_key_epochs SET activated_at = now(), created_at = now() WHERE channel_id = ${channelId} AND version = ${version}`,
+    state = await json(await request(`/api/channels/${channelId}/key-recipients`));
+    assert.equal(state.updateRequired, true);
+    assert.equal(state.rotationRequired, true);
+    assert.ok((await json(await request('/api/mls/group/pending'))).needCommit.includes(channelId));
+    // One member refreshes it while the other device is offline.
+    assert.deepEqual(await json(await submitCommit(firstDevice, refresh), 201), { version: version + 1, epoch: 2 });
+    const earlierKey = key;
+    activate(refresh);
+    assert.equal(
+      (await db.execute(sql`SELECT path_refreshed_at > now() - interval '1 minute' AS fresh FROM mls_groups WHERE channel_id = ${channelId}`)).rows[0].fresh,
+      true,
     );
-    assert.notEqual(
-      (
-        await request(`/api/channels/${channelId}/keys`, {
-          version: version + 1,
-          keyCommitment: commitment,
-          keys,
-        })
-      ).status,
-      201,
+    await json(await request(`/api/channels/${channelId}/messages`, await encryptedMessage()), 201);
+    const stale = await request(
+      `/api/channels/${channelId}/messages`,
+      await encryptedMessage({ keyVersion: version - 1, rawKey: earlierKey }),
+    );
+    const staleBody = await json(stale, 400);
+    assert.deepEqual([staleBody.code, staleBody.currentVersion], ['KEY_VERSION_STALE', version]);
+
+    // Per-device key deliveries never apply to a group version, and the
+    // per-device proposal of a new version is gone.
+    const delivery = (keyVersion: number) => {
+      const encryptedKey = Buffer.from(JSON.stringify({ mls: 1, version: keyVersion, transcript: refresh.local.transcript })).toString('base64');
+      return {
+        version: keyVersion,
+        keyCommitment: commitment,
+        keys: [{
+          deviceId: first.id,
+          encryptedKey,
+          signature: signature(firstKeys.privateKey, serializeChannelKeyWrap({
+            channelId,
+            keyVersion,
+            keyCommitment: commitment,
+            recipientDeviceId: first.id,
+            encryptedKey,
+          })),
+        }],
+      };
+    };
+    assert.equal((await request(`/api/channels/${channelId}/keys`, delivery(version))).status, 400);
+    assert.equal(
+      (await request(`/api/channels/${channelId}/keys`, delivery(version + 1))).status,
+      409,
       'legacy group proposal is disabled',
     );
   });
-  it('lets an offline recipient fetch and acknowledge a retired delivery without reactivating it', async () => {
-    const { db } = await import('../db/index.js');
-    const { sql } = await import('drizzle-orm');
-    await db.execute(sql`UPDATE channel_key_epochs SET status = 'retired' WHERE channel_id = ${channelId} AND version = ${version}`);
-    await db.execute(sql`UPDATE channel_key_epoch_recipients SET accepted_delivery_id = NULL, acknowledged_at = NULL, acknowledgement_signature = NULL WHERE channel_id = ${channelId} AND version = ${version} AND device_id = ${second.id}`);
-    try {
-      const deliveries = await json(await request(`/api/channels/${channelId}/keys?version=${version}`, undefined, secondCookie));
-      assert.equal(deliveries.length, 1);
-      const delivery = deliveries[0];
-      assert.equal(delivery.epochStatus, 'retired');
-      assert.equal(delivery.confirmedAt, null);
-      const result = await json(await request(`/api/channels/${channelId}/keys/acknowledge`, {
-        deliveryId: delivery.deliveryId,
-        signature: signature(secondKeys.privateKey, serializeChannelKeyAcknowledgement({
-          deliveryId: delivery.deliveryId, distributorDeviceId: delivery.distributorDeviceId,
-          channelId, keyVersion: version, keyCommitment: commitment,
-          recipientDeviceId: second.id, encryptedKey: delivery.encryptedKey,
-        })),
-      }, secondCookie));
-      assert.equal(result.status, 'retired');
-      assert.equal(result.activated, false);
-      assert.equal((await db.execute(sql`SELECT status FROM channel_key_epochs WHERE channel_id = ${channelId} AND version = ${version}`)).rows[0].status, 'retired');
-    } finally {
-      await db.execute(sql`UPDATE channel_key_epochs SET status = 'active' WHERE channel_id = ${channelId} AND version = ${version}`);
-    }
+  it('lets an offline member catch up from the commit log and keep the keys it already had', async () => {
+    const secondDevice = secondMember();
+    const before = localGroups.get(second.id)!;
+    assert.equal(before.version, version - 1, 'the second device missed the refresh');
+    const earlierKey = before.keys.get(before.version)!;
+    const stale = await request(
+      `/api/channels/${channelId}/messages`,
+      await encryptedMessage({ device: secondDevice, keyVersion: before.version, rawKey: earlierKey }),
+      secondCookie,
+    );
+    const staleBody = await json(stale, 400);
+    assert.deepEqual([staleBody.code, staleBody.currentVersion], ['KEY_VERSION_STALE', version]);
+    assert.deepEqual((await catchUp(secondDevice)).map((record) => record.version), [version]);
+    const caughtUp = localGroups.get(second.id)!;
+    assert.deepEqual(caughtUp.keys.get(version), key, 'both devices derive the same key');
+    assert.deepEqual(caughtUp.keys.get(version - 1), earlierKey, 'keys derived earlier stay');
+    assert.deepEqual(await json(await request(
+      `/api/channels/${channelId}/mls/group/commits?after=${version}`,
+      undefined,
+      secondCookie,
+    )), []);
+    await json(await request(
+      `/api/channels/${channelId}/messages`,
+      await encryptedMessage({ device: secondDevice }),
+      secondCookie,
+    ), 201);
+    // Reading the log changes nothing on the server.
+    const state = await json(await request(`/api/channels/${channelId}/key-recipients`));
+    assert.equal(state.currentVersion, version);
+    assert.equal(state.keyCommitment, commitment);
   });
 
   it('enrolls and authenticates a passkey; rejects wrong origin, RP, missing UV and replay', async () => {
@@ -1017,7 +1392,7 @@ process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
     const { db } = await import('../db/index.js');
     const { passkeys: table } = await import('../db/schema.js');
     const { sql, eq } = await import('drizzle-orm');
-    const path = `/api/channels/${channelId}/mls/epochs/fresh-start`;
+    const path = `/api/channels/${channelId}/mls/group/fresh-start`;
     const body = { test: 'passkey' };
     const purpose = actionPurpose('POST', path, body);
     const session = (
@@ -1229,6 +1604,24 @@ process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
       ),
       'replacement can re-archive history owned by the account',
     );
+    const earlierKey = localGroups.get(first.id)!.keys.get(version - 1)!;
+    assert.equal(
+      (
+        await request(
+          '/api/recovery/keys',
+          {
+            generation,
+            channelId,
+            version,
+            keyCommitment: keyCommitmentOf(earlierKey),
+            ciphertext: encryptedHistory,
+          },
+          replacementCookie,
+        )
+      ).status,
+      403,
+      'the commitment must name the key of that version',
+    );
     await json(
       await request(
         '/api/recovery/keys',
@@ -1299,17 +1692,30 @@ process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
       ),
     );
     assert.equal((await request('/api/devices', undefined, secondCookie)).status, 401);
-    assert.notEqual(
-      (await request(`/api/channels/${channelId}/messages`, await encryptedMessage())).status,
-      201,
-      'revocation blocks stale epoch writes',
+    assert.deepEqual(
+      await refusal(await request(`/api/channels/${channelId}/messages`, await encryptedMessage())),
+      [400, 'KEY_ROTATION_REQUIRED'],
+      'revocation blocks writes until the device leaves the group',
     );
     const recipients = await json(await request(`/api/channels/${channelId}/key-recipients`));
     assert.equal(recipients.rotationRequired, true);
+    assert.deepEqual(recipients.requiredRemoveDeviceIds, [second.id]);
     assert.equal(
       recipients.recipients.some((r: any) => r.deviceId === second.id),
       false,
     );
+    assert.ok((await json(await request('/api/mls/group/pending'))).needCommit.includes(channelId));
+    // The revoked device reads nothing more of the group.
+    const groupService = await import('../services/mls-group.service.js');
+    await assert.rejects(groupService.listGroupCommits(channelId, userId, second.id, 0, 16), /DEVICE_APPROVAL_REQUIRED/);
+    await assert.rejects(groupService.listGroupMembers(channelId, userId, second.id, version), /DEVICE_APPROVAL_REQUIRED/);
+    // A remaining member removes it, and writes continue under the new key.
+    const removal = await groupCommit(firstMember(), { remove: [second.id] });
+    assert.deepEqual(await json(await submitCommit(firstMember(), removal), 201), { version: version + 1, epoch: removal.envelope.epoch });
+    activate(removal);
+    assert.deepEqual(removal.envelope.members.map((member) => member.deviceId), [first.id]);
+    await json(await request(`/api/channels/${channelId}/messages`, await encryptedMessage()), 201);
+    assert.equal((await json(await request(`/api/channels/${channelId}/key-recipients`))).rotationRequired, false);
     const disableHead = await head();
     const disable = {
       kind: 'recovery-disable' as const,
@@ -1378,9 +1784,11 @@ process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
       })),
     }, 'DELETE'));
   });
-  it('aborts a pending roster when a visible member registers their first device', async () => {
+  it('asks members to add a visible member’s first device and starts over only when confirmed and needed', async () => {
     const { db } = await import('../db/index.js');
     const { sql } = await import('drizzle-orm');
+    const mls = await clientMls();
+    const groupService = await import('../services/mls-group.service.js');
     const channel = await db.execute(
       sql`SELECT workspace_id FROM channels WHERE id = ${channelId}`,
     );
@@ -1412,16 +1820,8 @@ process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
     const login = await request('/api/auth/login', { email, password }, '');
     await json(login);
     const auth = login.headers.get('set-cookie')!.split(';')[0];
-    const pendingVersion = (await json(await request(`/api/channels/${channelId}/key-recipients`)))
-      .nextVersion;
-    // Model a proposal made while this authorized account has no devices yet.
-    // It necessarily has no recipient row for the account about to register.
-    await db.execute(
-      sql`INSERT INTO channel_key_epochs (channel_id, version, protocol_version, status, key_commitment, distributor_device_id) VALUES (${channelId}, ${pendingVersion}, 3, 'pending', ${commitment}, ${first.id})`,
-    );
-    await db.execute(
-      sql`INSERT INTO channel_key_epoch_recipients (channel_id, version, device_id, user_id) VALUES (${channelId}, ${pendingVersion}, ${first.id}, ${userId})`,
-    );
+    // The account sees the channel but has no device yet: nothing waits.
+    assert.deepEqual((await json(await request(`/api/channels/${channelId}/key-recipients`))).pendingAddDeviceIds, []);
     const keys = deviceKeys();
     const challenge = (await json(await request('/api/devices/challenge', {}, auth))).challenge;
     const device = await json(
@@ -1439,14 +1839,99 @@ process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
       201,
     );
     assert.ok(device.approvedAt);
-    const pending = await db.execute(
-      sql`SELECT status FROM channel_key_epochs WHERE channel_id = ${channelId} AND version = ${pendingVersion}`,
+    const newcomer = groupDevice(device, account.id, keys.privateKey, auth);
+    // The new device is asked to offer itself, and once it has, every member
+    // sees that it waits: it is not silently left out of the group.
+    assert.ok((await json(await request('/api/mls/group/pending', undefined, auth))).needPackage.includes(channelId));
+    assert.equal((await publishPackage(newcomer)).status, 201);
+    let state = await json(await request(`/api/channels/${channelId}/key-recipients`));
+    assert.deepEqual(state.pendingAddDeviceIds, [device.id], 'a newly eligible first device must be added');
+    assert.equal(state.rotationRequired, false, 'a device waiting to be added does not stop writes');
+    assert.ok((await json(await request('/api/mls/group/pending'))).needCommit.includes(channelId));
+    await json(await request(`/api/channels/${channelId}/messages`, await encryptedMessage()), 201);
+    const waiting = await json(await request(`/api/channels/${channelId}/key-recipients`, undefined, auth));
+    assert.equal(waiting.ownMembership, null);
+    assert.equal(waiting.canCommit, false);
+    assert.equal(waiting.historyRecoveryRequired, false, 'a usable member can add it');
+
+    // Starting the channel over replaces the group without its history. It
+    // takes a confirmed request on its own route, and only when no member
+    // can add this device.
+    const [entry] = await listedPackages(firstMember(), [newcomer]);
+    const restartVersion = version + 1;
+    const restartGroupId = mlsGroupId(channelId, restartVersion);
+    const restart = await mls.createChannelGroup(
+      restartGroupId,
+      publishedPackages.get(device.id)!.material,
+      [],
+      new Map([[device.id, await verifiedPackageKey(entry)]]),
     );
-    assert.equal(
-      pending.rows[0].status,
-      'aborted',
-      'a pending proposal cannot omit a newly eligible first device',
+    const restarted = await sealCommit(newcomer, restart, {
+      channelId,
+      version: restartVersion,
+      previousVersion: version,
+      previousTranscript: waiting.group.transcript,
+      groupId: restartGroupId,
+      epoch: 1,
+      kind: 'create',
+      added: [entry],
+      removed: [],
+      members: [{ deviceId: device.id, userId: account.id, leafIndex: 0 }],
+    });
+    assert.deepEqual(
+      await refusal(await submitCommit(newcomer, restarted)),
+      [403, 'KEY_FRESH_START_REQUIRED'],
+      'the ordinary route never replaces an existing group',
     );
+    const freshStartPath = `/api/channels/${channelId}/mls/group/fresh-start`;
+    const freshStart = {
+      commit: restarted.envelope,
+      freshStartSignature: signature(keys.privateKey, serializeChannelKeyFreshStart({
+        channelId,
+        keyVersion: restartVersion,
+        keyCommitment: restarted.envelope.keyCommitment,
+        deviceId: device.id,
+      })),
+    };
+    assert.equal((await request(freshStartPath, freshStart, auth)).status, 428);
+    await assert.rejects(
+      groupService.admitGroupCommit(account.id, device.id, restarted.envelope, { signature: freshStart.freshStartSignature }),
+      /AUTHENTICATION_FAILED/,
+      'MLS fresh start cannot be called without a server-created step-up receipt',
+    );
+    const session = (await db.execute(sql`SELECT id FROM sessions WHERE device_id = ${device.id}`)).rows[0];
+    const { actionPurpose } = await import('./action-purpose.js');
+    await assert.rejects(
+      groupService.admitGroupCommit(account.id, device.id, restarted.envelope, {
+        signature: freshStart.freshStartSignature,
+        stepUpProof: {
+          sessionId: session.id as string,
+          userId: account.id,
+          purpose: actionPurpose('POST', freshStartPath, freshStart),
+          expiresAt: Date.now() + 60_000,
+        },
+      }),
+      /AUTHENTICATION_FAILED/,
+      'a receipt-shaped object is not a receipt',
+    );
+    assert.deepEqual(
+      await refusal(await sensitive(freshStartPath, freshStart, 'POST', auth)),
+      [409, 'KEY_FRESH_START_NOT_REQUIRED'],
+      'a confirmed fresh start is still refused while a member can add the device',
+    );
+
+    // A member adds it; it joins from the Welcome and writes at once.
+    const addition = await groupCommit(firstMember(), { add: [newcomer] });
+    assert.deepEqual(await json(await submitCommit(firstMember(), addition), 201), { version: restartVersion, epoch: addition.envelope.epoch });
+    activate(addition);
+    assert.deepEqual(addition.envelope.members.map((member) => member.deviceId), [first.id, device.id]);
+    assert.deepEqual(await joinFromLog(newcomer), key);
+    state = await json(await request(`/api/channels/${channelId}/key-recipients`));
+    assert.deepEqual(state.pendingAddDeviceIds, []);
+    await json(await request(`/api/channels/${channelId}/messages`, await encryptedMessage({ device: newcomer }), auth), 201);
+    // It reads from the version that added it, never an earlier one.
+    assert.deepEqual(await json(await request(`/api/channels/${channelId}/mls/group/commits?after=0`, undefined, auth)), []);
+    assert.equal((await request(`/api/channels/${channelId}/mls/group/members?version=${version - 1}`, undefined, auth)).status, 404);
   });
   it('isolates retained and in-progress attachment usage by workspace', async () => {
     const { db } = await import('../db/index.js');

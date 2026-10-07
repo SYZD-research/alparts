@@ -1137,6 +1137,40 @@ describe('joining and asking to be added again', () => {
     await expectSameKey([alice, bob], 4);
   });
 
+  it('leaves a replaced group it cannot read behind and joins the group that added it, without asking again', async () => {
+    const [mallory, alice, carol] = [await newDevice('mallory'), await newDevice('alice'), await newDevice('carol')];
+    await ensure(mallory);
+    await ensure(alice);
+    await ensure(carol);
+    await addPending(mallory);
+    expect(await ensure(alice)).toEqual({ status: 'ready', version: 2 });
+    expect(await ensure(carol)).toEqual({ status: 'ready', version: 2 });
+    // Carol goes offline. Mallory's refresh cannot be used; Alice starts over.
+    server.rewrite = (envelope) => resign(mallory, envelope, { keyCommitment: 'A'.repeat(43) });
+    server.updateRequired = true;
+    await ensure(mallory);
+    server.rewrite = null;
+    expect(await ensure(alice)).toEqual({ status: 'waiting', rejoining: true });
+    server.freshStartAllowed = true;
+    use(alice);
+    expect(await createChannelGroupVersion(channelId, await server.getKeyRecipients(), channelKeyScopes.capture(channelId), { freshStart: true })).toBe(4);
+    server.freshStartAllowed = false;
+    // Background work publishes Carol's package before it reads the old group,
+    // and Alice adds it to the new one.
+    use(carol);
+    server.pendingWork = { needPackage: [channelId], needCommit: [] };
+    scheduleGroupMaintenance(0);
+    await vi.waitFor(() => expect(server.packages.has(carol.deviceId)).toBe(true));
+    expect(await addPending(alice)).toEqual({ status: 'committed', version: 5 });
+    // Version 3 belongs to the membership the fresh start ended.
+    expect(await ensure(carol)).toEqual({ status: 'ready', version: 5 });
+    expect(server.rejoinRequests.has(carol.deviceId)).toBe(false);
+    expect(record(carol, `mls-rejoin:${channelId}`)).toBeNull();
+    expect(keyOf(carol, 2)).toBeTruthy();
+    expect(keyOf(carol, 3)).toBeUndefined();
+    await expectSameKey([alice, carol], 5);
+  });
+
   it('stops asking to be added again after three requests a day and says so plainly', async () => {
     const { alice, bob, carol } = await threeMembers();
     for (let round = 0; round < 3; round += 1) {

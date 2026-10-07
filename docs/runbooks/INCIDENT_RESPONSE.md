@@ -82,7 +82,7 @@ This runbook is deliberately fail-safe. Commands that delete, prune, drop, or ov
 ## Ransomware or host compromise
 
 - **Contain:** isolate network/host; assume served browser code, local checkpoint, runtime credentials and same-host backups are untrusted.
-- **Recover:** clean/new host from a reviewed immutable source/image; rotate all exposed credentials; restore only independently held verified artifacts/checkpoint evidence; re-enroll/revoke devices and rotate channel epochs as appropriate.
+- **Recover:** clean/new host from a reviewed immutable source/image; rotate all exposed credentials; restore only independently held verified artifacts/checkpoint evidence; re-enroll/revoke devices as appropriate (each conversation's group removes revoked devices before the next write).
 - **Return:** require external security review of persistence and supply chain. Do not “clean” the original host in place and reuse it as proof of recovery.
 
 ## Region outage

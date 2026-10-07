@@ -155,7 +155,7 @@ For step-by-step setup, see the [deployment guide](docs/policies/DEPLOYMENT.md);
 
 Message text, attachment contents and file names are encrypted on the device. The server can still see information such as senders, participants, posting times and traffic volume. Encryption alone cannot protect you if a device, or the web app delivered to it, is compromised.
 
-Device approval and key updates when participants change are implemented, but an update needs confirmation from every approved device it affects. Sending may wait while one of those devices is offline. Because keys for reading past history are kept, full per-message forward secrecy is not guaranteed.
+Device approval and key updates when participants or devices change are implemented. A device that is offline does not hold up sending. A newly added device can read and send messages once another device in the conversation comes online. It cannot read messages sent before that, although messages your other devices could read may be restored from your saved history. Keys for reading past messages are kept on your devices, so anyone who obtains a device's data may also be able to read past messages. Remove devices you have lost or no longer use.
 
 History restore must be set up and saved in advance. If you lose every usable device, your restore passkey and your recovery code, not even the server administrator can recover the message text. The design and migration steps are described in [Protecting accounts, devices and history](docs/security/ACCOUNT_AND_GROUP_SECURITY.md) and [Setting up passkeys and recovery codes](docs/security/AUDIT_ALPARTS_REMEDIATION.md#パスキーと復旧コード) (Japanese).
 

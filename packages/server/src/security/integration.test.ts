@@ -6,18 +6,18 @@ import {
   createHash,
   createPublicKey,
   generateKeyPairSync,
-  privateDecrypt,
   publicEncrypt,
   randomBytes,
   randomUUID,
   sign,
+  verify,
 } from 'node:crypto';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { crc32, deflateSync } from 'node:zlib';
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { eq, inArray, sql } from 'drizzle-orm';
 import pg from 'pg';
 import {
   acceptAll,
@@ -49,11 +49,12 @@ import {
   serializeMlsGroupCommit,
   serializeMlsMemberPackage,
   type MlsGroupCommit,
+  type MlsGroupMember,
+  type MlsMemberPackage,
+  type DirectoryHead,
   Permissions,
-  serializeDeviceDecision, serializeGroupKeyPackage, serializeMlsEpoch, type MlsEpoch, type GroupKeyPackage,
+  serializeDeviceDecision,
   serializeAttachmentEnvelope,
-  serializeChannelKeyAcknowledgement,
-  serializeChannelKeyEpochAbort,
   serializeChannelKeyFreshStart,
   serializeChannelKeyWrap,
   serializeDeviceChallengeProof,
@@ -67,7 +68,6 @@ import {
 
 const enabled = process.env.RUN_INTEGRATION === '1';
 const fixtureKeys = new Map<string, ReturnType<typeof deviceFixture>>();
-const joinedMlsKeys = new Map<string, Map<string, Buffer>>();
 
 describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }, () => {
   let baseUrl = '';
@@ -207,7 +207,7 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
       body: await deviceRegistrationBody(retryDeviceAccount, retryDeviceKeys, 'Retry identity'),
     });
     assert.equal(firstDeviceRegistration.status, 201);
-    const firstRetryDevice = await json<{ id: string }>(firstDeviceRegistration);
+    const firstRetryDevice = await json<{ id: string; identityKey: string }>(firstDeviceRegistration);
     const repeatedDeviceRegistration = await request('/api/devices', {
       method: 'POST', cookie: retryDeviceAccount.cookie,
       body: await deviceRegistrationBody(retryDeviceAccount, retryDeviceKeys, 'Retry identity renamed'),
@@ -215,11 +215,12 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     assert.equal(repeatedDeviceRegistration.status, 200);
     assert.equal((await json<{ id: string }>(repeatedDeviceRegistration)).id, firstRetryDevice.id);
 
-    // A workspace manager can legitimately create more than 64 provisional
-    // epochs that include an ordinary member. Those rows must not consume an
-    // account-global enrollment cap and prevent that member from recovering a
-    // device. Seed the exact database state directly so this regression test
-    // remains fast and independent of API rate limits.
+    // Provisional epochs from before continuous groups (more than 64 of them,
+    // including an ordinary member) must not consume an account-global
+    // enrollment cap and prevent that member from recovering a device. Group
+    // protocol 4 creates no such rows, but databases may still hold them.
+    // Seed the exact database state directly so this regression test remains
+    // fast and independent of API rate limits.
     const enrollmentDatabaseModule = await import('../db/index.js');
     const enrollmentSchemaModule = await import('../db/schema.js');
     const enrollmentFixtureChannels = await enrollmentDatabaseModule.db
@@ -262,9 +263,9 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
       })),
     );
 
-    // Losing the only accepted device must not permanently wedge future
-    // writes. Recovery creates a new epoch without pretending old ciphertext
-    // is decryptable, and is separately visible in state and audit logs.
+    // Losing every device in a channel's group must not permanently wedge
+    // future writes. Recovery starts a new group without pretending old
+    // ciphertext is decryptable, and is visible in state and audit logs.
     const recoveryWorkspaceResponse = await request('/api/workspaces', {
       method: 'POST', cookie: retryDeviceAccount.cookie, body: { name: 'Sole holder recovery' },
     });
@@ -279,23 +280,18 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
       await request(`/api/channels/${recoveryChannel.id}/key-recipients`, { cookie: retryDeviceAccount.cookie }),
     );
     assert.deepEqual(soleRecipients.recipients.map((recipient) => recipient.deviceId), [firstRetryDevice.id]);
-    await distributeAndAcknowledgeChannelKey({
-      channelId: recoveryChannel.id,
-      version: 1,
-      rawKey: randomBytes(32),
-      senderCookie: retryDeviceAccount.cookie,
-      senderKeys: retryDeviceKeys,
-      recipients: soleRecipients.recipients,
-      acknowledgements: [{
-        deviceId: firstRetryDevice.id,
-        cookie: retryDeviceAccount.cookie,
-        keys: retryDeviceKeys,
-      }],
-    });
+    const firstRetryMember = asGroupMember(retryDeviceAccount.cookie, retryDeviceAccount.user.id, retryDeviceKeys, firstRetryDevice);
+    const recoveryGroup = new ChannelGroup(recoveryChannel.id);
+    // Alone, the genesis is an empty commit; the group is usable at once.
+    const soleGenesis = await recoveryGroup.create(firstRetryMember);
+    assert.equal(soleGenesis.response!.status, 201);
+    assert.deepEqual(await json(soleGenesis.response!), { version: 1, epoch: 1 });
+    assert.equal(soleGenesis.envelope.welcome, '');
 
-    // A newly enrolled manager may explicitly leave unavailable history
-    // behind and start a fresh writable epoch. Every current endpoint gets a
-    // signed wrap, while every endpoint gates activation, including the old endpoint.
+    // A newly enrolled device of the same account joins through an Add
+    // commit by a device already in the group. Until then it cannot write,
+    // while its waiting addition never stops the others from writing; it
+    // writes as soon as the commit is accepted, without any acknowledgement.
     const freshStartLogin = await request('/api/auth/login', {
       method: 'POST',
       body: { email: 'device-retry@example.test', password: 'Correct-Horse-Battery-10!' },
@@ -308,70 +304,37 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
       freshStartKeys,
       'Fresh start identity',
     );
-    const freshStartState = await json<{
-      nextVersion: number;
-      recipients: Array<{ deviceId: string; identityKey: string }>;
-    }>(await request(`/api/channels/${recoveryChannel.id}/key-recipients`, { cookie: freshStartCookie }));
-    assert.equal(freshStartState.nextVersion, 2);
-    const freshStartKey = randomBytes(32);
-    const { keyCommitment: freshStartCommitment, keys: freshStartWraps } = await proposeFixtureMls({
-      channelId: recoveryChannel.id, version: freshStartState.nextVersion, rawKey: freshStartKey,
-      senderCookie: freshStartCookie, senderKeys: freshStartKeys, recipients: freshStartState.recipients, fresh: true,
-    });
-    const proposedFreshState = await json<{
-      pendingRequiredDeviceIds: string[];
-    }>(await request(`/api/channels/${recoveryChannel.id}/key-recipients`, { cookie: freshStartCookie }));
-    assert.deepEqual(new Set(proposedFreshState.pendingRequiredDeviceIds), new Set([firstRetryDevice.id, freshStartDevice.id]));
-    const oldEndpointWrap = freshStartWraps.find((key) => key.deviceId === firstRetryDevice.id);
-    assert.ok(oldEndpointWrap);
-    const optionalAcknowledgement = await acknowledgeChannelKeyDelivery({
-      channelId: recoveryChannel.id,
-      version: 2,
-      keyCommitment: freshStartCommitment,
-      encryptedKey: oldEndpointWrap.encryptedKey,
-      deviceId: firstRetryDevice.id,
-      cookie: retryDeviceAccount.cookie,
-      keys: retryDeviceKeys,
-    });
-    assert.equal(optionalAcknowledgement.status, 'pending');
-    assert.equal(optionalAcknowledgement.activated, false);
-    const freshStartDelivery = freshStartWraps.find((key) => key.deviceId === freshStartDevice.id);
-    assert.ok(freshStartDelivery);
-    const freshStartAcknowledgement = await acknowledgeChannelKeyDelivery({
-      channelId: recoveryChannel.id,
-      version: 2,
-      keyCommitment: freshStartCommitment,
-      encryptedKey: freshStartDelivery.encryptedKey,
-      deviceId: freshStartDevice.id,
-      cookie: freshStartCookie,
-      keys: freshStartKeys,
-    });
-    assert.equal(freshStartAcknowledgement.status, 'active');
-    assert.equal(freshStartAcknowledgement.activated, true);
-    const oldEndpointDeliveries = await json<Array<{ version: number; encryptedKey: string }>>(
-      await request(`/api/channels/${recoveryChannel.id}/keys?version=2`, { cookie: retryDeviceAccount.cookie }),
+    const newDeviceMember = asGroupMember(freshStartCookie, retryDeviceAccount.user.id, freshStartKeys, freshStartDevice);
+    const newDeviceState = await recoveryGroup.state(newDeviceMember);
+    assert.equal(newDeviceState.nextVersion, 2);
+    assert.deepEqual(
+      [newDeviceState.ownMembership, newDeviceState.canCommit, newDeviceState.canCreate, newDeviceState.historyRecoveryRequired],
+      [null, false, false, false],
     );
-    const oldEndpointDelivery = oldEndpointDeliveries.find((delivery) => delivery.version === 2);
-    assert.ok(oldEndpointDelivery);
-    assert.deepEqual(unwrapKey(oldEndpointDelivery.encryptedKey, retryDeviceKeys.encryptionPrivateKey), freshStartKey);
-    const freshStartWrite = await request(`/api/channels/${recoveryChannel.id}/messages`, {
-      method: 'POST',
-      cookie: freshStartCookie,
-      body: encryptedMessage(
-        recoveryChannel.id,
-        retryDeviceAccount.user.id,
-        freshStartDevice.id,
-        freshStartKeys.signingPrivateKey,
-        freshStartKey,
-        'fresh messages wait for every current endpoint',
-        undefined,
-        2,
-      ).body,
-    });
-    assert.equal(freshStartWrite.status, 201);
+    assert.equal((await recoveryGroup.publish(newDeviceMember)).status, 201);
+    assert.deepEqual((await recoveryGroup.state(firstRetryMember)).pendingAddDeviceIds, [freshStartDevice.id]);
+    assert.equal((await groupMessage(firstRetryMember, recoveryChannel.id, recoveryGroup.key(1), 1)).status, 201,
+      'a device waiting to be added does not hold up writes');
+    assert.deepEqual(await refusal(await groupMessage(newDeviceMember, recoveryChannel.id, randomBytes(32), 1)),
+      [400, 'INVALID_KEY_VERSION'], 'a device outside the group cannot write');
+    // Starting over is only for a device nobody can add: here a member is reachable.
+    const prematureRestart = await recoveryGroup.create(newDeviceMember, [], { freshStart: true });
+    assert.deepEqual(await refusal(prematureRestart.response!), [409, 'KEY_FRESH_START_NOT_REQUIRED']);
+    const deviceAdded = await recoveryGroup.commit(firstRetryMember, { add: [newDeviceMember] });
+    assert.equal(deviceAdded.response!.status, 201);
+    assert.equal(deviceAdded.outcomes.get(freshStartDevice.id), 'current', 'the added device joins from the Welcome');
+    assert.equal((await groupMessage(newDeviceMember, recoveryChannel.id, recoveryGroup.key(2), 2,
+      'written right after the commit was accepted')).status, 201);
+    const staleWrite = await groupMessage(firstRetryMember, recoveryChannel.id, recoveryGroup.key(1), 1);
+    assert.equal(staleWrite.status, 400);
+    assert.deepEqual(pick(await json(staleWrite), ['code', 'currentVersion']), { code: 'KEY_VERSION_STALE', currentVersion: 2 },
+      'the writer learns which version to reseal for');
+    assert.equal((await groupMessage(firstRetryMember, recoveryChannel.id, recoveryGroup.key(2), 2)).status, 201);
     assert.equal((await request(`/api/devices/${freshStartDevice.id}`, {
       method: 'DELETE', cookie: freshStartCookie,
     })).status, 200);
+    assert.deepEqual(await refusal(await groupMessage(firstRetryMember, recoveryChannel.id, recoveryGroup.key(2), 2)),
+      [400, 'KEY_ROTATION_REQUIRED'], 'a revoked device in the group stops writes');
 
     const recoveryLogin = await request('/api/auth/login', {
       method: 'POST',
@@ -404,6 +367,8 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     });
     assert.equal(revokedIdentityWithFreshSession.status, 409);
     assert.equal((await json<{ error: string }>(revokedIdentityWithFreshSession)).error, 'IDENTITY_REVOKED');
+    // Earlier provisional epochs (before continuous groups) that include an
+    // ordinary member never keep that member from enrolling a device.
     const enrollmentFixtureEpochs = await enrollmentDatabaseModule.db.query.channelKeyEpochs.findMany({
       where: inArray(enrollmentSchemaModule.channelKeyEpochs.channelId, enrollmentFixtureChannelIds),
     });
@@ -419,49 +384,33 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
       .where(inArray(enrollmentSchemaModule.channelKeyEpochs.channelId, enrollmentFixtureChannelIds));
     await enrollmentDatabaseModule.db.delete(enrollmentSchemaModule.channels)
       .where(inArray(enrollmentSchemaModule.channels.id, enrollmentFixtureChannelIds));
-    const recoveryState = await json<{
-      historyRecoveryRequired: boolean;
-      rotationRequired: boolean;
-      canRotate: boolean;
-      recipients: Array<{ deviceId: string; identityKey: string }>;
-    }>(await request(`/api/channels/${recoveryChannel.id}/key-recipients`, { cookie: recoveryCookie }));
+    // Every device of the group is now revoked: nobody can commit, so the
+    // remaining device may start over, and only that way.
+    const recoveryMember = asGroupMember(recoveryCookie, retryDeviceAccount.user.id, recoveryKeys, recoveryDevice);
+    const recoveryState = await recoveryGroup.state(recoveryMember);
     assert.equal(recoveryState.historyRecoveryRequired, true);
     assert.equal(recoveryState.rotationRequired, true);
-    assert.equal(recoveryState.canRotate, true);
-    assert.deepEqual(recoveryState.recipients.map((recipient) => recipient.deviceId), [recoveryDevice.id]);
-    const recoveredChannelKey = randomBytes(32);
-    await distributeAndAcknowledgeChannelKey({
-      channelId: recoveryChannel.id,
-      version: 3,
-      rawKey: recoveredChannelKey,
-      senderCookie: recoveryCookie,
-      senderKeys: recoveryKeys,
-      recipients: recoveryState.recipients,
-      acknowledgements: [{ deviceId: recoveryDevice.id, cookie: recoveryCookie, keys: recoveryKeys }],
-    });
-    const recoveredWrite = await request(`/api/channels/${recoveryChannel.id}/messages`, {
-      method: 'POST', cookie: recoveryCookie,
-      body: encryptedMessage(
-        recoveryChannel.id,
-        retryDeviceAccount.user.id,
-        recoveryDevice.id,
-        recoveryKeys.signingPrivateKey,
-        recoveredChannelKey,
-        'future writes survive total key-holder loss',
-        undefined,
-        3,
-      ).body,
-    });
+    assert.equal(recoveryState.canRotate, false, 'no device here can commit to this group');
+    assert.deepEqual(recoveryState.requiredRemoveDeviceIds, [firstRetryDevice.id, freshStartDevice.id].sort());
+    assert.deepEqual(recoveryState.recipients.map((recipient: { deviceId: string }) => recipient.deviceId), [recoveryDevice.id]);
+    const recovered = await recoveryGroup.create(recoveryMember, [], { freshStart: true });
+    assert.equal(recovered.response!.status, 201);
+    assert.deepEqual(await json(recovered.response!), { version: 3, epoch: 1 });
+    assert.equal(recovered.envelope.previousTranscript, groupTranscript(deviceAdded.envelope), 'the new group continues the old chain');
+    const recoveredWrite = await groupMessage(recoveryMember, recoveryChannel.id, recoveryGroup.key(3), 3,
+      'future writes survive total key-holder loss');
     assert.equal(recoveredWrite.status, 201);
-    const recoveryAudit = await json<{ data: Array<{ action: string }> }>(await request(
+    const recoveryAudit = await json<{ data: Array<{ action: string; details: Record<string, unknown> | null }> }>(await request(
       `/api/workspaces/${recoveryWorkspace.id}/audit-logs?limit=100`,
       { method: 'POST', cookie: recoveryCookie, body: {} },
     ));
-    assert.equal(recoveryAudit.data.some((entry) => entry.action === 'channel.key.epoch.recovery.propose'), true);
-    assert.equal(recoveryAudit.data.some((entry) => entry.action === 'channel.key.epoch.fresh_start'), true);
+    const freshStartAudit = recoveryAudit.data.find((entry) => entry.action === 'channel.key.group.fresh_start');
+    assert.ok(freshStartAudit, 'starting over is recorded');
+    assert.deepEqual(freshStartAudit.details?.removed, [firstRetryDevice.id, freshStartDevice.id].sort());
+    assert.equal(recoveryAudit.data.some((entry) => entry.action === 'channel.key.group.commit'), true);
     // Keep this account from becoming an unintended recipient in the shared
     // workspace scenarios below. Self-revocation also proves that the newly
-    // recovered epoch remains subject to the same fail-closed holder-loss rule.
+    // recovered group remains subject to the same fail-closed holder-loss rule.
     assert.equal((await request(`/api/devices/${recoveryDevice.id}`, {
       method: 'DELETE', cookie: recoveryCookie,
     })).status, 200);
@@ -517,10 +466,13 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     const malloryKeys = deviceFixture();
     const bobDevice = await registerDevice(bob, bobKeys, 'Bob test device');
     const malloryDevice = await registerDevice(mallory, malloryKeys, 'Mallory test device');
+    const aliceMember = asGroupMember(alice.cookie, alice.user.id, aliceKeys, aliceDevice);
+    const bobMember = asGroupMember(bob.cookie, bob.user.id, bobKeys, bobDevice);
+    const malloryMember = asGroupMember(mallory.cookie, mallory.user.id, malloryKeys, malloryDevice);
 
-    // A channel left only with a non-manager who never held the active key
-    // must not stay unwritable: that viewer may start fresh after step-up,
-    // while automatic rotation stays manager-only.
+    // A channel left only with a non-manager who was never in its group must
+    // not stay unwritable: nobody remains who could add that viewer, so it
+    // may start over after confirming its identity, and managers are told.
     const orphanWorkspaceResponse = await request('/api/workspaces', {
       method: 'POST', cookie: alice.cookie, body: { name: 'Orphan recovery' },
     });
@@ -535,15 +487,8 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
       await request(`/api/channels/${orphanChannel.id}/key-recipients`, { cookie: alice.cookie }),
     );
     assert.deepEqual(holderOnly.recipients.map((recipient) => recipient.deviceId), [aliceDevice.id]);
-    await distributeAndAcknowledgeChannelKey({
-      channelId: orphanChannel.id,
-      version: 1,
-      rawKey: randomBytes(32),
-      senderCookie: alice.cookie,
-      senderKeys: aliceKeys,
-      recipients: holderOnly.recipients,
-      acknowledgements: [{ deviceId: aliceDevice.id, cookie: alice.cookie, keys: aliceKeys }],
-    });
+    const orphanGroup = new ChannelGroup(orphanChannel.id);
+    assert.equal((await orphanGroup.create(aliceMember)).response!.status, 201);
     const orphanInvitation = await createWorkspaceInvitation(orphanWorkspace.id, alice.cookie, 'mallory@example.test');
     assert.equal((await request('/api/invitations/accept', {
       method: 'POST', cookie: mallory.cookie, body: { token: orphanInvitation.token },
@@ -554,15 +499,11 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     assert.equal((await request(`/api/channels/${orphanChannel.id}/members/${alice.user.id}`, {
       method: 'DELETE', cookie: alice.cookie,
     })).status, 200);
-    const orphanState = await json<{
-      historyRecoveryRequired: boolean;
-      canRotate: boolean;
-      nextVersion: number;
-      recipients: Array<{ deviceId: string; identityKey: string }>;
-    }>(await request(`/api/channels/${orphanChannel.id}/key-recipients`, { cookie: mallory.cookie }));
+    const orphanState = await orphanGroup.state(malloryMember);
     assert.equal(orphanState.historyRecoveryRequired, true);
-    assert.equal(orphanState.canRotate, false, 'automatic rotation stays manager-only');
-    assert.deepEqual(orphanState.recipients.map((recipient) => recipient.deviceId), [malloryDevice.id]);
+    assert.equal(orphanState.canRotate, false, 'only a usable member commits to the group');
+    assert.deepEqual(orphanState.requiredRemoveDeviceIds, [aliceDevice.id]);
+    assert.deepEqual(orphanState.recipients.map((recipient: { deviceId: string }) => recipient.deviceId), [malloryDevice.id]);
     const { io: orphanIo } = await import('socket.io-client');
     const orphanManagerSocket = orphanIo(baseUrl, {
       transports: ['websocket'],
@@ -573,32 +514,15 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     const managerNotice = onceSocketEventMatching<{ kind: string; workspaceId: string; channelId: string }>(
       orphanManagerSocket, 'attention:new', (payload) => payload.kind === 'channel-restarted', 5_000,
     );
-    const orphanKey = randomBytes(32);
-    const { keyCommitment: orphanCommitment, keys: orphanWraps } = await proposeFixtureMls({
-      channelId: orphanChannel.id, version: orphanState.nextVersion, rawKey: orphanKey,
-      senderCookie: mallory.cookie, senderKeys: malloryKeys, recipients: orphanState.recipients, fresh: true,
-    });
+    const orphanRestart = await orphanGroup.create(malloryMember, [], { freshStart: true });
+    assert.equal(orphanRestart.response!.status, 201);
+    assert.equal(orphanRestart.outcomes.get(aliceDevice.id), 'gone', 'the device that lost access cannot read the new group');
     const notice = await managerNotice;
     assert.equal(notice.workspaceId, orphanWorkspace.id, 'managers are told that earlier messages became unreadable');
     assert.equal(notice.channelId, orphanChannel.id);
     orphanManagerSocket.disconnect();
-    const orphanAcknowledgement = await acknowledgeChannelKeyDelivery({
-      channelId: orphanChannel.id,
-      version: orphanState.nextVersion,
-      keyCommitment: orphanCommitment,
-      encryptedKey: orphanWraps[0].encryptedKey,
-      deviceId: malloryDevice.id,
-      cookie: mallory.cookie,
-      keys: malloryKeys,
-    });
-    assert.equal(orphanAcknowledgement.status, 'active');
-    assert.equal((await request(`/api/channels/${orphanChannel.id}/messages`, {
-      method: 'POST', cookie: mallory.cookie,
-      body: encryptedMessage(
-        orphanChannel.id, mallory.user.id, malloryDevice.id, malloryKeys.signingPrivateKey, orphanKey,
-        'the remaining member restarted the channel', undefined, orphanState.nextVersion,
-      ).body,
-    })).status, 201);
+    assert.equal((await groupMessage(malloryMember, orphanChannel.id, orphanGroup.key(), orphanGroup.version,
+      'the remaining member restarted the channel')).status, 201);
 
     const membersResponse = await request(`/api/workspaces/${workspace.id}/members`, { cookie: alice.cookie });
     assert.equal(membersResponse.status, 200);
@@ -646,9 +570,10 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
       new Set([alice.user.id, bob.user.id]),
     );
 
-    // A provisional epoch is never writable after only the proposer's ACK.
-    // A poisoned immutable delivery cannot be overwritten; another eligible
-    // participant can abort it and retry with a strictly higher version.
+    // An accepted commit is usable at once: no device acknowledges anything.
+    // Only the committer chose its Welcome, and the server cannot open it. A
+    // device that cannot use its Welcome asks to be added again and is
+    // re-added by a member, so it is never locked out for good.
     const dmRecipientsResponse = await request(`/api/channels/${dm.channelId}/key-recipients`, {
       cookie: alice.cookie,
     });
@@ -659,102 +584,60 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     const dmAliceRecipient = dmRecipients.recipients.find((recipient) => recipient.deviceId === aliceDevice.id);
     const dmBobRecipient = dmRecipients.recipients.find((recipient) => recipient.deviceId === bobDevice.id);
     assert.ok(dmAliceRecipient && dmBobRecipient);
-    const provisionalDmKey = randomBytes(32);
-    const { keyCommitment: provisionalDmCommitment, keys: provisionalWraps } = await proposeFixtureMls({
-      channelId: dm.channelId, version: 1, rawKey: provisionalDmKey, senderCookie: alice.cookie,
-      senderKeys: aliceKeys, recipients: dmRecipients.recipients, poisonWelcome: true,
-    });
-    const provisionalAliceWrap = provisionalWraps.find(k => k.deviceId === aliceDevice.id)!;
-    const provisionalBobWrap = provisionalWraps.find(k => k.deviceId === bobDevice.id)!;
-    const provisionalAliceAcknowledgement = await acknowledgeChannelKeyDelivery({
-      channelId: dm.channelId,
-      version: 1,
-      keyCommitment: provisionalDmCommitment,
-      encryptedKey: provisionalAliceWrap.encryptedKey,
-      deviceId: aliceDevice.id,
-      cookie: alice.cookie,
-      keys: aliceKeys,
-    });
-    assert.equal(provisionalAliceAcknowledgement.status, 'pending');
-    assert.equal(provisionalAliceAcknowledgement.activated, false);
-    assert.equal((await request(`/api/channels/${dm.channelId}/messages`, {
-      method: 'POST',
-      cookie: alice.cookie,
-      body: encryptedMessage(
-        dm.channelId,
-        alice.user.id,
-        aliceDevice.id,
-        aliceKeys.signingPrivateKey,
-        provisionalDmKey,
-        'a self-acknowledged pending epoch must not be writable',
-      ).body,
-    })).status, 400);
+    const dmGroup = new ChannelGroup(dm.channelId);
+    const poisonedGenesis = await dmGroup.create(aliceMember, [bobMember], { welcome: poisonWelcome });
+    assert.equal(poisonedGenesis.response!.status, 201);
+    assert.equal(poisonedGenesis.outcomes.get(bobDevice.id), 'unreadable', 'a malformed Welcome cannot be joined');
+    assert.equal((await groupMessage(aliceMember, dm.channelId, dmGroup.key(1), 1,
+      'written right after the commit was accepted')).status, 201);
 
+    // An accepted version and its key cannot be replaced: neither by a
+    // per-device delivery nor by another envelope for the same version. The
+    // identical envelope (a retry after a lost response) is answered again.
     const changedBobWrap = signedChannelKeyWrap({
       channelId: dm.channelId,
       version: 1,
-      keyCommitment: provisionalDmCommitment,
-      rawKey: provisionalDmKey,
+      keyCommitment: poisonedGenesis.envelope.keyCommitment,
+      rawKey: randomBytes(32),
       recipient: dmBobRecipient,
       senderKeys: aliceKeys,
     });
     assert.equal((await request(`/api/channels/${dm.channelId}/keys`, {
       method: 'POST',
       cookie: alice.cookie,
-      body: { version: 1, keyCommitment: provisionalDmCommitment, keys: [changedBobWrap] },
-    })).status, 409, 'one distributor cannot replace its immutable delivery candidate');
-    assert.throws(() => unwrapKey(provisionalBobWrap.encryptedKey, bobKeys.encryptionPrivateKey), 'a malformed Welcome cannot be joined');
-
-    const abortSignature = sign('sha256', Buffer.from(serializeChannelKeyEpochAbort({
-      channelId: dm.channelId,
-      keyVersion: 1,
-      keyCommitment: provisionalDmCommitment,
-      deviceId: bobDevice.id,
-    })), {
-      key: bobKeys.signingPrivateKey,
-      dsaEncoding: 'ieee-p1363',
-    }).toString('base64');
-    const abortResponse = await request(`/api/channels/${dm.channelId}/keys/abort`, {
-      method: 'POST',
-      cookie: bob.cookie,
-      body: { version: 1, keyCommitment: provisionalDmCommitment, signature: abortSignature },
-    });
-    assert.equal(abortResponse.status, 200);
-    assert.deepEqual(await json<{ version: number; status: string }>(abortResponse), {
-      version: 1,
-      status: 'aborted',
-    });
-    const dmAfterAbort = await json<{
-      currentVersion: number;
-      pendingVersion: number | null;
-      nextVersion: number;
-      canRotate: boolean;
-      canAbortPending: boolean;
-    }>(await request(`/api/channels/${dm.channelId}/key-recipients`, { cookie: bob.cookie }));
-    assert.equal(dmAfterAbort.currentVersion, 0);
-    assert.equal(dmAfterAbort.pendingVersion, null);
-    assert.equal(dmAfterAbort.nextVersion, 2);
-    assert.equal(dmAfterAbort.canRotate, true);
-    assert.equal(dmAfterAbort.canAbortPending, false);
+      body: { version: 1, keyCommitment: poisonedGenesis.envelope.keyCommitment, keys: [changedBobWrap] },
+    })).status, 400, 'a group version takes no per-device delivery');
+    const { signature: _genesisSignature, ...genesisFields } = poisonedGenesis.envelope;
+    const replacedGenesis = dmGroup.sign(aliceMember, { ...genesisFields, keyCommitment: keyCommitmentOf(randomBytes(32)) });
+    assert.deepEqual(await refusal(await dmGroup.send(aliceMember, replacedGenesis)), [409, 'MLS_CONFLICT']);
+    const resentGenesis = await dmGroup.send(aliceMember, poisonedGenesis.envelope);
+    assert.equal(resentGenesis.status, 200);
+    assert.deepEqual(await json(resentGenesis), { version: 1, epoch: 1, replay: true });
     assert.deepEqual(
       await json<unknown[]>(await request(`/api/channels/${dm.channelId}/keys`, { cookie: bob.cookie })),
       [],
-      'aborted provisional delivery material is removed',
+      'group versions leave no key material on the server',
     );
 
-    const activeDmKey = randomBytes(32);
-    await distributeAndAcknowledgeChannelKey({
-      channelId: dm.channelId,
-      version: 2,
-      rawKey: activeDmKey,
-      senderCookie: bob.cookie,
-      senderKeys: bobKeys,
-      recipients: dmRecipients.recipients,
-      acknowledgements: [
-        { deviceId: bobDevice.id, cookie: bob.cookie, keys: bobKeys },
-        { deviceId: aliceDevice.id, cookie: alice.cookie, keys: aliceKeys },
-      ],
-    });
+    let bobDmState = await dmGroup.state(bobMember);
+    assert.deepEqual(
+      [bobDmState.ownMembership, bobDmState.canCommit],
+      [{ joinedVersion: 1, leafIndex: 1, rejoinRequested: false }, true],
+    );
+    assert.equal((await dmGroup.publish(bobMember, { rejoin: true })).status, 201);
+    bobDmState = await dmGroup.state(bobMember);
+    assert.deepEqual([bobDmState.ownMembership.rejoinRequested, bobDmState.canCommit], [true, false]);
+    assert.deepEqual((await dmGroup.state(aliceMember)).pendingAddDeviceIds, [bobDevice.id]);
+    assert.equal((await groupMessage(aliceMember, dm.channelId, dmGroup.key(1), 1)).status, 201,
+      'a request to be added again does not hold up writes');
+    const bobReadded = await dmGroup.commit(aliceMember, { remove: [bobMember], add: [bobMember] });
+    assert.equal(bobReadded.response!.status, 201);
+    assert.equal(bobReadded.outcomes.get(bobDevice.id), 'current', 'the re-added device joins from the new Welcome');
+    assert.deepEqual(bobReadded.envelope.members.map((member) => [member.deviceId, member.leafIndex]),
+      [[aliceDevice.id, 0], [bobDevice.id, 1]]);
+    assert.equal((await groupMessage(bobMember, dm.channelId, dmGroup.key(2), 2)).status, 201);
+    assert.deepEqual((await dmGroup.state(bobMember)).ownMembership, { joinedVersion: 2, leafIndex: 1, rejoinRequested: false });
+
     const forbiddenVersionThreeKey = randomBytes(32);
     const forbiddenVersionThreeCommitment = createHash('sha256')
       .update(forbiddenVersionThreeKey)
@@ -775,15 +658,12 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
         keyCommitment: forbiddenVersionThreeCommitment,
         keys: forbiddenVersionThreeWraps,
       },
-    })).status, 409, 'legacy group proposals are refused even for a healthy active epoch');
-    const healthyDmState = await json<{
-      currentVersion: number;
-      pendingVersion: number | null;
-      rotationRequired: boolean;
-    }>(await request(`/api/channels/${dm.channelId}/key-recipients`, { cookie: alice.cookie }));
+    })).status, 409, 'legacy group proposals are refused even for a healthy group');
+    const healthyDmState = await dmGroup.state(aliceMember);
     assert.equal(healthyDmState.currentVersion, 2);
     assert.equal(healthyDmState.pendingVersion, null);
     assert.equal(healthyDmState.rotationRequired, false);
+    assert.deepEqual(healthyDmState.pendingAddDeviceIds, []);
 
     const forbiddenWorkspace = await request(`/api/workspaces/${workspace.id}`, { cookie: mallory.cookie });
     assert.notEqual(forbiddenWorkspace.status, 200);
@@ -1322,7 +1202,6 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     const recipientsResponse = await request(`/api/channels/${channelId}/key-recipients`, { cookie: alice.cookie });
     assert.equal(recipientsResponse.status, 200);
     const recipients = await json<{ recipients: Array<{ deviceId: string; identityKey: string }> }>(recipientsResponse);
-    const rawChannelKey = randomBytes(32);
     const legacyUnsignedDistribution = await request(`/api/channels/${channelId}/keys`, {
       method: 'POST',
       cookie: alice.cookie,
@@ -1330,52 +1209,38 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
         version: 1,
         keys: recipients.recipients.map((recipient) => ({
           deviceId: recipient.deviceId,
-          encryptedKey: wrapKey(rawChannelKey, recipient.identityKey),
+          encryptedKey: wrapKey(randomBytes(32), recipient.identityKey),
         })),
       },
     });
     assert.equal(legacyUnsignedDistribution.status, 400);
-    const committedDistribution = await distributeAndAcknowledgeChannelKey({
-      channelId,
-      version: 1,
-      rawKey: rawChannelKey,
-      senderCookie: alice.cookie,
-      senderKeys: aliceKeys,
-      recipients: recipients.recipients,
-      acknowledgements: [
-        { deviceId: aliceDevice.id, cookie: alice.cookie, keys: aliceKeys },
-        { deviceId: bobDevice.id, cookie: bob.cookie, keys: bobKeys },
-      ],
-    });
+    // Clients from before continuous groups are told to reload instead of
+    // writing per-epoch groups.
+    for (const [method, path] of [
+      ['POST', 'mls/packages'], ['GET', 'mls/packages'], ['POST', 'mls/epochs'], ['POST', 'mls/epochs/fresh-start'], ['POST', 'keys/start-fresh'],
+    ]) {
+      const response = await request(`/api/channels/${channelId}/${path}`, { method, cookie: alice.cookie, ...(method === 'POST' ? { body: {} } : {}) });
+      assert.deepEqual([response.status, (await json<{ error: string }>(response)).error], [410, 'UPDATE_REQUIRED'], `${method} ${path}`);
+    }
+    const mainGroup = new ChannelGroup(channelId);
+    const mainGenesis = await mainGroup.create(aliceMember, [bobMember]);
+    assert.equal(mainGenesis.response!.status, 201);
+    assert.equal(mainGenesis.outcomes.get(bobDevice.id), 'current');
+    const rawChannelKey = mainGroup.key(1);
 
-    // Keep the new-device backfill notification isolated from the primary
-    // message channel, because the secondary device is revoked later and that
-    // correctly dirties every active epoch in which it accepted a delivery.
+    // Keep the new-device addition isolated from the primary message
+    // channel, because the secondary device is revoked later.
     const backfillChannelResponse = await request(`/api/workspaces/${workspace.id}/channels`, {
       method: 'POST', cookie: alice.cookie, body: { name: 'device-backfill' },
     });
     assert.equal(backfillChannelResponse.status, 201);
     const backfillChannel = await json<{ id: string }>(backfillChannelResponse);
-    const backfillRecipients = await json<{
-      recipients: Array<{ deviceId: string; identityKey: string }>;
-    }>(await request(`/api/channels/${backfillChannel.id}/key-recipients`, { cookie: alice.cookie }));
-    const backfillKey = randomBytes(32);
-    const backfillDistribution = await distributeAndAcknowledgeChannelKey({
-      channelId: backfillChannel.id,
-      version: 1,
-      rawKey: backfillKey,
-      senderCookie: alice.cookie,
-      senderKeys: aliceKeys,
-      recipients: backfillRecipients.recipients,
-      acknowledgements: [
-        { deviceId: aliceDevice.id, cookie: alice.cookie, keys: aliceKeys },
-        { deviceId: bobDevice.id, cookie: bob.cookie, keys: bobKeys },
-      ],
-    });
+    const backfillGroup = new ChannelGroup(backfillChannel.id);
+    assert.equal((await backfillGroup.create(aliceMember, [bobMember])).response!.status, 201);
     assert.equal(await joinChannel(aliceSocket, backfillChannel.id), true);
 
     // Revocation must remain constant-work with respect to device history and
-    // must fail closed at each channel's bounded active-recipient boundary.
+    // must fail closed at each channel's bounded group boundary.
     const secondaryLogin = await request('/api/auth/login', {
       method: 'POST',
       body: { email: 'alice@example.test', password: alice.password },
@@ -1388,6 +1253,7 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
       secondaryKeys,
       'Alice revocation boundary device',
     );
+    const secondaryMember = asGroupMember(secondaryCookie, alice.user.id, secondaryKeys, secondaryDevice);
     const postEnrollmentRecipients = await json<{
       recipients: Array<{ deviceId: string; identityKey: string }>;
     }>(await request(`/api/channels/${backfillChannel.id}/key-recipients`, { cookie: alice.cookie }));
@@ -1395,17 +1261,29 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
       (recipient) => recipient.deviceId === secondaryDevice.id,
     );
     assert.ok(secondaryBackfillRecipient);
+    // A new device never receives an earlier version's secret: no delivery,
+    // and neither the commit log nor the roster of a version before it joined.
     const oldBackfill = await request(`/api/channels/${backfillChannel.id}/keys`, {
-      method: 'POST', cookie: alice.cookie, body: { version: 1, keyCommitment: backfillDistribution.keyCommitment,
-        keys: [signedChannelKeyWrap({ channelId: backfillChannel.id, version: 1, keyCommitment: backfillDistribution.keyCommitment, rawKey: backfillKey, recipient: secondaryBackfillRecipient, senderKeys: aliceKeys })] },
+      method: 'POST', cookie: alice.cookie, body: { version: 1, keyCommitment: keyCommitmentOf(backfillGroup.key(1)),
+        keys: [signedChannelKeyWrap({ channelId: backfillChannel.id, version: 1, keyCommitment: keyCommitmentOf(backfillGroup.key(1)), rawKey: backfillGroup.key(1), recipient: secondaryBackfillRecipient, senderKeys: aliceKeys })] },
     });
-    assert.equal(oldBackfill.status, 409, 'a new device receives a fresh epoch, never an old MLS secret');
+    assert.equal(oldBackfill.status, 400, 'a new device is added to the group, never sent an old secret');
+    assert.deepEqual(await json(await request(`/api/channels/${backfillChannel.id}/mls/group/commits?after=0`, { cookie: secondaryCookie })), []);
+    assert.equal((await request(`/api/channels/${backfillChannel.id}/mls/group/members?version=1`, { cookie: secondaryCookie })).status, 404);
+    // Its package tells the members (also in other channels and workspaces
+    // through their user rooms) that a device waits to be added.
     const backfillAvailable = onceSocketEventMatching<{channelId:string}>(aliceSocket, 'channel:key-rotation-required', event => event.channelId === backfillChannel.id);
-    await distributeAndAcknowledgeChannelKey({ channelId: backfillChannel.id, version: 2, rawKey: backfillKey,
-      senderCookie: alice.cookie, senderKeys: aliceKeys, recipients: postEnrollmentRecipients.recipients,
-      acknowledgements: [{deviceId:aliceDevice.id,cookie:alice.cookie,keys:aliceKeys},{deviceId:bobDevice.id,cookie:bob.cookie,keys:bobKeys},{deviceId:secondaryDevice.id,cookie:secondaryCookie,keys:secondaryKeys}],
-    });
+    assert.equal((await backfillGroup.publish(secondaryMember)).status, 201);
     assert.equal((await backfillAvailable).channelId, backfillChannel.id);
+    const secondaryAdded = await backfillGroup.commit(bobMember, { add: [secondaryMember] });
+    assert.equal(secondaryAdded.response!.status, 201);
+    assert.deepEqual([...secondaryAdded.outcomes.entries()].sort(), [[aliceDevice.id, 'current'], [secondaryDevice.id, 'current']].sort());
+    assert.deepEqual(await json(await request(`/api/channels/${backfillChannel.id}/mls/group/commits?after=0`, { cookie: secondaryCookie })), [],
+      'the log starts at the version that added the device');
+    assert.deepEqual((await json<Array<{ version: number }>>(await request(`/api/channels/${backfillChannel.id}/mls/group/commits?after=1`, { cookie: secondaryCookie })))
+      .map((record) => record.version), [2]);
+    assert.equal((await groupMessage(secondaryMember, backfillChannel.id, backfillGroup.key(2), 2)).status, 201);
+
     const revocationChannelResponse = await request(`/api/workspaces/${workspace.id}/channels`, {
       method: 'POST', cookie: alice.cookie, body: { name: 'revocation-boundary' },
     });
@@ -1415,138 +1293,64 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
       recipients: Array<{ deviceId: string; identityKey: string }>;
     }>(await request(`/api/channels/${revocationChannel.id}/key-recipients`, { cookie: alice.cookie }));
     assert.equal(revocationRecipients.recipients.some((entry) => entry.deviceId === secondaryDevice.id), true);
-    const revocationChannelKey = randomBytes(32);
-    await distributeAndAcknowledgeChannelKey({
-      channelId: revocationChannel.id,
-      version: 1,
-      rawKey: revocationChannelKey,
-      senderCookie: alice.cookie,
-      senderKeys: aliceKeys,
-      recipients: revocationRecipients.recipients,
-      acknowledgements: [
-        { deviceId: aliceDevice.id, cookie: alice.cookie, keys: aliceKeys },
-        { deviceId: secondaryDevice.id, cookie: secondaryCookie, keys: secondaryKeys },
-        { deviceId: bobDevice.id, cookie: bob.cookie, keys: bobKeys },
-      ],
-    });
+    const revocationGroup = new ChannelGroup(revocationChannel.id);
+    assert.equal((await revocationGroup.create(aliceMember, [secondaryMember, bobMember])).response!.status, 201);
+    const revocationChannelKey = revocationGroup.key(1);
+    // A device that only published a package is a pending addition: it
+    // never stops writes, and after revocation it cannot be added at all.
     const pendingRevocationChannelResponse = await request(`/api/workspaces/${workspace.id}/channels`, {
       method: 'POST', cookie: alice.cookie, body: { name: 'pending-revocation-boundary' },
     });
     assert.equal(pendingRevocationChannelResponse.status, 201);
     const pendingRevocationChannel = await json<{ id: string }>(pendingRevocationChannelResponse);
-    const pendingRevocationRecipients = await json<{
-      recipients: Array<{ deviceId: string; identityKey: string }>;
-    }>(await request(`/api/channels/${pendingRevocationChannel.id}/key-recipients`, { cookie: alice.cookie }));
-    const pendingRevocationKey = randomBytes(32);
-    const {keyCommitment: pendingRevocationCommitment, keys: _pendingRevocationWraps} = await proposeFixtureMls({
-      channelId: pendingRevocationChannel.id, version: 1, rawKey: pendingRevocationKey,
-      senderCookie: alice.cookie, senderKeys: aliceKeys, recipients: pendingRevocationRecipients.recipients,
-    });
+    const pendingRevocationGroup = new ChannelGroup(pendingRevocationChannel.id);
+    assert.equal((await pendingRevocationGroup.create(aliceMember, [bobMember])).response!.status, 201);
+    assert.equal((await pendingRevocationGroup.publish(secondaryMember)).status, 201);
+    assert.deepEqual((await pendingRevocationGroup.state(aliceMember)).pendingAddDeviceIds, [secondaryDevice.id]);
+    assert.equal((await groupMessage(aliceMember, pendingRevocationChannel.id, pendingRevocationGroup.key(1), 1)).status, 201);
+
+    // Bob's device is offline from here on: it must never hold up anyone.
+    revocationGroup.offline.add(bobDevice.id);
     assert.equal((await request(`/api/devices/${secondaryDevice.id}`, {
       method: 'DELETE', cookie: alice.cookie,
     })).status, 200);
     assert.equal((await request('/api/devices', { cookie: secondaryCookie })).status, 401);
-    const blockedAfterRecipientRevocation = await request(`/api/channels/${revocationChannel.id}/messages`, {
-      method: 'POST',
-      cookie: alice.cookie,
-      body: encryptedMessage(
-        revocationChannel.id,
-        alice.user.id,
-        aliceDevice.id,
-        aliceKeys.signingPrivateKey,
-        revocationChannelKey,
-        'must not be accepted after any active recipient is revoked',
-      ).body,
-    });
-    assert.equal(blockedAfterRecipientRevocation.status, 400);
-    const revocationState = await json<{
-      rotationRequired: boolean;
-      canRotate: boolean;
-      recipients: Array<{ deviceId: string }>;
-    }>(await request(`/api/channels/${revocationChannel.id}/key-recipients`, { cookie: alice.cookie }));
+    const blockedAfterRecipientRevocation = await groupMessage(aliceMember, revocationChannel.id, revocationChannelKey, 1,
+      'must not be accepted while a revoked device is in the group');
+    assert.deepEqual(await refusal(blockedAfterRecipientRevocation), [400, 'KEY_ROTATION_REQUIRED']);
+    const revocationState = await revocationGroup.state(aliceMember);
     assert.equal(revocationState.rotationRequired, true);
     assert.equal(revocationState.canRotate, true);
-    assert.equal(revocationState.recipients.some((entry) => entry.deviceId === secondaryDevice.id), false);
-    const postRevocationKey = randomBytes(32);
-    await distributeAndAcknowledgeChannelKey({
-      channelId: revocationChannel.id,
-      version: 2,
-      rawKey: postRevocationKey,
-      senderCookie: alice.cookie,
-      senderKeys: aliceKeys,
-      recipients: await json<{ recipients: Array<{ deviceId: string; identityKey: string }> }>(
-        await request(`/api/channels/${revocationChannel.id}/key-recipients`, { cookie: alice.cookie }),
-      ).then((state) => state.recipients),
-      acknowledgements: [
-        { deviceId: aliceDevice.id, cookie: alice.cookie, keys: aliceKeys },
-        { deviceId: bobDevice.id, cookie: bob.cookie, keys: bobKeys },
-      ],
-    });
-    const acceptedAfterRevocationRotation = await request(`/api/channels/${revocationChannel.id}/messages`, {
-      method: 'POST',
-      cookie: alice.cookie,
-      body: encryptedMessage(
-        revocationChannel.id,
-        alice.user.id,
-        aliceDevice.id,
-        aliceKeys.signingPrivateKey,
-        postRevocationKey,
-        'accepted after bounded revocation recovery',
-        undefined,
-        2,
-      ).body,
-    });
-    assert.equal(acceptedAfterRevocationRotation.status, 201);
+    assert.deepEqual(revocationState.requiredRemoveDeviceIds, [secondaryDevice.id]);
+    assert.equal(revocationState.recipients.some((entry: { deviceId: string }) => entry.deviceId === secondaryDevice.id), false);
+    // The revoked device can read neither the log nor any roster.
+    const mlsGroupService = await import('../services/mls-group.service.js');
+    await assert.rejects(mlsGroupService.listGroupCommits(revocationChannel.id, alice.user.id, secondaryDevice.id, 0, 16), /DEVICE_APPROVAL_REQUIRED/);
+    await assert.rejects(mlsGroupService.listGroupMembers(revocationChannel.id, alice.user.id, secondaryDevice.id, 1), /DEVICE_APPROVAL_REQUIRED/);
+    // Only a commit that removes it unblocks writes; adding nothing else is fine.
+    const keepingRevoked = await revocationGroup.commit(aliceMember, {}, { post: false });
+    assert.deepEqual(await refusal(await revocationGroup.send(aliceMember, keepingRevoked.envelope)), [409, 'MLS_CONFLICT'],
+      'a commit that keeps a revoked device is refused');
+    const revokedRemoved = await revocationGroup.commit(aliceMember, { remove: [secondaryMember] });
+    assert.equal(revokedRemoved.response!.status, 201);
+    assert.equal(revokedRemoved.outcomes.has(bobDevice.id), false, 'the offline device was not needed');
+    const postRevocationKey = revocationGroup.key(2);
+    assert.equal((await groupMessage(aliceMember, revocationChannel.id, postRevocationKey, 2,
+      'accepted after bounded revocation recovery')).status, 201);
+    assert.deepEqual(await refusal(await groupMessage(aliceMember, revocationChannel.id, revocationChannelKey, 1)), [400, 'KEY_VERSION_STALE']);
+    // The offline device catches up from the log and writes with the same key.
+    revocationGroup.offline.delete(bobDevice.id);
+    assert.equal(await revocationGroup.sync(bobMember), 'current');
+    assert.equal((await groupMessage(bobMember, revocationChannel.id, postRevocationKey, 2, 'caught up from the log')).status, 201);
 
-    const invalidPendingState = await json<{
-      pendingVersion: number | null;
-      pendingInvalid: boolean;
-      canAbortPending: boolean;
-    }>(await request(`/api/channels/${pendingRevocationChannel.id}/key-recipients`, { cookie: alice.cookie }));
-    assert.equal(invalidPendingState.pendingVersion, 1);
-    assert.equal(invalidPendingState.pendingInvalid, true);
-    assert.equal(invalidPendingState.canAbortPending, true);
-    const invalidPendingAbortSignature = sign('sha256', Buffer.from(serializeChannelKeyEpochAbort({
-      channelId: pendingRevocationChannel.id,
-      keyVersion: 1,
-      keyCommitment: pendingRevocationCommitment,
-      deviceId: aliceDevice.id,
-    })), {
-      key: aliceKeys.signingPrivateKey,
-      dsaEncoding: 'ieee-p1363',
-    }).toString('base64');
-    assert.equal((await request(`/api/channels/${pendingRevocationChannel.id}/keys/abort`, {
-      method: 'POST',
-      cookie: alice.cookie,
-      body: {
-        version: 1,
-        keyCommitment: pendingRevocationCommitment,
-        signature: invalidPendingAbortSignature,
-      },
-    })).status, 200);
-    const afterInvalidPendingAbort = await json<{ pendingVersion: number | null }>(
-      await request(`/api/channels/${pendingRevocationChannel.id}/key-recipients`, { cookie: alice.cookie }),
-    );
-    assert.equal(afterInvalidPendingAbort.pendingVersion, null);
-    assert.deepEqual(
-      await json<unknown[]>(await request(`/api/channels/${pendingRevocationChannel.id}/keys`, { cookie: alice.cookie })),
-      [],
-      'aborting an invalid pending epoch removes every provisional delivery',
-    );
-    const databaseModule = await import('../db/index.js');
-    const schemaModule = await import('../db/schema.js');
-    assert.equal((await databaseModule.db.query.channelKeys.findMany({
-      where: and(
-        eq(schemaModule.channelKeys.channelId, pendingRevocationChannel.id),
-        eq(schemaModule.channelKeys.version, 1),
-      ),
-    })).length, 0);
-    assert.equal((await databaseModule.db.query.channelKeyEpochRecipients.findMany({
-      where: and(
-        eq(schemaModule.channelKeyEpochRecipients.channelId, pendingRevocationChannel.id),
-        eq(schemaModule.channelKeyEpochRecipients.version, 1),
-      ),
-    })).length, 0);
+    const afterPendingRevocation = await pendingRevocationGroup.state(aliceMember);
+    assert.deepEqual(afterPendingRevocation.pendingAddDeviceIds, [], 'a revoked device is no longer waiting to be added');
+    assert.deepEqual(afterPendingRevocation.requiredRemoveDeviceIds, []);
+    assert.equal(afterPendingRevocation.rotationRequired, false);
+    assert.equal((await groupMessage(aliceMember, pendingRevocationChannel.id, pendingRevocationGroup.key(1), 1)).status, 201);
+    const revokedAddition = await pendingRevocationGroup.commit(aliceMember, { add: [secondaryMember] }, { post: false });
+    assert.deepEqual(await refusal(await pendingRevocationGroup.send(aliceMember, revokedAddition.envelope)), [409, 'MLS_CONFLICT'],
+      'a revoked device cannot be added');
     let revocationReplayDirtiedWorkspace = false;
     const onRevocationReplayDirty = () => { revocationReplayDirtiedWorkspace = true; };
     aliceSocket.on('workspace:key-state-dirty', onRevocationReplayDirty);
@@ -1561,13 +1365,14 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
       'an idempotent revocation replay does not broadcast redundant workspace key dirtiness',
     );
 
+    // Neither a delivery nor another envelope replaces an accepted version.
     const aliceRecipient = recipients.recipients.find((recipient) => recipient.deviceId === aliceDevice.id);
     assert.ok(aliceRecipient);
     const poisonEncryptedKey = wrapKey(randomBytes(32), aliceRecipient.identityKey);
     const poisonSignature = sign('sha256', Buffer.from(serializeChannelKeyWrap({
       channelId,
       keyVersion: 1,
-      keyCommitment: committedDistribution.keyCommitment,
+      keyCommitment: mainGenesis.envelope.keyCommitment,
       recipientDeviceId: aliceDevice.id,
       encryptedKey: poisonEncryptedKey,
     })), {
@@ -1579,11 +1384,16 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
       cookie: bob.cookie,
       body: {
         version: 1,
-        keyCommitment: committedDistribution.keyCommitment,
+        keyCommitment: mainGenesis.envelope.keyCommitment,
         keys: [{ deviceId: aliceDevice.id, encryptedKey: poisonEncryptedKey, signature: poisonSignature }],
       },
     });
-    assert.equal(confirmedWrapOverwrite.status, 409, 'a confirmed recipient wrap is immutable');
+    assert.equal(confirmedWrapOverwrite.status, 400, 'a group version takes no per-device delivery');
+    const { signature: _mainSignature, ...mainGenesisFields } = mainGenesis.envelope;
+    assert.deepEqual(await refusal(await mainGroup.send(bobMember, mainGroup.sign(bobMember, {
+      ...mainGenesisFields, committerDeviceId: bobDevice.id,
+    }))), [409, 'MLS_CONFLICT'], 'another member cannot replace an accepted version');
+    assert.equal((await mainGroup.record(aliceMember, 1)).transcript, groupTranscript(mainGenesis.envelope));
 
     const messageRequest = encryptedMessage(
       channelId,
@@ -1736,16 +1546,10 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     const privateRecipientsResponse = await request(`/api/channels/${privateChannel.id}/key-recipients`, { cookie: alice.cookie });
     assert.equal(privateRecipientsResponse.status, 200);
     const privateRecipients = await json<{ recipients: Array<{ deviceId: string; identityKey: string }> }>(privateRecipientsResponse);
-    const rawPrivateChannelKey = randomBytes(32);
-    await distributeAndAcknowledgeChannelKey({
-      channelId: privateChannel.id,
-      version: 1,
-      rawKey: rawPrivateChannelKey,
-      senderCookie: alice.cookie,
-      senderKeys: aliceKeys,
-      recipients: privateRecipients.recipients,
-      acknowledgements: [{ deviceId: aliceDevice.id, cookie: alice.cookie, keys: aliceKeys }],
-    });
+    assert.deepEqual(privateRecipients.recipients.map((recipient) => recipient.deviceId), [aliceDevice.id]);
+    const privateGroup = new ChannelGroup(privateChannel.id);
+    assert.equal((await privateGroup.create(aliceMember)).response!.status, 201);
+    const rawPrivateChannelKey = privateGroup.key(1);
     const privateMessageResponse = await request(`/api/channels/${privateChannel.id}/messages`, {
       method: 'POST',
       cookie: alice.cookie,
@@ -2625,9 +2429,9 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     });
     assert.equal(await joinChannel(bobSocket, disposableChannel.id), false);
 
-    // Bob receives a wrapped key but deliberately creates no message, read
-    // position, preference, or bookmark in this channel. The historical key
-    // row is the only durable evidence that the channel is known to him.
+    // Bob's device joins the channel's group but he deliberately creates no
+    // message, read position, preference, or bookmark in this channel. The
+    // group membership is the only durable evidence that he knows it.
     const keyOnlyChannelResponse = await request(`/api/workspaces/${workspace.id}/channels`, {
       method: 'POST',
       cookie: alice.cookie,
@@ -2643,19 +2447,10 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
       keyOnlyRecipientsResponse,
     );
     assert.equal(keyOnlyRecipients.recipients.some((recipient) => recipient.deviceId === bobDevice.id), true);
-    const keyOnlyMaterial = randomBytes(32);
-    await distributeAndAcknowledgeChannelKey({
-      channelId: keyOnlyChannel.id,
-      version: 1,
-      rawKey: keyOnlyMaterial,
-      senderCookie: alice.cookie,
-      senderKeys: aliceKeys,
-      recipients: keyOnlyRecipients.recipients,
-      acknowledgements: [
-        { deviceId: aliceDevice.id, cookie: alice.cookie, keys: aliceKeys },
-        { deviceId: bobDevice.id, cookie: bob.cookie, keys: bobKeys },
-      ],
-    });
+    const keyOnlyGroup = new ChannelGroup(keyOnlyChannel.id);
+    const keyOnlyGenesis = await keyOnlyGroup.create(aliceMember, [bobMember]);
+    assert.equal(keyOnlyGenesis.response!.status, 201);
+    assert.equal(keyOnlyGenesis.outcomes.get(bobDevice.id), 'current');
 
     const categoryOverridePreviewResponse = await request(
       `/api/workspaces/${workspace.id}/categories/${overrideTarget.categoryId}/permission-overrides/preview`,
@@ -2770,6 +2565,59 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     assert.equal(await joinChannel(bobSocket, channelId), false);
     assert.equal((await request(`/api/channels/${channelId}/messages`, { cookie: alice.cookie })).status, 200, 'owner cannot be override-locked out');
 
+    // Bob's device is still in the channel's group but he no longer sees the
+    // channel: writes stop until a commit removes the device, which can no
+    // longer read the log.
+    assert.deepEqual((await mainGroup.state(aliceMember)).requiredRemoveDeviceIds, [bobDevice.id]);
+    assert.deepEqual(await refusal(await groupMessage(aliceMember, channelId, rawChannelKey, 1)), [400, 'KEY_ROTATION_REQUIRED']);
+    assert.equal((await request(`/api/channels/${channelId}/mls/group/commits?after=0`, { cookie: bob.cookie })).status, 404);
+    const bobLeftMain = await mainGroup.commit(aliceMember, { remove: [bobMember] });
+    assert.equal(bobLeftMain.response!.status, 201);
+    assert.equal(bobLeftMain.outcomes.get(bobDevice.id), 'gone');
+    const removalWrite = await groupMessage(aliceMember, channelId, mainGroup.key(2), 2, 'written while bob is out');
+    assert.equal(removalWrite.status, 201);
+    const removalMessage = await json<{ id: string }>(removalWrite);
+    // A file keeps the version of its message only while nobody left the group since.
+    const finalizeAttachment = async (messageId: string, keyVersion: number) => {
+      const reservation = {
+        idempotencyKey: randomUUID(),
+        messageId,
+        filenameEnc: Buffer.alloc(32, 0x5a).toString('base64'),
+        mimeType: 'application/octet-stream',
+      };
+      const reserved = await request('/api/files/uploads', { method: 'POST', cookie: alice.cookie, body: reservation });
+      assert.equal(reserved.status, 201);
+      const { uploadId } = await json<{ uploadId: string }>(reserved);
+      assert.equal((await request(`/api/files/uploads/${uploadId}/chunks/0`, {
+        method: 'PUT', cookie: alice.cookie, body: Buffer.alloc(16, 0x35),
+      })).status, 201);
+      return request(`/api/files/uploads/${uploadId}/finalize`, {
+        method: 'POST', cookie: alice.cookie,
+        body: signedAttachmentFinalizeBody({
+          uploadId,
+          messageId,
+          channelId,
+          authorId: alice.user.id,
+          deviceId: aliceDevice.id,
+          privateKey: aliceKeys.signingPrivateKey,
+          filenameEnc: reservation.filenameEnc,
+          mimeType: reservation.mimeType,
+          keyVersion,
+          chunkCount: 1,
+          wrappedKey: wrapKey(randomBytes(32), aliceKeys.identityKey),
+          cryptoManifest: {
+            version: 1,
+            algorithm: 'AES-256-GCM',
+            nonceStrategy: 'prefix-counter-be32',
+            noncePrefix: Buffer.alloc(8, 0x46).toString('base64'),
+            aadVersion: 1,
+            plaintextSize: 0,
+          },
+        }),
+      });
+    };
+    assert.deepEqual(await refusal(await finalizeAttachment(newerMessage.id, 1)), [400, 'KEY_ROTATION_REQUIRED']);
+
     const staleAuthorizationOverride = await request(
       `/api/workspaces/${workspace.id}/channels/${channelId}/permission-overrides/${memberRole.id}`,
       {
@@ -2802,22 +2650,21 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     assert.equal((await request(`/api/channels/${channelId}/messages`, { cookie: bob.cookie })).status, 200);
     assert.equal(await joinChannel(bobSocket, channelId), true);
 
-    const rotatedRecipientsResponse = await request(`/api/channels/${channelId}/key-recipients`, { cookie: alice.cookie });
-    assert.equal(rotatedRecipientsResponse.status, 200);
-    const rotatedRecipients = await json<{ recipients: Array<{ deviceId: string; identityKey: string }> }>(rotatedRecipientsResponse);
-    const rotatedChannelKey = randomBytes(32);
-    await distributeAndAcknowledgeChannelKey({
-      channelId,
-      version: 2,
-      rawKey: rotatedChannelKey,
-      senderCookie: alice.cookie,
-      senderKeys: aliceKeys,
-      recipients: rotatedRecipients.recipients,
-      acknowledgements: [
-        { deviceId: aliceDevice.id, cookie: alice.cookie, keys: aliceKeys },
-        { deviceId: bobDevice.id, cookie: bob.cookie, keys: bobKeys },
-      ],
-    });
+    // Bob sees the channel again: his device publishes a package and a member
+    // adds it. It joins at the new version and never gets the roster or key
+    // of the version written while it was out.
+    assert.equal(await mainGroup.sync(bobMember), 'waiting');
+    assert.equal((await mainGroup.publish(bobMember)).status, 201);
+    const bobBackInMain = await mainGroup.commit(aliceMember, { add: [bobMember] });
+    assert.equal(bobBackInMain.response!.status, 201);
+    assert.equal(bobBackInMain.outcomes.get(bobDevice.id), 'current');
+    assert.equal(bobBackInMain.envelope.welcome === '', false);
+    assert.deepEqual((await json<Array<{ version: number }>>(await request(`/api/channels/${channelId}/mls/group/commits?after=0`, { cookie: bob.cookie })))
+      .map((record) => record.version), [1, 2, 3], 'the versions it was in, and the one that removed it');
+    assert.equal((await request(`/api/channels/${channelId}/mls/group/members?version=2`, { cookie: bob.cookie })).status, 404);
+    // An addition removes nobody, so the file of a version-2 message still finalizes.
+    assert.equal((await finalizeAttachment(removalMessage.id, 2)).status, 201);
+    const rotatedChannelKey = mainGroup.key(3);
 
     const staleChannelOverride = await request(
       `/api/workspaces/${workspace.id}/channels/${channelId}/permission-overrides/${memberRole.id}`,
@@ -2870,6 +2717,8 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
         bobKeys.signingPrivateKey,
         rotatedChannelKey,
         'must be denied by channel override',
+        undefined,
+        3,
       ).body,
     });
     assert.equal(deniedSend.status, 403);
@@ -2984,7 +2833,7 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     assert.equal(
       workspaceAccessRevokedPayload.channelIds.includes(keyOnlyChannel.id),
       true,
-      'historical wrapped-key delivery is sufficient proof that the removed member knew the channel',
+      'membership in the channel\'s group is sufficient proof that the removed member knew the channel',
     );
     const recipientsAfterRemovalResponse = await request(`/api/channels/${channelId}/key-recipients`, { cookie: alice.cookie });
     assert.equal(recipientsAfterRemovalResponse.status, 200);
@@ -2993,15 +2842,11 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     }>(recipientsAfterRemovalResponse);
     assert.equal(recipientsAfterRemoval.recipients.some((recipient) => recipient.deviceId === bobDevice.id), false);
     assert.equal(recipientsAfterRemoval.recipients.some((recipient) => recipient.deviceId === attachmentOnlyDevice.id), false);
-    await distributeAndAcknowledgeChannelKey({
-      channelId,
-      version: 3,
-      rawKey: randomBytes(32),
-      senderCookie: alice.cookie,
-      senderKeys: aliceKeys,
-      recipients: recipientsAfterRemoval.recipients,
-      acknowledgements: [{ deviceId: aliceDevice.id, cookie: alice.cookie, keys: aliceKeys }],
-    });
+    // The device of the member who left is removed by the next commit.
+    assert.deepEqual((await mainGroup.state(aliceMember)).requiredRemoveDeviceIds, [bobDevice.id]);
+    const bobRemovedFromMain = await mainGroup.commit(aliceMember, { remove: [bobMember] });
+    assert.equal(bobRemovedFromMain.response!.status, 201);
+    assert.equal((await groupMessage(aliceMember, channelId, mainGroup.key(4), 4)).status, 201);
     assert.equal((await request(`/api/devices/${bobDevice.id}`, {
       method: 'DELETE', cookie: bob.cookie,
     })).status, 200);
@@ -3011,7 +2856,7 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     assert.equal(
       afterFormerMemberRevoke.rotationRequired,
       false,
-      'revoking a former member device must not stale the current epoch',
+      'revoking a device that already left the group requires no commit',
     );
     const historicalIds = encodeURIComponent([bobDevice.id, attachmentOnlyDevice.id, randomUUID()].join(','));
     const historicalDirectoryResponse = await request(
@@ -3040,28 +2885,23 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     assert.equal(legacyDirectory.some((device) => device.deviceId === aliceDevice.id), true);
     assert.equal(legacyDirectory.some((device) => device.deviceId === bobDevice.id), true);
     assert.equal(legacyDirectory.some((device) => device.deviceId === attachmentOnlyDevice.id), true);
-    const currentKeyDeliveries = await json<Array<{ version: number; epochStatus: string }>>(
-      await request(`/api/channels/${channelId}/keys?scope=current`, { cookie: alice.cookie }),
+    // Group versions are read from the commit log in bounded pages; the
+    // per-device delivery list (kept for earlier history) has nothing for them.
+    const firstPage = await json<Array<{ version: number }>>(
+      await request(`/api/channels/${channelId}/mls/group/commits?after=0&limit=2`, { cookie: alice.cookie }),
     );
-    assert.equal(currentKeyDeliveries.length > 0, true);
-    assert.equal(currentKeyDeliveries.every((delivery) => delivery.version === 3 && delivery.epochStatus === 'active'), true);
+    assert.deepEqual(firstPage.map((record) => record.version), [1, 2]);
+    const secondPage = await json<Array<{ version: number }>>(
+      await request(`/api/channels/${channelId}/mls/group/commits?after=2&limit=16`, { cookie: alice.cookie }),
+    );
+    assert.deepEqual(secondPage.map((record) => record.version), [3, 4]);
+    assert.equal((await request(`/api/channels/${channelId}/mls/group/commits?after=0&limit=17`, { cookie: alice.cookie })).status, 400);
+    assert.equal((await request(`/api/channels/${channelId}/mls/group/commits?after=not-a-version`, { cookie: alice.cookie })).status, 400);
+    assert.equal(await mainGroup.sync(aliceMember), 'current');
     const legacyKeyResponse = await request(`/api/channels/${channelId}/keys`, { cookie: alice.cookie });
     assert.equal(legacyKeyResponse.headers.get('deprecation'), 'true');
-    const legacyKeyDeliveries = await json<Array<{ version: number; epochStatus: string }>>(legacyKeyResponse);
-    assert.equal(legacyKeyDeliveries.some((delivery) => delivery.version === 1), true);
-    assert.equal(legacyKeyDeliveries.some((delivery) => delivery.version === 2), true);
-    assert.equal(legacyKeyDeliveries.some((delivery) => delivery.version === 3), true);
-    const retiredKeyDeliveries = await json<Array<{ version: number; epochStatus: string }>>(
-      await request(`/api/channels/${channelId}/keys?version=2`, { cookie: alice.cookie }),
-    );
-    assert.equal(retiredKeyDeliveries.length > 0, true);
-    assert.equal(retiredKeyDeliveries.every((delivery) => delivery.version === 2 && delivery.epochStatus === 'retired'), true);
-    const batchedHistoricalDeliveries = await json<Array<{ version: number; epochStatus: string }>>(
-      await request(`/api/channels/${channelId}/keys?versions=1,2`, { cookie: alice.cookie }),
-    );
-    assert.equal(batchedHistoricalDeliveries.some((delivery) => delivery.version === 1), true);
-    assert.equal(batchedHistoricalDeliveries.some((delivery) => delivery.version === 2), true);
-    assert.equal(batchedHistoricalDeliveries.every((delivery) => [1, 2].includes(delivery.version)), true);
+    assert.deepEqual(await json(legacyKeyResponse), []);
+    assert.deepEqual(await json(await request(`/api/channels/${channelId}/keys?versions=1,2`, { cookie: alice.cookie })), []);
     assert.equal((await request(`/api/channels/${channelId}/keys?versions=1,1`, {
       cookie: alice.cookie,
     })).status, 400);
@@ -3187,19 +3027,15 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     const recipients = await json<{ recipients: Array<{ deviceId: string; identityKey: string }> }>(
       await request(`/api/channels/${forum.id}/key-recipients`, { cookie: owner.cookie }),
     );
-    const forumKey = randomBytes(32);
-    await distributeAndAcknowledgeChannelKey({
-      channelId: forum.id,
-      version: 1,
-      rawKey: forumKey,
-      senderCookie: owner.cookie,
-      senderKeys: ownerKeys,
-      recipients: recipients.recipients,
-      acknowledgements: [
-        { deviceId: ownerDevice.id, cookie: owner.cookie, keys: ownerKeys },
-        { deviceId: memberDevice.id, cookie: member.cookie, keys: memberKeys },
-      ],
-    });
+    assert.deepEqual(recipients.recipients.map((recipient) => recipient.deviceId).sort(), [ownerDevice.id, memberDevice.id].sort());
+    const forumGroup = new ChannelGroup(forum.id);
+    const forumGenesis = await forumGroup.create(
+      asGroupMember(owner.cookie, owner.user.id, ownerKeys, ownerDevice),
+      [asGroupMember(member.cookie, member.user.id, memberKeys, memberDevice)],
+    );
+    assert.equal(forumGenesis.response!.status, 201);
+    assert.equal(forumGenesis.outcomes.get(memberDevice.id), 'current');
+    const forumKey = forumGroup.key(1);
     const asMember = (input: Omit<Parameters<typeof encryptedForumEvent>[0], 'channelId' | 'authorId' | 'deviceId' | 'privateKey' | 'key'>) => (
       encryptedForumEvent({ ...input, channelId: forum.id, authorId: member.user.id, deviceId: memberDevice.id, privateKey: memberKeys.signingPrivateKey, key: forumKey })
     );
@@ -3834,6 +3670,127 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
       assert.equal((await postMessage(b1, channelId, randomBytes(32), 2)).status, 201);
     });
 
+    it('lets a device start over only after its rejoin, or a manager only after a stalled change, has waited', async () => {
+      const { db } = await import('../db/index.js');
+      const ownerMember = asGroupMember(owner.cookie, owner.user.id, o1.keys, o1);
+      const bobMember = asGroupMember(bob.cookie, bob.user.id, b1.keys, b1);
+      const carolMember = asGroupMember(carol.cookie, carol.user.id, c1.keys, c1);
+
+      // (b) A member that lost its group asked to be added again, and nobody
+      // re-added it for 30 minutes although they could have.
+      const rejoinChannel = await groupChannel('rejoin-wait');
+      const rejoinGroup = new ChannelGroup(rejoinChannel);
+      assert.equal((await rejoinGroup.create(ownerMember, [bobMember, carolMember])).response!.status, 201);
+      rejoinGroup.local.delete(c1.id);
+      assert.equal((await rejoinGroup.publish(carolMember, { rejoin: true, material: await earlierMemberPackage(c1.id, 3_600n) })).status, 201);
+      let restart = await rejoinGroup.create(carolMember, [], { freshStart: true });
+      assert.deepEqual(await refusal(restart.response!), [409, 'KEY_FRESH_START_NOT_REQUIRED']);
+      assert.equal((await rejoinGroup.state(carolMember)).historyRecoveryRequired, false);
+      await db.execute(sql`update mls_rejoin_requests set requested_at = requested_at - interval '31 minutes' where channel_id = ${rejoinChannel}`);
+      await db.execute(sql`update mls_member_packages set created_at = created_at - interval '31 minutes' where channel_id = ${rejoinChannel}`);
+      assert.equal((await rejoinGroup.state(carolMember)).historyRecoveryRequired, true);
+      assert.equal((await rejoinGroup.state(bobMember)).historyRecoveryRequired, false, 'a usable member keeps committing instead');
+      restart = await rejoinGroup.create(carolMember, [], { freshStart: true });
+      assert.equal(restart.response!.status, 201);
+      assert.deepEqual([restart.outcomes.get(o1.id), restart.outcomes.get(b1.id)], ['removed', 'removed'],
+        'the other devices see the group replaced and leave it');
+      assert.equal(await rejoinGroup.sync(bobMember), 'waiting');
+      assert.equal((await rejoinGroup.publish(bobMember)).status, 201);
+      const bobBack = await rejoinGroup.commit(carolMember, { add: [bobMember] });
+      assert.equal(bobBack.response!.status, 201);
+      assert.equal(bobBack.outcomes.get(b1.id), 'current');
+      assert.equal((await groupMessage(bobMember, rejoinChannel, rejoinGroup.key(), rejoinGroup.version)).status, 201);
+
+      // (c) A manager outside the group may start over once a change nobody
+      // committed has waited 15 minutes; an ordinary member never on that ground.
+      const carolLogin = await request('/api/auth/login', {
+        method: 'POST', body: { email: 'group-carol@example.test', password: carol.password },
+      });
+      assert.equal(carolLogin.status, 200);
+      const carolCookie = carolLogin.headers.get('set-cookie')!.split(';', 1)[0];
+      const c2Keys = deviceFixture();
+      const c2 = await registerDevice({ ...carol, cookie: carolCookie }, c2Keys, 'C2');
+      const carolSecond = asGroupMember(carolCookie, carol.user.id, c2Keys, c2);
+      const stallChannel = await groupChannel('stalled-change');
+      const stallGroup = new ChannelGroup(stallChannel);
+      assert.equal((await stallGroup.create(bobMember, [carolMember])).response!.status, 201);
+      assert.equal((await stallGroup.publish(carolSecond, { material: await earlierMemberPackage(c2.id, 3_600n) })).status, 201);
+      assert.equal((await stallGroup.publish(ownerMember, { material: await earlierMemberPackage(o1.id, 3_600n) })).status, 201);
+      let managerRestart = await stallGroup.create(ownerMember, [carolSecond], { freshStart: true });
+      assert.deepEqual(await refusal(managerRestart.response!), [409, 'KEY_FRESH_START_NOT_REQUIRED']);
+      await db.execute(sql`update mls_member_packages set created_at = created_at - interval '16 minutes' where channel_id = ${stallChannel}`);
+      await db.execute(sql`update channel_key_epochs set created_at = created_at - interval '16 minutes'
+        where channel_id = ${stallChannel} and status = 'active'`);
+      assert.equal((await stallGroup.state(carolSecond)).historyRecoveryRequired, false);
+      assert.equal((await stallGroup.state(ownerMember)).historyRecoveryRequired, true);
+      const memberRestart = await stallGroup.create(carolSecond, [], { freshStart: true, post: false });
+      assert.deepEqual(await refusal(await stallGroup.send(carolSecond, memberRestart.envelope, true)), [409, 'KEY_FRESH_START_NOT_REQUIRED']);
+      managerRestart = await stallGroup.create(ownerMember, [carolSecond], { freshStart: true });
+      assert.equal(managerRestart.response!.status, 201);
+      assert.deepEqual(
+        [managerRestart.outcomes.get(c2.id), managerRestart.outcomes.get(b1.id), managerRestart.outcomes.get(c1.id)],
+        ['current', 'removed', 'removed'],
+      );
+      assert.equal((await groupMessage(carolSecond, stallChannel, stallGroup.key(), stallGroup.version)).status, 201);
+    });
+
+    it('backs up history keys only for versions at which a device of the user was in the group', async () => {
+      const { db } = await import('../db/index.js');
+      const { directoryHead } = await import('../services/directory.service.js');
+      const channelId = await groupChannel('recovery-history', true);
+      assert.equal((await request(`/api/channels/${channelId}/members`, {
+        method: 'POST', cookie: owner.cookie, body: { userId: bob.user.id },
+      })).status, 201);
+      const ownerMember = asGroupMember(owner.cookie, owner.user.id, o1.keys, o1);
+      const bobMember = asGroupMember(bob.cookie, bob.user.id, b1.keys, b1);
+      const history = new ChannelGroup(channelId);
+      assert.equal((await history.create(ownerMember, [bobMember])).response!.status, 201);
+      // Bob leaves for version 2 and is added again at version 3.
+      assert.equal((await request(`/api/channels/${channelId}/members/${bob.user.id}`, { method: 'DELETE', cookie: owner.cookie })).status, 200);
+      assert.equal((await history.commit(ownerMember, { remove: [bobMember] })).response!.status, 201);
+      assert.equal((await request(`/api/channels/${channelId}/members`, {
+        method: 'POST', cookie: owner.cookie, body: { userId: bob.user.id },
+      })).status, 201);
+      assert.equal((await history.publish(bobMember)).status, 201);
+      const readded = await history.commit(ownerMember, { add: [bobMember] });
+      assert.equal(readded.response!.status, 201);
+      assert.equal(readded.outcomes.get(b1.id), 'current');
+      assert.equal(history.version, 3);
+
+      // An opaque archive: the server stores it and checks only who may add to it.
+      const generation = randomUUID();
+      const signingKey = JSON.stringify(generateKeyPairSync('ec', { namedCurve: 'prime256v1' }).publicKey.export({ format: 'jwk' }));
+      const head = await directoryHead(db, bob.user.id);
+      const decision = { kind: 'recovery-config' as const, deviceId: generation, identityKey: signingKey, actorDeviceId: b1.id };
+      assert.equal((await request('/api/recovery/configure', {
+        method: 'POST',
+        cookie: bob.cookie,
+        body: {
+          generation,
+          signingKey,
+          encryptedSecret: randomBytes(96).toString('base64'),
+          accessTokenHash: randomBytes(32).toString('hex'),
+          head,
+          signature: signDevicePayload(b1.keys, serializeDeviceDecision(head, decision)),
+        },
+      })).status, 200);
+      const candidates = await json<{ candidates: Array<{ channelId: string; version: number }> }>(
+        await request('/api/recovery/candidates', { cookie: bob.cookie }),
+      );
+      assert.deepEqual(candidates.candidates.filter((entry) => entry.channelId === channelId).map((entry) => entry.version), [1, 3]);
+      const backup = (version: number, keyCommitment: string) => request('/api/recovery/keys', {
+        method: 'POST',
+        cookie: bob.cookie,
+        body: { generation, channelId, version, keyCommitment, ciphertext: randomBytes(96).toString('base64') },
+      });
+      assert.equal((await backup(1, keyCommitmentOf(history.key(1)))).status, 200);
+      assert.equal((await backup(2, keyCommitmentOf(history.key(2)))).status, 403, 'no device of the user was in the group at version 2');
+      assert.equal((await backup(3, keyCommitmentOf(history.key(2)))).status, 403, 'the commitment must name the key of that version');
+      assert.equal((await backup(3, keyCommitmentOf(history.key(3)))).status, 200);
+      const stored = await json<{ keys: Array<{ channelId: string; version: number }> }>(await request('/api/recovery/keys', { cookie: bob.cookie }));
+      assert.deepEqual(stored.keys.filter((entry) => entry.channelId === channelId).map((entry) => entry.version), [1, 3]);
+    });
+
     // === helpers ===
 
     async function groupDevice(account: Account, name: string): Promise<GroupDevice> {
@@ -4224,86 +4181,533 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     return device;
   }
 
-  async function proposeFixtureMls(input: { channelId: string; version: number; rawKey: Buffer; senderCookie: string; senderKeys: ReturnType<typeof deviceFixture>; recipients: Array<{deviceId: string;identityKey: string}>; fresh?: boolean; poisonWelcome?: boolean }) {
-    const crypto = await import('../../../client/src/services/' + 'mls-crypto.ts');
-    const state = await json<any>(await request(`/api/channels/${input.channelId}/key-recipients`, { cookie: input.senderCookie }));
-    const materials = new Map<string, Awaited<ReturnType<typeof crypto.generateEpochKeyPackage>>>();
-    const roster: GroupKeyPackage[] = [];
-    const sender = state.recipients.find((r: any) => JSON.parse(r.identityKey).signingKey.x === JSON.parse(input.senderKeys.identityKey).signingKey.x);
-    assert.ok(sender);
-    for (const recipient of state.recipients) {
-      const keys = fixtureKeys.get(JSON.parse(recipient.identityKey).signingKey.x); assert.ok(keys);
-      const material = await crypto.generateEpochKeyPackage(recipient.deviceId); materials.set(recipient.deviceId, material);
-      const pkg = { ...recipient, packageId: randomUUID(), keyPackage: material.publicPackage };
-      const signature = sign('sha256', Buffer.from(serializeGroupKeyPackage(input.channelId, input.version, pkg)), { key: keys.signingPrivateKey, dsaEncoding: 'ieee-p1363' }).toString('base64');
-      // These fixture endpoints include offline participants. Their protocol
-      // publication is exercised through the service; account-security's suite
-      // separately exercises package/session binding over HTTP.
-      await (await import('../services/mls.service.js')).publishKeyPackage(input.channelId, recipient.userId, recipient.deviceId, input.version, {...pkg, signature});
-      roster.push({...pkg, signature});
-    }
-    const parent = state.currentVersion && state.protocolVersion === 3 ? await json<any>(await request(`/api/channels/${input.channelId}/mls/epochs/${state.currentVersion}`, {cookie: input.senderCookie})) : null;
-    const context = {channelId: input.channelId, version: input.version, previousVersion: state.currentVersion, previousTranscript: parent?.transcript ?? '0'.repeat(64)};
-    const groupId = JSON.stringify(['alparts', input.channelId, input.version, context.previousTranscript]);
-    const group = await crypto.createEpochGroup(groupId, materials.get(sender.deviceId)!, roster.map(p => p.keyPackage));
-    input.rawKey.set(group.raw);
-    const keyCommitment = createHash('sha256').update(input.rawKey).digest('base64url');
-    const { db } = await import('../db/index.js'); const {directoryHead} = await import('../services/directory.service.js');
-    const directoryHeads = await Promise.all([...new Set(roster.map(p => p.userId))].sort().map(id => directoryHead(db, id)));
-    const unsigned = {...context, keyCommitment, roster, directoryHeads, distributorDeviceId: sender.deviceId, welcome: input.poisonWelcome ? Buffer.from('invalid MLS welcome').toString('base64') : group.welcome, commit: group.commit};
-    const epoch: MlsEpoch = {...unsigned, signature: sign('sha256',Buffer.from(serializeMlsEpoch(unsigned)),{key:input.senderKeys.signingPrivateKey,dsaEncoding:'ieee-p1363'}).toString('base64')};
-    const transcript = createHash('sha256').update(serializeMlsEpoch(epoch)).digest('hex');
-    const encryptedKey = Buffer.from(JSON.stringify({mls:1,version:input.version,transcript})).toString('base64');
-    const keys = roster.map(recipient => ({deviceId:recipient.deviceId,encryptedKey,signature:sign('sha256',Buffer.from(serializeChannelKeyWrap({channelId:input.channelId,keyVersion:input.version,keyCommitment,recipientDeviceId:recipient.deviceId,encryptedKey})),{key:input.senderKeys.signingPrivateKey,dsaEncoding:'ieee-p1363'}).toString('base64')}));
-    const joined = new Map<string, Buffer>();
-    for(const member of roster) {
-      const key = fixtureKeys.get(JSON.parse(member.identityKey).signingKey.x)!;
-      if(input.poisonWelcome && member.deviceId !== sender.deviceId) {
-        await assert.rejects(crypto.joinEpochGroup(groupId,materials.get(member.deviceId)!,roster.map(p=>p.keyPackage),epoch.welcome));
-        continue;
-      }
-      const raw = member.deviceId === sender.deviceId ? group.raw : await crypto.joinEpochGroup(groupId,materials.get(member.deviceId)!,roster.map(p=>p.keyPackage),epoch.welcome);
-      assert.deepEqual(raw,group.raw); joined.set(key.encryptionPrivateKey.export({format:'jwk'}).n!,Buffer.from(raw));
-    }
-    joinedMlsKeys.set(encryptedKey,joined);
-    const freshStartSignature = input.fresh ? sign('sha256',Buffer.from(serializeChannelKeyFreshStart({channelId:input.channelId,keyVersion:input.version,keyCommitment,deviceId:sender.deviceId})),{key:input.senderKeys.signingPrivateKey,dsaEncoding:'ieee-p1363'}).toString('base64') : undefined;
-    const response = await request(`/api/channels/${input.channelId}/mls/epochs${input.fresh?'/fresh-start':''}`,{method:'POST',cookie:input.senderCookie,body:{epoch,keys,...(freshStartSignature?{freshStartSignature}:{})}});
-    assert.equal(response.status,201,await response.text());
-    return {keyCommitment,keys};
+  // === Continuous channel groups (group protocol 4), driven like clients ===
+  //
+  // Groups, commits and Welcomes are made by the client's adapter
+  // (packages/client/src/services/mls-crypto.ts) and checked with the
+  // client's envelope rules (mls-group-model.ts); every exchange goes through
+  // the server's HTTP routes with the device's own session.
+
+  /** A device and the session bound to it. */
+  interface MemberDevice {
+    id: string;
+    userId: string;
+    identityKey: string;
+    keys: ReturnType<typeof deviceFixture>;
+    cookie: string;
   }
 
-  async function distributeAndAcknowledgeChannelKey(input: {
-    channelId: string;
-    version: number;
-    rawKey: Buffer;
-    senderCookie: string;
-    senderKeys: ReturnType<typeof deviceFixture>;
-    recipients: Array<{ deviceId: string; identityKey: string }>;
-    acknowledgements: Array<{
-      deviceId: string;
-      cookie: string;
-      keys: ReturnType<typeof deviceFixture>;
-    }>;
-  }) {
-    const {keyCommitment,keys} = await proposeFixtureMls(input);
+  interface MemberPackageMaterial {
+    publicPackage: string;
+    privatePackage: { initPrivateKey: string; hpkePrivateKey: string; signaturePrivateKey: string };
+  }
 
-    for (const acknowledgement of input.acknowledgements) {
-      const wrapped = keys.find((key) => key.deviceId === acknowledgement.deviceId);
-      assert.ok(wrapped, `missing wrap for ${acknowledgement.deviceId}`);
-      const unwrapped = unwrapKey(wrapped.encryptedKey, acknowledgement.keys.encryptionPrivateKey);
-      assert.deepEqual(unwrapped, input.rawKey);
-      assert.equal(createHash('sha256').update(unwrapped).digest('base64url'), keyCommitment);
-      await acknowledgeChannelKeyDelivery({
-        channelId: input.channelId,
-        version: input.version,
-        keyCommitment,
-        encryptedKey: wrapped.encryptedKey,
-        deviceId: acknowledgement.deviceId,
-        cookie: acknowledgement.cookie,
-        keys: acknowledgement.keys,
+  interface ClientCommitResult {
+    newState: ClientState;
+    commit: string;
+    welcome: string;
+  }
+
+  interface ClientDecodedCommit {
+    groupId: string;
+    epoch: number;
+    senderLeafIndex: number;
+    addPackages: string[];
+    removedLeaves: number[];
+    hasPath: boolean;
+  }
+
+  /** What one device's client holds for a channel (`mls-group:{channelId}`). */
+  interface LocalGroupView {
+    genesisVersion: number;
+    groupId: string;
+    version: number;
+    epoch: number;
+    transcript: string;
+    members: MlsGroupMember[];
+    directoryHeads: DirectoryHead[];
+    /** Encoded like the client stores it, so a refused commit leaves it untouched. */
+    state: string;
+  }
+
+  interface ClientGroupModules {
+    mls: {
+      generateMemberPackage(deviceId: string): Promise<MemberPackageMaterial>;
+      readMemberPackage(encoded: string): { identity: string | null; signatureKey: string };
+      groupLeaves(state: ClientState): Array<{ leafIndex: number; deviceId: string; signatureKey: string }>;
+      treeAuthMap(state: ClientState, excludeLeaves?: readonly number[]): Map<string, string>;
+      createChannelGroup(
+        groupId: string,
+        own: MemberPackageMaterial,
+        others: readonly string[],
+        authMap: ReadonlyMap<string, string>,
+      ): Promise<ClientCommitResult>;
+      commitChannelGroup(
+        state: ClientState,
+        change: { add: readonly string[]; removeLeaves: readonly number[]; authMap: ReadonlyMap<string, string> },
+      ): Promise<ClientCommitResult>;
+      decodeChannelCommit(encoded: string): ClientDecodedCommit;
+      processChannelCommit(
+        state: ClientState,
+        encoded: string,
+        expected: { addPackages: readonly string[]; removedLeaves: readonly number[] },
+        authMap: ReadonlyMap<string, string>,
+      ): Promise<{ newState: ClientState }>;
+      joinChannelGroup(welcome: string, own: MemberPackageMaterial, authMap: ReadonlyMap<string, string>): Promise<ClientState>;
+      assertChannelGroup(state: ClientState, groupId: string, epoch: number): void;
+      exportChannelKey(state: ClientState, groupId: string, version: number): Promise<Uint8Array>;
+      encodeChannelGroupState(state: ClientState): string;
+      decodeChannelGroupState(encoded: string): ClientState;
+    };
+    model: {
+      assertEnvelopeStructure(channelId: string, envelope: MlsGroupCommit, decoded: ClientDecodedCommit, previous: LocalGroupView | null): void;
+      assertTreeMatchesRoster(
+        leaves: ReadonlyArray<{ leafIndex: number; deviceId: string; signatureKey: string }>,
+        members: readonly MlsGroupMember[],
+        authMap: ReadonlyMap<string, string>,
+      ): void;
+      nextRoster(
+        current: readonly MlsGroupMember[],
+        removed: readonly string[],
+        added: ReadonlyArray<Pick<MlsGroupMember, 'deviceId' | 'userId'>>,
+      ): MlsGroupMember[];
+      genesisRoster(added: ReadonlyArray<Pick<MlsGroupMember, 'deviceId' | 'userId'>>): MlsGroupMember[];
+      rosterUsers(members: ReadonlyArray<Pick<MlsGroupMember, 'userId'>>): string[];
+    };
+  }
+
+  let clientGroupModules: Promise<ClientGroupModules> | null = null;
+  function clientGroup(): Promise<ClientGroupModules> {
+    clientGroupModules ??= Promise.all([
+      import('../../../client/src/services/' + 'mls-crypto.ts'),
+      import('../../../client/src/services/' + 'mls-group-model.ts'),
+    ]).then(([mls, model]) => ({ mls, model }) as ClientGroupModules);
+    return clientGroupModules;
+  }
+
+  /** `device` as the server returned it at registration: its identity key is the stored form. */
+  function asGroupMember(
+    cookie: string,
+    userId: string,
+    keys: ReturnType<typeof deviceFixture>,
+    device: { id: string; identityKey: string },
+  ): MemberDevice {
+    return { id: device.id, userId, identityKey: device.identityKey, keys, cookie };
+  }
+
+  /** How a device's sync ended: up to date, not added yet, removed, unable to use what it got, or without access. */
+  type GroupSyncOutcome = 'current' | 'waiting' | 'removed' | 'unreadable' | 'gone';
+
+  interface GroupSubmission {
+    envelope: MlsGroupCommit;
+    committer: MemberDevice;
+    raw: Buffer;
+    local: LocalGroupView;
+    freshStart: boolean;
+    response: Response | null;
+    /** How every other device's sync ended after the commit was accepted. */
+    outcomes: Map<string, GroupSyncOutcome>;
+  }
+
+  /**
+   * One channel's continuous group as its devices' clients see it. Every
+   * device keeps its own local view, catches up from the server's commit log
+   * and joins from the Welcome of the envelope that added it.
+   */
+  class ChannelGroup {
+    readonly devices = new Map<string, MemberDevice>();
+    readonly local = new Map<string, LocalGroupView>();
+    /** The package each device last published and that no commit used yet. */
+    readonly published = new Map<string, { packageId: string; material: MemberPackageMaterial; signature: string }>();
+    /** Private material of every published package, by package id, for joining. */
+    readonly materials = new Map<string, MemberPackageMaterial>();
+    /** Devices that do not sync after a commit until a test syncs them. */
+    readonly offline = new Set<string>();
+    /** The key of each version; every device that derives it must agree. */
+    readonly keys = new Map<number, Buffer>();
+    /** Latest accepted version. */
+    version = 0;
+
+    constructor(readonly channelId: string) {}
+
+    key(version = this.version): Buffer {
+      const key = this.keys.get(version);
+      assert.ok(key, `no device derived the key of version ${version}`);
+      return key;
+    }
+
+    async state(device: MemberDevice): Promise<any> {
+      const response = await request(`/api/channels/${this.channelId}/key-recipients`, { cookie: device.cookie });
+      assert.equal(response.status, 200);
+      return response.json();
+    }
+
+    /** POST /mls/group/packages with a package made by the client (or a given one). */
+    async publish(device: MemberDevice, options: { rejoin?: boolean; material?: MemberPackageMaterial } = {}) {
+      const { mls } = await clientGroup();
+      this.devices.set(device.id, device);
+      const material = options.material ?? await mls.generateMemberPackage(device.id);
+      const packageId = randomUUID();
+      const signature = signDevicePayload(device.keys, serializeMlsMemberPackage(this.channelId, {
+        deviceId: device.id, packageId, keyPackage: material.publicPackage,
+      }));
+      const response = await request(`/api/channels/${this.channelId}/mls/group/packages`, {
+        method: 'POST',
+        cookie: device.cookie,
+        body: { packageId, keyPackage: material.publicPackage, signature, ...(options.rejoin ? { rejoin: true } : {}) },
+      });
+      if (response.status === 201 || response.status === 200) {
+        this.published.set(device.id, { packageId, material, signature });
+        this.materials.set(packageId, material);
+      }
+      return response;
+    }
+
+    /** The entry a commit adds for this device's published package. */
+    entry(device: MemberDevice): MlsMemberPackage {
+      const pkg = this.published.get(device.id);
+      assert.ok(pkg, `${device.id} has no unused package`);
+      return {
+        deviceId: device.id,
+        userId: device.userId,
+        identityKey: device.identityKey,
+        packageId: pkg.packageId,
+        keyPackage: pkg.material.publicPackage,
+        signature: pkg.signature,
+      };
+    }
+
+    /** Entries to add: as GET /mls/group/packages lists them, which must be what each device published. */
+    async additions(viewer: MemberDevice, devices: readonly MemberDevice[]): Promise<MlsMemberPackage[]> {
+      if (devices.length === 0) return [];
+      const response = await request(`/api/channels/${this.channelId}/mls/group/packages`, { cookie: viewer.cookie });
+      assert.equal(response.status, 200);
+      const listed = await json<MlsMemberPackage[]>(response);
+      return devices.map((device) => {
+        this.devices.set(device.id, device);
+        const own = this.entry(device);
+        const entry = listed.find((candidate) => candidate.deviceId === device.id);
+        if (entry) assert.deepEqual(entry, own);
+        return entry ?? own;
       });
     }
-    return { keyCommitment, keys };
+
+    /**
+     * A new group: the creator at leaf 0 and the given devices added by its
+     * genesis commit. Devices without an unused package publish one first.
+     */
+    async create(
+      creator: MemberDevice,
+      others: readonly MemberDevice[] = [],
+      options: { freshStart?: boolean; post?: boolean; welcome?: (welcome: string) => string } = {},
+    ): Promise<GroupSubmission> {
+      const { mls, model } = await clientGroup();
+      for (const device of [creator, ...others]) {
+        this.devices.set(device.id, device);
+        if (!this.published.has(device.id)) assert.equal((await this.publish(device)).status, 201);
+      }
+      const state = await this.state(creator);
+      const version: number = state.nextVersion;
+      const added = await this.additions(creator, [creator, ...others]);
+      const authMap = new Map(added.map((entry) => [entry.deviceId, mls.readMemberPackage(entry.keyPackage).signatureKey]));
+      const groupId = mlsGroupId(this.channelId, version);
+      const result = await mls.createChannelGroup(
+        groupId,
+        this.published.get(creator.id)!.material,
+        added.slice(1).map((entry) => entry.keyPackage),
+        authMap,
+      );
+      const members = model.genesisRoster(added);
+      mls.assertChannelGroup(result.newState, groupId, 1);
+      model.assertTreeMatchesRoster(mls.groupLeaves(result.newState), members, authMap);
+      return this.submit(creator, result, {
+        channelId: this.channelId,
+        version,
+        previousVersion: state.currentVersion,
+        previousTranscript: state.group?.transcript ?? '0'.repeat(64),
+        groupId,
+        epoch: 1,
+        kind: 'create',
+        welcome: options.welcome ? options.welcome(result.welcome) : result.welcome,
+        added,
+        removed: [],
+        members,
+      }, version, options);
+    }
+
+    /** Add, remove (a removed and re-added device rejoins) or, with neither, refresh the group key. */
+    async commit(
+      committer: MemberDevice,
+      change: { add?: readonly MemberDevice[]; remove?: readonly MemberDevice[] } = {},
+      options: { post?: boolean } = {},
+    ): Promise<GroupSubmission> {
+      const { mls, model } = await clientGroup();
+      assert.equal(await this.sync(committer), 'current');
+      const local = this.local.get(committer.id)!;
+      const added = await this.additions(committer, change.add ?? []);
+      const removed = (change.remove ?? []).map((device) => device.id).sort();
+      const leafOf = new Map(local.members.map((member) => [member.deviceId, member.leafIndex]));
+      const removeLeaves = removed.map((deviceId) => {
+        const leaf = leafOf.get(deviceId);
+        assert.notEqual(leaf, undefined, `${deviceId} is not in the group`);
+        return leaf!;
+      });
+      const state = mls.decodeChannelGroupState(local.state);
+      const authMap = mls.treeAuthMap(state, removeLeaves);
+      for (const entry of added) authMap.set(entry.deviceId, mls.readMemberPackage(entry.keyPackage).signatureKey);
+      const result = await mls.commitChannelGroup(state, { add: added.map((entry) => entry.keyPackage), removeLeaves, authMap });
+      const members = model.nextRoster(local.members, removed, added);
+      mls.assertChannelGroup(result.newState, local.groupId, local.epoch + 1);
+      model.assertTreeMatchesRoster(mls.groupLeaves(result.newState), members, authMap);
+      return this.submit(committer, result, {
+        channelId: this.channelId,
+        version: local.version + 1,
+        previousVersion: local.version,
+        previousTranscript: local.transcript,
+        groupId: local.groupId,
+        epoch: local.epoch + 1,
+        kind: 'commit',
+        welcome: result.welcome,
+        added,
+        removed,
+        members,
+      }, local.genesisVersion, options);
+    }
+
+    /** Sign the envelope with the committer's device key and send it (unless `post: false`). */
+    private async submit(
+      committer: MemberDevice,
+      result: ClientCommitResult,
+      fields: Omit<MlsGroupCommit, 'keyCommitment' | 'commit' | 'directoryHeads' | 'committerDeviceId' | 'signature'>,
+      genesisVersion: number,
+      options: { freshStart?: boolean; post?: boolean },
+    ): Promise<GroupSubmission> {
+      const { mls, model } = await clientGroup();
+      const raw = Buffer.from(await mls.exportChannelKey(result.newState, fields.groupId, fields.version));
+      const { db } = await import('../db/index.js');
+      const { directoryHead } = await import('../services/directory.service.js');
+      const envelope = this.sign(committer, {
+        ...fields,
+        keyCommitment: keyCommitmentOf(raw),
+        commit: result.commit,
+        directoryHeads: await Promise.all(model.rosterUsers(fields.members).map((userId) => directoryHead(db, userId))),
+        committerDeviceId: committer.id,
+      });
+      const submission: GroupSubmission = {
+        envelope,
+        committer,
+        raw,
+        freshStart: Boolean(options.freshStart),
+        local: {
+          genesisVersion,
+          groupId: envelope.groupId,
+          version: envelope.version,
+          epoch: envelope.epoch,
+          transcript: groupTranscript(envelope),
+          members: envelope.members,
+          directoryHeads: envelope.directoryHeads,
+          state: mls.encodeChannelGroupState(result.newState),
+        },
+        response: null,
+        outcomes: new Map(),
+      };
+      if (options.post === false) return submission;
+      submission.response = await this.send(committer, envelope, submission.freshStart);
+      if (submission.response.status === 201) await this.accepted(submission);
+      return submission;
+    }
+
+    sign(committer: MemberDevice, unsigned: Omit<MlsGroupCommit, 'signature'>): MlsGroupCommit {
+      return { ...unsigned, signature: signDevicePayload(committer.keys, serializeMlsGroupCommit(unsigned)) };
+    }
+
+    send(committer: MemberDevice, envelope: MlsGroupCommit, freshStart = false): Promise<Response> {
+      const freshStartSignature = signDevicePayload(committer.keys, serializeChannelKeyFreshStart({
+        channelId: envelope.channelId, keyVersion: envelope.version, keyCommitment: envelope.keyCommitment, deviceId: committer.id,
+      }));
+      return request(`/api/channels/${envelope.channelId}/mls/group/${freshStart ? 'fresh-start' : 'commits'}`, {
+        method: 'POST',
+        cookie: committer.cookie,
+        body: freshStart ? { commit: envelope, freshStartSignature } : { commit: envelope },
+      });
+    }
+
+    /** The committer adopts its own state; every other online device syncs. */
+    async accepted(submission: GroupSubmission): Promise<void> {
+      const { envelope } = submission;
+      this.version = envelope.version;
+      this.recordKey(envelope.version, submission.raw);
+      this.local.set(submission.committer.id, submission.local);
+      for (const entry of envelope.added) this.published.delete(entry.deviceId);
+      for (const device of this.devices.values()) {
+        if (device.id === submission.committer.id || this.offline.has(device.id)) continue;
+        if (!this.local.has(device.id) && !envelope.members.some((member) => member.deviceId === device.id)) continue;
+        submission.outcomes.set(device.id, await this.sync(device));
+      }
+    }
+
+    recordKey(version: number, raw: Buffer): void {
+      const known = this.keys.get(version);
+      if (known) assert.deepEqual(raw, known, `every device derives the same key for version ${version}`);
+      else this.keys.set(version, Buffer.from(raw));
+    }
+
+    /** One accepted envelope from the log, checked like a client checks it. */
+    async record(device: MemberDevice, version: number): Promise<{ version: number; transcript: string; envelope: MlsGroupCommit }> {
+      const response = await request(`/api/channels/${this.channelId}/mls/group/commits?after=${version - 1}&limit=1`, { cookie: device.cookie });
+      assert.equal(response.status, 200);
+      const records = await json<Array<{ version: number; transcript: string; envelope: MlsGroupCommit }>>(response);
+      assert.deepEqual(records.map((record) => record.version), [version]);
+      this.checkRecord(records[0]);
+      return records[0];
+    }
+
+    checkRecord(record: { version: number; transcript: string; envelope: MlsGroupCommit }): void {
+      const { signature, ...unsigned } = record.envelope;
+      assert.equal(record.envelope.version, record.version);
+      assert.equal(record.transcript, groupTranscript(record.envelope));
+      const committer = this.devices.get(record.envelope.committerDeviceId);
+      assert.ok(committer, 'the committer is a device of this channel');
+      assert.equal(verifyDevicePayload(committer.identityKey, serializeMlsGroupCommit(unsigned), signature), true);
+    }
+
+    /** The signature key of a member package after checking who signed it. */
+    async verifiedPackage(entry: Pick<MlsMemberPackage, 'deviceId' | 'identityKey' | 'packageId' | 'keyPackage' | 'signature'>): Promise<string> {
+      const { mls } = await clientGroup();
+      assert.equal(verifyDevicePayload(entry.identityKey, serializeMlsMemberPackage(this.channelId, entry), entry.signature), true);
+      const known = this.devices.get(entry.deviceId);
+      if (known) assert.equal(entry.identityKey, known.identityKey);
+      const info = mls.readMemberPackage(entry.keyPackage);
+      assert.equal(info.identity, entry.deviceId);
+      return info.signatureKey;
+    }
+
+    /**
+     * Join from the Welcome of the envelope that added the device, with the
+     * roster of that version (GET /mls/group/members). False when the
+     * Welcome cannot be used: the client then asks to be added again.
+     */
+    async joinAt(device: MemberDevice, record: { version: number; transcript: string; envelope: MlsGroupCommit }): Promise<boolean> {
+      const { mls, model } = await clientGroup();
+      const { envelope } = record;
+      model.assertEnvelopeStructure(this.channelId, envelope, mls.decodeChannelCommit(envelope.commit), null);
+      const index = envelope.added.findIndex((entry) => entry.deviceId === device.id);
+      assert.ok(index >= 0, 'the envelope adds this device');
+      // The creator has no Welcome; without its own state it starts over.
+      if (envelope.kind === 'create' && index === 0) return false;
+      const material = this.materials.get(envelope.added[index].packageId);
+      assert.ok(material, 'the device keeps the package it was added with');
+      const response = await request(`/api/channels/${this.channelId}/mls/group/members?version=${envelope.version}`, { cookie: device.cookie });
+      assert.equal(response.status, 200);
+      const rows = await json<Array<MlsMemberPackage & { leafIndex: number }>>(response);
+      assert.deepEqual(
+        rows.map((row) => [row.deviceId, row.userId, row.leafIndex]),
+        envelope.members.map((member) => [member.deviceId, member.userId, member.leafIndex]),
+      );
+      const authMap = new Map<string, string>();
+      for (const row of rows) authMap.set(row.deviceId, await this.verifiedPackage(row));
+      let state: ClientState;
+      try {
+        state = await mls.joinChannelGroup(envelope.welcome, material, authMap);
+        mls.assertChannelGroup(state, envelope.groupId, envelope.epoch);
+        model.assertTreeMatchesRoster(mls.groupLeaves(state), envelope.members, authMap);
+      } catch {
+        return false;
+      }
+      const raw = Buffer.from(await mls.exportChannelKey(state, envelope.groupId, envelope.version));
+      assert.equal(keyCommitmentOf(raw), envelope.keyCommitment);
+      this.recordKey(envelope.version, raw);
+      this.local.set(device.id, {
+        genesisVersion: envelope.version - envelope.epoch + 1,
+        groupId: envelope.groupId,
+        version: envelope.version,
+        epoch: envelope.epoch,
+        transcript: record.transcript,
+        members: envelope.members,
+        directoryHeads: envelope.directoryHeads,
+        state: mls.encodeChannelGroupState(state),
+      });
+      return true;
+    }
+
+    /** What a client does on reconnect: join if it was added, then process the log in order. */
+    async sync(device: MemberDevice): Promise<GroupSyncOutcome> {
+      const { mls, model } = await clientGroup();
+      this.devices.set(device.id, device);
+      for (let round = 0; round < 64; round++) {
+        const start = this.local.get(device.id);
+        if (!start) {
+          const response = await request(`/api/channels/${this.channelId}/key-recipients`, { cookie: device.cookie });
+          if (response.status !== 200) return 'gone';
+          const state = await json<any>(response);
+          if (!state.ownMembership) return 'waiting';
+          if (!await this.joinAt(device, await this.record(device, state.ownMembership.joinedVersion))) return 'unreadable';
+          continue;
+        }
+        const response = await request(`/api/channels/${this.channelId}/mls/group/commits?after=${start.version}`, { cookie: device.cookie });
+        if (response.status === 401 || response.status === 404) {
+          this.local.delete(device.id);
+          return 'gone';
+        }
+        assert.equal(response.status, 200);
+        const records = await json<Array<{ version: number; transcript: string; envelope: MlsGroupCommit }>>(response);
+        if (records.length === 0) return 'current';
+        for (const record of records) {
+          const local = this.local.get(device.id)!;
+          this.checkRecord(record);
+          assert.equal(record.version, local.version + 1);
+          const { envelope } = record;
+          const decoded = mls.decodeChannelCommit(envelope.commit);
+          model.assertEnvelopeStructure(this.channelId, envelope, decoded, local);
+          if (envelope.kind === 'create' || envelope.removed.includes(device.id)) {
+            // Removed, or the group was replaced: keys already derived stay.
+            this.local.delete(device.id);
+            if (!envelope.added.some((entry) => entry.deviceId === device.id)) return 'removed';
+            if (!await this.joinAt(device, record)) return 'unreadable';
+            break;
+          }
+          const state = mls.decodeChannelGroupState(local.state);
+          const authMap = mls.treeAuthMap(state, decoded.removedLeaves);
+          for (const entry of envelope.added) authMap.set(entry.deviceId, await this.verifiedPackage(entry));
+          let next: ClientState;
+          try {
+            next = (await mls.processChannelCommit(state, envelope.commit, decoded, authMap)).newState;
+            mls.assertChannelGroup(next, envelope.groupId, envelope.epoch);
+          } catch {
+            return 'unreadable';
+          }
+          model.assertTreeMatchesRoster(mls.groupLeaves(next), envelope.members, authMap);
+          const raw = Buffer.from(await mls.exportChannelKey(next, envelope.groupId, envelope.version));
+          assert.equal(keyCommitmentOf(raw), envelope.keyCommitment);
+          this.recordKey(envelope.version, raw);
+          this.local.set(device.id, {
+            genesisVersion: local.genesisVersion,
+            groupId: envelope.groupId,
+            version: envelope.version,
+            epoch: envelope.epoch,
+            transcript: record.transcript,
+            members: envelope.members,
+            directoryHeads: envelope.directoryHeads,
+            state: mls.encodeChannelGroupState(next),
+          });
+        }
+      }
+      throw new Error('the commit log did not end');
+    }
+  }
+
+  /** A message write at a key version, as POST /messages takes it. */
+  function groupMessage(device: MemberDevice, channelId: string, key: Buffer, keyVersion: number, text = 'group message') {
+    return request(`/api/channels/${channelId}/messages`, {
+      method: 'POST',
+      cookie: device.cookie,
+      body: encryptedMessage(channelId, device.userId, device.id, device.keys.signingPrivateKey, key, text, undefined, keyVersion).body,
+    });
+  }
+
+  /** Status and refusal code of a response. */
+  async function refusal(response: Response): Promise<[number, string | undefined]> {
+    return [response.status, (await response.json().catch(() => ({})) as { code?: string }).code];
   }
 
   function signedChannelKeyWrap(input: {
@@ -4326,53 +4730,6 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
       dsaEncoding: 'ieee-p1363',
     }).toString('base64');
     return { deviceId: input.recipient.deviceId, encryptedKey, signature };
-  }
-
-  async function acknowledgeChannelKeyDelivery(input: {
-    channelId: string;
-    version: number;
-    keyCommitment: string;
-    encryptedKey: string;
-    deviceId: string;
-    cookie: string;
-    keys: ReturnType<typeof deviceFixture>;
-  }) {
-    const deliveriesResponse = await request(`/api/channels/${input.channelId}/keys`, {
-      cookie: input.cookie,
-    });
-    assert.equal(deliveriesResponse.status, 200);
-    const deliveries = await json<Array<{
-      deliveryId: string;
-      version: number;
-      keyCommitment: string;
-      encryptedKey: string;
-      distributorDeviceId: string;
-    }>>(deliveriesResponse);
-    const delivery = deliveries.find((candidate) => (
-      candidate.version === input.version
-      && candidate.keyCommitment === input.keyCommitment
-      && candidate.encryptedKey === input.encryptedKey
-    ));
-    assert.ok(delivery, `missing committed delivery for ${input.deviceId}`);
-    const signature = sign('sha256', Buffer.from(serializeChannelKeyAcknowledgement({
-      deliveryId: delivery.deliveryId,
-      channelId: input.channelId,
-      keyVersion: input.version,
-      keyCommitment: input.keyCommitment,
-      recipientDeviceId: input.deviceId,
-      distributorDeviceId: delivery.distributorDeviceId,
-      encryptedKey: input.encryptedKey,
-    })), {
-      key: input.keys.signingPrivateKey,
-      dsaEncoding: 'ieee-p1363',
-    }).toString('base64');
-    const response = await request(`/api/channels/${input.channelId}/keys/acknowledge`, {
-      method: 'POST',
-      cookie: input.cookie,
-      body: { deliveryId: delivery.deliveryId, signature },
-    });
-    assert.equal(response.status, 200);
-    return json<{ version: number; status: string; activated: boolean }>(response);
   }
 
   async function request(path: string, options: { method?: string; cookie?: string; body?: unknown; contentType?: string } = {}): Promise<Response> {
@@ -4462,16 +4819,6 @@ function wrapKey(raw: Buffer, identityKey: string): string {
   const encryptionKey = JSON.parse(identityKey).encryptionKey;
   const key = createPublicKey({ key: encryptionKey as any, format: 'jwk' });
   return publicEncrypt({ key, padding: constants.RSA_PKCS1_OAEP_PADDING, oaepHash: 'sha256' }, raw).toString('base64');
-}
-
-function unwrapKey(wrapped: string, privateKey: import('node:crypto').KeyObject): Buffer {
-  const joined = joinedMlsKeys.get(wrapped)?.get(privateKey.export({format:'jwk'}).n!);
-  if (joined) return Buffer.from(joined);
-  return privateDecrypt({
-    key: privateKey,
-    padding: constants.RSA_PKCS1_OAEP_PADDING,
-    oaepHash: 'sha256',
-  }, Buffer.from(wrapped, 'base64'));
 }
 
 function encryptedMessage(
@@ -4672,6 +5019,59 @@ function signEnvelope(envelope: SignedMessageEnvelope, privateKey: import('node:
     key: privateKey,
     dsaEncoding: 'ieee-p1363',
   }).toString('base64');
+}
+
+function signDevicePayload(keys: ReturnType<typeof deviceFixture>, payload: string): string {
+  return sign('sha256', Buffer.from(payload), { key: keys.signingPrivateKey, dsaEncoding: 'ieee-p1363' }).toString('base64');
+}
+
+function verifyDevicePayload(identityKey: string, payload: string, signature: string): boolean {
+  const key = createPublicKey({ key: JSON.parse(identityKey).signingKey, format: 'jwk' });
+  return verify('sha256', Buffer.from(payload), { key, dsaEncoding: 'ieee-p1363' }, Buffer.from(signature, 'base64'));
+}
+
+/** base64url(SHA-256(key)), as envelopes and recovery records name a key. */
+function keyCommitmentOf(raw: Buffer): string {
+  return createHash('sha256').update(raw).digest('base64url');
+}
+
+/** The transcript that names an accepted version. */
+function groupTranscript(envelope: MlsGroupCommit): string {
+  return createHash('sha256').update(serializeMlsGroupCommit(envelope)).digest('hex');
+}
+
+/**
+ * A Welcome the server accepts (it names the right new members) whose
+ * encrypted group information nobody can open. Only the committer chose it.
+ */
+function poisonWelcome(welcome: string): string {
+  const message = decodeMlsMessage(Buffer.from(welcome, 'base64'), 0)![0];
+  assert.equal(message.wireformat, 'mls_welcome');
+  if (message.wireformat !== 'mls_welcome') throw new Error('not a Welcome');
+  const encryptedGroupInfo = Uint8Array.from(message.welcome.encryptedGroupInfo);
+  encryptedGroupInfo[0] ^= 0xff;
+  return Buffer.from(encodeMlsMessage({ ...message, welcome: { ...message.welcome, encryptedGroupInfo } })).toString('base64');
+}
+
+/** A member package like the client's, but valid since `validFor` seconds ago (to stand in for a package published earlier). */
+async function earlierMemberPackage(deviceId: string, validFor: bigint) {
+  const now = BigInt(Math.floor(Date.now() / 1000));
+  const pair = await generateKeyPackage(
+    { credentialType: 'basic', identity: new TextEncoder().encode(deviceId) },
+    { versions: ['mls10'], ciphersuites: [MLS_CIPHERSUITE], extensions: [], proposals: [], credentials: ['basic'] },
+    { notBefore: now - validFor, notAfter: now + 604800n },
+    [],
+    await getCiphersuiteImpl(getCiphersuiteFromName(MLS_CIPHERSUITE)),
+  );
+  const base64 = (bytes: Uint8Array) => Buffer.from(bytes).toString('base64');
+  return {
+    publicPackage: base64(encodeMlsMessage({ version: 'mls10', wireformat: 'mls_key_package', keyPackage: pair.publicPackage })),
+    privatePackage: {
+      initPrivateKey: base64(pair.privatePackage.initPrivateKey),
+      hpkePrivateKey: base64(pair.privatePackage.hpkePrivateKey),
+      signaturePrivateKey: base64(pair.privatePackage.signaturePrivateKey),
+    },
+  };
 }
 
 async function onceConnected(socket: import('socket.io-client').Socket): Promise<void> {

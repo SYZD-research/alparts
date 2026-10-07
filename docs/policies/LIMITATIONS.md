@@ -1,12 +1,12 @@
 # LIMITATIONS.md — Phase 1 Prototype 制限事項
 
-最終更新: 2026-09-16
+最終更新: 2026-10-07
 
 > **現在の境界**
 >
 > - Client: Web、およびWindows・Linux・macOS desktop（React/TypeScript + Electron）
 > - Server: Linux上のsingle-node / single-process Node.js + PostgreSQL + S3互換オブジェクトストレージ（推奨はSeaweedFS）
-> - Crypto: MLS-based group per application epoch + separate encrypted archive keys
+> - Crypto: channelごとに継続するMLS group（group protocol 4）+ separate encrypted archive keys
 > - Product: text-centered + 最大8人P2P音声のsmall-team prototype
 
 このリポジトリは `SPECIFICATION.md` の初期正式版を完成させたものではなく、正式運用へ承認されていない。2026-08-30に公式npx CLIのDeep Security Scanはartifact packagingまで完了し、13 canonical finding / 15 report instanceを出力した。Coverageはtime ceilingとdeferred reconciliationにより`partial`で、検出根本原因を現treeで修正しても、formal architecture blockerまたは独立外部reviewを完了した意味ではない。ゼロデイ、認証情報、Embargo情報などの高影響秘密へ使用しないこと。
@@ -43,21 +43,27 @@
 - 招待制のpassword認証に加えて、Web版のPasskeyと重要操作のstep-upを実装した。Passkey登録後のpassword fallbackは禁止する。Passwordはstep-up付きで変更でき、変更時は他のsessionを終了する。Passkeyを登録した利用者はpasswordでのloginを無効にでき、運用者はCLIでpasswordを再設定できる（再設定はpassword loginを有効に戻し、全sessionを終了する）。Step-upは利用者ごとに15分あたり120操作まで、本人確認の失敗はこれとは別に15分あたり10回までに制限する。OIDC、組織による認証器数の強制、nativeアプリのWebAuthn連携は未実装。
 - bcryptは固定2本のWorker threadで実行し、active 2 / pending 16 / 待機5秒を超えると503でrejectする。保存hashの形式/costを処理前に検証し、実行が30秒を超えたWorkerは失敗として終了する。新端末step-upのKDFはaudit/key/DB row lockより前に完了させる。これはsingle-processのCPU隔離であり、複数replicaを合算したrate limitや外部DDoS防御ではない。
 - Sessionは1つの端末にbindingされ、追加端末は既存端末の承認または復旧コードによる確認が必要。端末attestationと組織支援型・閾値型recoveryは未実装。
-- 新端末登録時のpending epoch cleanupは最大50 workspace membershipを安定順にlockし、各workspaceの最大300 channel内でset-basedに実施する。他tenantがaccount-globalな小さい上限を消費して端末回復を恒久妨害する設計ではないが、上限全体を処理する登録は通常より高latencyになり得てstatement timeout内に完了しなければ安全にrollbackする。
+- 新端末登録時のpending epoch cleanup（group protocol 4以降は新しいpending epochを作らず、migration 0023で残りを中止済み）は最大50 workspace membershipを安定順にlockし、各workspaceの最大300 channel内でset-basedに実施する。他tenantがaccount-globalな小さい上限を消費して端末回復を恒久妨害する設計ではないが、上限全体を処理する登録は通常より高latencyになり得てstatement timeout内に完了しなければ安全にrollbackする。
 - destructive operation、policy変更、recovery、組織exportの二者承認はない。
 - Workspace管理は作成・一覧・member removalまでで、workspace rename/delete/icon update/owner transfer、組織policy管理はない。
 
 ### E2EEと鍵管理
 
 - Message/attachmentはbrowserでAES-256-GCM暗号化し、message protocol v3では認証user ID、mutation target、broadcast-mention flagを含むcontext付きenvelopeへP-256 device keyで署名する。Server/clientはuser-device bindingを再確認し、channel keyがない場合はplaintextへfallbackせず停止する。旧protocol v1 ciphertextは互換復号せずfail closedになり、protocol v2 messageはlegacy互換としてbroadcast mention権限を持たない。
-- 新epochはMLSライブラリのgroup/commit/Welcome/exporterを使用する。各application epochで新groupを作り、長期の履歴鍵を別途保存するため、連続MLS会話の相互運用やmessage単位の完全なforward secrecyを主張しない。独立reviewは未実施。
-- Channel epochはfrozen recipient snapshotを持つ`pending`として提案され、全required recipient deviceが署名・復号・commitmentを検証し、server発行のexact delivery IDとdistributorへ署名ackした場合だけatomicに`active`となる。`pending`はmessage/attachment write資格を持たず、per-distributor delivery candidateはimmutableである。中断時はmanagerまたはDM participantが署名abortし、次回は単調増加versionで再提案する。端末directoryの追記型chainとclient checkpoint照合を実装したが、独立witnessはない。
-- 全required端末のackをactivation barrierにするため、offline端末が残ると新epochは有効化されない。Operatorが黙ってbarrierを迂回する仕組みはなく、管理者は不要端末を失効させたうえでpending epochをabortし、次versionを再提案する必要がある。
-- 履歴を取得できないmanagerまたはDM参加者は、step-upと端末署名を伴う明示操作で将来用epochを開始できる。この場合も全参加端末の確認が必要で、offline端末を黙って除外しない。
+- Channel keyはMLSライブラリのgroup/commit/Welcome/exporterで作る。Channelごとに一つのMLS groupを継続し、端末の追加・削除と定期更新をcommitで反映する（group protocol 4、[ADR 0012](../adr/0012-continuous-mls-groups.md)）。長期の履歴鍵を別途保存するため、message単位の完全なforward secrecyは主張しない。他のMLS実装との相互運用、external commit/join、MLS application messageによるmessage単位のratchetは提供しない。独立reviewは未実施。
+- Serverはchannelごとにcommitを順序付け、1 versionに1 commitだけを、直前versionとそのtranscriptのcompare-and-swapで受理する。受理したcommitはその場で`active`になり、pending、全員の受領確認、abortはない。Serverはcommit envelopeの署名、roster、Add/Removeとpackageの一致、Welcomeの宛先、UpdatePathのleaf credentialを検証するが、MLSの秘密値（path secret、exporter）は検証できない。同じbyte列の再送には同じ結果を返す。端末directoryの追記型chainとclient checkpoint照合を実装したが、独立witnessはない。
+- Offline端末は書き込みを止めない。戻った端末は保存されたcommit logを順に処理して追いつく。書き込みが止まるのは、groupに資格を失った端末（失効・未承認・channel閲覧権の喪失）が残っている間と、group更新（genesis、Remove付きcommit、空commit）が24時間受理されていない間だけで、onlineの利用可能なmember 1台がRemoveまたは更新のcommitを出せば再開する。送信する端末自身が利用可能なmemberなら、公式clientは送信前にそのcommitを出す。追加待ちの端末は書き込みを止めない。
+- 新しく資格を得た端末（新端末、channelを新たに閲覧できるようになったuserの端末、移行後の最初のgroupに入らなかった端末）はpackageを公開し、onlineのmemberに追加されるのを待つ。追加されたversionから読める。資格を得てから追加されるまでに書かれたmessageは、同じaccountの暗号化履歴archiveに含まれる場合を除き、その端末では読めない（HIST-01は未達）。移行直後のchannelは、最後の鍵の受信者だった、まだ資格のある端末がすべてpackageを公開するか、そのchannelで最初のpackageが公開されてから24時間経つまで最初のgroupを作れず、その間は書き込めない。
+- 正しく署名されたcommitやWelcomeを処理できなかった端末、またはlocalのgroup stateを失った端末は、導出済みの鍵を残したまま参加し直しを要求する（rejoin。server・clientとも1端末1 channelあたり24時間に3回まで）。次のcommitでほかの利用可能なmemberが同じ端末を外して追加し直す。
+- 次のいずれかの場合に限り、step-upと端末署名を伴う明示操作で新しいgroupを始められる（fresh start）: 利用可能なmemberがいない、または72時間誰もonlineでない（資格のある端末）、自分の参加し直しの要求が30分進まない（その端末）、追加・削除・参加し直しが15分進まない（channel管理者・DM参加者）。それ以前のmessageは、鍵または履歴archiveを持たない端末では読めないままになる。Channel管理者（DMではほかの参加者）へ通知する。Operatorが条件を迂回する仕組みはない。
+- 侵害後の回復（CRYPTO-04）はgroup protocol 3より狭い。UpdatePath付きcommitで更新されるのはcommitした端末自身のleafとpath secretだけで、書き込む端末は自分のleafを少なくとも7日ごとに更新し、ほかの端末も自分がRemoveや24時間の更新をcommitしたときには更新されるが、そうしたcommitをしない端末のleafは削除されるまで更新されない。Protocol 3は各versionで全参加端末の新しいpackageからgroupを作り直していた。
+- 端末がgroupへ追加された後、一度もそのgroupに参加しないうちに外された場合（例: offlineの間に追加され、そのまま閲覧権を失った）、その期間のversionの鍵は端末がcommit logから得られず、利用者が保存した履歴archiveからだけ復元できる。端末は現在のmembershipから参加する（形式モデルM3のKA-unjoined）。
+- 履歴archiveを復元したgroup外の端末を失効させても、現在のversionの鍵はその端末に残る。Group外の端末の失効はcommitを要求しないため、次のcommit（最長でも24時間ごとの更新）まで新しいmessageもその鍵で暗号化される。失効した端末はserverからmessageを取得できないので、影響はserverを信頼しない前提のときに限られる（形式モデルM3のKC-dev-restore）。
+- 資格のある悪意あるmemberは、特定の端末だけが処理できないcommitや開けないWelcomeを出し、rejoinを強いることができる（MLSのinsider DoS）。Serverはこれを検出できない。各versionのcommitter deviceは監査に記録され、対処は管理者によるmember除外と、必要ならfresh startである。
 - 保管済み復旧コードで、事前にserverへ暗号化保存した履歴鍵を復元できる。Accountへのloginは別途必要。未保存の履歴、復旧コードも全端末も失った履歴、失権したchannelは復旧できない。管理者代理復旧はない。
-- 1 userは最大8 active device、1 workspaceは最大50 member、1回のchannel-key配布は最大400 active recipient deviceで、paginationまたは複数batchを跨ぐatomic commitはない。複数端末を含む実recipientがこの上限へ達すると新epochを配布できないため、正式capacity planningまではsmall-team運用に限定する。
-- 端末directoryは署名付き追記chainとlocal checkpointを照合し、group rosterおよび任意の端末間確認でsplit viewを検出する。初回はTOFUであり、互いに照合されないviewや初回anchorの偽装を独立witnessなしに検出できるとは主張しない。過去のmessage/attachment/key distributorの公開鍵は履歴検証に使える。
-- 公式clientのkey取得は`scope=current`を使う。履歴は1 request最大64 unique version、response最大864 deliveryで明示取得する。更新前tab向けのqueryなし経路は新しい順に最大16のactive/pending/retired epochだけを返しdeprecation headerを付けるため、長期間更新されないtabがそれより古い履歴を取得できる保証はない。
+- 1 userは最大8 active device、1 workspaceは最大50 member、1 channelのgroupは最大400 member device（50×8と一致）である。最初のgroupは最大400端末を1 commitで追加し、commitのpaginationや複数batchを跨ぐatomic commitはない。正式capacity planningまではsmall-team運用に限定する。
+- 端末directoryは署名付き追記chainとlocal checkpointを照合し、group commitが運ぶdirectory headおよび任意の端末間確認でsplit viewを検出する。Serverがcommit履歴を端末ごとに分岐させた場合は、分岐したcommitが検証済みversionにつながらない時点で検出し、その会話の処理を止める（その時点まで検出できない）。初回はTOFUであり、互いに照合されないviewや初回anchorの偽装を独立witnessなしに検出できるとは主張しない。過去のmessage/attachment/key distributorの公開鍵は履歴検証に使える。
+- Group protocol 4のversionの鍵は端末が自分のgroupから導出し、commit logは1 page最大16 version・約4 MiBで取得する。一度group protocol 4のgroupを検証したchannelでは、それ以降のversionについてserverからの旧方式の配送を受け付けない（downgrade拒否）。それより前（v2/v3）の鍵の取得は`scope=current`を使い、履歴は1 request最大64 unique version、response最大864 deliveryで明示取得する。更新前tab向けのqueryなし経路は新しい順に最大16のactive/pending/retired epochだけを返しdeprecation headerを付けるため、長期間更新されないtabがそれより古い履歴を取得できる保証はない。
 - Server/operatorはuser/workspace/channel membership、device routing、message/attachment ID・時刻、ciphertext size、attachment MIME type・chunk count・upload/download timing、opaque storage keyを観測できる。完全なmetadata inventory/public disclosureはなく、配送拒否、削除、rollback、可用性妨害も可能である。正規受信者によるcopy、screenshot、外部撮影、受信済みdataの完全遠隔消去も防止できない。
 
 ### Client local stateとoffline
@@ -117,7 +123,7 @@
 - Object-storage requestには既定10秒・最大60秒のheader/stream inactivity timeoutと、単一node内のactive/pending work上限がある。Remote I/OはDB transaction外で行い、DB commit後のobject orphanはcleanupで回収するが、PostgreSQLとオブジェクトストレージの分散transactionは提供しない。Download開始後に権限が失効しても、すでに送信開始したciphertext streamを遠隔回収することはできない。
 - WebSocketのrate/socket budgetとroom-join serialization、attachment upload serialization、object-storage gateはいずれもprocess-localである。起動時のPostgreSQL session lockで同一DBへの二重起動を拒否し、所有権を失うと受付を停止する。監査commitからcheckpoint保存まで別lockを保持し、次のprocessは終了を待つ。`DB_POOL_MAX >= 2`と専用接続1本が必要。transaction-pooling proxyは未対応。複数instance化する前に共有coordinationへ置換しなければならない。
 - 追加のdurable上限は、1 channel 1,000 pin、1 message 20 distinct emoji・1 user/message 20 reaction・合計1,000 reaction、pending upload 16/user・200/workspaceである。Audited/guarded authoritative commitは共通でprocess内active 1・waiting 64・待機30秒、upload operationは4/upload・64/processに制限する。これは単一processで意図したcorrectness bottleneckであり、大規模write throughputの実測はない。これらは保持期間やarchive workflowの代替ではない。
-- Message履歴とaudit履歴そのものには自動retentionがない。Unread集計はDB上でexact countを行い、audit起動検証は1,000行ずつ走査するため、長期大規模運用のlatency/起動時間は未計測である。停止したkey rotationが長期間蓄積する環境を含むsoak/capacity試験とlifecycle設計は残る。
+- Message履歴とaudit履歴そのものには自動retentionがない。Unread集計はDB上でexact countを行い、audit起動検証は1,000行ずつ走査するため、長期大規模運用のlatency/起動時間は未計測である。Channelごとのcommit log、使用済みpackage ID、group node keyの記録は削除しない。これらが長期間蓄積する環境を含むsoak/capacity試験とlifecycle設計は残る。
 
 ### 配布、data governance、UX assurance
 
@@ -132,7 +138,7 @@
 
 | 領域 | 状態 |
 | --- | --- |
-| Group protocolの独立review、independent witness、message単位のforward secrecy | 残作業。MLS epoch、端末approval、directory検証は実装済み |
+| Group protocolの独立review、independent witness、message単位のforward secrecy、UpdatePath付きcommitをしないmemberへの侵害後回復 | 残作業。Channelごとに継続するMLS group、端末approval、directory検証は実装済み |
 | OIDC、native WebAuthn、二者approval、組織支援型recovery | 残作業。Web Passkey、step-up、利用者管理の履歴recoveryは実装済み |
 | iOS/Android、desktop配布署名・notarization・署名検証update | 延期 |
 | HA、broker、DB failover、cluster migration、PITR/WORM/off-site/自動DR | 延期 |

@@ -645,5 +645,171 @@
     "Bounded models and explicit attacker capabilities; not a proof for arbitrary implementations or histories.",
     "The durable audit head bucket must have independent write/restore authority. Simultaneous rollback of all stores remains undetectable without an independent witness.",
     "Commits preceding durable checkpoint completion remain a crash-window limit."
+  ],
+  "addenda": [
+    {
+      "date": "2026-10-07",
+      "scope": "M3 rewritten for continuous per-channel MLS groups (group protocol 4); client fix for an unreadable envelope of an earlier membership. Earlier entries of this file are unchanged and describe group protocol 3.",
+      "environment": {
+        "python": "3.13.16",
+        "node": "24.21.0",
+        "z3": "5.1.0 (separate virtualenv, harness tests only)"
+      },
+      "model_runs": [
+        {
+          "command": "python3 formal-model/run.py M3",
+          "exit_code": 0,
+          "elapsed_seconds": 379,
+          "peak_rss_mb": 898,
+          "summary": {
+            "PASS": 15,
+            "LIMIT": 3,
+            "FINDING": 0,
+            "MODEL-GAP": 0,
+            "VACUOUS": 0
+          },
+          "checks": [
+            {
+              "check": "KC whenever a message can be written, only devices of users who can see the channel can derive or hold its key (removal, joining, fresh start, restore)",
+              "verdict": "PASS"
+            },
+            {
+              "check": "KC-dev whenever a message can be written, no revoked device can derive or holds its key from the group",
+              "verdict": "PASS"
+            },
+            {
+              "check": "KI the server accepts one commit per version: the version chain never forks",
+              "verdict": "PASS"
+            },
+            {
+              "check": "KA a device that may read the channel derives, from the commit log alone, every version of each membership it joined (versions from an envelope it could not read on are exempt)",
+              "verdict": "PASS"
+            },
+            {
+              "check": "KA-unjoined a membership that ended before the device joined it is not recovered from the log (only from the user's backups)",
+              "verdict": "LIMIT"
+            },
+            {
+              "check": "KC-dev-restore a device that restored its user's backups and was then revoked holds the current key until the next commit (at most 24 hours)",
+              "verdict": "LIMIT"
+            },
+            {
+              "check": "KL while one online usable member can follow the log, every online eligible device reaches a writable state by protocol steps alone (no fresh start)",
+              "verdict": "PASS"
+            },
+            {
+              "check": "KL-orphan with no such member (none left, or none able to read an envelope), a fresh start makes every online eligible device writable again",
+              "verdict": "PASS"
+            },
+            {
+              "check": "KL-lost a member that goes offline for good (Y1) never blocks the others: every online eligible device still reaches a writable state",
+              "verdict": "PASS"
+            },
+            {
+              "check": "KC-server a server that ignores channel visibility can let a non-viewer's device derive the key of messages written later (F-E2E-001)",
+              "verdict": "LIMIT"
+            },
+            {
+              "check": "KC-ctl writing before the Remove is accepted lets a user who lost the channel read new messages",
+              "verdict": "PASS"
+            },
+            {
+              "check": "KC-dev-ctl writing before the Remove is accepted lets a revoked device read new messages",
+              "verdict": "PASS"
+            },
+            {
+              "check": "KI-ctl without the version compare-and-swap, two commits extend the same version",
+              "verdict": "PASS"
+            },
+            {
+              "check": "KA-ctl serving the log only to current members leaves a device removed while offline without keys of versions it was a member at",
+              "verdict": "PASS"
+            },
+            {
+              "check": "KA-rejoin-ctl asking to be added again when an envelope of an already ended membership cannot be read leaves the device out of the membership that added it (client before the fix)",
+              "verdict": "PASS"
+            },
+            {
+              "check": "KL-poison-ctl without rejoin and fresh start, a device that cannot read one envelope never writes again",
+              "verdict": "PASS"
+            },
+            {
+              "check": "KL-orphan-ctl without fresh start, a channel whose usable members are gone stays unwritable",
+              "verdict": "PASS"
+            },
+            {
+              "check": "KL-lost-ctl without the 72-hour rule, a member that went offline for good keeps a non-manager waiting",
+              "verdict": "PASS"
+            }
+          ]
+        }
+      ],
+      "model_counts": {
+        "M3": {
+          "main": {
+            "states": 2672946,
+            "transitions": 8497515,
+            "max_versions": 6,
+            "viewer_changes": 2,
+            "device_changes": 2,
+            "lost_device": "Y1"
+          },
+          "faults": {
+            "states": 2458694,
+            "transitions": 6114332,
+            "max_versions": 6,
+            "viewer_changes": 1,
+            "device_changes": 1,
+            "unreadable_envelopes": 1
+          },
+          "second_device": {
+            "states": 1082911,
+            "transitions": 3806987,
+            "max_versions": 5,
+            "viewer_changes": 0,
+            "device_changes": 2,
+            "history_restore": true
+          },
+          "total_states": 6214551
+        }
+      },
+      "suites": {
+        "client-unit": {
+          "tests": 325,
+          "pass": 325,
+          "fail": 0
+        },
+        "harness_regressions": {
+          "pass": 14,
+          "fail": 0
+        }
+      },
+      "static_checks": {
+        "client_typecheck": "PASS",
+        "oxlint_packages": "PASS"
+      },
+      "not_rerun": "M1c, M1, M2, M2c, M4, M5, M6 and the service conformance audit",
+      "source_sha256": {
+        "formal-model/m3_key_epochs.py": "437fbdfa4ee949f177b3ad9f7d065d94528e66e11d7123a7fbdcc657b75c1316",
+        "formal-model/run.py": "50eae6a14b428a3831e5011b8d0a19aa541a0edb740ec2534f9c38f4f78f756e",
+        "formal-model/common.py": "bdc5cb25f35bccd4197e06e4f1c450cf0ef68fe13c0497766e97cf1082e88678",
+        "packages/server/src/services/mls-group-rules.ts": "c27091a18b98121cce7cd51c21756b417787e34c44df1c50230d13fd5159fb33",
+        "packages/server/src/services/mls-group.service.ts": "49cc4045e10ca96f0c90eff6df58704826f2e5900482358a210fdda8a1bb1418",
+        "packages/server/src/services/mls-group-gate.ts": "2d87ceffa0e2e306e1d165810276352902533515822f8269a9fd4b32f35beb41",
+        "packages/server/src/services/mls-group-state.ts": "55b1b0c24faebc6448d327e4ff77fb7a209f7db3d5bb7011d936ba2892d6a551",
+        "packages/server/src/routes/mls-group.ts": "6b77f9eeb81552752157d3662d126e15643b0e00442cbdbf019a0d22eb84b56a",
+        "packages/server/src/services/recovery.service.ts": "5fe614121ffc4060f856d8c3f483253e3d46be3dd1ab9af4a554aef25610bd7d",
+        "packages/client/src/services/mls-group.service.ts": "5d6ee9389add393ddf19d7a843201832f81dd5cdf396910844aaac8885693b83",
+        "packages/client/src/services/mls-group.service.test.ts": "3c9dbce11eec7baf8219c06d6843fc02d9e6a2ffdcf6e33a8eb16f96754ce9cf"
+      },
+      "log_sha256": {
+        "models-M3.log": "43e406d03d3cbe98d2e5ae1c8088380e666642cd4a9a445e7396d8c947a6ed5d"
+      },
+      "limitations": [
+        "KA-unjoined: a membership that ended before the device joined it is not recovered from the commit log, only from the user's backups.",
+        "KC-dev-restore: a device that restored its user's backups and was then revoked holds the current key until the next commit (at most 24 hours).",
+        "KC-server (F-E2E-001): a server that ignores channel visibility can add a non-viewer's device."
+      ]
+    }
   ]
 }

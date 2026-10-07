@@ -47,7 +47,8 @@ Retries that could duplicate a durable mutation must reuse the operation's idemp
 | Password-work saturation | login/registration reject promptly with 503 and `Retry-After`; event loop capacity is preserved |
 | Object-store saturation | attachment request rejects promptly with 503; normal channel capacity and DB pool are not allowed to grow without bound |
 | Browser message burst/history saturation | one coalesced verifier drains bounded batches; unloaded-channel events are ignored and reconciled by REST; oldest resident data/channels are evicted and history paging stops visibly at the local window |
-| All accepted key holders lost | old ciphertext remains honestly unavailable; an authorized replacement device may establish only a new future epoch and the UI exposes `historyRecoveryRequired` |
+| No usable group member left | old ciphertext remains honestly unavailable; the server reports `historyRecoveryRequired`, the UI offers to start without earlier messages, and after step-up a device may start only a new group for future messages |
+| Members offline | writes continue; returning devices catch up from the ordered commit log; devices waiting to be added are added by the next online member |
 | Persistent database catalog drift | startup/readiness fail closed even when the migration journal is intact; repair forward or restore a verified database rather than editing the expected hash ad hoc |
 | Disk full | writes/checkpoints/backups fail; readiness should fail through dependency/checkpoint checks; operator must stop writes and recover space without deleting evidence |
 

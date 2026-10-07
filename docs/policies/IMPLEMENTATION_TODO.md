@@ -1,8 +1,8 @@
 # 実装 TODO / 要件ステータス
 
-最終更新: 2026-09-16
+最終更新: 2026-10-07
 
-この表が完成対象として扱うのは、`LIMITATIONS.md` で定義した **Windows・Linux・macOS desktop / Web / single-node / basic per-channel key / text中心＋最大8人P2P音声のPhase 1 prototype** だけである。`SPECIFICATION.md` の初期正式版全体を実装した、または正式運用へ承認されたという意味ではない。
+この表が完成対象として扱うのは、`LIMITATIONS.md` で定義した **Windows・Linux・macOS desktop / Web / single-node / channelごとに継続するMLS group / text中心＋最大8人P2P音声のPhase 1 prototype** だけである。`SPECIFICATION.md` の初期正式版全体を実装した、または正式運用へ承認されたという意味ではない。
 
 ## ステータス規約
 
@@ -23,7 +23,7 @@
 | LIC-01 | DOC-01 | 一部完了 | 権利者がAGPL-3.0-onlyを選定し、`LICENSE`（FSF公式本文）とpackage metadataへ反映した。配布される依存がすべてAGPL-3.0と両立することを確認済み | 配布物（desktop・Android・OCI image）へのthird-party noticeと対応するソースの提供方法の整備 |
 | RUN-01 | DOC-01 | 完了 | shared build、本番server起動、non-root OCI image、systemd hardening、`*_FILE` secret、startup/liveness/readiness、graceful drain | typecheck/buildとserver試験に加え、設定不足時のfail-fastおよび各probeを確認 |
 | SEC-01 | RUN-01 | 完了 | DB-backed session、HttpOnly cookie、REST/WebSocketのworkspace/channel/private-channel認可、入力制限、rate limit、外部画像の自動取得防止 | server security/unit/integration試験でBOLA、room join、logout/失効、cross-channel参照を拒否 |
-| KEY-01 | SEC-01 | 完了 | non-extractable device key、session-bound enrollment proof/current-password step-up、frozen recipient snapshotを持つ二段階`pending→active` channel epoch、全required exact-delivery ack、immutable per-distributor candidate、署名abort、単調version、失効・離脱時のrekey待ち、鍵不在時の平文fallback禁止 | 自己ack、DM proposer、divergent/overwrite candidate、ack前write、abort/retry、device/session競合と正規全員ack activationを自動試験で確認。新しいMLS epoch/端末承認への拡張は下記SEC-ACCOUNT-01参照 |
+| KEY-01 | SEC-01 | 完了 | non-extractable device key、session-bound enrollment proof/current-password step-up、channelごとに継続するMLS group（group protocol 4、ADR 0012）。Serverがcommitを1 versionずつcompare-and-swapで順序付け、受理したcommitを即時有効化する（二段階`pending→active`、全員ack、署名abortは廃止）。資格を失った端末がgroupに残る間と24時間group更新がない間のwrite停止、offline端末はwriteを止めない、単調version、commit logからの追いつき、rejoin、条件付きfresh start、downgrade拒否、鍵不在時の平文fallback禁止 | 受理規則のserver unit試験（実commit使用）、commitの順序付けと再送、current versionだけのwriteと古いversionの`KEY_VERSION_STALE`、package規則、資格を失った端末のRemoveまでのwrite停止、fresh-start条件を統合試験で、複数端末のcreate/add/remove/更新、offline追いつき、応答喪失後の自commit採用、rejoin、改ざん・rollbackの停止をclient試験で確認。旧二段階方式の記録はADR 0011と`SECURITY_AUDIT.md`を参照 |
 | EVT-01 | KEY-01 | 完了 | REST/Socketの耐久化後配信、protocol-v3 signed broadcast intent、認証済み`message/edit/delete/reaction` とpin snapshotの決定的projector、REST responseとlocal signed envelopeの完全一致検証、`(createdAt, id)`順序、重複排除 | server WebSocket試験と `message-projector.test.ts` の正常・改ざんresponse controlが成功 |
 | CHAT-01 | EVT-01 | 完了 | 基本投稿、返信、編集、削除、reaction、pin、bookmark、typing/presence、既読位置と未読数に加え、loaded-history thread panel、UUID message link、大量貼付previewをserver/clientへ接続 | server integrationとclient model試験が成功。完全なthread取得、20 pageを超えるlink遡及、全履歴mentionは別項目 |
 | MGT-01 | SEC-01, KEY-01 | 完了 | workspace/category/channel管理、position変更、private member管理、一回限り・期限付き・email binding可能な招待、role CRUD/割当/preview/有効権限理由、session/device失効UI。Workspace/user/role/assignment/invitation/bookmarkのtransactional quotaとbounded listを含む | management/server試験、fresh migration、client model、typecheck/buildが成功。招待email配送は提供しない |
@@ -76,7 +76,7 @@ DB/MinIOを使う試験は、既存データを含まない一意な使い捨て
 
 | 領域 | 状態 | 正式版に必要なもの |
 | --- | --- | --- |
-| MLS / 鍵透明性 / 端末承認 | 延期 | RFC 9420相当のforward secrecy/post-compromise security、append-only directory、consistency proof、independent witness、既存端末承認 |
+| MLS / 鍵透明性 / 端末承認 | 一部完了 | Channelごとに継続するRFC 9420 group、append-only directory、client checkpoint照合、既存端末承認は実装済み。Message単位のforward secrecy、UpdatePath付きcommitをしないmemberへのpost-compromise security、independent witness、独立暗号reviewは延期 |
 | 強固な認証と承認 | 延期 | WebAuthn/Passkey、OIDC、step-up、破壊的操作・export・recoveryの二者承認 |
 | Client platform | 一部完了 | Windows/Linux/macOS desktopとOS保護領域は完了。iOS/Android、signed/notarized distribution、署名検証updateは延期 |
 | Restricted profile | 延期 | Web無効化、参加後履歴、通知制限、external user approval、閾値recoveryなどのpolicy enforcement |
@@ -93,6 +93,6 @@ DB/MinIOを使う試験は、既存データを含まない一意な使い捨て
 
 | ID | 状態 | 実装と受入範囲 |
 | --- | --- | --- |
-| SEC-ACCOUNT-01 | 実装済み・独立受入待ち | 既存端末承認、directory chainとcheckpoint照合、固定suite MLS groupによるepoch更新、Web Passkey、重要操作step-up、ユーザー管理の暗号化履歴復旧。通常suiteに加えて専用HTTP統合試験と実際のMLS/復号試験を追加。 |
+| SEC-ACCOUNT-01 | 実装済み・独立受入待ち | 既存端末承認、directory chainとcheckpoint照合、固定suite MLS groupをchannelごとに継続するgroup protocol 4（2026-10-07、[ADR 0012](../adr/0012-continuous-mls-groups.md)）、Web Passkey、重要操作step-up、ユーザー管理の暗号化履歴復旧。通常suiteに加えて専用HTTP統合試験と実際のMLS/復号試験を追加。 |
 
 [仕様への対応・限界・移行](../security/ACCOUNT_AND_GROUP_SECURITY.md)を参照。Native WebAuthn、OIDC、独立witness、組織閾値復旧、Restricted policy、独立暗号reviewはこの項目の完了に含めない。

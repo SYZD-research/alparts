@@ -1266,12 +1266,16 @@ async function syncLocked(work: GroupWork, initial: ChannelKeyRecipientState): P
       const outcome = await catchUp(work, local, chain, state.currentVersion);
       if (outcome.kind === 'stalled') return { status: 'removed' };
       if (outcome.kind === 'unreadable') {
-        // An own fresh start already replaced the group this device cannot
-        // read: settle it instead of asking to be added again.
+        // Only a version of the current membership makes this device ask to
+        // be added again. One from before it (the device was removed, or the
+        // group replaced, and it was added again later) only ends that
+        // earlier membership: the keys derived so far are kept and the
+        // current membership is joined from its own Welcome. An own fresh
+        // start that already replaced the group is settled the same way.
         const pending = await read<PendingGroupRecord>(work, names.pending(work.channelId));
-        if (pending?.kind !== 'create' || pending.version !== state.group.genesisVersion) {
-          return requestRejoin(work, state, outcome);
-        }
+        const ownFreshStart = pending?.kind === 'create' && pending.version === state.group.genesisVersion;
+        const earlierMembership = Boolean(state.ownMembership && outcome.version < state.ownMembership.joinedVersion);
+        if (!ownFreshStart && !earlierMembership) return requestRejoin(work, state, outcome);
         await deleteSecurityState(work.owner, names.group(work.channelId));
         local = null;
         continue;

@@ -13,6 +13,7 @@ import {
   messageBookmarks,
   channelKeys,
   devices,
+  mlsGroupMembers,
   dmConversations,
   dmMembers,
   profileFlags,
@@ -253,12 +254,17 @@ export async function removeMember(workspaceId: string, userId: string, actorId:
         .from(channelKeys)
         .innerJoin(devices, eq(channelKeys.deviceId, devices.id))
         .where(and(eq(devices.userId, userId), inArray(channelKeys.channelId, channelIds)));
+      // A device of the user was in the channel's group (group protocol 4).
+      const groupChannels = await tx.selectDistinct({ channelId: mlsGroupMembers.channelId })
+        .from(mlsGroupMembers)
+        .where(and(eq(mlsGroupMembers.userId, userId), inArray(mlsGroupMembers.channelId, channelIds)));
       for (const row of [
         ...authoredChannels,
         ...readChannels,
         ...preferenceChannels,
         ...bookmarkedChannels,
         ...keyedChannels,
+        ...groupChannels,
       ]) {
         knownChannelIds.add(row.channelId);
       }

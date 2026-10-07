@@ -19,8 +19,8 @@ This is an inventory, not a stable public OpenAPI contract. No formal API versio
 | --- | --- |
 | `POST /api/auth/register`, `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/auth/me` | invite-gated account creation and session lifecycle |
 | `GET /api/auth/sessions`, `DELETE /api/auth/sessions/:id`, `DELETE /api/auth/sessions` | bounded session inventory (maximum 16 unexpired/user) and scoped/all revocation |
-| `POST /api/devices/challenge`, `POST /api/devices`, `POST /api/devices/:id/bind` | session-bound device enrollment/binding proof; new-device provisional-epoch reconciliation is partitioned by the bounded workspace set |
-| `GET /api/devices`, `DELETE /api/devices/:id` | active/revoked device inventory and idempotent revocation; dirty-key notifications name only current workspaces with an affected active/pending recipient |
+| `POST /api/devices/challenge`, `POST /api/devices`, `POST /api/devices/:id/bind` | session-bound device enrollment/binding proof; cleanup of protocol-2/3 provisional epochs (none are created since migration 0023) is partitioned by the bounded workspace set; enrollment and approval tell the user's devices to publish group packages for every channel they see |
+| `GET /api/devices`, `DELETE /api/devices/:id` | active/revoked device inventory and idempotent revocation; dirty-key notifications name only current workspaces with an affected recipient or group member, and members of every group that still contains the revoked device are told to remove it |
 
 ## Workspaces, invitations, roles and permissions
 
@@ -100,15 +100,33 @@ Anything the caller cannot see answers 404. Pinning applies to whole posts only.
 
 | Paths | Responsibility |
 | --- | --- |
-| `GET /api/channels/:id/key-recipients` | frozen bounded active-device recipient input |
-| `GET /api/channels/:id/keys?scope=current` | authorized wrapped keys for active/pending epochs; this is the official-client default |
+| `GET /api/channels/:id/key-recipients` | the caller's bounded key state: active version and protocol, eligible devices, and for group protocol 4 the group (`genesisVersion`, `groupId`, `epoch`, `transcript`, roster), `ownMembership`, `pendingAddDeviceIds`, `requiredRemoveDeviceIds`, `updateRequired`, `ownLeafRefreshDue`, `canCommit`, `canCreate`, `genesisWaiting`, `rotationRequired` and `historyRecoveryRequired`. The former pending-epoch fields stay for old clients and are always empty. A read by a member also records that the device is online. |
+| `GET /api/channels/:id/keys?scope=current` | authorized wrapped keys and protocol-3 locators for protocol-2/3 epochs; group protocol 4 versions have no deliveries (devices derive them from their group) |
 | `GET /api/channels/:id/keys?version=N` or `?versions=N,...` | one or at most 64 unique positive historical versions; active/pending candidates and the accepted retired delivery are returned within an absolute 864-delivery bound |
 | `GET /api/channels/:id/keys` | deprecated rollout bridge for pre-change tabs: newest 16 active/pending/retired versions, with `Deprecation: true` and a warning; it is not an all-history API |
 | `GET /api/channels/:id/device-directory?ids=<uuid,...>` | at most 64 explicitly requested public signing identities, returned only when current-eligible or referenced by a message/attachment in this channel |
 | `GET /api/channels/:id/device-directory` | deprecated bounded rollout bridge: union of current devices and historical message/attachment signers, maximum 400, with `Deprecation: true`; clients must migrate to explicit IDs |
-| `POST /api/channels/:id/keys` | propose immutable signed recipient deliveries/epoch commitment |
-| `POST .../keys/start-fresh` | password-confirmed, device-signed fresh epoch for an authorized manager/DM participant that explicitly continues without unavailable history |
-| `POST .../keys/acknowledge`, `POST .../keys/abort` | exact-delivery acknowledgement or signed abort/state transition |
+| `POST /api/channels/:id/keys` | signed delivery of a still-active protocol-2 epoch's key to devices of its original account roster (before the channel's first group); new versions, protocol-3 versions and group protocol 4 versions are refused |
+| `POST .../keys/start-fresh` | retired: `410 UPDATE_REQUIRED` |
+| `POST .../keys/acknowledge`, `POST .../keys/abort` | signed acknowledgement of a protocol-2/3 delivery, and the legacy abort of a pending epoch (none exist since migration 0023) |
+
+## Channel groups (group protocol 4)
+
+One MLS group continues per channel; see [the protocol document](../security/ACCOUNT_AND_GROUP_SECURITY.md#group-key-lifecycle). Every route needs a bound device; channel routes also need current channel access. Errors use `{ error: 'GROUP_STATE_CHANGED', code, message, statusCode }`: 409 when the answer depends on state the client may have read earlier (read the state again and retry), 403 when the request is invalid in every state or not permitted for this device. Schema errors are 400 `VALIDATION`; unknown channels or versions are 404. Reads allow 600 requests per minute per device.
+
+| Paths | Responsibility |
+| --- | --- |
+| `POST /api/channels/:id/mls/group/packages` | publish this device's one-time member package `{packageId, keyPackage, signature, rejoin?}`. 201 when created or changed, 200 for an identical resend. 409 `PACKAGE_CONSUMED` (package ID used before), `PACKAGE_KEY_CONFLICT`, `ALREADY_MEMBER` (a member without `rejoin`), `REJOIN_LIMIT` (more than three rejoin requests in 24 hours); 403 `INVALID_MLS` or `DEVICE_APPROVAL_REQUIRED`. `rejoin` from a non-member is ignored. 120 per minute per device. |
+| `GET /api/channels/:id/mls/group/packages` | valid packages of the devices waiting to be added (and rejoin requests), with user ID and current identity key; only for an eligible device |
+| `POST /api/channels/:id/mls/group/commits` | `{commit}`: one signed commit envelope (`kind: 'create'` for a channel's first group, `'commit'` otherwise). 201 `{version, epoch}`; a retry with the same bytes answers 200 `{version, epoch, replay: true}`. 409 codes include `MLS_CONFLICT`, `GENESIS_WAITING`, `KEY_ROTATION_NOT_REQUIRED`, `COMMIT_RATE_LIMITED`, `PACKAGE_KEY_CONFLICT`; 403 `INVALID_MLS`, and `KEY_FRESH_START_REQUIRED` for a create on an existing group. The route ID must equal `commit.channelId`. 60 per minute per device and channel; add-only and empty commits are also limited to 60 per channel per hour. |
+| `POST /api/channels/:id/mls/group/fresh-start` | `{commit, freshStartSignature}` with exact-action step-up: replace the group with a new one (create) when the documented conditions hold, otherwise 409 `KEY_FRESH_START_NOT_REQUIRED`. Managers (or the other DM participants) receive `attention:new` with kind `channel-restarted`. |
+| `GET /api/channels/:id/mls/group/commits?after=V&limit=L` | accepted commits after version V in ascending order (`L` at most 16, about 4 MiB per page) as `{version, transcript, envelope}`: only versions at which this device was a member, and the version that removed it; the page ends at the first version it may not see |
+| `GET /api/channels/:id/mls/group/members?version=V` | roster at version V with each member's add-time package, signature, leaf index, directory sequence and current identity key; only for a device that was a member at V |
+| `GET /api/mls/group/pending?cursor=` | for this device across the user's workspaces: channels where it should publish a package (`needPackage`) and channels where it is a usable member and a commit is due (`needCommit`), paged by workspace `cursor` |
+| `GET /api/channels/:id/mls/epochs/:version` | signed protocol-3 epoch envelope for history; group protocol 4 versions are 404 and are read through the commit log |
+| `GET/POST /api/channels/:id/mls/packages`, `POST .../mls/epochs`, `POST .../mls/epochs/fresh-start` | retired protocol-3 write routes: `410 UPDATE_REQUIRED`, so tabs from before the upgrade reload |
+
+Commit and fresh-start bodies have their own 2 MiB parser allowance; other JSON stays at 512 KiB. Encrypted message, edit, delete, forum and attachment-finalization refusals keep HTTP 400 and add a `code`: `KEY_VERSION_STALE` with `currentVersion` (catch up and seal again), `KEY_ROTATION_REQUIRED` (a removal or refresh commit is needed first) or `INVALID_KEY_VERSION` (stop).
 
 ## Attachments
 
@@ -131,7 +149,7 @@ Message create/edit/delete/replay, reaction/pin, channel preference and bookmark
 
 ## WebSocket events
 
-Client-to-server admission includes `channel:join`, `channel:leave`, `message:send/edit/delete`, `presence:update`, `typing:start/stop`, and `voice:join/leave/state/signal`. Server-to-client delivery includes durable message events, authorization/channel/key change events, presence/typing changes, voice participant/state/signal events, `member:profile-updated`, `workspace:profile-flags-changed`, `attention:new` (including `profile-appeal` to workspace managers; forum mentions and replies name the post), `forum:post-updated`, `forum:post-removed`, `forum:tags-updated`, `forum:post-read` (to the reader's own sessions) and `operation:error`. `message:send` accepts `postId` for forum replies; posts are started over HTTP.
+Client-to-server admission includes `channel:join`, `channel:leave`, `message:send/edit/delete`, `presence:update`, `typing:start/stop`, and `voice:join/leave/state/signal`. Server-to-client delivery includes durable message events, authorization/channel/key change events (`channel:key-rotation-required {channelId}` goes to the channel room and to the user rooms of current viewers with an eligible device after an accepted commit, a new or changed package, a viewer gain or a device revocation, and to the user's own room for every channel it sees after device or recovery approval), presence/typing changes, voice participant/state/signal events, `member:profile-updated`, `workspace:profile-flags-changed`, `attention:new` (including `profile-appeal` to workspace managers; forum mentions and replies name the post), `forum:post-updated`, `forum:post-removed`, `forum:tags-updated`, `forum:post-read` (to the reader's own sessions) and `operation:error`. `message:send` accepts `postId` for forum replies; posts are started over HTTP.
 
 Socket handshake is source/global bounded before token DB work, then binds a live session and active device. Joins and server-driven grants are reauthorized under workspace locks. Presence/typing/voice state is ephemeral; durable messages remain in PostgreSQL. Voice signaling is exact-schema/device-signed/sequence-checked by recipients, while audio is peer-to-peer DTLS-SRTP and never passes through the application server.
 

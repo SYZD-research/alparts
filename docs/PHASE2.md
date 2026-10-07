@@ -1,6 +1,6 @@
 # Phase 2 implementation status
 
-Phase 2 is **not complete or suitable for formal release**. Device approval, transparency, MLS-based epochs, web passkeys and user-controlled
+Phase 2 is **not complete or suitable for formal release**. Device approval, transparency, continuous per-channel MLS groups, web passkeys and user-controlled
 history recovery are now implemented as described in [the security update](security/ACCOUNT_AND_GROUP_SECURITY.md).
 OIDC, native WebAuthn integration and independent protocol assurance remain open.
 The existing confidentiality warning and release gates still apply.
