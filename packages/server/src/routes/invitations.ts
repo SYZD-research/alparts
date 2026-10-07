@@ -7,6 +7,7 @@ import { requireWorkspacePermission } from '../middleware/rbac.js';
 import { rateLimit } from '../middleware/rate-limit.js';
 import * as invitationService from '../services/invitation.service.js';
 import { joinAuthorizedUserToWorkspaceRoom } from '../websocket/room-membership.js';
+import { emitJoinedWorkspaceKeyState } from '../websocket/key-state.js';
 
 const router = Router();
 const uuid = z.string().uuid();
@@ -28,6 +29,7 @@ router.post('/invitations/accept', authMiddleware, invitationMutationLimit, asyn
       workspaceId: result.workspaceId,
       userId: req.userId,
     });
+    void emitJoinedWorkspaceKeyState(io, req.userId!, result.workspaceId);
     res.json(result);
   } catch (error: any) {
     if (!sendInvitationError(res, error)) throw error;

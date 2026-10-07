@@ -1,16 +1,21 @@
-import { randomUUID } from 'node:crypto';
 import { Router, type NextFunction } from 'express';
-import type { WsAttentionNotification } from '@alparts/shared';
 import { isAccountSecurityError } from '../security/account-errors.js';
 import { authMiddleware, type AuthRequest } from '../middleware/auth.js';
 import { requireChannelAccess } from '../middleware/rbac.js';
 import { rateLimit } from '../middleware/rate-limit.js';
 import * as service from '../services/mls.service.js';
-import { proposeMlsChannelEpoch } from '../services/key.service.js';
-import { mlsEpochProposal, mlsPackage, mlsVersion } from './mls-schema.js';
+import { mlsVersion } from './mls-schema.js';
 const router = Router();
+// Per-epoch groups (protocol 3) only remain readable as history. Their write
+// routes ask open tabs from before continuous groups to reload.
+const updateRequired = (_req: unknown, res: any) => {
+  res.status(410).json({ error: 'UPDATE_REQUIRED', message: 'Update the application and try again', statusCode: 410 });
+};
+router.get('/channels/:id/mls/packages', authMiddleware, updateRequired);
+router.post('/channels/:id/mls/packages', authMiddleware, updateRequired);
+router.post(['/channels/:id/mls/epochs', '/channels/:id/mls/epochs/fresh-start'], authMiddleware, updateRequired);
 router.use(
-  '/channels/:id/mls',
+  '/channels/:id/mls/epochs',
   authMiddleware,
   rateLimit({
     windowMs: 60_000,
@@ -46,35 +51,6 @@ const handle =
     }
   };
 router.get(
-  '/channels/:id/mls/packages',
-  handle(async (req, res) => {
-    res.json(await service.groupPackages(req.params.id, req.userId!, req.deviceId!));
-  }),
-);
-router.post(
-  '/channels/:id/mls/packages',
-  handle(async (req, res) => {
-    const body = mlsPackage.extend({ version: mlsVersion }).parse(req.body);
-    const created = await service.publishKeyPackage(
-      req.params.id,
-      req.userId!,
-      req.deviceId!,
-      body.version,
-      {
-        packageId: body.packageId,
-        keyPackage: body.keyPackage,
-        signature: body.signature,
-      },
-    );
-    if (created)
-      req.app
-        .get('io')
-        ?.to(`channel:${req.params.id}`)
-        .emit('channel:key-rotation-required', { channelId: req.params.id });
-    res.json({ success: true });
-  }),
-);
-router.get(
   '/channels/:id/mls/epochs/:version',
   handle(async (req, res) => {
     res.json(
@@ -85,40 +61,6 @@ router.get(
         mlsVersion.parse(Number(req.params.version)),
       ),
     );
-  }),
-);
-router.post(
-  ['/channels/:id/mls/epochs', '/channels/:id/mls/epochs/fresh-start'],
-  handle(async (req, res) => {
-    const body = mlsEpochProposal.parse(req.body);
-    if (body.epoch.channelId !== req.params.id) {
-      res.sendStatus(400);
-      return;
-    }
-    const fresh = req.path.endsWith('/fresh-start');
-    if (fresh !== Boolean(body.freshStartSignature)) {
-      res.sendStatus(400);
-      return;
-    }
-    const { notifyManagerUserIds, workspaceId, ...result } = await proposeMlsChannelEpoch(
-      req.userId!,
-      req.deviceId!,
-      body.epoch,
-      body.keys,
-      body.freshStartSignature,
-      req.stepUpProof,
-    );
-    const io = req.app.get('io');
-    io?.to(`channel:${req.params.id}`).emit('channel:key-rotation-required', { channelId: req.params.id });
-    for (const managerId of notifyManagerUserIds) {
-      io?.to(`user:${managerId}`).emit('attention:new', {
-        notificationId: randomUUID(),
-        workspaceId,
-        channelId: req.params.id,
-        kind: 'channel-restarted',
-      } satisfies WsAttentionNotification);
-    }
-    res.status(201).json(result);
   }),
 );
 export default router;

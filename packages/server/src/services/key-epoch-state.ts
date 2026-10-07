@@ -102,6 +102,32 @@ export async function abortPendingChannelKeyEpochs(
   return [...new Set(aborted.map((row) => row.channelId))].sort();
 }
 
+/**
+ * Since when a continuous group has a member whose user no longer sees the
+ * channel (fresh start rule c counts from it). Set when the first such member
+ * appears and cleared when access returns; an accepted commit clears it too,
+ * as it must remove those members.
+ */
+export async function refreshGroupRemoveRequirement(
+  store: any,
+  channelId: string,
+  viewerUserIds: readonly string[],
+): Promise<void> {
+  const lostAccess = viewerUserIds.length === 0
+    ? sql`true`
+    : sql`m.user_id not in (${sql.join(viewerUserIds.map((id) => sql`${id}`), sql`, `)})`;
+  await store.execute(sql`
+    update mls_groups g set remove_required_at = case
+      when exists (
+        select 1 from mls_group_members m
+        where m.channel_id = g.channel_id and m.removed_version is null and ${lostAccess}
+      ) then coalesce(g.remove_required_at, now())
+      else null
+    end
+    where g.channel_id = ${channelId} and g.genesis_version is not null
+  `);
+}
+
 /** Viewer/device loss both aborts a provisional epoch and blocks active writes. */
 export async function requireChannelKeyRotation(
   store: any,

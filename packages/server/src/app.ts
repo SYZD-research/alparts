@@ -11,6 +11,7 @@ import { setupWebSocket } from './websocket/index.js';
 import authRoutes from './routes/auth.js';
 import recoveryRoutes from './routes/recovery.js';
 import mlsRoutes from './routes/mls.js';
+import mlsGroupRoutes from './routes/mls-group.js';
 import directoryRoutes from './routes/directory.js';
 import passkeyRoutes from './routes/passkeys.js';
 import { sensitiveActionBoundary } from './middleware/step-up.js';
@@ -169,14 +170,16 @@ export function createApp() {
     });
   });
 
-  // Signed group proposals include every member's public package and the
+  // Signed group commits include every added member's public package and the
   // Welcome. Keep their bounded allowance separate from ordinary JSON requests.
+  // Retired per-epoch proposal routes keep it so old tabs still get their 410.
+  const GROUP_BODY_PATH = /^\/api\/channels\/[^/]+\/mls\/(?:epochs(?:\/fresh-start)?|group\/(?:commits|fresh-start))$/;
   const groupBody = reserveJsonBody(MLS_EPOCH_BODY_BYTES);
   const normalBody = reserveJsonBody(512 * 1024);
   const groupParser = express.json({ limit: MLS_EPOCH_BODY_BYTES, strict: true, type: 'application/json' });
   const normalParser = express.json({ limit: '512kb', strict: true, type: 'application/json' });
-  app.use((req, res, next) => (/^\/api\/channels\/[^/]+\/mls\/epochs(?:\/fresh-start)?$/.test(req.path) ? groupBody : normalBody)(req, res, next));
-  app.use((req, res, next) => (/^\/api\/channels\/[^/]+\/mls\/epochs(?:\/fresh-start)?$/.test(req.path) ? groupParser : normalParser)(req, res, next));
+  app.use((req, res, next) => (GROUP_BODY_PATH.test(req.path) ? groupBody : normalBody)(req, res, next));
+  app.use((req, res, next) => (GROUP_BODY_PATH.test(req.path) ? groupParser : normalParser)(req, res, next));
   app.use('/api', (_req, res, next) => {
     res.setHeader('Cache-Control', 'no-store');
     next();
@@ -236,6 +239,7 @@ export function createApp() {
   app.use('/api/auth', passkeyRoutes);
   app.use('/api', directoryRoutes);
   app.use('/api', mlsRoutes);
+  app.use('/api', mlsGroupRoutes);
   app.use('/api/recovery', recoveryRoutes);
   app.use('/api/auth', authRoutes);
   app.use('/api/workspaces', workspaceRoutes);

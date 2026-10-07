@@ -30,6 +30,15 @@ describe('identity confirmation for password settings (SEC-06)', () => {
   });
 });
 
+describe('identity confirmation for starting a conversation over', () => {
+  it('requires it for a group fresh start, not for ordinary group commits', () => {
+    assert.equal(isSensitiveRequest('POST', '/api/channels/c1/mls/group/fresh-start', {}), true);
+    assert.equal(isSensitiveRequest('post', '/API/Channels/c1/MLS/group/fresh-start/', {}), true);
+    assert.equal(isSensitiveRequest('POST', '/api/channels/c1/mls/group/commits', {}), false);
+    assert.equal(isSensitiveRequest('POST', '/api/channels/c1/mls/group/packages', {}), false);
+  });
+});
+
 describe('step-up purposes', () => {
   it('bind every field except passwords, which must not end up in a fast digest', async () => {
     const { purposeFields } = await import('../security/action-purpose.js');

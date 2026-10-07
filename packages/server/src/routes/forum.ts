@@ -15,6 +15,7 @@ import * as messageService from '../services/message.service.js';
 import { authMiddleware, type AuthRequest } from '../middleware/auth.js';
 import { requireChannelAccess, requireChannelPermission } from '../middleware/rbac.js';
 import { displayText } from '../security/display-text.js';
+import { keyWriteErrorDetails } from '../security/key-write-errors.js';
 import {
   broadcastForumPostUpdated,
   broadcastForumTagsUpdated,
@@ -240,11 +241,12 @@ function sendForumError(res: Response, error: any): void {
     'INVALID_DEVICE',
     'INVALID_KEY_VERSION',
     'KEY_ROTATION_REQUIRED',
+    'KEY_VERSION_STALE',
     'INVALID_SIGNATURE',
     'INVALID_REFERENCE',
     'BROADCAST_MENTION_FORBIDDEN',
   ].includes(code)) {
-    res.status(400).json({ error: 'INVALID_MESSAGE', message: 'Invalid encrypted message', statusCode: 400 });
+    res.status(400).json({ error: 'INVALID_MESSAGE', message: 'Invalid encrypted message', statusCode: 400, ...keyWriteErrorDetails(error) });
     return;
   }
   throw error;

@@ -20,6 +20,35 @@ import { crc32, deflateSync } from 'node:zlib';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import pg from 'pg';
 import {
+  acceptAll,
+  createCommit,
+  createGroup,
+  decodeMlsMessage,
+  emptyPskIndex,
+  encodeMlsMessage,
+  generateKeyPackage,
+  getCiphersuiteFromName,
+  getCiphersuiteImpl,
+  joinGroup,
+  makePskIndex,
+  mlsExporter,
+  processMessage,
+  type ClientState,
+  type KeyPackage,
+  type MlsPublicMessage,
+  type PrivateKeyPackage,
+} from 'ts-mls';
+import { defaultClientConfig } from 'ts-mls/clientConfig.js';
+import { signKeyPackage } from 'ts-mls/keyPackage.js';
+import { signLeafNodeKeyPackage } from 'ts-mls/leafNode.js';
+import {
+  MLS_CIPHERSUITE,
+  MLS_GROUP_EXPORTER_LABEL,
+  mlsExporterContext,
+  mlsGroupId,
+  serializeMlsGroupCommit,
+  serializeMlsMemberPackage,
+  type MlsGroupCommit,
   Permissions,
   serializeDeviceDecision, serializeGroupKeyPackage, serializeMlsEpoch, type MlsEpoch, type GroupKeyPackage,
   serializeAttachmentEnvelope,
@@ -65,7 +94,7 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     const auditModule = await import('../middleware/audit.js');
     const dbModule = await import('../db/index.js');
     closeDb = dbModule.closeDb;
-    assert.equal(await dbModule.checkDatabaseSchema(), 23);
+    assert.equal(await dbModule.checkDatabaseSchema(), 24);
     verifyAuditChain = auditModule.verifyAuditChain;
     await auditModule.provisionAuditCheckpoint();
     const startupAudit = await verifyAuditChain();
@@ -3482,6 +3511,559 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     assert.equal((await verifyAuditChain()).valid, true);
   });
 
+  describe('continuous channel groups', () => {
+    type Account = { cookie: string; user: { id: string }; password: string };
+    interface GroupPackage { id: string; pub: KeyPackage; priv: PrivateKeyPackage; encoded: string; signature: string }
+    interface GroupDevice {
+      id: string;
+      userId: string;
+      identityKey: string;
+      keys: ReturnType<typeof deviceFixture>;
+      account: Account;
+      /** The package this device last published, per channel. */
+      packages: Map<string, GroupPackage>;
+    }
+    type CommitResult = Awaited<ReturnType<typeof createCommit>>;
+
+    let suite: Awaited<ReturnType<typeof getCiphersuiteImpl>>;
+    const clientConfig = {
+      ...defaultClientConfig,
+      keyRetentionConfig: { retainKeysForGenerations: 0, retainKeysForEpochs: 1, maximumForwardRatchetSteps: 1000 },
+    };
+    const textEncoder = new TextEncoder();
+    const b64 = (bytes: Uint8Array) => Buffer.from(bytes).toString('base64');
+    let owner: Account;
+    let bob: Account;
+    let carol: Account;
+    let dave: Account;
+    let workspaceId = '';
+    let o1: GroupDevice;
+    let b1: GroupDevice;
+    let c1: GroupDevice;
+    let d1: GroupDevice;
+
+    before(async () => {
+      suite = await getCiphersuiteImpl(getCiphersuiteFromName(MLS_CIPHERSUITE));
+      // Invitations into this suite come from any existing account, through
+      // the services: it may have no device left to confirm its identity
+      // with. On its own, this suite registers the first account.
+      const { db } = await import('../db/index.js');
+      const inviterId = (await db.query.users.findFirst({ columns: { id: true } }))?.id
+        ?? (await createAccount('group-admin@example.test', 'Correct-Horse-Battery-20!', 'Admin', process.env.REGISTRATION_INVITE_SECRET!)).user.id;
+      const lobby = await (await import('../services/workspace.service.js')).createWorkspace('Group invitations', inviterId);
+      const { createInvitation } = await import('../services/invitation.service.js');
+      const ownerInvitation = await createInvitation(lobby.id, inviterId, { email: 'group-owner@example.test', expiresInSeconds: 3_600 });
+      owner = await createAccount('group-owner@example.test', 'Correct-Horse-Battery-21!', 'Owner', ownerInvitation.token);
+      o1 = await groupDevice(owner, 'O1');
+      const workspaceResponse = await request('/api/workspaces', { method: 'POST', cookie: owner.cookie, body: { name: 'Groups' } });
+      assert.equal(workspaceResponse.status, 201);
+      workspaceId = (await json<{ id: string }>(workspaceResponse)).id;
+      bob = await createAccount('group-bob@example.test', 'Correct-Horse-Battery-22!', 'Bob',
+        (await createWorkspaceInvitation(workspaceId, owner.cookie, 'group-bob@example.test')).token);
+      carol = await createAccount('group-carol@example.test', 'Correct-Horse-Battery-23!', 'Carol',
+        (await createWorkspaceInvitation(workspaceId, owner.cookie, 'group-carol@example.test')).token);
+      dave = await createAccount('group-dave@example.test', 'Correct-Horse-Battery-24!', 'Dave',
+        (await createWorkspaceInvitation(workspaceId, owner.cookie, 'group-dave@example.test')).token);
+      b1 = await groupDevice(bob, 'B1');
+      c1 = await groupDevice(carol, 'C1');
+      d1 = await groupDevice(dave, 'D1');
+    });
+
+    it('orders commits, answers retries and keeps writes on the current version', async () => {
+      const { db } = await import('../db/index.js');
+      const keyService = await import('../services/key.service.js');
+      const channelId = await groupChannel('ordered');
+      let state = await groupState(owner, channelId);
+      assert.equal(state.group, null);
+      assert.equal(state.canCreate, true);
+      assert.equal(state.protocolVersion, 4);
+
+      assert.equal((await publishPackage(o1, channelId)).status, 201);
+      assert.equal((await publishPackage(o1, channelId, { pkg: o1.packages.get(channelId) })).status, 200, 'the same package again changes nothing');
+      assert.equal((await publishPackage(b1, channelId)).status, 201);
+      const pending = await json<Array<{ deviceId: string }>>(await request(`/api/channels/${channelId}/mls/group/packages`, { cookie: owner.cookie }));
+      assert.deepEqual(pending.map((entry) => entry.deviceId).sort(), [o1.id, b1.id].sort());
+
+      const group = new GroupRun(channelId);
+      const genesis = await group.create(o1, [b1]);
+      assert.equal(genesis.response.status, 201);
+      assert.deepEqual(await json(genesis.response), { version: 1, epoch: 1 });
+      // A lost response is retried with the same bytes, after its packages were consumed.
+      const retried = await postCommit(o1, genesis.commit);
+      assert.equal(retried.status, 200);
+      assert.deepEqual(await json(retried), { version: 1, epoch: 1, replay: true });
+      assert.equal((await db.execute(sql`select count(*)::int as count from audit_logs
+        where action = 'channel.key.group.replay' and target_id = ${channelId}`)).rows[0].count, 1);
+      assert.equal((await db.execute(sql`select count(*)::int as count from mls_member_packages where channel_id = ${channelId}`)).rows[0].count, 0);
+      assert.deepEqual((await db.execute(sql`select device_id as "deviceId", leaf_index as "leafIndex" from mls_group_members
+        where channel_id = ${channelId} and removed_version is null order by leaf_index`)).rows,
+      [{ deviceId: o1.id, leafIndex: 0 }, { deviceId: b1.id, leafIndex: 1 }]);
+
+      state = await groupState(bob, channelId);
+      assert.equal(state.group.genesisVersion, 1);
+      assert.equal(state.ownMembership.joinedVersion, 1);
+      assert.equal(state.canCommit, true);
+      assert.equal(state.rotationRequired, false);
+      assert.equal(state.group.transcript, createHash('sha256').update(serializeMlsGroupCommit(genesis.commit)).digest('hex'));
+
+      // Writes use exactly the active version; a device outside the group cannot write.
+      const key = randomBytes(32);
+      assert.equal((await postMessage(o1, channelId, key, 1)).status, 201);
+      let response = await postMessage(o1, channelId, key, 2);
+      assert.equal(response.status, 400);
+      assert.deepEqual(pick(await json(response), ['code', 'currentVersion']), { code: 'KEY_VERSION_STALE', currentVersion: 1 });
+      assert.equal((await publishPackage(c1, channelId)).status, 201);
+      response = await postMessage(c1, channelId, key, 1);
+      assert.equal(response.status, 400);
+      assert.equal((await json<{ code: string }>(response)).code, 'INVALID_KEY_VERSION');
+
+      // Per-device key deliveries never apply to a group version.
+      const recipient = { deviceId: o1.id, identityKey: o1.identityKey };
+      const wrap = signedChannelKeyWrap({
+        channelId, version: 1, keyCommitment: genesis.commit.keyCommitment, rawKey: key, recipient, senderKeys: o1.keys,
+      });
+      response = await request(`/api/channels/${channelId}/keys`, {
+        method: 'POST', cookie: owner.cookie, body: { version: 1, keyCommitment: genesis.commit.keyCommitment, keys: [wrap] },
+      });
+      assert.equal(response.status, 400);
+      await assert.rejects(
+        keyService.distributeChannelKeys(channelId, owner.user.id, o1.id, 1, genesis.commit.keyCommitment, [wrap]),
+        /INVALID_KEY_VERSION/,
+      );
+      const nextWrap = signedChannelKeyWrap({
+        channelId, version: 2, keyCommitment: 'n'.repeat(43), rawKey: key, recipient, senderKeys: o1.keys,
+      });
+      assert.equal((await request(`/api/channels/${channelId}/keys`, {
+        method: 'POST', cookie: owner.cookie, body: { version: 2, keyCommitment: 'n'.repeat(43), keys: [nextWrap] },
+      })).status, 409);
+      await assert.rejects(
+        keyService.distributeChannelKeys(channelId, owner.user.id, o1.id, 2, 'n'.repeat(43), [nextWrap]),
+        /GROUP_PROTOCOL_REQUIRED/,
+      );
+      // The per-epoch read route serves only earlier protocols.
+      assert.equal((await request(`/api/channels/${channelId}/mls/epochs/1`, { cookie: owner.cookie })).status, 403);
+
+      // The log and rosters are for members only.
+      assert.deepEqual(await json(await request(`/api/channels/${channelId}/mls/group/commits?after=0`, { cookie: carol.cookie })), []);
+      assert.equal((await request(`/api/channels/${channelId}/mls/group/members?version=1`, { cookie: carol.cookie })).status, 404);
+      const added = await group.commit(b1, { add: [c1] });
+      assert.equal(added.response.status, 201);
+      assert.equal((await db.execute(sql`select count(*)::int as count from mls_member_packages where channel_id = ${channelId}`)).rows[0].count, 0);
+      assert.deepEqual(await json(await request(`/api/channels/${channelId}/mls/group/commits?after=0`, { cookie: carol.cookie })), []);
+      assert.deepEqual((await json<Array<{ version: number }>>(await request(`/api/channels/${channelId}/mls/group/commits?after=1`, { cookie: carol.cookie })))
+        .map((entry) => entry.version), [2]);
+      assert.equal((await request(`/api/channels/${channelId}/mls/group/members?version=1`, { cookie: carol.cookie })).status, 404);
+      assert.deepEqual((await json<Array<{ deviceId: string }>>(await request(`/api/channels/${channelId}/mls/group/members?version=2`, { cookie: carol.cookie })))
+        .map((entry) => entry.deviceId), [o1.id, b1.id, c1.id]);
+
+      // An empty commit refreshes the group key only when it is due.
+      const early = await group.commit(o1, {}, { post: false });
+      response = await postCommit(o1, early.commit);
+      assert.equal(response.status, 409);
+      assert.equal((await json<{ code: string }>(response)).code, 'KEY_ROTATION_NOT_REQUIRED');
+      await db.execute(sql`update mls_groups set path_refreshed_at = now() - interval '25 hours' where channel_id = ${channelId}`);
+      response = await postMessage(b1, channelId, key, 2);
+      assert.equal(response.status, 400);
+      assert.equal((await json<{ code: string }>(response)).code, 'KEY_ROTATION_REQUIRED');
+      assert.equal((await groupState(bob, channelId)).updateRequired, true);
+      const refresh = await group.commit(o1);
+      assert.equal(refresh.response.status, 201);
+      const path = refresh.result.commit as unknown as MlsPublicMessage;
+      const leafKey = b64((path.publicMessage.content as any).commit.path.leafNode.hpkePublicKey);
+      const row = (await db.execute(sql`select g.path_refreshed_at > now() - interval '1 minute' as "fresh", m.encryption_key as "encryptionKey"
+        from mls_groups g join mls_group_members m on m.channel_id = g.channel_id and m.device_id = ${o1.id} and m.removed_version is null
+        where g.channel_id = ${channelId}`)).rows[0] as { fresh: boolean; encryptionKey: string };
+      assert.deepEqual(row, { fresh: true, encryptionKey: leafKey });
+      assert.ok(Number((await db.execute(sql`select count(*)::int as count from mls_group_node_keys where channel_id = ${channelId}`)).rows[0].count) >= 2);
+      assert.equal((await postMessage(c1, channelId, key, 3)).status, 201);
+    });
+
+    it('publishes each package once and keeps package keys unique', async () => {
+      const { db } = await import('../db/index.js');
+      const channelId = await groupChannel('packages');
+      await publishPackage(o1, channelId);
+      await publishPackage(b1, channelId);
+      const group = new GroupRun(channelId);
+      assert.equal((await group.create(o1, [b1])).response.status, 201);
+
+      // A package id is used once, whatever bytes come with it.
+      const first = await newGroupPackage(c1, channelId);
+      assert.equal((await publishPackage(c1, channelId, { pkg: first })).status, 201);
+      const other = await newGroupPackage(c1, channelId);
+      let response = await publishPackage(c1, channelId, { pkg: signPackage(c1, channelId, first.id, other.pub, other.priv) });
+      assert.deepEqual([response.status, (await json<{ code: string }>(response)).code], [409, 'PACKAGE_CONSUMED']);
+      assert.equal((await publishPackage(c1, channelId)).status, 201, 'a new package replaces the first');
+      response = await publishPackage(c1, channelId, { pkg: first });
+      assert.deepEqual([response.status, (await json<{ code: string }>(response)).code], [409, 'PACKAGE_CONSUMED']);
+      response = await publishPackage(c1, channelId, { pkg: await newGroupPackage(c1, channelId, { notAfter: 1800n }) });
+      assert.deepEqual([response.status, (await json<{ code: string }>(response)).code], [403, 'INVALID_MLS'], 'never valid long enough to be added');
+
+      // Keys stay unique against current leaves and every node key of the tree.
+      response = await publishPackage(c1, channelId, { pkg: await packageWithLeafKey(c1, channelId, b1.packages.get(channelId)!.pub.leafNode.hpkePublicKey) });
+      assert.deepEqual([response.status, (await json<{ code: string }>(response)).code], [409, 'PACKAGE_KEY_CONFLICT']);
+      await db.execute(sql`update mls_groups set path_refreshed_at = now() - interval '25 hours' where channel_id = ${channelId}`);
+      // An UpdatePath may not take a key of a package that waits to be added.
+      const blocked = await group.commit(o1, {}, { post: false });
+      const blockedLeaf = ((blocked.result.commit as unknown as MlsPublicMessage).publicMessage.content as any).commit.path.leafNode;
+      assert.equal((await publishPackage(c1, channelId, { pkg: await packageWithLeafKey(c1, channelId, blockedLeaf.hpkePublicKey) })).status, 201);
+      response = await postCommit(o1, blocked.commit);
+      assert.deepEqual([response.status, (await json<{ code: string }>(response)).code], [409, 'PACKAGE_KEY_CONFLICT']);
+      const refresh = await group.commit(o1);
+      assert.equal(refresh.response.status, 201);
+      const parentKey = (refresh.result.commit as unknown as MlsPublicMessage).publicMessage.content as any;
+      response = await publishPackage(c1, channelId, { pkg: await packageWithLeafKey(c1, channelId, parentKey.commit.path.nodes[0].hpkePublicKey) });
+      assert.deepEqual([response.status, (await json<{ code: string }>(response)).code], [409, 'PACKAGE_KEY_CONFLICT']);
+
+      // A member publishes only to ask to be added again, a few times a day.
+      response = await publishPackage(b1, channelId);
+      assert.deepEqual([response.status, (await json<{ code: string }>(response)).code], [409, 'ALREADY_MEMBER']);
+      for (const expected of [201, 201, 201, 409]) {
+        response = await publishPackage(b1, channelId, { rejoin: true });
+        assert.equal(response.status, expected);
+      }
+      assert.equal((await json<{ code: string }>(response)).code, 'REJOIN_LIMIT');
+      await db.execute(sql`update mls_rejoin_requests set requested_at = requested_at - interval '25 hours' where channel_id = ${channelId}`);
+      assert.equal((await publishPackage(b1, channelId, { rejoin: true })).status, 201);
+      assert.equal((await db.execute(sql`select count(*)::int as count from mls_rejoin_requests
+        where channel_id = ${channelId} and device_id = ${b1.id}`)).rows[0].count, 2, 'the oldest open request and the new one');
+      assert.deepEqual((await groupState(owner, channelId)).pendingAddDeviceIds, [b1.id, c1.id].sort());
+
+      // Waiting packages do not keep an unused channel from being deleted.
+      const unused = await groupChannel('unused');
+      await publishPackage(o1, unused);
+      await publishPackage(c1, unused);
+      assert.equal((await request(`/api/channels/${unused}`, { method: 'DELETE', cookie: owner.cookie })).status, 200);
+      assert.equal((await db.execute(sql`select count(*)::int as count from mls_published_package_ids where channel_id = ${unused}`)).rows[0].count, 2);
+    });
+
+    it('stops writes while the group holds a device without access until a commit removes it', async () => {
+      const { db } = await import('../db/index.js');
+      const service = await import('../services/mls-group.service.js');
+      const channelId = await groupChannel('access', true);
+      for (const account of [bob, carol, dave]) {
+        assert.equal((await request(`/api/channels/${channelId}/members`, {
+          method: 'POST', cookie: owner.cookie, body: { userId: account.user.id },
+        })).status, 201);
+      }
+      for (const device of [o1, b1, c1, d1]) await publishPackage(device, channelId);
+      const group = new GroupRun(channelId);
+      assert.equal((await group.create(o1, [b1, c1, d1])).response.status, 201);
+      const key = randomBytes(32);
+      assert.equal((await postMessage(o1, channelId, key, 1)).status, 201);
+      await attachmentGate(o1, channelId, 1, 1);
+
+      // A revoked member blocks writes until a commit removes it. The other
+      // members hear at once that a commit is due.
+      const { io } = await import('socket.io-client');
+      const bobSocket = io(baseUrl, { transports: ['websocket'], extraHeaders: { Cookie: bob.cookie, Origin: 'http://localhost:5173' } });
+      sockets.push(bobSocket);
+      await onceConnected(bobSocket);
+      await delay(200);
+      const removeDue = onceSocketEventMatching<{ channelId: string }>(
+        bobSocket, 'channel:key-rotation-required', (payload) => payload.channelId === channelId, 5_000,
+      );
+      assert.equal((await request(`/api/devices/${d1.id}`, { method: 'DELETE', cookie: dave.cookie })).status, 200);
+      await removeDue;
+      bobSocket.disconnect();
+      let response = await postMessage(o1, channelId, key, 1);
+      assert.deepEqual([response.status, (await json<{ code: string }>(response)).code], [400, 'KEY_ROTATION_REQUIRED']);
+      assert.deepEqual((await groupState(owner, channelId)).requiredRemoveDeviceIds, [d1.id]);
+      assert.ok((await json<{ needCommit: string[] }>(await request('/api/mls/group/pending', { cookie: bob.cookie }))).needCommit.includes(channelId));
+      await assert.rejects(service.listGroupCommits(channelId, dave.user.id, d1.id, 0, 16), /DEVICE_APPROVAL_REQUIRED/);
+      await assert.rejects(service.listGroupMembers(channelId, dave.user.id, d1.id, 1), /DEVICE_APPROVAL_REQUIRED/);
+      assert.equal((await group.commit(b1, { remove: [d1] })).response.status, 201);
+      assert.equal((await db.execute(sql`select removed_version as "removedVersion" from mls_group_members
+        where channel_id = ${channelId} and device_id = ${d1.id}`)).rows[0].removedVersion, 2);
+      assert.equal((await postMessage(o1, channelId, key, 2)).status, 201);
+
+      // A file keeps its message's version only while nobody left since.
+      await assert.rejects(attachmentGate(o1, channelId, 1, 1), /KEY_ROTATION_REQUIRED/);
+      await attachmentGate(o1, channelId, 2, 2);
+      await assert.rejects(attachmentGate(o1, channelId, 2, 1), /INVALID_KEY_VERSION/);
+      // A rejoin removes and adds the same device in one commit.
+      assert.equal((await publishPackage(c1, channelId, { rejoin: true })).status, 201);
+      assert.equal((await group.commit(o1, { remove: [c1], add: [c1] })).response.status, 201);
+      await attachmentGate(o1, channelId, 2, 2);
+      assert.deepEqual((await json<Array<{ version: number }>>(await request(`/api/channels/${channelId}/mls/group/commits?after=1`, { cookie: carol.cookie })))
+        .map((entry) => entry.version), [2, 3]);
+
+      // A member whose user lost access blocks writes the same way.
+      assert.equal((await request(`/api/channels/${channelId}/members/${bob.user.id}`, { method: 'DELETE', cookie: owner.cookie })).status, 200);
+      const since = (await db.execute(sql`select remove_required_at as "since" from mls_groups where channel_id = ${channelId}`)).rows[0].since;
+      assert.ok(since, 'the group records since when a remove is due');
+      response = await postMessage(o1, channelId, key, 3);
+      assert.deepEqual([response.status, (await json<{ code: string }>(response)).code], [400, 'KEY_ROTATION_REQUIRED']);
+      assert.equal((await request(`/api/channels/${channelId}/mls/group/commits?after=0`, { cookie: bob.cookie })).status, 404);
+      assert.equal((await group.commit(o1, { remove: [b1] })).response.status, 201);
+      assert.equal((await db.execute(sql`select remove_required_at as "since" from mls_groups where channel_id = ${channelId}`)).rows[0].since, null);
+      assert.equal((await postMessage(o1, channelId, key, 4)).status, 201);
+    });
+
+    it('restarts a group only when permitted and records who left', async () => {
+      const { db } = await import('../db/index.js');
+      const channelId = await groupChannel('restart');
+      for (const device of [o1, b1, c1]) await publishPackage(device, channelId);
+      const group = new GroupRun(channelId);
+      assert.equal((await group.create(o1, [b1, c1])).response.status, 201);
+
+      await publishPackage(b1, channelId, { rejoin: true });
+      const restart = await group.create(b1, [], { post: false });
+      let response = await postCommit(b1, restart.commit);
+      assert.deepEqual([response.status, (await json<{ code: string }>(response)).code], [403, 'KEY_FRESH_START_REQUIRED']);
+      response = await postCommit(b1, restart.commit, true);
+      assert.deepEqual([response.status, (await json<{ code: string }>(response)).code], [409, 'KEY_FRESH_START_NOT_REQUIRED']);
+      // Nobody usable has been online for three days.
+      await db.execute(sql`update mls_group_members set last_seen_at = now() - interval '73 hours' where channel_id = ${channelId}`);
+      assert.equal((await groupState(bob, channelId)).historyRecoveryRequired, true);
+      response = await postCommit(b1, restart.commit, true);
+      assert.equal(response.status, 201);
+      await group.adopt(restart);
+
+      const removed = (await db.execute(sql`select device_id as "deviceId" from mls_group_members
+        where channel_id = ${channelId} and removed_version = 2 order by device_id`)).rows.map((row: any) => row.deviceId);
+      assert.deepEqual(removed, [o1.id, b1.id, c1.id].sort());
+      const audit = (await db.execute(sql`select details from audit_logs
+        where action = 'channel.key.group.fresh_start' and target_id = ${channelId}`)).rows[0] as { details: { removed: string[]; added: string[] } };
+      assert.deepEqual(audit.details.removed, [o1.id, b1.id, c1.id].sort());
+      assert.deepEqual(audit.details.added, [b1.id]);
+      const state = await groupState(owner, channelId);
+      assert.equal(state.group.genesisVersion, 2);
+      assert.equal(state.ownMembership, null);
+      assert.deepEqual((await json<Array<{ version: number }>>(await request(`/api/channels/${channelId}/mls/group/commits?after=1`, { cookie: owner.cookie })))
+        .map((entry) => entry.version), [2], 'a former member sees the version that removed it');
+      assert.equal((await postMessage(b1, channelId, randomBytes(32), 2)).status, 201);
+    });
+
+    // === helpers ===
+
+    async function groupDevice(account: Account, name: string): Promise<GroupDevice> {
+      const keys = deviceFixture();
+      const device = await registerDevice(account, keys, name);
+      return { id: device.id, userId: account.user.id, identityKey: device.identityKey, keys, account, packages: new Map() };
+    }
+
+    async function groupChannel(name: string, isPrivate = false): Promise<string> {
+      const response = await request(`/api/workspaces/${workspaceId}/channels`, {
+        method: 'POST', cookie: owner.cookie, body: { name, isPrivate },
+      });
+      assert.equal(response.status, 201);
+      return (await json<{ id: string }>(response)).id;
+    }
+
+    async function groupState(account: Account, channelId: string): Promise<any> {
+      const response = await request(`/api/channels/${channelId}/key-recipients`, { cookie: account.cookie });
+      assert.equal(response.status, 200);
+      return response.json();
+    }
+
+    function signPackage(device: GroupDevice, channelId: string, id: string, pub: KeyPackage, priv: PrivateKeyPackage): GroupPackage {
+      const encoded = b64(encodeMlsMessage({ version: 'mls10', wireformat: 'mls_key_package', keyPackage: pub }));
+      const signature = sign('sha256', Buffer.from(serializeMlsMemberPackage(channelId, { deviceId: device.id, packageId: id, keyPackage: encoded })), {
+        key: device.keys.signingPrivateKey, dsaEncoding: 'ieee-p1363',
+      }).toString('base64');
+      return { id, pub, priv, encoded, signature };
+    }
+
+    async function newGroupPackage(device: GroupDevice, channelId: string, lifetime: { notAfter?: bigint } = {}): Promise<GroupPackage> {
+      const now = BigInt(Math.floor(Date.now() / 1000));
+      const pair = await generateKeyPackage(
+        { credentialType: 'basic', identity: textEncoder.encode(device.id) },
+        { versions: ['mls10'], ciphersuites: [MLS_CIPHERSUITE], extensions: [], proposals: [], credentials: ['basic'] },
+        { notBefore: now - 900n, notAfter: now + (lifetime.notAfter ?? 604800n) },
+        [],
+        suite,
+      );
+      return signPackage(device, channelId, randomUUID(), pair.publicPackage, pair.privatePackage);
+    }
+
+    /** A correctly signed package whose leaf reuses `hpkeKey`. */
+    async function packageWithLeafKey(device: GroupDevice, channelId: string, hpkeKey: Uint8Array): Promise<GroupPackage> {
+      const base = await newGroupPackage(device, channelId);
+      const leafNode = await signLeafNodeKeyPackage({ ...base.pub.leafNode, hpkePublicKey: hpkeKey }, base.priv.signaturePrivateKey, suite.signature);
+      const pub = await signKeyPackage({
+        version: 'mls10', cipherSuite: suite.name, initKey: base.pub.initKey, leafNode, extensions: [],
+      }, base.priv.signaturePrivateKey, suite.signature);
+      return signPackage(device, channelId, randomUUID(), pub, base.priv);
+    }
+
+    async function publishPackage(device: GroupDevice, channelId: string, options: { pkg?: GroupPackage; rejoin?: boolean } = {}) {
+      const pkg = options.pkg ?? await newGroupPackage(device, channelId);
+      const response = await request(`/api/channels/${channelId}/mls/group/packages`, {
+        method: 'POST',
+        cookie: device.account.cookie,
+        body: { packageId: pkg.id, keyPackage: pkg.encoded, signature: pkg.signature, ...(options.rejoin ? { rejoin: true } : {}) },
+      });
+      if (response.status === 201 || response.status === 200) device.packages.set(channelId, pkg);
+      return response;
+    }
+
+    async function postCommit(device: GroupDevice, commit: MlsGroupCommit, freshStart = false) {
+      const path = `/api/channels/${commit.channelId}/mls/group/${freshStart ? 'fresh-start' : 'commits'}`;
+      const freshStartSignature = sign('sha256', Buffer.from(serializeChannelKeyFreshStart({
+        channelId: commit.channelId, keyVersion: commit.version, keyCommitment: commit.keyCommitment, deviceId: device.id,
+      })), { key: device.keys.signingPrivateKey, dsaEncoding: 'ieee-p1363' }).toString('base64');
+      return request(path, {
+        method: 'POST',
+        cookie: device.account.cookie,
+        body: freshStart ? { commit, freshStartSignature } : { commit },
+      });
+    }
+
+    function postMessage(device: GroupDevice, channelId: string, key: Buffer, keyVersion: number) {
+      const { body } = encryptedMessage(channelId, device.userId, device.id, device.keys.signingPrivateKey, key, 'hello', undefined, keyVersion);
+      return request(`/api/channels/${channelId}/messages`, { method: 'POST', cookie: device.account.cookie, body });
+    }
+
+    /** The write gate as attachment finalization runs it. */
+    async function attachmentGate(device: GroupDevice, channelId: string, keyVersion: number, parentKeyVersion: number) {
+      const { db } = await import('../db/index.js');
+      const { channels: channelTable } = await import('../db/schema.js');
+      const { authorizeGroupWrite } = await import('../services/mls-group-gate.js');
+      await db.transaction(async (tx) => {
+        const channel = (await tx.query.channels.findFirst({ where: eq(channelTable.id, channelId) }))!;
+        await authorizeGroupWrite(tx, { channel, userId: device.userId, deviceId: device.id, keyVersion, parentKeyVersion });
+      });
+    }
+
+    /** One channel's group as its member devices hold it. */
+    class GroupRun {
+      states = new Map<string, ClientState>();
+      leaves = new Map<string, number>();
+      version = 0;
+      transcript = '0'.repeat(64);
+      genesis = 0;
+
+      constructor(readonly channelId: string) {}
+
+      async create(creator: GroupDevice, others: GroupDevice[], options: { post?: boolean } = {}) {
+        const version = this.version + 1;
+        const groupState = await createGroup(
+          textEncoder.encode(mlsGroupId(this.channelId, version)),
+          creator.packages.get(this.channelId)!.pub,
+          creator.packages.get(this.channelId)!.priv,
+          [],
+          suite,
+          clientConfig,
+        );
+        const result = await createCommit({ state: groupState, cipherSuite: suite }, {
+          wireAsPublicMessage: true,
+          ratchetTreeExtension: true,
+          extraProposals: others.map((device) => ({ proposalType: 'add' as const, add: { keyPackage: device.packages.get(this.channelId)!.pub } })),
+        });
+        const commit = await this.envelope('create', version, version, creator, result, [creator, ...others], []);
+        const created = { commit, result, creator, joined: others, removed: [] as GroupDevice[], response: undefined as unknown as Response };
+        if (options.post === false) return created;
+        created.response = await postCommit(creator, commit);
+        if (created.response.status === 201) await this.adopt(created);
+        return created;
+      }
+
+      async commit(
+        committer: GroupDevice,
+        change: { add?: GroupDevice[]; remove?: GroupDevice[] } = {},
+        options: { post?: boolean } = {},
+      ) {
+        const result = await createCommit({ state: this.states.get(committer.id)!, cipherSuite: suite }, {
+          wireAsPublicMessage: true,
+          ratchetTreeExtension: true,
+          extraProposals: [
+            ...(change.remove ?? []).map((device) => ({ proposalType: 'remove' as const, remove: { removed: this.leaves.get(device.id)! } })),
+            ...(change.add ?? []).map((device) => ({ proposalType: 'add' as const, add: { keyPackage: device.packages.get(this.channelId)!.pub } })),
+          ],
+        });
+        const commit = await this.envelope('commit', this.version + 1, this.genesis, committer, result, change.add ?? [], change.remove ?? []);
+        const made = { commit, result, creator: committer, joined: change.add ?? [], removed: change.remove ?? [], response: undefined as unknown as Response };
+        if (options.post === false) return made;
+        made.response = await postCommit(committer, commit);
+        if (made.response.status === 201) await this.adopt(made);
+        return made;
+      }
+
+      /** Every member processes an accepted commit; added devices join from its Welcome. */
+      async adopt(accepted: { commit: MlsGroupCommit; result: CommitResult; creator: GroupDevice; joined: GroupDevice[]; removed: GroupDevice[] }) {
+        if (accepted.commit.kind === 'create') {
+          this.states.clear();
+          this.genesis = accepted.commit.version;
+        } else {
+          const message = decodeMlsMessage(Buffer.from(accepted.commit.commit, 'base64'), 0)![0] as unknown as MlsPublicMessage;
+          for (const [deviceId, state] of this.states) {
+            if (deviceId === accepted.creator.id || accepted.removed.some((device) => device.id === deviceId)) continue;
+            const processed = await processMessage(message, state, makePskIndex(state, {}), acceptAll, suite);
+            assert.equal(processed.kind, 'newState');
+            this.states.set(deviceId, processed.newState);
+          }
+          for (const device of accepted.removed) this.states.delete(device.id);
+        }
+        this.states.set(accepted.creator.id, accepted.result.newState);
+        for (const device of accepted.joined) {
+          const pkg = device.packages.get(this.channelId)!;
+          this.states.set(device.id, await joinGroup(accepted.result.welcome!, pkg.pub, pkg.priv, emptyPskIndex, suite, undefined, undefined, clientConfig));
+        }
+        this.leaves = new Map(accepted.commit.members.map((member) => [member.deviceId, member.leafIndex]));
+        this.version = accepted.commit.version;
+        this.transcript = createHash('sha256').update(serializeMlsGroupCommit(accepted.commit)).digest('hex');
+      }
+
+      async envelope(
+        kind: 'create' | 'commit',
+        version: number,
+        genesis: number,
+        committer: GroupDevice,
+        result: CommitResult,
+        added: GroupDevice[],
+        removed: GroupDevice[],
+      ): Promise<MlsGroupCommit> {
+        const { db } = await import('../db/index.js');
+        const { directoryHead } = await import('../services/directory.service.js');
+        const groupId = mlsGroupId(this.channelId, genesis);
+        const raw = await mlsExporter(result.newState.keySchedule.exporterSecret, MLS_GROUP_EXPORTER_LABEL,
+          textEncoder.encode(mlsExporterContext(groupId, version)), 32, suite);
+        const members: MlsGroupCommit['members'] = [];
+        for (let index = 0; index < result.newState.ratchetTree.length; index += 2) {
+          const node = result.newState.ratchetTree[index];
+          if (node?.nodeType !== 'leaf' || node.leaf.credential.credentialType !== 'basic') continue;
+          const deviceId = new TextDecoder().decode(node.leaf.credential.identity);
+          const device = [o1, b1, c1, d1].find((candidate) => candidate.id === deviceId)!;
+          members.push({ deviceId, userId: device.userId, leafIndex: index / 2 });
+        }
+        const unsigned: Omit<MlsGroupCommit, 'signature'> = {
+          channelId: this.channelId,
+          version,
+          previousVersion: this.version,
+          previousTranscript: this.transcript,
+          groupId,
+          epoch: version - genesis + 1,
+          kind,
+          keyCommitment: createHash('sha256').update(raw).digest('base64url'),
+          commit: b64(encodeMlsMessage(result.commit)),
+          welcome: result.welcome ? b64(encodeMlsMessage({ version: 'mls10', wireformat: 'mls_welcome', welcome: result.welcome })) : '',
+          added: added.map((device) => {
+            const pkg = device.packages.get(this.channelId)!;
+            return {
+              deviceId: device.id,
+              userId: device.userId,
+              identityKey: device.identityKey,
+              packageId: pkg.id,
+              keyPackage: pkg.encoded,
+              signature: pkg.signature,
+            };
+          }),
+          removed: removed.map((device) => device.id).sort(),
+          members,
+          directoryHeads: await Promise.all([...new Set(members.map((member) => member.userId))].sort()
+            .map((userId) => directoryHead(db, userId))),
+          committerDeviceId: committer.id,
+        };
+        return {
+          ...unsigned,
+          signature: sign('sha256', Buffer.from(serializeMlsGroupCommit(unsigned)), {
+            key: committer.keys.signingPrivateKey, dsaEncoding: 'ieee-p1363',
+          }).toString('base64'),
+        };
+      }
+    }
+  });
+
   it('fails the schema gate when the journal is intact but a catalog invariant is removed', async () => {
     const client = new pg.Client({ connectionString: process.env.DATABASE_URL });
     await client.connect();
@@ -3502,7 +4084,7 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
       await client.end();
     }
     const { checkDatabaseSchema } = await import('../db/index.js');
-    assert.equal(await checkDatabaseSchema(), 23);
+    assert.equal(await checkDatabaseSchema(), 24);
   });
 
   it('never re-signs a shortened audit chain after the external checkpoint anchor is deleted', async () => {

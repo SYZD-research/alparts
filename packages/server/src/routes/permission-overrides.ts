@@ -7,6 +7,7 @@ import { requireChannelPermission, requireWorkspacePermission } from '../middlew
 import * as overrideService from '../services/permission-override.service.js';
 import type { ChannelViewerEffect } from '../services/authorization.service.js';
 import { joinAuthorizedUserToChannelRoom, leaveUserChannelRooms } from '../websocket/room-membership.js';
+import { emitChannelKeyState, keyStateChannelIds } from '../websocket/key-state.js';
 
 const router = Router();
 const uuid = z.string().uuid();
@@ -195,14 +196,12 @@ async function applyRealtimeEffects(req: AuthRequest, effects: ChannelViewerEffe
     for (const userId of effect.gainedUserIds) {
       await joinAuthorizedUserToChannelRoom(io, userId, effect.channelId);
     }
-    if (effect.rotationRequired) {
-      io.to(`channel:${effect.channelId}`).emit('channel:key-rotation-required', { channelId: effect.channelId });
-    }
     io.to(`channel:${effect.channelId}`).emit('channel:permissions-updated', {
       channelId: effect.channelId,
       workspaceId: req.params.wid,
     });
   }
+  void emitChannelKeyState(io, keyStateChannelIds(effects));
   io.to(`workspace:${req.params.wid}`).emit('workspace:permissions-updated', { workspaceId: req.params.wid });
 }
 

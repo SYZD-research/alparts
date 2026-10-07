@@ -14,9 +14,18 @@ import {
   MAX_MLS_KEY_PACKAGE_LENGTH,
   MAX_WORKSPACE_MEMBERS,
   MLS_CIPHERSUITE,
+  mlsGroupId,
+  type MlsGroupCommit,
 } from '@alparts/shared';
 import { validateMlsKeyPackage } from '../security/mls-package.js';
-import { MLS_EPOCH_BODY_BYTES, mlsEpochProposal } from './mls-schema.js';
+import { decodeGroupCommit, decodeGroupWelcome, readMemberPackage } from '../security/mls-group-commit.js';
+import { assertCommitStructure } from '../services/mls-group-rules.js';
+import {
+  MLS_EPOCH_BODY_BYTES,
+  mlsEpochProposal,
+  mlsGroupCommitRequest,
+  mlsGroupFreshStartRequest,
+} from './mls-schema.js';
 
 const encoder = new TextEncoder();
 const base64 = (bytes: Uint8Array) => Buffer.from(bytes).toString('base64');
@@ -97,5 +106,71 @@ describe('MLS epoch proposal bounds', () => {
 
     assert.equal(mlsEpochProposal.safeParse(body).success, true);
     assert.ok(Buffer.byteLength(JSON.stringify(body)) <= MLS_EPOCH_BODY_BYTES);
+  });
+});
+
+describe('MLS group commit bounds', () => {
+  it('accepts a group created with the largest allowed roster', async () => {
+    const cs = await getCiphersuiteImpl(getCiphersuiteFromName(MLS_CIPHERSUITE));
+    const now = BigInt(Math.floor(Date.now() / 1000));
+    const users = Array.from({ length: MAX_WORKSPACE_MEMBERS }, () => randomUUID());
+    const sharedIdentityKey = await identityKey();
+    const devices = await Promise.all(Array.from({ length: MAX_KEY_RECIPIENTS }, async (_, index) => {
+      const deviceId = randomUUID();
+      const pair = await generateKeyPackage(
+        { credentialType: 'basic', identity: encoder.encode(deviceId) },
+        { versions: ['mls10'], ciphersuites: [MLS_CIPHERSUITE], extensions: [], proposals: [], credentials: ['basic'] },
+        { notBefore: now - 900n, notAfter: now + 604800n },
+        [],
+        cs,
+      );
+      const keyPackage = base64(encodeMlsMessage({ version: 'mls10', wireformat: 'mls_key_package', keyPackage: pair.publicPackage }));
+      return { deviceId, userId: users[index % users.length], pair, keyPackage };
+    }));
+    const channelId = randomUUID();
+    const groupId = mlsGroupId(channelId, 3);
+    const [creator, ...others] = devices;
+    const group = await createGroup(encoder.encode(groupId), creator.pair.publicPackage, creator.pair.privatePackage, [], cs);
+    const result = await createCommit({ state: group, cipherSuite: cs }, {
+      wireAsPublicMessage: true,
+      ratchetTreeExtension: true,
+      extraProposals: others.map((device) => ({ proposalType: 'add' as const, add: { keyPackage: device.pair.publicPackage } })),
+    });
+    assert.ok(result.welcome);
+    const commit: MlsGroupCommit = {
+      channelId,
+      version: 3,
+      previousVersion: 2,
+      previousTranscript: 'a'.repeat(64),
+      groupId,
+      epoch: 1,
+      kind: 'create',
+      keyCommitment: 'b'.repeat(43),
+      commit: base64(encodeMlsMessage(result.commit)),
+      welcome: base64(encodeMlsMessage({ version: 'mls10', wireformat: 'mls_welcome', welcome: result.welcome })),
+      added: devices.map((device) => ({
+        deviceId: device.deviceId,
+        userId: device.userId,
+        identityKey: sharedIdentityKey,
+        packageId: randomUUID(),
+        keyPackage: device.keyPackage,
+        signature: fakeSignature(),
+      })),
+      removed: [],
+      members: devices.map((device, leafIndex) => ({ deviceId: device.deviceId, userId: device.userId, leafIndex })),
+      directoryHeads: [...users].sort().map((userId) => ({ userId, sequence: 1, hash: 'c'.repeat(64) })),
+      committerDeviceId: creator.deviceId,
+      signature: fakeSignature(),
+    };
+
+    for (const body of [{ commit }, { commit, freshStartSignature: fakeSignature() }]) {
+      assert.ok(Buffer.byteLength(JSON.stringify(body)) <= MLS_EPOCH_BODY_BYTES);
+    }
+    assert.equal(mlsGroupCommitRequest.safeParse({ commit }).success, true);
+    assert.equal(mlsGroupFreshStartRequest.safeParse({ commit, freshStartSignature: fakeSignature() }).success, true);
+    assert.equal(mlsGroupCommitRequest.safeParse({ commit, freshStartSignature: fakeSignature() }).success, false);
+    // The server reads the full-size envelope without group secrets.
+    const keys = await Promise.all(commit.added.map((entry) => readMemberPackage(entry.keyPackage, entry.deviceId)));
+    assertCommitStructure(commit, await decodeGroupCommit(commit.commit), decodeGroupWelcome(commit.welcome), keys);
   });
 });

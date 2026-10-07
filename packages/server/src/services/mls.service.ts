@@ -243,14 +243,18 @@ export async function getMlsEpoch(
       or exists (select 1 from ancestors where version = ${version})`);
     // A newly approved device needs the active signed predecessor to build a
     // fresh proposal. Older unrelated/aborted proposals remain inaccessible.
-    if (version !== state.currentVersion && !allowed.rows.length) throw new Error('MLS_NOT_FOUND');
+    // Continuous groups (protocol 4) are read only through the commit log,
+    // which limits each device to the versions it was a member of.
+    const currentShortcut = version === state.currentVersion && state.protocolVersion === 3;
+    if (!currentShortcut && !allowed.rows.length) throw new Error('MLS_NOT_FOUND');
+    const epoch = await tx.query.channelKeyEpochs.findFirst({
+      where: and(eq(channelKeyEpochs.channelId, channelId), eq(channelKeyEpochs.version, version)),
+    });
+    if (!epoch || epoch.protocolVersion > 3) throw new Error('MLS_NOT_FOUND');
     const row = await tx.query.mlsEpochs.findFirst({
       where: and(eq(mlsEpochs.channelId, channelId), eq(mlsEpochs.version, version)),
     });
     if (!row) throw new Error('MLS_NOT_FOUND');
-    const epoch = await tx.query.channelKeyEpochs.findFirst({
-      where: and(eq(channelKeyEpochs.channelId, channelId), eq(channelKeyEpochs.version, version)),
-    });
-    return { ...row, status: epoch?.status };
+    return { ...row, status: epoch.status };
   });
 }

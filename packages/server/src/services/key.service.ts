@@ -1,7 +1,7 @@
 import { actionPurpose } from '../security/action-purpose.js';
 import { assertFreshStartStepUp, type StepUpProof } from './passkey.service.js';
 import { createHash } from 'node:crypto';
-import { serializeMlsEpoch, type MlsEpoch } from '@alparts/shared';
+import { GROUP_PROTOCOL_VERSION, serializeMlsEpoch, type MlsEpoch } from '@alparts/shared';
 import { validateAndStoreMlsEpoch } from './mls.service.js';
 import { and, asc, desc, eq, inArray, isNotNull, isNull, ne, or, sql } from 'drizzle-orm';
 import { Permissions } from '@alparts/shared';
@@ -48,15 +48,12 @@ import {
   nextChannelKeyVersion,
 } from './key-epoch-state.js';
 import { assertCurrentPasswordSnapshot } from './auth.service.js';
+import { getEligibleDevicesFromStore, loadGroupSnapshot } from './mls-group-state.js';
+import { describeGroupState, LAST_SEEN_INTERVAL_MS, type EligibleDevice } from './mls-group-rules.js';
+import { touchGroupMember } from './mls-group-heartbeat.js';
 
 const KEY_PROTOCOL_VERSION = 2;
 const MAX_KEY_VERSION = 1_000_000;
-
-interface EligibleDevice {
-  id: string;
-  userId: string;
-  identityKey: string;
-}
 
 interface WrappedKeyInput {
   deviceId: string;
@@ -71,15 +68,25 @@ interface FreshStartAuthorization {
 }
 
 export async function getKeyRecipients(channelId: string, userId: string, senderDeviceId?: string) {
-  return db.transaction(async (tx) => {
+  const { state, ownLastSeenAt } = await db.transaction(async (tx) => {
     const channel = await tx.query.channels.findFirst({ where: eq(channels.id, channelId) });
     if (!channel) throw new Error('CHANNEL_NOT_FOUND');
     await lockWorkspaceForAuthorization(tx, channel.workspaceId, 'share');
-    return getKeyRecipientsFromStore(tx as unknown as typeof db, channelId, userId, senderDeviceId);
+    return readKeyRecipientState(tx as unknown as typeof db, channelId, userId, senderDeviceId);
   });
+  // A member that reads the state is online; fresh start for idle groups
+  // (§5.3.4 a) counts from this heartbeat.
+  if (senderDeviceId && ownLastSeenAt && Date.now() - ownLastSeenAt.getTime() >= LAST_SEEN_INTERVAL_MS) {
+    await touchGroupMember(channelId, senderDeviceId);
+  }
+  return state;
 }
 
 export async function getKeyRecipientsFromStore(store: typeof db, channelId: string, userId: string, senderDeviceId?: string) {
+  return (await readKeyRecipientState(store, channelId, userId, senderDeviceId)).state;
+}
+
+async function readKeyRecipientState(store: typeof db, channelId: string, userId: string, senderDeviceId?: string) {
   const authorization = await getChannelAuthorizationFromStore(store, userId, channelId);
   if (!isVisibleChannelAuthorization(authorization)) throw new Error('CHANNEL_NOT_FOUND');
   const channel = await store.query.channels.findFirst({ where: eq(channels.id, channelId) });
@@ -93,127 +100,69 @@ export async function getKeyRecipientsFromStore(store: typeof db, channelId: str
     .orderBy(asc(devices.id));
   if (recipientDevices.length > MAX_KEY_RECIPIENTS) throw new Error('KEY_RECIPIENT_LIMIT');
 
+  const snapshot = await loadGroupSnapshot(store, channelId, recipientDevices.map((device) => device.id));
   const activeEpoch = await store.query.channelKeyEpochs.findFirst({
     where: and(eq(channelKeyEpochs.channelId, channelId), eq(channelKeyEpochs.status, 'active')),
   });
-  const pendingEpoch = await store.query.channelKeyEpochs.findFirst({
-    where: and(eq(channelKeyEpochs.channelId, channelId), eq(channelKeyEpochs.status, 'pending')),
-  });
-  const latestEpoch = await store.query.channelKeyEpochs.findFirst({
-    columns: { version: true },
-    where: eq(channelKeyEpochs.channelId, channelId),
-    orderBy: [desc(channelKeyEpochs.version)],
-  });
-
-  const activeAcknowledgements = activeEpoch ? await store.query.channelKeyEpochRecipients.findMany({
-    columns: { deviceId: true },
-    where: and(
-      eq(channelKeyEpochRecipients.channelId, channelId),
-      eq(channelKeyEpochRecipients.version, activeEpoch.version),
-      isNotNull(channelKeyEpochRecipients.acceptedDeliveryId),
-    ),
-    limit: MAX_KEY_RECIPIENTS + 1,
-  }) : [];
+  // Pre-v4 holders stay visible for history; v4 members are the group roster.
+  const activeAcknowledgements = activeEpoch && activeEpoch.protocolVersion < 4
+    ? await store.query.channelKeyEpochRecipients.findMany({
+      columns: { deviceId: true },
+      where: and(
+        eq(channelKeyEpochRecipients.channelId, channelId),
+        eq(channelKeyEpochRecipients.version, activeEpoch.version),
+        isNotNull(channelKeyEpochRecipients.acceptedDeliveryId),
+      ),
+      limit: MAX_KEY_RECIPIENTS + 1,
+    })
+    : [];
   if (activeAcknowledgements.length > MAX_KEY_RECIPIENTS) throw new Error('KEY_RECIPIENT_INVARIANT_EXCEEDED');
-  const pendingRecipients = pendingEpoch ? await store.query.channelKeyEpochRecipients.findMany({
-    columns: {
-      deviceId: true,
-      userId: true,
-      requiredForActivation: true,
-      acceptedDeliveryId: true,
-    },
-    where: and(
-      eq(channelKeyEpochRecipients.channelId, channelId),
-      eq(channelKeyEpochRecipients.version, pendingEpoch.version),
-    ),
-    limit: MAX_KEY_RECIPIENTS + 1,
-  }) : [];
-  if (pendingRecipients.length > MAX_KEY_RECIPIENTS) throw new Error('KEY_RECIPIENT_INVARIANT_EXCEEDED');
-  const senderPendingRecipient = pendingEpoch && senderDeviceId
-    ? pendingRecipients.find((recipient) => (
-      recipient.deviceId === senderDeviceId && recipient.userId === userId
-    ))
-    : null;
-
-  const activeAcknowledgedDeviceIds = new Set(activeAcknowledgements.map((row) => row.deviceId));
-  const activeHasRevokedRecipient = activeEpoch
-    ? await hasRevokedEpochRecipient(store, channelId, activeEpoch.version)
-    : false;
-  const pendingHasRevokedRecipient = pendingEpoch
-    ? await hasRevokedEpochRecipient(store, channelId, pendingEpoch.version)
-    : false;
-  const activeRecipientRows = activeEpoch ? await store.select({ deviceId: channelKeyEpochRecipients.deviceId }).from(channelKeyEpochRecipients).where(and(eq(channelKeyEpochRecipients.channelId, channelId), eq(channelKeyEpochRecipients.version, activeEpoch.version))).limit(MAX_KEY_RECIPIENTS + 1) : [];
-  const effectiveRotationRequired = channel.keyRotationRequired || activeHasRevokedRecipient || !!(activeEpoch && (
-    activeEpoch.protocolVersion < 3 || Date.now() - activeEpoch.createdAt.getTime() >= 24 * 60 * 60_000
-    || activeRecipientRows.length !== recipientDevices.length || activeRecipientRows.some((r) => !recipientDevices.some((d) => d.id === r.deviceId))
-  ));
-  const activeHasEligibleHolder = recipientDevices.some((device) => (
-    activeAcknowledgedDeviceIds.has(device.id)
-  ));
-  // If every accepted holder is gone, preserving the old epoch is impossible.
-  // An authorized current device may create a fresh epoch for future writes;
-  // old ciphertext remains unavailable and is never silently re-encrypted.
-  const historyRecoveryRequired = Boolean(
-    activeEpoch && effectiveRotationRequired && !activeHasEligibleHolder
-  );
   const hasRotationPermission = channel.type === 'dm'
     || (authorization.permissions & Permissions.MANAGE_CHANNELS) === Permissions.MANAGE_CHANNELS;
-  const senderIsEligible = Boolean(senderDeviceId && recipientDevices.some(
-    (device) => device.id === senderDeviceId && device.userId === userId,
-  ));
-  const nextVersion = nextChannelKeyVersion(latestEpoch?.version);
-  const canRotate = Boolean(
-    !pendingEpoch
-    && nextVersion <= MAX_KEY_VERSION
-    && senderIsEligible
-    && (
-      !activeEpoch
-      || (
-        effectiveRotationRequired
-        && senderDeviceId
-        && (activeAcknowledgedDeviceIds.has(senderDeviceId) || (historyRecoveryRequired && hasRotationPermission))
-      )
-    )
-  );
-  const canAbortPending = Boolean(
-    pendingEpoch
-    && hasRotationPermission
-    && senderIsEligible
-    && (senderPendingRecipient || pendingHasRevokedRecipient || Date.now() - pendingEpoch.createdAt.getTime() >= 15 * 60_000)
-    && (
-      !activeEpoch
-      || Date.now() - pendingEpoch.createdAt.getTime() >= 15 * 60_000
-      || (senderDeviceId && activeAcknowledgedDeviceIds.has(senderDeviceId))
-      || historyRecoveryRequired
-      || pendingEpoch.distributorDeviceId === senderDeviceId
-    )
-  );
+  const nextVersion = nextChannelKeyVersion(snapshot.latestVersion);
+  const { ownLastSeenAt, ...group } = describeGroupState(channelId, snapshot, recipientDevices, {
+    userId,
+    deviceId: senderDeviceId,
+    hasRotationPermission,
+    now: Date.now(),
+  });
 
   return {
-    protocolVersion: activeEpoch?.protocolVersion ?? 3,
-    pendingProtocolVersion: pendingEpoch?.protocolVersion ?? null,
-    currentVersion: activeEpoch?.version ?? 0,
-    keyCommitment: activeEpoch?.keyCommitment ?? null,
-    pendingVersion: pendingEpoch?.version ?? null,
-    pendingKeyCommitment: pendingEpoch?.keyCommitment ?? null,
-    pendingInvalid: pendingHasRevokedRecipient,
-    pendingAcknowledgedDeviceIds: pendingRecipients.flatMap((recipient) => (
-      recipient.acceptedDeliveryId ? [recipient.deviceId] : []
-    )),
-    pendingRequiredDeviceIds: pendingRecipients.flatMap((recipient) => (
-      recipient.requiredForActivation ? [recipient.deviceId] : []
-    )),
-    nextVersion,
-    rotationRequired: effectiveRotationRequired,
-    historyRecoveryRequired,
-    canRotate,
-    canAbortPending,
-    distributedDeviceIds: [...activeAcknowledgedDeviceIds],
-    recipients: recipientDevices.map((device) => ({
-      deviceId: device.id,
-      userId: device.userId,
-      identityKey: device.identityKey,
-    })),
+    state: {
+      protocolVersion: activeEpoch?.protocolVersion ?? GROUP_PROTOCOL_VERSION,
+      // Provisional epochs ended with group protocol 4; these stay for old clients.
+      pendingProtocolVersion: null,
+      currentVersion: activeEpoch?.version ?? 0,
+      keyCommitment: activeEpoch?.keyCommitment ?? null,
+      pendingVersion: null,
+      pendingKeyCommitment: null,
+      pendingInvalid: false,
+      pendingAcknowledgedDeviceIds: [] as string[],
+      pendingRequiredDeviceIds: [] as string[],
+      nextVersion,
+      rotationRequired: group.rotationRequired,
+      historyRecoveryRequired: group.historyRecoveryRequired,
+      canRotate: nextVersion <= MAX_KEY_VERSION && (group.canCommit || group.canCreate),
+      canAbortPending: false,
+      distributedDeviceIds: group.group
+        ? group.group.members.map((member) => member.deviceId)
+        : activeAcknowledgements.map((row) => row.deviceId),
+      recipients: recipientDevices.map((device) => ({
+        deviceId: device.id,
+        userId: device.userId,
+        identityKey: device.identityKey,
+      })),
+      group: group.group,
+      ownMembership: group.ownMembership,
+      pendingAddDeviceIds: group.pendingAddDeviceIds,
+      requiredRemoveDeviceIds: group.requiredRemoveDeviceIds,
+      updateRequired: group.updateRequired,
+      ownLeafRefreshDue: group.ownLeafRefreshDue,
+      canCommit: group.canCommit,
+      canCreate: group.canCreate,
+      genesisWaiting: group.genesisWaiting,
+    },
+    ownLastSeenAt,
   };
 }
 
@@ -1107,22 +1056,6 @@ async function getRecipientUserIds(channelId: string): Promise<string[]> {
   return getChannelViewerIdsFromStore(db, channel);
 }
 
-async function getEligibleDevicesFromStore(
-  store: any,
-  channel: typeof channels.$inferSelect,
-): Promise<EligibleDevice[]> {
-  const recipientUserIds = await getChannelViewerIdsFromStore(store, channel);
-  if (recipientUserIds.length === 0) return [];
-  const result = await store.select({ id: devices.id, userId: devices.userId, identityKey: devices.identityKey })
-    .from(devices)
-    .where(and(inArray(devices.userId, recipientUserIds), isNull(devices.revokedAt), isNotNull(devices.approvedAt)))
-    .orderBy(asc(devices.id))
-    .limit(MAX_KEY_RECIPIENTS + 1)
-    .for('share') as EligibleDevice[];
-  if (result.length > MAX_KEY_RECIPIENTS) throw new Error('KEY_RECIPIENT_INVARIANT_EXCEEDED');
-  return result;
-}
-
 async function hasAcceptedEpoch(
   store: any,
   channelId: string,
@@ -1161,7 +1094,7 @@ async function hasAnyAcceptedEpochRecipient(
   return Boolean(recipient);
 }
 
-async function channelManagersToNotify(store: any, workspaceId: string, actorId: string): Promise<string[]> {
+export async function channelManagersToNotify(store: any, workspaceId: string, actorId: string): Promise<string[]> {
   const snapshot = await loadWorkspaceAuthorizationSnapshot(store, workspaceId, []);
   if (!snapshot) return [];
   return [...snapshot.membersByUserId.keys()].filter((memberId) => {

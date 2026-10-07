@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { authMiddleware, type AuthRequest } from '../middleware/auth.js';
 import { rateLimit } from '../middleware/rate-limit.js';
 import * as service from '../services/recovery.service.js';
+import { emitUserKeyState } from '../websocket/key-state.js';
 const router = Router();
 router.use(authMiddleware);
 router.use(
@@ -150,6 +151,7 @@ router.post(
         .get('io')
         ?.to(`workspace:${workspaceId}`)
         .emit('workspace:key-state-dirty', { workspaceId });
+    void emitUserKeyState(req.app.get('io'), req.userId!, result.dirtyWorkspaceIds);
     res.json({ success: true });
   }),
 );

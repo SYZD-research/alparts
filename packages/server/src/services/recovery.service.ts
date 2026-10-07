@@ -1,5 +1,5 @@
 import { createHash, timingSafeEqual, createPublicKey, verify } from 'node:crypto';
-import { and, asc, eq, gt, isNotNull, isNull, or, sql } from 'drizzle-orm';
+import { and, asc, eq, gt, isNotNull, isNull, lte, or, sql } from 'drizzle-orm';
 import { serializeDeviceDecision, type DirectoryHead, type DirectoryEvent } from '@alparts/shared';
 import { db } from '../db/index.js';
 import {
@@ -8,6 +8,7 @@ import {
   historyRecoveryKeys,
   channelKeyEpochRecipients,
   channelKeyEpochs,
+  mlsGroupMembers,
   passkeys,
 } from '../db/schema.js';
 import { config as serverConfig } from '../config/index.js';
@@ -323,7 +324,10 @@ export async function backupHistoryKeys(
               isNotNull(channelKeyEpochRecipients.acceptedDeliveryId),
             ),
           );
-        if (!accepted || accepted.commitment !== input.keyCommitment)
+        // A continuous-group version is held by every device that was a
+        // member of the group at that version.
+        const commitment = accepted?.commitment ?? (await groupMemberCommitment(tx, userId, input));
+        if (!commitment || commitment !== input.keyCommitment)
           throw new Error('INVALID_RECOVERY');
         const existing = await tx.query.historyRecoveryKeys.findFirst({
           where: and(
@@ -404,29 +408,32 @@ export async function historyBackupCandidates(
   cursor?: { channelId: string; version: number },
 ) {
   await requireApprovedDevice(db, userId, sessionId);
-  const rows = await db
-    .selectDistinct({
-      channelId: channelKeyEpochRecipients.channelId,
-      version: channelKeyEpochRecipients.version,
-    })
-    .from(channelKeyEpochRecipients)
-    .where(
-      and(
-        eq(channelKeyEpochRecipients.userId, userId),
-        isNotNull(channelKeyEpochRecipients.acceptedDeliveryId),
-        cursor
-          ? or(
-              gt(channelKeyEpochRecipients.channelId, cursor.channelId),
-              and(
-                eq(channelKeyEpochRecipients.channelId, cursor.channelId),
-                gt(channelKeyEpochRecipients.version, cursor.version),
-              ),
-            )
-          : undefined,
-      ),
-    )
-    .orderBy(asc(channelKeyEpochRecipients.channelId), asc(channelKeyEpochRecipients.version))
-    .limit(64);
+  // Acknowledged per-epoch deliveries, and every continuous-group version at
+  // which one of the user's devices was a member.
+  const after = cursor
+    ? sql`where (candidate.channel_id > ${cursor.channelId}::uuid
+        or (candidate.channel_id = ${cursor.channelId}::uuid and candidate.version > ${cursor.version}))`
+    : sql``;
+  const result = (await db.execute(sql`
+    select candidate.channel_id as "channelId", candidate.version
+    from (
+      select recipient.channel_id, recipient.version
+      from channel_key_epoch_recipients recipient
+      where recipient.user_id = ${userId} and recipient.accepted_delivery_id is not null
+      union
+      select epoch.channel_id, epoch.version
+      from channel_key_epochs epoch
+      join mls_group_members member on member.channel_id = epoch.channel_id
+        and member.user_id = ${userId}
+        and member.joined_version <= epoch.version
+        and (member.removed_version is null or epoch.version < member.removed_version)
+      where epoch.protocol_version = 4
+    ) candidate
+    ${after}
+    order by candidate.channel_id asc, candidate.version asc
+    limit 64
+  `)) as { rows: Array<{ channelId: string; version: number }> };
+  const rows = result.rows.map((row) => ({ channelId: row.channelId, version: Number(row.version) }));
   const candidates = [];
   for (const row of rows)
     if (
@@ -436,6 +443,37 @@ export async function historyBackupCandidates(
     )
       candidates.push(row);
   return { candidates, cursor: rows.length === 64 ? rows.at(-1)! : null };
+}
+
+async function groupMemberCommitment(
+  tx: any,
+  userId: string,
+  input: Pick<HistoryKeyBackup, 'channelId' | 'version'>,
+): Promise<string | null> {
+  const [held] = await tx
+    .select({ commitment: channelKeyEpochs.keyCommitment })
+    .from(channelKeyEpochs)
+    .innerJoin(
+      mlsGroupMembers,
+      and(
+        eq(mlsGroupMembers.channelId, channelKeyEpochs.channelId),
+        eq(mlsGroupMembers.userId, userId),
+        lte(mlsGroupMembers.joinedVersion, channelKeyEpochs.version),
+        or(
+          isNull(mlsGroupMembers.removedVersion),
+          gt(mlsGroupMembers.removedVersion, channelKeyEpochs.version),
+        ),
+      ),
+    )
+    .where(
+      and(
+        eq(channelKeyEpochs.channelId, input.channelId),
+        eq(channelKeyEpochs.version, input.version),
+        eq(channelKeyEpochs.protocolVersion, 4),
+      ),
+    )
+    .limit(1);
+  return held?.commitment ?? null;
 }
 
 export async function disableRecovery(
