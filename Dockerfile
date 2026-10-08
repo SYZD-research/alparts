@@ -1,14 +1,18 @@
 FROM node:24-alpine3.22@sha256:191c9f0080fcbbc6547a85dc0ff7988072214a355aabdc1d2ec55a7dae5eea8a AS build
 
 WORKDIR /app
-RUN apk add --no-cache 'libcrypto3=3.5.9-r0' 'libssl3=3.5.9-r0'
+# mediasoup publishes no musl worker binary, so it is built from source here.
+RUN apk add --no-cache 'libcrypto3=3.5.9-r0' 'libssl3=3.5.9-r0' \
+    python3 py3-pip make gcc g++ linux-headers
+ENV MEDIASOUP_SKIP_WORKER_PREBUILT_DOWNLOAD=true
 RUN corepack enable
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
 COPY packages/shared/package.json packages/shared/package.json
 COPY packages/server/package.json packages/server/package.json
 COPY packages/client/package.json packages/client/package.json
-RUN pnpm install --frozen-lockfile
+RUN pnpm install --frozen-lockfile \
+    && cp packages/server/node_modules/mediasoup/worker/out/Release/mediasoup-worker /app/mediasoup-worker
 
 COPY packages ./packages
 RUN pnpm build
@@ -16,12 +20,10 @@ RUN pnpm build
 FROM node:24-alpine3.22@sha256:191c9f0080fcbbc6547a85dc0ff7988072214a355aabdc1d2ec55a7dae5eea8a AS runtime
 
 ENV NODE_ENV=production \
-    BIND_HOST=127.0.0.1
+    BIND_HOST=127.0.0.1 \
+    MEDIASOUP_WORKER_BIN=/app/mediasoup-worker
 WORKDIR /app
-RUN apk add --no-cache \
-    'libcrypto3=3.5.9-r0' 'libssl3=3.5.9-r0' \
-    python3 py3-pip gcc g++ make linux-headers
-ENV MEDIASOUP_SKIP_WORKER_PREBUILT_DOWNLOAD=true
+RUN apk add --no-cache 'libcrypto3=3.5.9-r0' 'libssl3=3.5.9-r0'
 RUN corepack enable
 RUN mkdir -p /var/lib/alparts-audit && chown node:node /var/lib/alparts-audit
 
@@ -34,6 +36,7 @@ RUN pnpm install --prod --frozen-lockfile --ignore-scripts --filter @alparts/ser
     && rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
       /opt/yarn-v1.22.22 /root/.cache /root/.local/share/pnpm
 
+COPY --from=build /app/mediasoup-worker /app/mediasoup-worker
 COPY --from=build /app/packages/shared/dist packages/shared/dist
 COPY --from=build /app/packages/server/dist packages/server/dist
 COPY --from=build /app/packages/server/src/db/migrations packages/server/migrations
