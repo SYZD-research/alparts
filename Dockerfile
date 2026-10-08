@@ -18,7 +18,10 @@ FROM node:24-alpine3.22@sha256:191c9f0080fcbbc6547a85dc0ff7988072214a355aabdc1d2
 ENV NODE_ENV=production \
     BIND_HOST=127.0.0.1
 WORKDIR /app
-RUN apk add --no-cache 'libcrypto3=3.5.9-r0' 'libssl3=3.5.9-r0'
+RUN apk add --no-cache \
+    'libcrypto3=3.5.9-r0' 'libssl3=3.5.9-r0' \
+    python3 py3-pip gcc g++ make linux-headers
+ENV MEDIASOUP_SKIP_WORKER_PREBUILT_DOWNLOAD=true
 RUN corepack enable
 RUN mkdir -p /var/lib/alparts-audit && chown node:node /var/lib/alparts-audit
 
