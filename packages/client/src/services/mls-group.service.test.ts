@@ -1106,7 +1106,7 @@ describe('background maintenance', () => {
     await new Promise((resolve) => setTimeout(resolve, 2_600));
     expect(server.latest()!.version).toBe(3);
     server.stateOverride = null;
-  });
+  }, 20_000);  // two real background delays (~2 s each) plus MLS commits; the 5 s default is too tight on CI
 
   it('publishes a package for channels the server lists', async () => {
     const alice = await newDevice('alice');
