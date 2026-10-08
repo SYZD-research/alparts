@@ -1,3 +1,4 @@
+import type { VoiceCoordinator } from '../voice/voice-coordinator.js';
 import type { Server as SocketServer } from 'socket.io';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
@@ -518,4 +519,192 @@ export function parseVoiceSignal(value: unknown): { envelope: SignedVoiceSignalE
   if (!parsed.success) return null;
   const { signature: signalSignature, ...envelope } = parsed.data;
   return { envelope: envelope as SignedVoiceSignalEnvelope, signature: signalSignature };
+}
+
+type VoiceSfuJoinAcknowledgement = (result:
+	| {
+		ok: true;
+		participantId: string;
+		rtpCapabilities: Awaited<ReturnType<VoiceCoordinator['joinParticipant']>>;
+	}
+	| {
+		ok: false;
+		error: 'INVALID_REQUEST' | 'ALREADY_JOINED' | 'FORBIDDEN' | 'VOICE_CHANNEL_FULL' | 'SFU_UNAVAILABLE';
+	}
+) => void;
+
+export function attachVoiceSfuEvents(
+	io: SocketServer,
+	coordinator: VoiceCoordinator,
+): void {
+	const sessions = new Map<string, {
+		channelId: string;
+		participantId: string;
+	}>();
+
+	const release = (socketId: string): void => {
+		const session = sessions.get(socketId);
+
+		if (!session) {
+			return;
+		}
+
+		sessions.delete(socketId);
+		coordinator.leaveParticipant(session.participantId);
+	};
+
+	io.of('/').adapter.on('leave-room', (room, socketId) => {
+		const session = sessions.get(socketId);
+
+		if (session && room === `channel:${session.channelId}`) {
+			release(socketId);
+		}
+	});
+
+	io.on('connection', (socket: AuthenticatedSocket) => {
+		socket.on('voice:sfu:join', async (
+			value: unknown,
+			acknowledge?: VoiceSfuJoinAcknowledgement,
+		) => {
+			if (!consumeSocketRate(socket, 'voice-sfu-join', 20, 60_000)) {
+				acknowledge?.({ ok: false, error: 'INVALID_REQUEST' });
+				return;
+			}
+
+			const parsed = joinSchema.safeParse(value);
+
+			if (!parsed.success) {
+				acknowledge?.({ ok: false, error: 'INVALID_REQUEST' });
+				return;
+			}
+
+			if (sessions.has(socket.id)) {
+				acknowledge?.({ ok: false, error: 'ALREADY_JOINED' });
+				return;
+			}
+
+			const session = {
+				channelId: parsed.data.channelId,
+				participantId: randomUUID(),
+			};
+
+			sessions.set(socket.id, session);
+
+			try {
+				const authorized = await authorizeSfuVoiceChannel(
+					socket,
+					session.channelId,
+				);
+
+				if (!authorized || sessions.get(socket.id) !== session) {
+					throw new Error('VOICE_SFU_FORBIDDEN');
+				}
+
+				const rtpCapabilities = await coordinator.joinParticipant(
+					session.channelId,
+					session.participantId,
+				);
+
+				if (
+					!socket.connected
+					|| sessions.get(socket.id) !== session
+					|| !socket.rooms.has(`channel:${session.channelId}`)
+				) {
+					throw new Error('VOICE_SFU_FORBIDDEN');
+				}
+
+				acknowledge?.({
+					ok: true,
+					participantId: session.participantId,
+					rtpCapabilities,
+				});
+			} catch (error) {
+				if (sessions.get(socket.id) === session) {
+					release(socket.id);
+				} else {
+					coordinator.leaveParticipant(session.participantId);
+				}
+
+				if (error instanceof Error && error.message === 'VOICE_CHANNEL_FULL') {
+					acknowledge?.({ ok: false, error: 'VOICE_CHANNEL_FULL' });
+				} else if (error instanceof Error && error.message === 'VOICE_SFU_FORBIDDEN') {
+					acknowledge?.({ ok: false, error: 'FORBIDDEN' });
+				} else {
+					logError('websocket.voice_sfu_join', error);
+					acknowledge?.({ ok: false, error: 'SFU_UNAVAILABLE' });
+				}
+			}
+		});
+
+		socket.on('voice:sfu:leave', (
+			value: unknown,
+			acknowledge?: BasicAcknowledgement,
+		) => {
+			const parsed = leaveSchema.safeParse(value);
+			const session = sessions.get(socket.id);
+
+			if (!parsed.success || session?.channelId !== parsed.data.channelId) {
+				acknowledge?.({ ok: false });
+				return;
+			}
+
+			release(socket.id);
+			acknowledge?.({ ok: true });
+		});
+
+		socket.once('disconnect', () => {
+			release(socket.id);
+		});
+	});
+}
+
+async function authorizeSfuVoiceChannel(
+	socket: AuthenticatedSocket,
+	channelId: string,
+): Promise<boolean> {
+	const required = Permissions.VIEW_CHANNELS | Permissions.CONNECT_VOICE;
+
+	if (!await authorizeSocketChannel(socket, channelId, required)) {
+		return false;
+	}
+
+	const location = await db.query.channels.findFirst({
+		columns: { workspaceId: true, type: true },
+		where: eq(channels.id, channelId),
+	});
+
+	if (!location || location.type !== 'voice') {
+		return false;
+	}
+
+	return db.transaction(async (transaction) => {
+		await lockWorkspaceForAuthorization(
+			transaction,
+			location.workspaceId,
+			'share',
+		);
+
+		const authorization = await getChannelAuthorizationFromStore(
+			transaction,
+			socket.userId!,
+			channelId,
+		);
+
+		if (
+			!socket.connected
+			|| authorization?.workspaceId !== location.workspaceId
+			|| !isVisibleChannelAuthorization(authorization)
+			|| (authorization.permissions & required) !== required
+		) {
+			return false;
+		}
+
+		const room = `channel:${channelId}`;
+
+		if (!socket.rooms.has(room)) {
+			await socket.join(room);
+		}
+
+		return socket.connected && socket.rooms.has(room);
+	});
 }
