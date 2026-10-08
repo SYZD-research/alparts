@@ -322,11 +322,11 @@ export class VoiceCoordinator {
 				await this.startPromise.catch(() => undefined);
 			}
 
-			for (const participantId of [...this.sessions.keys()]) {
-				this.leaveParticipant(participantId);
-			}
+			for (const participantId of this.sessions.keys()) {
+        this.leaveParticipant(participantId);
+      }
 
-			await Promise.allSettled([...this.pendingJoins]);
+			await Promise.allSettled(this.pendingJoins);
 
 			this.consumers.close();
 			this.producers.close();
