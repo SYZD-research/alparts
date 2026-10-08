@@ -3,7 +3,12 @@ import type { Attachment, Message } from '@alparts/shared';
 
 const mocks = vi.hoisted(() => {
   class ApiError extends Error {
-    constructor(message: string, readonly status: number, readonly code: string | null = null) {
+    constructor(
+      message: string,
+      readonly status: number,
+      readonly code: string | null = null,
+      readonly reason: string | null = null,
+    ) {
       super(message);
     }
   }
@@ -15,6 +20,7 @@ const mocks = vi.hoisted(() => {
   return {
     ApiError,
     messageState,
+    ensureChannelKey: vi.fn(async () => ({ key: {} as CryptoKey, version: 2 })),
     api: {
       getAttachmentUploadStatus: vi.fn(),
       putAttachmentChunk: vi.fn(async () => undefined),
@@ -27,6 +33,7 @@ const mocks = vi.hoisted(() => {
 vi.mock('../services/api', () => ({ api: mocks.api, ApiError: mocks.ApiError }));
 vi.mock('./message.store', () => ({ useMessageStore: { getState: () => mocks.messageState } }));
 vi.mock('../services/crypto.service', () => ({
+  ensureChannelKey: mocks.ensureChannelKey,
   getActiveDevice: () => ({ deviceId: 'device', userId: 'author' }),
   getChannelKeyForVersion: vi.fn(async () => ({}) as CryptoKey),
   signAttachmentEnvelope: vi.fn(async () => 'signature'),
@@ -144,5 +151,40 @@ describe('cancelling while the upload is being confirmed (SQ-24)', () => {
   it('offers no resume for a cancelled upload, whose file is no longer kept', () => {
     expect(attachmentTaskActions('cancelled').resume).toBe(false);
     expect(attachmentTaskActions('failed').resume).toBe(true);
+  });
+});
+
+describe('finalizing after the members of the channel changed', () => {
+  const refused = () => new mocks.ApiError('refused', 400, 'VALIDATION', 'KEY_ROTATION_REQUIRED');
+
+  it('brings the channel up to date once and finalizes again', async () => {
+    const attachment = { id: 'attachment', messageId: message.id } as unknown as Attachment;
+    mocks.api.finalizeAttachmentUpload.mockRejectedValueOnce(refused()).mockResolvedValueOnce(attachment);
+    await useAttachmentStore.getState().startUploads(message, [new File(['hello'], 'a.txt')]);
+    await until(() => onlyTask().status === 'completed');
+    expect(mocks.ensureChannelKey).toHaveBeenCalledWith(channelId, { purpose: 'write' });
+    expect(mocks.api.finalizeAttachmentUpload).toHaveBeenCalledTimes(2);
+  });
+
+  it('fails with a plain message when the server still refuses', async () => {
+    mocks.api.finalizeAttachmentUpload.mockRejectedValue(refused());
+    await useAttachmentStore.getState().startUploads(message, [new File(['hello'], 'a.txt')]);
+    await until(() => onlyTask().status === 'failed');
+    expect(mocks.api.finalizeAttachmentUpload).toHaveBeenCalledTimes(2);
+    expect(onlyTask().error).toBe('この会話のメンバーが変わったため、ファイルを送信できませんでした。もう一度送信してください。');
+    expect(onlyTask().resendRequired).toBe(true);
+    expect(attachmentTaskActions('failed', true).resume).toBe(false);
+  });
+
+  it('is not resumed on reconnect or by a retry once the server refused it for the changed members', async () => {
+    mocks.api.finalizeAttachmentUpload.mockRejectedValue(refused());
+    await useAttachmentStore.getState().startUploads(message, [new File(['hello'], 'a.txt')]);
+    await until(() => onlyTask().status === 'failed');
+    const finalized = mocks.api.finalizeAttachmentUpload.mock.calls.length;
+    useAttachmentStore.getState().resumeFailedUploads();
+    useAttachmentStore.getState().retryUpload(onlyTask().id);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(mocks.api.finalizeAttachmentUpload).toHaveBeenCalledTimes(finalized);
+    expect(onlyTask()).toMatchObject({ status: 'failed', resendRequired: true });
   });
 });

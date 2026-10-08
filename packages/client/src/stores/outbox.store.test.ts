@@ -259,6 +259,82 @@ describe('a send whose response was lost (SQ-23)', () => {
   });
 });
 
+describe('a message refused for its key', () => {
+  function persistInMemory() {
+    const persisted = new Map<string, OutboxCommand>();
+    localState.saveCommand.mockImplementation(async (_context, command: OutboxCommand) => {
+      persisted.set(command.idempotencyKey, structuredClone(command));
+    });
+    localState.loadCommand.mockImplementation(async (_context, id: string) => persisted.get(id) ?? null);
+    localState.deleteCommand.mockImplementation(async (_context, id: string) => { persisted.delete(id); });
+    return persisted;
+  }
+  const refused = (reason: string) => new ApiError('refused', 400, 'INVALID_MESSAGE', undefined, { reason });
+
+  it('is sealed again with the newer key at once and sent', async () => {
+    const persisted = persistInMemory();
+    messageState.sendSealedMessage
+      .mockRejectedValueOnce(refused('KEY_VERSION_STALE'))
+      .mockRejectedValueOnce(refused('KEY_ROTATION_REQUIRED'));
+    const idempotencyKey = await useOutboxStore.getState().enqueue(channelId, 'after a commit');
+    await vi.waitFor(() => expect(useOutboxStore.getState().items[idempotencyKey]).toBeUndefined());
+    expect(messageState.sealMessage).toHaveBeenCalledTimes(3);
+    expect(messageState.sendSealedMessage).toHaveBeenCalledTimes(3);
+    expect(persisted.size).toBe(0);
+  });
+
+  it('stops resealing by itself after three refusals and waits for a retry', async () => {
+    const persisted = persistInMemory();
+    messageState.sendSealedMessage.mockRejectedValue(refused('KEY_ROTATION_REQUIRED'));
+    const idempotencyKey = await useOutboxStore.getState().enqueue(channelId, 'blocked');
+    await vi.waitFor(() => expect(useOutboxStore.getState().items[idempotencyKey]?.status).toBe('failed'));
+    expect(messageState.sendSealedMessage).toHaveBeenCalledTimes(4);
+    expect(persisted.get(idempotencyKey)).toMatchObject({ resealCount: 3, lastRefusal: 'KEY_ROTATION_REQUIRED' });
+    expect(persisted.get(idempotencyKey)?.sealed).toBeUndefined();
+    expect(useOutboxStore.getState().items[idempotencyKey]?.lastRefusal).toBe('KEY_ROTATION_REQUIRED');
+  });
+
+  it('after a newer key, sends again only the messages of that channel refused for their key, in order', async () => {
+    const persisted = persistInMemory();
+    const other = '44444444-4444-4444-8444-444444444444';
+    let second = 0;
+    const command = (forChannel: string, content: string, lastRefusal: string): OutboxCommand => ({
+      ...createOutboxCommand({ channelId: forChannel, content }, () => crypto.randomUUID(), () => `2026-10-07T00:00:0${second++}.000Z`),
+      lastRefusal,
+    });
+    const stale = command(channelId, 'stale key', 'KEY_VERSION_STALE');
+    const invalid = command(other, 'invalid', 'INVALID_KEY_VERSION');
+    const behindInvalid = command(other, 'after the invalid one', 'KEY_VERSION_STALE');
+    const commands = [stale, invalid, behindInvalid];
+    for (const entry of commands) persisted.set(entry.idempotencyKey, entry);
+    useOutboxStore.setState({
+      isInitialized: true,
+      items: Object.fromEntries(commands.map((entry) => [
+        entry.idempotencyKey,
+        { ...outboxItemFromCommand(entry), status: 'failed' as const, error: 'refused' },
+      ])),
+    });
+
+    await useOutboxStore.getState().flushKeyRefusals([channelId, other]);
+    expect(messageState.sendSealedMessage).toHaveBeenCalledOnce();
+    expect(useOutboxStore.getState().items[stale.idempotencyKey]).toBeUndefined();
+    // A refusal a newer key cannot fix waits for a manual retry, and nothing behind it overtakes it.
+    expect(useOutboxStore.getState().items[invalid.idempotencyKey]?.status).toBe('failed');
+    expect(useOutboxStore.getState().items[behindInvalid.idempotencyKey]?.status).toBe('failed');
+  });
+
+  it('does not reseal by itself for a refusal a newer key cannot fix', async () => {
+    const persisted = persistInMemory();
+    messageState.sendSealedMessage.mockRejectedValueOnce(refused('INVALID_KEY_VERSION'));
+    const idempotencyKey = await useOutboxStore.getState().enqueue(channelId, 'invalid');
+    await vi.waitFor(() => expect(useOutboxStore.getState().items[idempotencyKey]?.status).toBe('failed'));
+    expect(messageState.sendSealedMessage).toHaveBeenCalledTimes(1);
+    // A manual retry seals it again.
+    expect(persisted.get(idempotencyKey)?.sealed).toBeUndefined();
+    expect(persisted.get(idempotencyKey)?.resealCount).toBeUndefined();
+  });
+});
+
 function sealedFor(sealedChannelId: string, idempotencyKey: string, content: string): SealedMessage {
   return {
     envelope: {

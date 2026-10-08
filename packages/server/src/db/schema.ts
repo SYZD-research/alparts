@@ -753,3 +753,95 @@ export const channelDirectoryHeads = pgTable('channel_directory_heads', {
   sequence: integer('sequence').notNull(),
 }, (t) => [primaryKey({ columns: [t.channelId, t.userId] }),
   check('channel_directory_heads_sequence_check', sql`${t.sequence} between 0 and 8192`)]);
+
+// === Continuous channel groups (group protocol 4) ===
+
+export const mlsGroups = pgTable('mls_groups', {
+  channelId: uuid('channel_id').primaryKey().references(() => channels.id),
+  genesisVersion: integer('genesis_version'),
+  pathRefreshedAt: timestamp('path_refreshed_at', { withTimezone: true }),
+  genesisRequestedAt: timestamp('genesis_requested_at', { withTimezone: true }),
+  removeRequiredAt: timestamp('remove_required_at', { withTimezone: true }),
+}, (t) => [
+  check('mls_groups_genesis_check', sql`(${t.genesisVersion} is null) = (${t.pathRefreshedAt} is null)`),
+  check('mls_groups_genesis_version_check', sql`${t.genesisVersion} is null or ${t.genesisVersion} >= 1`),
+]);
+
+export const mlsMemberPackages = pgTable('mls_member_packages', {
+  channelId: uuid('channel_id').notNull().references(() => channels.id),
+  deviceId: uuid('device_id').notNull().references(() => devices.id),
+  packageId: uuid('package_id').notNull(),
+  keyPackage: text('key_package').notNull(),
+  signature: text('signature').notNull(),
+  initKey: text('init_key').notNull(),
+  encryptionKey: text('encryption_key').notNull(),
+  signatureKey: text('signature_key').notNull(),
+  notBefore: timestamp('not_before', { withTimezone: true }).notNull(),
+  notAfter: timestamp('not_after', { withTimezone: true }).notNull(),
+  rejoin: boolean('rejoin').notNull().default(false),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => [
+  primaryKey({ columns: [t.channelId, t.deviceId] }),
+  unique('mls_member_packages_package_id_unique').on(t.packageId),
+  index('mls_member_packages_device_id_idx').on(t.deviceId),
+  check('mls_member_packages_lifetime_check', sql`${t.notBefore} < ${t.notAfter}`),
+]);
+
+export const mlsPublishedPackageIds = pgTable('mls_published_package_ids', {
+  packageId: uuid('package_id').primaryKey(),
+  channelId: uuid('channel_id').notNull(),
+  deviceId: uuid('device_id').notNull().references(() => devices.id),
+  publishedAt: timestamp('published_at', { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const mlsGroupMembers = pgTable('mls_group_members', {
+  channelId: uuid('channel_id').notNull().references(() => channels.id),
+  genesisVersion: integer('genesis_version').notNull(),
+  deviceId: uuid('device_id').notNull(),
+  userId: uuid('user_id').notNull(),
+  leafIndex: integer('leaf_index').notNull(),
+  joinedVersion: integer('joined_version').notNull(),
+  removedVersion: integer('removed_version'),
+  packageId: uuid('package_id').notNull(),
+  keyPackage: text('key_package').notNull(),
+  packageSignature: text('package_signature').notNull(),
+  joinedDirectorySequence: integer('joined_directory_sequence').notNull(),
+  signatureKey: text('signature_key').notNull(),
+  encryptionKey: text('encryption_key').notNull(),
+  leafUpdatedAt: timestamp('leaf_updated_at', { withTimezone: true }).defaultNow().notNull(),
+  lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => [
+  primaryKey({ columns: [t.channelId, t.deviceId, t.joinedVersion] }),
+  unique('mls_group_members_package_id_unique').on(t.packageId),
+  foreignKey({
+    name: 'mls_group_members_device_user_fk',
+    columns: [t.deviceId, t.userId],
+    foreignColumns: [devices.id, devices.userId],
+  }),
+  uniqueIndex('mls_group_members_current_device_idx')
+    .on(t.channelId, t.deviceId)
+    .where(sql`${t.removedVersion} is null`),
+  uniqueIndex('mls_group_members_current_leaf_idx')
+    .on(t.channelId, t.leafIndex)
+    .where(sql`${t.removedVersion} is null`),
+  index('mls_group_members_device_id_idx').on(t.deviceId),
+  index('mls_group_members_channel_user_idx').on(t.channelId, t.userId),
+  index('mls_group_members_user_channel_idx').on(t.userId, t.channelId),
+  check('mls_group_members_leaf_index_check', sql`${t.leafIndex} >= 0`),
+  check('mls_group_members_joined_version_check', sql`${t.joinedVersion} >= ${t.genesisVersion}`),
+  check('mls_group_members_removed_version_check', sql`${t.removedVersion} is null or ${t.removedVersion} > ${t.joinedVersion}`),
+  check('mls_group_members_directory_sequence_check', sql`${t.joinedDirectorySequence} between 0 and 8192`),
+]);
+
+export const mlsGroupNodeKeys = pgTable('mls_group_node_keys', {
+  channelId: uuid('channel_id').notNull().references(() => channels.id),
+  genesisVersion: integer('genesis_version').notNull(),
+  key: text('key').notNull(),
+}, (t) => [primaryKey({ columns: [t.channelId, t.genesisVersion, t.key] })]);
+
+export const mlsRejoinRequests = pgTable('mls_rejoin_requests', {
+  channelId: uuid('channel_id').notNull().references(() => channels.id),
+  deviceId: uuid('device_id').notNull().references(() => devices.id),
+  requestedAt: timestamp('requested_at', { withTimezone: true }).defaultNow().notNull(),
+  version: integer('version').notNull(),
+}, (t) => [primaryKey({ columns: [t.channelId, t.deviceId, t.requestedAt] })]);

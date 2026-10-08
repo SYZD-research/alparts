@@ -214,53 +214,133 @@ try {
     return { ...device, signText, cookie: `alparts_session=${authentication.token}` };
   }
 
-  await check('M3c-orphan-proposal', 'A non-manager without the active key must use the fresh-start path, as M3 and canRotate require', async () => {
+  await check('M3c-orphan-proposal', 'Only a group member orders a commit; a device outside the group replaces it only by confirmed fresh start, and only when no usable member is left (M3 KL-orphan, §5.3.4)', async () => {
     const f = await fixture();
     const shared = await import('../../packages/shared/src/index.ts');
     const keyService = await import('../../packages/server/src/services/key.service.ts');
-    const mlsService = await import('../../packages/server/src/services/mls.service.ts');
+    const groups = await import('../../packages/server/src/services/mls-group.service.ts');
     const { directoryHead } = await import('../../packages/server/src/services/directory.service.ts');
-    const crypto = await import('../../packages/client/src/services/mls-crypto.ts');
+    const { hashPassword } = await import('../../packages/server/src/security/password-work.ts');
+    const { actionPurpose } = await import('../../packages/server/src/security/action-purpose.ts');
+    const mls = await import('../../packages/client/src/services/mls-crypto.ts');
+    const setup = (ok: boolean, message: string) => { if (!ok) throw new Error(`fixture: ${message}`); };
+    const password = randomUUID() + randomUUID();
+    await db.update(schema.users).set({ passwordHash: await hashPassword(password, 12) }).where(eq(schema.users.id, f.subject));
     const old = await register(f.owner);
     const sender = await register(f.subject);
-    // A migrated active epoch whose sole original holder later loses visibility.
-    await db.insert(schema.channelKeyEpochs).values({ channelId: f.channelId, version: 1, protocolVersion: 2, status: 'active', keyCommitment: 'a'.repeat(43), distributorDeviceId: old.id, activatedAt: new Date() });
-    await db.insert(schema.channelKeyEpochRecipients).values({ channelId: f.channelId, version: 1, deviceId: old.id, userId: f.owner });
-    const [delivery] = await db.insert(schema.channelKeys).values({ channelId: f.channelId, version: 1, deviceId: old.id, encryptedKey: 'legacy-test-fixture', distributorDeviceId: old.id, signature: 'legacy-test-fixture' }).returning();
-    await db.update(schema.channelKeyEpochRecipients).set({ acceptedDeliveryId: delivery.id, acknowledgementSignature: 'legacy-test-fixture', acknowledgedAt: new Date() }).where(eq(schema.channelKeyEpochRecipients.channelId, f.channelId));
+    // A private channel whose group's only member is the owner's device; the
+    // subject (no MANAGE_CHANNELS) also sees it.
     await channels.updateChannel(f.channelId, { isPrivate: true }, f.owner);
     await channels.addChannelMember(f.channelId, f.subject, f.owner);
-    await channels.removeChannelMember(f.channelId, f.owner, f.owner);
-    const state = await keyService.getKeyRecipients(f.channelId, f.subject, sender.id);
-    assert.equal(state.historyRecoveryRequired, true);
-    assert.equal(state.canRotate, false);
-    assert.deepEqual(state.recipients.map(r => r.deviceId), [sender.id]);
-    const material = await crypto.generateEpochKeyPackage(sender.id);
-    const pkg = { deviceId: sender.id, userId: f.subject, identityKey: sender.identityKey, packageId: randomUUID(), keyPackage: material.publicPackage };
-    const signedPackage = { ...pkg, signature: sender.signText(shared.serializeGroupKeyPackage(f.channelId, 2, pkg)) };
-    await mlsService.publishKeyPackage(f.channelId, f.subject, sender.id, 2, signedPackage);
-    const context = { channelId: f.channelId, version: 2, previousVersion: 1, previousTranscript: '0'.repeat(64) };
-    const group = await crypto.createEpochGroup(JSON.stringify(['alparts', f.channelId, 2, context.previousTranscript]), material, [pkg.keyPackage]);
-    const keyCommitment = createHash('sha256').update(group.raw).digest('base64url');
-    const unsigned = { ...context, keyCommitment, roster: [signedPackage], directoryHeads: [await directoryHead(db, f.subject)], distributorDeviceId: sender.id, welcome: group.welcome, commit: group.commit };
-    const epoch = { ...unsigned, signature: sender.signText(shared.serializeMlsEpoch(unsigned)) };
-    const transcript = createHash('sha256').update(shared.serializeMlsEpoch(epoch)).digest('hex');
-    const encryptedKey = Buffer.from(JSON.stringify({ mls: 1, version: 2, transcript })).toString('base64');
-    const keys = [{ deviceId: sender.id, encryptedKey, signature: sender.signText(shared.serializeChannelKeyWrap({ channelId: f.channelId, keyVersion: 2, keyCommitment, recipientDeviceId: sender.id, encryptedKey })) }];
     const runtime = await (await import('../../packages/server/src/security/runtime-lease.ts')).acquireRuntimeLease();
     closeRuntime = () => runtime.close();
     const { httpServer } = (await import('../../packages/server/src/app.ts')).createApp();
     try {
       await new Promise<void>(resolve => httpServer.listen(0, '127.0.0.1', resolve));
       const address = httpServer.address() as import('node:net').AddressInfo;
-      const response = await fetch(`http://127.0.0.1:${address.port}/api/channels/${f.channelId}/mls/epochs`, {
-        method: 'POST', headers: { Cookie: sender.cookie, Origin: 'http://localhost:5173', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ epoch, keys }), signal: AbortSignal.timeout(10_000),
+      type Device = typeof sender;
+      const call = async (device: Device, path: string, body: unknown, stepUp?: string) => {
+        const response = await fetch(`http://127.0.0.1:${address.port}${path}`, {
+          method: 'POST',
+          headers: { Cookie: device.cookie, Origin: 'http://localhost:5173', 'Content-Type': 'application/json', ...(stepUp ? { 'X-Alparts-Step-Up': stepUp } : {}) },
+          body: JSON.stringify(body), signal: AbortSignal.timeout(10_000),
+        });
+        return { status: response.status, body: await response.json().catch(() => null) as any };
+      };
+      /** Like the app: confirm the identity for exactly this request, then send it. */
+      const confirmed = async (device: Device, path: string, body: unknown) => {
+        const purpose = actionPurpose('POST', path, body);
+        const options = await call(device, '/api/auth/step-up/options', { purpose });
+        setup(options.status === 200, `step-up options ${options.status}`);
+        const verified = await call(device, '/api/auth/step-up/verify', { id: options.body.id, purpose, password });
+        setup(verified.status === 200, `step-up verify ${verified.status}`);
+        return call(device, path, body, verified.body.token);
+      };
+      const groupPath = `/api/channels/${f.channelId}/mls/group`;
+      const publish = async (device: Device, userId: string) => {
+        const material = await mls.generateMemberPackage(device.id);
+        const packageId = randomUUID();
+        const body = {
+          packageId, keyPackage: material.publicPackage,
+          signature: device.signText(shared.serializeMlsMemberPackage(f.channelId, { deviceId: device.id, packageId, keyPackage: material.publicPackage })),
+        };
+        const response = await call(device, `${groupPath}/packages`, body);
+        setup(response.status === 201, `package ${response.status} ${JSON.stringify(response.body)}`);
+        return { material, entry: { deviceId: device.id, userId, identityKey: device.identityKey, ...body } };
+      };
+      const seal = async (device: Device, result: { newState: any; commit: string; welcome: string }, fields: any) => {
+        const raw = await mls.exportChannelKey(result.newState, fields.groupId, fields.version);
+        const users = [...new Set<string>(fields.members.map((member: any) => member.userId))].sort();
+        const unsigned = {
+          ...fields, keyCommitment: createHash('sha256').update(raw).digest('base64url'), commit: result.commit, welcome: result.welcome,
+          directoryHeads: await Promise.all(users.map(userId => directoryHead(db, userId))), committerDeviceId: device.id,
+        };
+        return { ...unsigned, signature: device.signText(shared.serializeMlsGroupCommit(unsigned)) };
+      };
+      const signatureKey = (entry: { keyPackage: string }) => mls.readMemberPackage(entry.keyPackage).signatureKey;
+
+      const own = await publish(old, f.owner);
+      const genesisId = shared.mlsGroupId(f.channelId, 1);
+      const genesis = await mls.createChannelGroup(genesisId, own.material, [], new Map([[old.id, signatureKey(own.entry)]]));
+      const created = await seal(old, genesis, {
+        channelId: f.channelId, version: 1, previousVersion: 0, previousTranscript: '0'.repeat(64), groupId: genesisId, epoch: 1,
+        kind: 'create', added: [own.entry], removed: [], members: [{ deviceId: old.id, userId: f.owner, leafIndex: 0 }],
       });
-      const body = await response.json();
-      if (![201, 403].includes(response.status)) throw new Error(`unexpected HTTP fixture response ${response.status}: ${JSON.stringify(body)}`);
-      assert.equal(response.status, 403,
-        'canRotate=false, but POST /mls/epochs returned 201 for a non-holder/non-manager without fresh-start proof or manager notification');
+      const genesisResponse = await call(old, `${groupPath}/commits`, { commit: created });
+      setup(genesisResponse.status === 201, `genesis ${genesisResponse.status} ${JSON.stringify(genesisResponse.body)}`);
+      const previousTranscript = createHash('sha256').update(shared.serializeMlsGroupCommit(created)).digest('hex');
+      const waiting = await publish(sender, f.subject);
+      // What the device outside the group can send: a new group of its own ...
+      const restartId = shared.mlsGroupId(f.channelId, 2);
+      const restart = await mls.createChannelGroup(restartId, waiting.material, [], new Map([[sender.id, signatureKey(waiting.entry)]]));
+      const replacement = await seal(sender, restart, {
+        channelId: f.channelId, version: 2, previousVersion: 1, previousTranscript, groupId: restartId, epoch: 1,
+        kind: 'create', added: [waiting.entry], removed: [], members: [{ deviceId: sender.id, userId: f.subject, leafIndex: 0 }],
+      });
+      const freshStart = {
+        commit: replacement,
+        freshStartSignature: sender.signText(shared.serializeChannelKeyFreshStart({ channelId: f.channelId, keyVersion: 2, keyCommitment: replacement.keyCommitment, deviceId: sender.id })),
+      };
+      // ... or a valid commit of the existing group (made from the member's state) that it orders as its own.
+      const tree = mls.treeAuthMap(genesis.newState);
+      tree.set(sender.id, signatureKey(waiting.entry));
+      const addition = await mls.commitChannelGroup(genesis.newState, { add: [waiting.entry.keyPackage], removeLeaves: [], authMap: tree });
+      const foreign = await seal(sender, addition, {
+        channelId: f.channelId, version: 2, previousVersion: 1, previousTranscript, groupId: genesisId, epoch: 2, kind: 'commit',
+        added: [waiting.entry], removed: [],
+        members: [{ deviceId: old.id, userId: f.owner, leafIndex: 0 }, { deviceId: sender.id, userId: f.subject, leafIndex: 1 }],
+      });
+
+      // While a usable member can add the device, even a confirmed fresh start is refused.
+      let state = await keyService.getKeyRecipients(f.channelId, f.subject, sender.id);
+      assert.deepEqual([state.historyRecoveryRequired, state.pendingAddDeviceIds], [false, [sender.id]]);
+      let response = await confirmed(sender, `${groupPath}/fresh-start`, freshStart);
+      assert.deepEqual([response.status, response.body?.code], [409, 'KEY_FRESH_START_NOT_REQUIRED'],
+        'a non-manager replaced a group that a usable member could still extend');
+
+      // The only member's user loses the channel: no usable member is left.
+      await channels.removeChannelMember(f.channelId, f.owner, f.owner);
+      state = await keyService.getKeyRecipients(f.channelId, f.subject, sender.id);
+      assert.equal(state.historyRecoveryRequired, true);
+      assert.equal(state.canRotate, false);
+      assert.deepEqual(state.requiredRemoveDeviceIds, [old.id]);
+      assert.deepEqual(state.recipients.map(r => r.deviceId), [sender.id]);
+      response = await call(sender, `${groupPath}/commits`, { commit: replacement });
+      assert.deepEqual([response.status, response.body?.code], [403, 'KEY_FRESH_START_REQUIRED'],
+        'canRotate=false, but the ordinary commit route took a new group from a device outside the existing one');
+      response = await call(sender, `${groupPath}/commits`, { commit: foreign });
+      assert.deepEqual([response.status, response.body?.code], [409, 'MLS_CONFLICT'], 'a device outside the group ordered a commit of it');
+      response = await call(sender, `${groupPath}/fresh-start`, freshStart);
+      assert.equal(response.status, 428, 'fresh start went through without a confirmation');
+      await assert.rejects(groups.admitGroupCommit(f.subject, sender.id, replacement, { signature: freshStart.freshStartSignature }),
+        /AUTHENTICATION_FAILED/, 'fresh start went through without a server-created confirmation receipt');
+      response = await confirmed(sender, `${groupPath}/fresh-start`, freshStart);
+      assert.deepEqual([response.status, response.body], [201, { version: 2, epoch: 1 }], 'a confirmed fresh start of an orphaned group was refused');
+      // The old group ended for its member at that version, and the restart is on record.
+      const ended = await db.query.mlsGroupMembers.findFirst({ where: (m: any, o: any) => o.and(o.eq(m.channelId, f.channelId), o.eq(m.deviceId, old.id)) });
+      assert.equal(ended?.removedVersion, 2);
+      const records = await db.query.auditLogs.findMany({ where: (a: any, o: any) => o.and(o.eq(a.action, 'channel.key.group.fresh_start'), o.eq(a.targetId, f.channelId)) });
+      assert.deepEqual(records.map((record: any) => [record.details.removed, record.details.added]), [[[old.id], [sender.id]]]);
     } finally {
       httpServer.closeAllConnections();
       await new Promise<void>(resolve => httpServer.close(() => resolve()));

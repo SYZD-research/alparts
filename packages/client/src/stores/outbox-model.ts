@@ -16,9 +16,28 @@ export interface OutboxCommand {
    * including after a restart, sends exactly this request.
    */
   sealed?: SealedMessage;
+  /** Automatic reseals after the server asked for a newer key (at most MAX_AUTOMATIC_RESEALS). */
+  resealCount?: number;
+  /** Why the server last refused this message as sent, if it gave a reason. */
+  lastRefusal?: string;
 }
 
 export const MAX_OUTBOX_COMMANDS_PER_DEVICE = 100;
+/** A refused message is sealed again with a newer key this often before it waits for the user. */
+export const MAX_AUTOMATIC_RESEALS = 3;
+/** Refusals that a newer key resolves: the version moved on, or a removal is due first. */
+const RESEALABLE_REASONS = new Set(['KEY_VERSION_STALE', 'KEY_ROTATION_REQUIRED']);
+
+/** Whether a refused message is sealed again automatically. */
+export function shouldResealAutomatically(reason: string | null, resealCount = 0): boolean {
+  return isKeyRefusal(reason) && resealCount < MAX_AUTOMATIC_RESEALS;
+}
+
+/** A refusal that a newer key on this device resolves. */
+export function isKeyRefusal(reason: string | null | undefined): boolean {
+  return typeof reason === 'string' && RESEALABLE_REASONS.has(reason);
+}
+const REFUSAL_PATTERN = /^[A-Z_]{1,64}$/;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export type OutboxStatus = 'queued' | 'sending' | 'failed';
@@ -33,6 +52,8 @@ export interface OutboxItem {
   createdAt: string;
   status: OutboxStatus;
   error: string | null;
+  /** Why the server last refused it, if it gave a reason. */
+  lastRefusal?: string;
 }
 
 export type OutboxTransition =
@@ -79,6 +100,14 @@ export function parseOutboxCommand(value: unknown): OutboxCommand | null {
     || typeof candidate.content !== 'string'
     || typeof candidate.createdAt !== 'string'
     || (candidate.refMessageId !== undefined && typeof candidate.refMessageId !== 'string')
+    || (candidate.lastRefusal !== undefined && (
+      typeof candidate.lastRefusal !== 'string' || !REFUSAL_PATTERN.test(candidate.lastRefusal)
+    ))
+    || (candidate.resealCount !== undefined && (
+      !Number.isSafeInteger(candidate.resealCount)
+      || candidate.resealCount < 0
+      || candidate.resealCount > MAX_AUTOMATIC_RESEALS
+    ))
     || (candidate.postId !== undefined && (typeof candidate.postId !== 'string' || !UUID_PATTERN.test(candidate.postId)))
     || (candidate.mentionedUserIds !== undefined && (
       !Array.isArray(candidate.mentionedUserIds)
@@ -108,6 +137,7 @@ export function outboxItemFromCommand(command: OutboxCommand): OutboxItem {
     createdAt: command.createdAt,
     status: 'queued',
     error: null,
+    ...(command.lastRefusal ? { lastRefusal: command.lastRefusal } : {}),
   };
 }
 

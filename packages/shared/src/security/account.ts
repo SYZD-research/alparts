@@ -92,6 +92,7 @@ export function isSensitiveAction(method: string, path: string): boolean {
     (path === '/api/recovery/configure' || path === '/api/recovery/access') ||
     (path === '/api/recovery' && method === 'DELETE') ||
     path.endsWith('/mls/epochs/fresh-start') ||
+    path.endsWith('/mls/group/fresh-start') ||
     (/^\/api\/(workspaces|channels|categories)\//.test(path) &&
       (method === 'DELETE' ||
         /\/(roles|members|invitations|permission-overrides)(\/|$)/.test(path)) &&

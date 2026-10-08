@@ -12,6 +12,7 @@
 | [0008](./0008-authorization.md) | Central bounded authorization snapshots and locked recheck | Accepted |
 | [0009](./0009-audit-witness.md) | Atomic DB audit chain plus external single-process witness | Accepted interim |
 | [0010](./0010-schema-image-coupling.md) | Exact migration journal plus bounded PostgreSQL 16 catalog fingerprint | Accepted for Phase 1 |
-| [0011](./0011-account-group-security.md) | Approved devices, transparency, MLS-based epochs, passkeys and user-controlled recovery | Implemented; assurance pending |
+| [0011](./0011-account-group-security.md) | Approved devices, transparency, MLS-based epochs, passkeys and user-controlled recovery | Implemented; assurance pending; group protocol superseded by 0012 |
+| [0012](./0012-continuous-mls-groups.md) | One continuing MLS group per channel; server-ordered commits active on acceptance, replacing the all-recipient barrier | Implemented; assurance pending |
 
 ADRs describe deliberate decisions, including their limits. They do not override current code, tests, risk register, or deployment acceptance evidence.

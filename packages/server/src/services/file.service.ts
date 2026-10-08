@@ -1,4 +1,3 @@
-import { isEpochRosterCurrent } from './key.service.js';
 import { randomUUID } from 'node:crypto';
 import type { Readable } from 'node:stream';
 import { and, asc, eq, gt, inArray, isNotNull, isNull, lte, sql } from 'drizzle-orm';
@@ -14,8 +13,6 @@ import {
   attachments,
   attachmentUploadChunks,
   attachmentUploads,
-  channelKeyEpochRecipients,
-  channelKeyEpochs,
   channels,
   devices,
   messages,
@@ -53,7 +50,7 @@ import {
   validateFinalChunkLayout,
   type AttachmentCryptoManifestInput,
 } from './attachment-contract.js';
-import { hasRevokedEpochRecipient } from './key-epoch-state.js';
+import { authorizeGroupWrite } from './mls-group-gate.js';
 import {
   createObjectStorageDeadline,
   deleteStoredUpload,
@@ -753,32 +750,15 @@ async function loadFinalizationSnapshot(
     .where(and(eq(devices.id, input.deviceId), eq(devices.userId, userId), isNull(devices.revokedAt), isNotNull(devices.approvedAt)))
     .for('share');
   if (!device) throw new Error('INVALID_DEVICE');
-  if (context.channel.keyRotationRequired) throw new Error('KEY_ROTATION_REQUIRED');
-  const epoch = await store.query.channelKeyEpochs.findFirst({
-    columns: { version: true, createdAt: true },
-    where: and(
-      eq(channelKeyEpochs.channelId, context.channel.id),
-      eq(channelKeyEpochs.version, input.keyVersion),
-      eq(channelKeyEpochs.status, 'active'),
-      eq(channelKeyEpochs.protocolVersion, 3),
-    ),
+  // The file key is wrapped under its message's version, which stays usable
+  // while nobody has left the group since (§5.4).
+  await authorizeGroupWrite(store, {
+    channel: context.channel,
+    userId,
+    deviceId: input.deviceId,
+    keyVersion: input.keyVersion,
+    parentKeyVersion: context.message.keyVersion,
   });
-  if (!epoch) throw new Error('INVALID_KEY_VERSION');
-  if (Date.now() - epoch.createdAt.getTime() >= 24 * 60 * 60_000 || !await isEpochRosterCurrent(store, context.channel, input.keyVersion)) throw new Error('KEY_ROTATION_REQUIRED');
-  if (await hasRevokedEpochRecipient(store, context.channel.id, input.keyVersion)) {
-    throw new Error('KEY_ROTATION_REQUIRED');
-  }
-  const recipient = await store.query.channelKeyEpochRecipients.findFirst({
-    columns: { acceptedDeliveryId: true },
-    where: and(
-      eq(channelKeyEpochRecipients.channelId, context.channel.id),
-      eq(channelKeyEpochRecipients.version, input.keyVersion),
-      eq(channelKeyEpochRecipients.deviceId, input.deviceId),
-      eq(channelKeyEpochRecipients.userId, userId),
-      isNotNull(channelKeyEpochRecipients.acceptedDeliveryId),
-    ),
-  });
-  if (!recipient?.acceptedDeliveryId) throw new Error('INVALID_KEY_VERSION');
   const envelope: SignedAttachmentEnvelope = {
     type: 'attachment',
     uploadId,

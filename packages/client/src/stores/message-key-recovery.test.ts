@@ -5,6 +5,7 @@ vi.mock('../services/crypto.service', async (importOriginal) => {
   return {
     ...actual,
     ensureChannelKey: vi.fn(),
+    hasChannelHistoryKeys: vi.fn(async () => false),
     startChannelWithoutHistory: vi.fn(),
   };
 });
@@ -13,6 +14,7 @@ import { api } from '../services/api';
 import {
   ChannelKeyDeliveryPendingError,
   ensureChannelKey,
+  hasChannelHistoryKeys,
   startChannelWithoutHistory,
 } from '../services/crypto.service';
 import { useMessageStore } from './message.store';
@@ -22,6 +24,7 @@ const channelId = '11111111-1111-4111-8111-111111111111';
 afterEach(() => {
   vi.restoreAllMocks();
   vi.mocked(ensureChannelKey).mockReset();
+  vi.mocked(hasChannelHistoryKeys).mockReset().mockResolvedValue(false);
   vi.mocked(startChannelWithoutHistory).mockReset();
   useMessageStore.getState().reset();
 });
@@ -69,7 +72,7 @@ describe('new-device channel preparation', () => {
 
     expect(getMessages).not.toHaveBeenCalled();
     expect(useMessageStore.getState().channelRecoveryPending[channelId]).toBe(true);
-    expect(useMessageStore.getState().channelKeyPending[channelId]).toBeTruthy();
+    expect(useMessageStore.getState().channelKeyPending[channelId]).toEqual({ reason: 'waiting', freshStartAvailable: false });
     expect(useMessageStore.getState().securityErrors[channelId]).toBeNull();
 
     await expect(useMessageStore.getState().retryChannelPreparation(channelId)).resolves.toBe(true);
@@ -78,6 +81,78 @@ describe('new-device channel preparation', () => {
     expect(useMessageStore.getState().eventsByChannel[channelId]).toEqual([]);
     expect(useMessageStore.getState().channelRecoveryPending[channelId]).toBe(false);
     expect(useMessageStore.getState().channelKeyPending[channelId]).toBeNull();
+  });
+
+  it('keeps showing history while the device asks to be added again or a first group waits', async () => {
+    const getMessages = vi.spyOn(api, 'getMessages').mockResolvedValue({ data: [], hasMore: false, cursor: null });
+    vi.mocked(ensureChannelKey).mockRejectedValueOnce(new ChannelKeyDeliveryPendingError('rejoining'));
+    await useMessageStore.getState().loadMessages(channelId);
+    expect(getMessages).toHaveBeenCalledOnce();
+    expect(useMessageStore.getState().channelRecoveryPending[channelId]).toBe(false);
+    expect(useMessageStore.getState().channelKeyPending[channelId]).toEqual({ reason: 'rejoining', freshStartAvailable: false });
+
+    vi.mocked(ensureChannelKey).mockRejectedValueOnce(new ChannelKeyDeliveryPendingError('genesis-waiting'));
+    expect(await useMessageStore.getState().reconcileChannelKey(channelId)).toBe(false);
+    expect(useMessageStore.getState().channelRecoveryPending[channelId]).toBe(false);
+    expect(useMessageStore.getState().channelKeyPending[channelId]).toEqual({ reason: 'genesis-waiting', freshStartAvailable: false });
+    expect(useMessageStore.getState().securityErrors[channelId]).toBeNull();
+
+    vi.mocked(ensureChannelKey).mockResolvedValue({ key: {} as CryptoKey, version: 3 });
+    expect(await useMessageStore.getState().reconcileChannelKey(channelId)).toBe(true);
+    expect(useMessageStore.getState().channelKeyPending[channelId]).toBeNull();
+  });
+
+  it('keeps history and only stops sending when the device may no longer ask to be added again', async () => {
+    const getMessages = vi.spyOn(api, 'getMessages').mockResolvedValue({ data: [], hasMore: false, cursor: null });
+    vi.mocked(ensureChannelKey).mockRejectedValueOnce(new ChannelKeyDeliveryPendingError('unavailable', true));
+    await useMessageStore.getState().loadMessages(channelId);
+    // Loading only reads: due removals and refreshes are left to writers.
+    expect(ensureChannelKey).toHaveBeenCalledWith(channelId, { purpose: 'read' });
+    expect(getMessages).toHaveBeenCalledOnce();
+    expect(useMessageStore.getState().channelRecoveryPending[channelId]).toBe(false);
+    expect(useMessageStore.getState().securityErrors[channelId]).toBeNull();
+    expect(useMessageStore.getState().channelKeyPending[channelId]).toEqual({ reason: 'unavailable', freshStartAvailable: true });
+  });
+
+  it('loads messages once a device that was waiting to be added is asked to rejoin instead', async () => {
+    const getMessages = vi.spyOn(api, 'getMessages').mockResolvedValue({ data: [], hasMore: false, cursor: null });
+    vi.mocked(ensureChannelKey).mockRejectedValueOnce(new ChannelKeyDeliveryPendingError('waiting'));
+    await useMessageStore.getState().loadMessages(channelId);
+    expect(getMessages).not.toHaveBeenCalled();
+    vi.mocked(ensureChannelKey).mockRejectedValue(new ChannelKeyDeliveryPendingError('rejoining'));
+    expect(await useMessageStore.getState().retryChannelPreparation(channelId)).toBe(false);
+    expect(getMessages).toHaveBeenCalledOnce();
+    expect(useMessageStore.getState().channelRecoveryPending[channelId]).toBe(false);
+  });
+
+  it('keeps showing the messages it has keys for while it waits to be added again', async () => {
+    // For example a member of the group a fresh start replaced.
+    vi.mocked(hasChannelHistoryKeys).mockResolvedValue(true);
+    const getMessages = vi.spyOn(api, 'getMessages').mockResolvedValue({ data: [], hasMore: false, cursor: null });
+    vi.mocked(ensureChannelKey).mockRejectedValue(new ChannelKeyDeliveryPendingError('waiting', true));
+    await useMessageStore.getState().loadMessages(channelId);
+    expect(hasChannelHistoryKeys).toHaveBeenCalledWith(channelId);
+    expect(getMessages).toHaveBeenCalledOnce();
+    expect(useMessageStore.getState().channelRecoveryPending[channelId]).toBe(false);
+    expect(useMessageStore.getState().channelKeyPending[channelId]).toEqual({ reason: 'waiting', freshStartAvailable: true });
+    expect(await useMessageStore.getState().reconcileChannelKey(channelId)).toBe(false);
+    expect(useMessageStore.getState().channelRecoveryPending[channelId]).toBe(false);
+    expect(useMessageStore.getState().securityErrors[channelId]).toBeNull();
+  });
+
+  it('keeps the same waiting state object while nothing about the wait changes', async () => {
+    vi.spyOn(api, 'getMessages').mockResolvedValue({ data: [], hasMore: false, cursor: null });
+    vi.mocked(ensureChannelKey).mockRejectedValue(new ChannelKeyDeliveryPendingError('unavailable'));
+    await useMessageStore.getState().loadMessages(channelId);
+    const first = useMessageStore.getState().channelKeyPending[channelId];
+    expect(first).toEqual({ reason: 'unavailable', freshStartAvailable: false });
+    expect(await useMessageStore.getState().reconcileChannelKey(channelId)).toBe(false);
+    expect(await useMessageStore.getState().retryChannelPreparation(channelId)).toBe(false);
+    expect(useMessageStore.getState().channelKeyPending[channelId]).toBe(first);
+    vi.mocked(ensureChannelKey).mockRejectedValue(new ChannelKeyDeliveryPendingError('unavailable', true));
+    expect(await useMessageStore.getState().reconcileChannelKey(channelId)).toBe(false);
+    expect(useMessageStore.getState().channelKeyPending[channelId]).toEqual({ reason: 'unavailable', freshStartAvailable: true });
+    expect(useMessageStore.getState().channelKeyPending[channelId]).not.toBe(first);
   });
 
   it('clears a transient preparation failure after a verified reconciliation', async () => {
@@ -91,7 +166,7 @@ describe('new-device channel preparation', () => {
 
   it('clears the waiting state and reloads after starting without history', async () => {
     useMessageStore.setState({
-      channelKeyPending: { [channelId]: 'waiting' },
+      channelKeyPending: { [channelId]: { reason: 'waiting', freshStartAvailable: true } },
       channelRecoveryPending: { [channelId]: true },
       securityErrors: { [channelId]: null },
     });

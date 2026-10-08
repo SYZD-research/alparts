@@ -65,3 +65,12 @@ python3 formal-model/run.py M3
 ```
 
 実サービス検査は [service-audit.mts](./conformance/service-audit.mts)。使い捨てDB管理者URLとMinIO、およびテスト用の秘密情報を設定して実行します。DB名は `alparts_test*` または `alparts_security_test*`、Originは `http://localhost:5173`。`NODE_ENV=test` で `pnpm --filter @alparts/server test:formal-conformance` を実行してください。検査ごとに新規DB・監査head識別子を用い、DBは終了時に削除します。保存先も使い捨て環境にしてください。
+
+## 追記（2026-10-07）：M3 を継続 MLS グループ向けに書き換え
+
+チャンネル鍵がチャンネルごとに継続する MLS グループ（v4）に変わったため、M3 を書き換えて再実行しました。上の表の M3（1,133,793状態）と LIMIT の F-KEY-007 は旧方式（v3）のものです。詳細は [README の「M3 の書き換え」](./README.md#m3-の書き換え2026-10-07継続-mls-グループ)。
+
+- `python3 formal-model/run.py M3`：**PASS 15 / LIMIT 3 / FINDING 0 / MODEL-GAP 0 / VACUOUS 0**。3通りの探索で計6,214,551状態、379秒、最大898MB（Python 3.13.16）。
+- 応答しない端末による停止（KL-lost、旧 F-KEY-007）は LIMIT から HOLDS に変わり PASS。LIMIT は KA-unjoined、KC-dev-restore、KC-server（F-E2E-001）。
+- KA の反例からクライアントの不具合を見つけて修正しました。グループが置き換えられた後に新しいグループへ追加された端末が、古いグループの読めない envelope に当たると、参加し直しを求めて新しいグループの履歴を失っていました。修正前の動作は KA-rejoin-ctl で破綻することを確認しています。クライアントの単体テスト 325 件、型検査、lint は成功。
+- 検証器の回帰テスト14件は、z3 を入れた別環境で成功。標準の Python には z3 がなく、M1 由来の import で読み込みに失敗します。M3 以外のモデルは今回再実行していません。結果と対象ソースの SHA-256 は [remediation-results.json](./remediation-results.json) の `addenda` にあります。

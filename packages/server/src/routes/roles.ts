@@ -16,6 +16,7 @@ import {
   joinAuthorizedUserToWorkspaceRoom,
   leaveUserChannelRooms,
 } from '../websocket/room-membership.js';
+import { emitChannelKeyState, keyStateChannelIds } from '../websocket/key-state.js';
 
 const router = Router();
 const uuid = z.string().uuid();
@@ -187,9 +188,10 @@ async function applyRealtimeEffects(req: AuthRequest, result: {
       await joinAuthorizedUserToChannelRoom(io, userId, effect.channelId);
     }
   }
-  for (const channelId of result.keyedChannelIds) {
-    io.to(`channel:${channelId}`).emit('channel:key-rotation-required', { channelId });
-  }
+  void emitChannelKeyState(io, [
+    ...result.keyedChannelIds,
+    ...keyStateChannelIds(result.roomEffects ?? []),
+  ]);
   io.to(`workspace:${req.params.wid}`).emit('workspace:roles-changed', { workspaceId: req.params.wid });
 }
 

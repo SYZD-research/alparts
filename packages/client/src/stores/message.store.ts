@@ -9,16 +9,17 @@ import {
 } from '@alparts/shared';
 import { api, ApiError } from '../services/api';
 import {
+  channelKeyWait,
   decryptMessage,
   encryptMessage,
   ensureChannelKey,
   getActiveDevice,
   getChannelKeysForVersions,
-  isChannelKeyActivationPendingError,
-  isChannelKeyDeliveryPendingError,
+  hasChannelHistoryKeys,
   signMessageEnvelope,
   startChannelWithoutHistory as establishFreshChannel,
   verifyMessageSignature,
+  type ChannelKeyWait,
 } from '../services/crypto.service';
 import { retryFixedRequest } from '../services/fixed-request-retry';
 import { CoalescedChannelWorker } from '../services/coalesced-channel-worker';
@@ -55,7 +56,9 @@ interface MessageState {
   hasMore: Record<string, boolean>;
   cursors: Record<string, string | null>;
   securityErrors: Record<string, string | null>;
-  channelKeyPending: Record<string, string | null>;
+  /** Why this device cannot write to a channel yet, if it cannot. */
+  channelKeyPending: Record<string, ChannelKeyWait | null>;
+  /** The device cannot read the channel yet: show the waiting screen instead of messages. */
   channelRecoveryPending: Record<string, boolean>;
   operationErrors: Record<string, string | null>;
   replyTargets: Record<string, ProjectedMessage | null>;
@@ -313,6 +316,27 @@ function requireLocallySignedMessageResponse(
   return markMessageCryptoVerification(event, true);
 }
 
+/**
+ * Waiting to be added hides the messages only on a device that never had a
+ * key of the channel. A device removed from the group (for example by a
+ * fresh start) keeps showing what it can read until it is added again.
+ */
+async function waitHidesHistory(channelId: string, wait: ChannelKeyWait): Promise<boolean> {
+  if (wait.reason !== 'waiting') return false;
+  try {
+    return !await hasChannelHistoryKeys(channelId);
+  } catch {
+    return true;
+  }
+}
+
+/** An unchanged waiting state keeps its object, so views that depend on it do not start over. */
+function sameWait(current: ChannelKeyWait | null | undefined, next: ChannelKeyWait | null): ChannelKeyWait | null {
+  return current && next && current.reason === next.reason && current.freshStartAvailable === next.freshStartAvailable
+    ? current
+    : next;
+}
+
 export const useMessageStore = create<MessageState>((set, get) => ({
   eventsByChannel: {},
   messagesByChannel: {},
@@ -340,15 +364,16 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         loadingByChannel: { ...state.loadingByChannel, [channelId]: true },
       }));
       try {
-        let keyPending: string | null = null;
+        let keyPending: ChannelKeyWait | null = null;
         try {
-          await ensureChannelKey(channelId);
+          await ensureChannelKey(channelId, { purpose: 'read' });
         } catch (error) {
-          if (!isChannelKeyActivationPendingError(error)) throw error;
-          // A pending epoch is an expected availability state. History remains
-          // readable with previously activated epochs, while writes continue
-          // to fail closed until every required recipient acknowledges it.
-          keyPending = error.message;
+          const wait = channelKeyWait(error);
+          // A device that already reads this channel keeps its history while
+          // it waits (a first group, being added again, or added back after
+          // it left the group); writes stay off until it has the current key.
+          if (!wait || await waitHidesHistory(channelId, wait)) throw error;
+          keyPending = wait;
         }
         const result = await api.getMessages(channelId);
         if (!isMessageContextCurrent(channelId, generation, channelEpoch) || loadVersions.get(channelId) !== loadVersion) return;
@@ -357,7 +382,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
           hasMore: { ...state.hasMore, [channelId]: result.hasMore },
           cursors: { ...state.cursors, [channelId]: result.cursor },
           securityErrors: { ...state.securityErrors, [channelId]: null },
-          channelKeyPending: { ...state.channelKeyPending, [channelId]: keyPending },
+          channelKeyPending: { ...state.channelKeyPending, [channelId]: sameWait(state.channelKeyPending[channelId], keyPending) },
           channelRecoveryPending: { ...state.channelRecoveryPending, [channelId]: false },
           loadingByChannel: { ...state.loadingByChannel, [channelId]: false },
           isLoading: Object.entries(state.loadingByChannel).some(([id, loading]) => id !== channelId && loading),
@@ -365,19 +390,16 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         await get().decryptMessages(channelId);
       } catch (error) {
         if (!isMessageContextCurrent(channelId, generation, channelEpoch) || loadVersions.get(channelId) !== loadVersion) return;
-        const recoveryPending = isChannelKeyDeliveryPendingError(error);
+        const wait = channelKeyWait(error);
         set((state) => ({
           isLoading: Object.entries(state.loadingByChannel).some(([id, loading]) => id !== channelId && loading),
           loadingByChannel: { ...state.loadingByChannel, [channelId]: false },
           securityErrors: {
             ...state.securityErrors,
-            [channelId]: recoveryPending ? null : errorMessage(error, 'Secure channel initialization failed'),
+            [channelId]: wait ? null : errorMessage(error, 'Secure channel initialization failed'),
           },
-          channelKeyPending: {
-            ...state.channelKeyPending,
-            [channelId]: recoveryPending ? error.message : null,
-          },
-          channelRecoveryPending: { ...state.channelRecoveryPending, [channelId]: recoveryPending },
+          channelKeyPending: { ...state.channelKeyPending, [channelId]: sameWait(state.channelKeyPending[channelId], wait) },
+          channelRecoveryPending: { ...state.channelRecoveryPending, [channelId]: wait !== null },
         }));
       }
     })();
@@ -449,7 +471,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       const generation = messageStoreGeneration;
       const channelEpoch = currentChannelEpoch(channelId);
       try {
-        await ensureChannelKey(channelId);
+        await ensureChannelKey(channelId, { purpose: 'read' });
         if (!isMessageContextCurrent(channelId, generation, channelEpoch)) return false;
         set((state) => ({
           channelKeyPending: { ...state.channelKeyPending, [channelId]: null },
@@ -460,16 +482,15 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         return true;
       } catch (error) {
         if (!isMessageContextCurrent(channelId, generation, channelEpoch)) return false;
-        if (isChannelKeyActivationPendingError(error)) {
+        const wait = channelKeyWait(error);
+        if (wait) {
+          // Waiting to be added shows the waiting screen; a device that
+          // already reads the channel keeps showing its messages.
+          const hidesHistory = await waitHidesHistory(channelId, wait);
+          if (!isMessageContextCurrent(channelId, generation, channelEpoch)) return false;
           set((state) => ({
-            channelKeyPending: { ...state.channelKeyPending, [channelId]: error.message },
-            channelRecoveryPending: { ...state.channelRecoveryPending, [channelId]: false },
-            securityErrors: { ...state.securityErrors, [channelId]: null },
-          }));
-        } else if (isChannelKeyDeliveryPendingError(error)) {
-          set((state) => ({
-            channelKeyPending: { ...state.channelKeyPending, [channelId]: error.message },
-            channelRecoveryPending: { ...state.channelRecoveryPending, [channelId]: true },
+            channelKeyPending: { ...state.channelKeyPending, [channelId]: sameWait(state.channelKeyPending[channelId], wait) },
+            channelRecoveryPending: { ...state.channelRecoveryPending, [channelId]: hidesHistory },
             securityErrors: { ...state.securityErrors, [channelId]: null },
           }));
         } else {
@@ -497,9 +518,12 @@ export const useMessageStore = create<MessageState>((set, get) => ({
 
   retryChannelPreparation: async (channelId) => {
     const reloadMessages = Boolean(get().channelRecoveryPending[channelId]);
-    if (!await get().reconcileChannelKey(channelId)) return false;
-    if (reloadMessages) await get().loadMessages(channelId);
-    return true;
+    const ready = await get().reconcileChannelKey(channelId);
+    // Messages were not loaded behind the waiting screen; load them once it is gone.
+    if (reloadMessages && !get().channelRecoveryPending[channelId] && !get().securityErrors[channelId]) {
+      await get().loadMessages(channelId);
+    }
+    return ready;
   },
 
   startChannelWithoutHistory: async (channelId) => {
@@ -549,7 +573,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     const forum = isForumChannel(channelId);
     if (forum !== Boolean(postId)) throw new Error(t('メッセージを送信できませんでした'));
     const device = getActiveDevice();
-    const channelKey = await ensureChannelKey(channelId);
+    const channelKey = await ensureChannelKey(channelId, { purpose: 'write' });
     const idempotencyKey = options.idempotencyKey || crypto.randomUUID();
     const broadcastMention = containsBroadcastMention(content);
     const unsigned = {
@@ -625,7 +649,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       if (!isForumChannel(channelId)) throw new Error(t('投稿を作成できませんでした'));
       const content = encodeForumPostContent({ title: post.title, body: post.body });
       const device = getActiveDevice();
-      const channelKey = await ensureChannelKey(channelId);
+      const channelKey = await ensureChannelKey(channelId, { purpose: 'write' });
       const broadcastMention = containsBroadcastMention(content);
       const unsigned = {
         type: 'message' as const,
@@ -723,7 +747,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     try {
       const postId = isForumChannel(channelId) ? forumPostIdOf(get(), channelId, messageId) : undefined;
       const device = getActiveDevice();
-      const channelKey = await ensureChannelKey(channelId);
+      const channelKey = await ensureChannelKey(channelId, { purpose: 'write' });
       const idempotencyKey = crypto.randomUUID();
       const broadcastMention = containsBroadcastMention(content);
       const unsigned = {
@@ -777,7 +801,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     try {
       const postId = isForumChannel(channelId) ? forumPostIdOf(get(), channelId, messageId) : undefined;
       const device = getActiveDevice();
-      const channelKey = await ensureChannelKey(channelId);
+      const channelKey = await ensureChannelKey(channelId, { purpose: 'write' });
       const envelope: SignedMessageEnvelope = {
         type: 'delete',
         channelId,

@@ -162,6 +162,13 @@
       "when": 1791327600000,
       "tag": "0022_email_verification",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1791414000000,
+      "tag": "0023_continuous_mls_groups",
+      "breakpoints": true
     }
   ]
 }

@@ -167,6 +167,8 @@ TAC advisory取得は認証されていない実行環境のため利用でき�
 
 別エージェントによる最終read-only bypass reviewは、保存済み34 findingすべてをsource-to-sinkで再確認し、具体的に悪用可能な残存bypassを報告しなかった。特にactivation直前のcurrent membership/device snapshot再照合、active epochだけのmessage/file write、REST responseのlocal signed envelope完全一致、audit anchor-to-tail descendant proofとsticky latchを確認した。Scanのcanonical `findings.json` / `report.md` は履歴保持のため変更せず、修正結果はscan artifact配下の独立した `artifacts/fix_report.md` に記録した。
 
+追記（2026-10-07、group protocol 4）: 上表「Split epoch / poisoned wrap」の二段階protocol（`pending`→全required recipientのack→`active`、署名abort）は、channelごとに継続するMLS groupへの移行（[ADR 0012](../adr/0012-continuous-mls-groups.md)）で廃止した。この記録は書き換えず、同じ脅威への現在の対処だけを記す。Split epoch: serverは1 versionに1 commitだけを直前transcriptのcompare-and-swapで受理し、clientは検証済みversionとtranscriptを固定して、つながらないcommitやrollbackを検出したら停止する。Poisoned wrap/Welcome: serverはcommitter署名、roster、proposal、Welcomeの宛先、UpdatePathのleafを検証し、それでも処理できない端末は鍵を残して参加し直しを要求し、次のcommitで追加し直される。進まない場合は条件付きのfresh startで回復する。資格を失った端末を含むgroupへのwriteはRemoveの受理まで停止する。
+
 ## Release conclusion
 
 現時点の結論は **Prototype / formal production use未承認** である。MLS、approval/key transparency、WebAuthn/OIDC、mobile、Restricted profile、HA、PITR/WORM/off-site/automatic DR、retention/export、signed updates、media、Bot/Webhook、独立外部security reviewなどのarchitectural blockerはlocalized findingの修正とは別であり、`LIMITATIONS.md` と `THREAT_MODEL.md` に残る。

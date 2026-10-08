@@ -1,12 +1,26 @@
-import { deleteChannelSecurityState, readSecurityState, writeSecurityState, fromBase64 } from './security-storage';
+import {
+  deleteChannelSecurityState,
+  fromBase64,
+  listSecurityStateNames,
+  readSecurityState,
+  writeSecurityState,
+} from './security-storage';
 import { padMessage, unpadMessage } from './message-padding';
-import { prepareMlsPackage, proposeMlsEpoch, deriveMlsDelivery, mlsLocator, nonMlsDeliveryAllowed, pinnedMlsVersion } from './mls.service';
-import { verifyDirectoryDevices, verifiedDirectory } from './directory.service';
+import { deriveMlsDelivery, mlsLocator, nonMlsDeliveryAllowed, pinnedMlsVersion } from './mls.service';
+import {
+  cancelGroupMaintenance,
+  createChannelGroupVersion,
+  ensureChannelGroupKey,
+  localGroupView,
+  syncChannelGroup,
+  type ChannelKeyPurpose,
+} from './mls-group.service';
+import { assertKeyRecipientState, isGroupEquivocation, requiresGroupKey } from './mls-group-model';
+import { verifiedDirectory } from './directory.service';
 import {
   serializeAttachmentEnvelope,
   serializeDeviceChallengeProof,
   serializeChannelKeyAcknowledgement,
-  serializeChannelKeyEpochAbort,
   serializeChannelKeyWrap,
   serializeMessageAad,
   serializeMessageEnvelope,
@@ -21,7 +35,6 @@ import {
   ApiError,
   type ChannelKeyDelivery,
   type ChannelKeyEpochStatus,
-  type ChannelKeyRecipientState,
 } from './api';
 import { channelKeyScopes, type ChannelKeyScopeToken } from './channel-key-scope';
 import {
@@ -30,7 +43,6 @@ import {
   getDesktopSecret,
   setDesktopSecret,
 } from './desktop.service';
-import { t } from '../i18n';
 
 const DB_NAME = 'alparts-crypto';
 const STORE_NAME = 'keys';
@@ -74,64 +86,16 @@ export interface ChannelKey {
   version: number;
 }
 
-export const CHANNEL_KEY_ACTIVATION_PENDING = 'CHANNEL_KEY_ACTIVATION_PENDING';
-export const CHANNEL_KEY_DELIVERY_PENDING = 'CHANNEL_KEY_DELIVERY_PENDING';
-export const CHANNEL_HISTORY_UNAVAILABLE = 'CHANNEL_HISTORY_UNAVAILABLE';
-
-/**
- * The candidate key is valid, but the server cannot activate it until every
- * required recipient device has acknowledged its exact delivery. This is an
- * availability state, not evidence of a cryptographic failure.
- */
-export class ChannelKeyActivationPendingError extends Error {
-  readonly code = CHANNEL_KEY_ACTIVATION_PENDING;
-
-  constructor(readonly remainingDeviceCount: number) {
-    super(
-      remainingDeviceCount > 0
-        ? t('会話の準備をしています（あと{count}台）。参加中の端末でこの会話を開いてください。', { count: remainingDeviceCount })
-        : t('会話の準備をしています'),
-    );
-    this.name = 'ChannelKeyActivationPendingError';
-  }
-}
-
-export function isChannelKeyActivationPendingError(
-  error: unknown,
-): error is ChannelKeyActivationPendingError {
-  return error instanceof ChannelKeyActivationPendingError
-    || (typeof error === 'object'
-      && error !== null
-      && (error as { code?: unknown }).code === CHANNEL_KEY_ACTIVATION_PENDING);
-}
-
-/**
- * This device is authorized, but another already-authorized device must wrap
- * the existing channel key for it. Treat this as recoverable availability,
- * never as a cryptographic verification failure or a reason to use plaintext.
- */
-export class ChannelKeyDeliveryPendingError extends Error {
-  readonly code = CHANNEL_KEY_DELIVERY_PENDING;
-
-  /** `historyUnavailable`: no current device holds the key, so waiting cannot help. */
-  constructor(historyUnavailable = false) {
-    super(historyUnavailable
-      ? CHANNEL_HISTORY_UNAVAILABLE
-      : 'A previously registered device must make this channel available to the current device');
-    this.name = 'ChannelKeyDeliveryPendingError';
-  }
-}
-
-export function isChannelKeyDeliveryPendingError(
-  error: unknown,
-): error is ChannelKeyDeliveryPendingError {
-  return error instanceof ChannelKeyDeliveryPendingError
-    || (typeof error === 'object'
-      && error !== null
-      && (error as { code?: unknown }).code === CHANNEL_KEY_DELIVERY_PENDING);
-}
-
-const MAX_KEY_RECONCILIATION_ATTEMPTS = 6;
+export {
+  CHANNEL_KEY_DELIVERY_PENDING,
+  ChannelKeyDeliveryPendingError,
+  channelKeyWait,
+  isChannelKeyDeliveryPendingError,
+  type ChannelKeyWait,
+  type ChannelKeyWaitReason,
+} from './channel-key-wait';
+export { assertKeyRecipientState } from './mls-group-model';
+export type { ChannelKeyPurpose } from './mls-group.service';
 
 interface LoadedChannelKeyDelivery {
   key: CryptoKey;
@@ -308,6 +272,7 @@ async function signDeviceChallenge(userId: string, challenge: string, signingPri
 }
 
 export function clearActiveDevice(): void {
+  cancelGroupMaintenance();
   deviceSessionGeneration += 1;
   deviceInitializations.clear();
   channelKeyScopes.reset();
@@ -455,197 +420,60 @@ async function importDesktopDeviceKeys(value: unknown): Promise<DeviceKeyMateria
   }
 }
 
-export async function ensureChannelKey(channelId: string): Promise<ChannelKey> {
+/**
+ * The key of the channel's current version. `write` (the default) commits
+ * due removals and refreshes first and refuses while this device knows a
+ * member to be revoked; `read` only brings the group up to date.
+ */
+export async function ensureChannelKey(
+  channelId: string,
+  options: { purpose?: ChannelKeyPurpose } = {},
+): Promise<ChannelKey> {
   const scope = channelKeyScopes.capture(channelId);
-  return navigator.locks.request(`alparts-channel-key:${getActiveDevice().deviceId}:${channelId}`, () => ensureChannelKeyAttempt(channelId, scope));
+  const purpose = options.purpose ?? 'write';
+  return navigator.locks.request(
+    `alparts-channel-key:${getActiveDevice().deviceId}:${channelId}`,
+    () => currentChannelKey(channelId, scope, purpose),
+  );
+}
+
+function currentChannelKey(channelId: string, scope: ChannelKeyScopeToken, purpose: ChannelKeyPurpose): Promise<ChannelKey> {
+  return ensureChannelGroupKey(channelId, scope, {
+    purpose,
+    loadKey: (version) => loadGroupVersionKey(channelId, version, scope),
+  });
 }
 
 /**
- * Explicitly establish a new writable epoch without requiring this endpoint
- * to possess the previous epoch. Historical ciphertext remains untouched and
- * unavailable here; every current endpoint still receives the new signed key.
+ * Whether this device holds the key of any version of the channel, derived
+ * or delivered here (each has its key commitment) or restored from the
+ * account's history backup. Such a device can show earlier messages while
+ * it waits to be added to the channel's current group.
+ */
+export async function hasChannelHistoryKeys(channelId: string): Promise<boolean> {
+  const device = getActiveDevice();
+  for (const prefix of [`key-commitment:${channelId}:`, `recovered:${channelId}:`]) {
+    if ((await listSecurityStateNames(device, prefix, 1)).length > 0) return true;
+  }
+  return false;
+}
+
+/**
+ * Start the channel again from a new group (fresh start, identity
+ * confirmation required). Earlier ciphertext stays untouched; devices that
+ * cannot read it now never will. Members join the new group as other
+ * devices add them.
  */
 export async function startChannelWithoutHistory(channelId: string): Promise<ChannelKey> {
   const scope = channelKeyScopes.capture(channelId);
   return navigator.locks.request(`alparts-channel-key:${getActiveDevice().deviceId}:${channelId}`, async () => {
     const state = await api.getKeyRecipients(channelId);
     channelKeyScopes.assertCurrent(scope);
-    assertKeyRecipientState(state);
-    await proposeMlsEpoch(channelId, state, true);
+    assertKeyRecipientState(channelId, state);
+    await createChannelGroupVersion(channelId, state, scope, { freshStart: state.group !== null });
     channelKeyScopes.assertCurrent(scope);
-    return ensureChannelKeyAttempt(channelId, scope);
+    return currentChannelKey(channelId, scope, 'write');
   });
-}
-
-async function ensureChannelKeyAttempt(
-  channelId: string,
-  scope: ChannelKeyScopeToken,
-): Promise<ChannelKey> {
-  const device = getActiveDevice();
-  for (let attempt = 0; attempt < MAX_KEY_RECONCILIATION_ATTEMPTS; attempt += 1) {
-    channelKeyScopes.assertCurrent(scope);
-    const [state, deliveries] = await Promise.all([
-      api.getKeyRecipients(channelId),
-      api.getChannelKeys(channelId),
-    ]);
-    channelKeyScopes.assertCurrent(scope);
-    assertKeyRecipientState(state);
-    await verifyDirectoryDevices(channelId, state.recipients, 'active');
-    if (state.pendingVersion === null && (state.rotationRequired || state.currentVersion === 0)) {
-      try { await prepareMlsPackage(channelId, state.nextVersion); }
-      catch (error) {
-        if (error instanceof ApiError && error.status === 409) continue;
-        throw error;
-      }
-    }
-
-    const activeDeliveries = state.currentVersion === 0 ? [] : deliveriesForEpoch(
-      deliveries,
-      'active',
-      state.currentVersion,
-      state.keyCommitment!,
-    );
-    const active = await loadChannelKeyDelivery(
-      channelId,
-      activeDeliveries,
-      device,
-      scope,
-      () => true,
-    );
-    channelKeyScopes.assertCurrent(scope);
-    if (active?.acknowledged) continue;
-
-    const hasPendingEpoch = state.pendingVersion !== null;
-    const pendingDeliveries = !hasPendingEpoch ? [] : deliveriesForEpoch(
-      deliveries,
-      'pending',
-      state.pendingVersion!,
-      state.pendingKeyCommitment!,
-    );
-    const pending = await loadChannelKeyDelivery(
-      channelId,
-      pendingDeliveries,
-      device,
-      scope,
-      () => true,
-    );
-    channelKeyScopes.assertCurrent(scope);
-    if (pending?.acknowledged) continue;
-
-    // GET requests are not one atomic snapshot. Retry an observed monotonic
-    // pending -> active -> retired transition instead of misclassifying it as
-    // an invalid delivery.
-    if (
-      (!active && hasAdjacentEpochStatus(deliveries, state.currentVersion, state.keyCommitment, 'active'))
-      || (hasPendingEpoch && !pending && hasAdjacentEpochStatus(
-        deliveries,
-        state.pendingVersion!,
-        state.pendingKeyCommitment!,
-        'pending',
-      ))
-    ) continue;
-
-    if (hasPendingEpoch) {
-      if (state.pendingInvalid) {
-        if (
-          state.canAbortPending
-          && state.recipients.some((recipient) => recipient.deviceId === device.deviceId)
-          && hasActiveEpochAuthority(state, device.deviceId, Boolean(active))
-        ) {
-          await abortPendingChannelKeyEpoch(channelId, state, device);
-          channelKeyScopes.assertCurrent(scope);
-          await deletePersistedChannelKey(channelStorageId(device, channelId, state.pendingVersion!)).catch(() => undefined);
-          continue;
-        }
-        throw new Error('Invalid pending channel key epoch requires an authorized manager to abort it');
-      }
-      if (!pending) {
-        if (
-          state.canAbortPending
-          && state.recipients.some((recipient) => recipient.deviceId === device.deviceId)
-          && hasActiveEpochAuthority(state, device.deviceId, Boolean(active))
-        ) {
-          await abortPendingChannelKeyEpoch(channelId, state, device);
-          channelKeyScopes.assertCurrent(scope);
-          await deletePersistedChannelKey(channelStorageId(device, channelId, state.pendingVersion!)).catch(() => undefined);
-          continue;
-        }
-        if (pendingDeliveries.length === 0) throw new ChannelKeyDeliveryPendingError();
-        throw new Error('This device has not received a valid pending channel key delivery');
-      }
-
-      if (!state.pendingAcknowledgedDeviceIds.includes(device.deviceId)) continue;
-      const acknowledged = new Set(state.pendingAcknowledgedDeviceIds);
-      const required = new Set(
-        state.pendingRequiredDeviceIds
-        ?? state.recipients.map((recipient) => recipient.deviceId),
-      );
-      const missing = state.recipients.filter((recipient) => (
-        required.has(recipient.deviceId) && !acknowledged.has(recipient.deviceId)
-      ));
-      if (missing.length === 0) continue;
-      if (mlsLocator(pending.delivery.encryptedKey)) throw new ChannelKeyActivationPendingError(missing.length);
-      try {
-        await distributeFromDelivery(channelId, pending.delivery, missing, device);
-        channelKeyScopes.assertCurrent(scope);
-      } catch (error) {
-        channelKeyScopes.assertCurrent(scope);
-        // The candidate key is immutable per distributor. A conflict means
-        // this device already supplied its one repair candidate.
-        if (!(error instanceof ApiError && error.status === 409)) throw error;
-      }
-      throw new ChannelKeyActivationPendingError(missing.length);
-    }
-
-    if (state.rotationRequired || state.currentVersion === 0) {
-      if (!state.canRotate) {
-        throw new ChannelKeyDeliveryPendingError(state.historyRecoveryRequired);
-      }
-      if (!state.recipients.some((recipient) => recipient.deviceId === device.deviceId)) {
-        throw new Error('Current device is not an authorized key recipient');
-      }
-      if (
-        state.currentVersion > 0
-        && !state.historyRecoveryRequired
-        && (!active || !state.distributedDeviceIds.includes(device.deviceId))
-      ) {
-        throw new Error('Current device must accept the active channel key before rotating it');
-      }
-
-      try {
-        await proposeMlsEpoch(channelId, state);
-        channelKeyScopes.assertCurrent(scope);
-        continue;
-      } catch (error) {
-        channelKeyScopes.assertCurrent(scope);
-        if (error instanceof ApiError && error.status === 409) continue;
-        throw error;
-      }
-    }
-
-    if (!active || !state.distributedDeviceIds.includes(device.deviceId)) {
-      if (!active && activeDeliveries.length === 0) throw new ChannelKeyDeliveryPendingError();
-      throw new Error('This device has not received the active channel key; approve it from an existing device');
-    }
-
-    const distributed = new Set(state.distributedDeviceIds);
-    const missing = state.recipients.filter((recipient) => !distributed.has(recipient.deviceId));
-    // An MLS key reaches new members only through an MLS epoch; never wrap it
-    // for devices the server merely reports as missing.
-    if (missing.length > 0 && !mlsLocator(active.delivery.encryptedKey)) {
-      try {
-        await distributeFromDelivery(channelId, active.delivery, missing, device);
-        channelKeyScopes.assertCurrent(scope);
-      } catch (error) {
-        channelKeyScopes.assertCurrent(scope);
-        if (!(error instanceof ApiError && error.status === 409)) throw error;
-      }
-    }
-    channelKeyScopes.assertCurrent(scope);
-    return { key: active.key, version: state.currentVersion };
-  }
-
-  throw new Error('Channel key state changed too many times; retry the operation');
 }
 
 async function unwrapChannelKey(encryptedKey: string, device: ActiveDevice): Promise<Uint8Array> {
@@ -678,105 +506,6 @@ export async function tryChannelKeyDeliveries<T>(
 
 export function isDecryptableChannelKeyEpoch(status: ChannelKeyEpochStatus): boolean {
   return status === 'active' || status === 'retired';
-}
-
-/**
- * A device may administer a provisional epoch with no active key only when no
- * authorized non-revoked accepted holder remains. This never grants access to
- * historical ciphertext; it only permits fail-closed abort/recovery.
- */
-export function hasActiveEpochAuthority(
-  state: Pick<
-    ChannelKeyRecipientState,
-    'currentVersion' | 'historyRecoveryRequired' | 'distributedDeviceIds'
-  >,
-  deviceId: string,
-  hasLoadedActiveKey: boolean,
-): boolean {
-  return state.currentVersion === 0
-    || state.historyRecoveryRequired
-    || (hasLoadedActiveKey && state.distributedDeviceIds.includes(deviceId));
-}
-
-function deliveriesForEpoch(
-  deliveries: readonly ChannelKeyDelivery[],
-  status: ChannelKeyEpochStatus,
-  version: number,
-  keyCommitment: string,
-): ChannelKeyDelivery[] {
-  return deliveries.filter((delivery) => (
-    delivery.epochStatus === status
-    && delivery.version === version
-    && delivery.keyCommitment === keyCommitment
-  ));
-}
-
-function hasAdjacentEpochStatus(
-  deliveries: readonly ChannelKeyDelivery[],
-  version: number,
-  keyCommitment: string | null,
-  expectedStatus: ChannelKeyEpochStatus,
-): boolean {
-  if (version === 0 || !keyCommitment) return false;
-  return deliveries.some((delivery) => (
-    delivery.version === version
-    && delivery.keyCommitment === keyCommitment
-    && delivery.epochStatus !== expectedStatus
-  ));
-}
-
-// Mirrors the server bounds: 50 members with at most 8 active devices each.
-const MAX_KEY_RECIPIENT_USERS = 50;
-const MAX_KEY_RECIPIENTS = MAX_KEY_RECIPIENT_USERS * 8;
-
-function assertKeyRecipientState(state: ChannelKeyRecipientState): void {
-  if (
-    !Array.isArray(state.recipients)
-    || state.recipients.length > MAX_KEY_RECIPIENTS
-    || new Set(state.recipients.map((recipient) => recipient.userId)).size > MAX_KEY_RECIPIENT_USERS
-  ) {
-    throw new Error('Server returned an unbounded channel key recipient set');
-  }
-  const recipientIds = new Set(state.recipients.map((recipient) => recipient.deviceId));
-  if (recipientIds.size !== state.recipients.length) {
-    throw new Error('Server returned duplicate channel key recipients');
-  }
-  if (
-    typeof state.pendingInvalid !== 'boolean'
-    || typeof state.historyRecoveryRequired !== 'boolean'
-  ) {
-    throw new Error('Server returned an invalid pending channel key state');
-  }
-  if ((state.currentVersion === 0) !== (state.keyCommitment === null)) {
-    throw new Error('Server returned an invalid active channel key state');
-  }
-  if ((state.pendingVersion === null) !== (state.pendingKeyCommitment === null)) {
-    throw new Error('Server returned an invalid pending channel key state');
-  }
-  if (
-    state.historyRecoveryRequired
-    && (state.currentVersion === 0 || !state.rotationRequired)
-  ) {
-    throw new Error('Server returned an invalid channel key recovery state');
-  }
-  if (state.nextVersion <= state.currentVersion || (state.pendingVersion !== null && state.nextVersion <= state.pendingVersion)) {
-    throw new Error('Server returned a non-monotonic channel key version');
-  }
-  if (
-    new Set(state.pendingAcknowledgedDeviceIds).size !== state.pendingAcknowledgedDeviceIds.length
-    || state.pendingAcknowledgedDeviceIds.some((deviceId) => !recipientIds.has(deviceId))
-    || (state.pendingVersion === null && state.pendingAcknowledgedDeviceIds.length > 0)
-  ) {
-    throw new Error('Server returned an invalid pending channel key acknowledgement state');
-  }
-  if (state.pendingRequiredDeviceIds !== undefined && (
-    new Set(state.pendingRequiredDeviceIds).size !== state.pendingRequiredDeviceIds.length
-    || state.pendingRequiredDeviceIds.some((deviceId) => !recipientIds.has(deviceId))
-    || (state.pendingVersion === null && state.pendingRequiredDeviceIds.length > 0)
-    || (state.pendingVersion !== null && state.pendingRequiredDeviceIds.length === 0)
-  )) {
-    throw new Error('Server returned an invalid pending channel key requirement state');
-  }
 }
 
 async function loadChannelKeyDelivery(
@@ -885,6 +614,11 @@ async function unwrapCommittedChannelKey(
   try {
     const locator = mlsLocator(wrapped.encryptedKey);
     if (locator && locator.version !== wrapped.version) return null;
+    // From the first continuous group on, keys come only from that group:
+    // never from a delivery, which a member and the server could forge.
+    if (requiresGroupKey(wrapped.version, (await localGroupView(channelId)).v4Start)) {
+      throw new Error('MLS_DOWNGRADE');
+    }
     // A channel already on MLS never goes back to keys the server could
     // have produced itself.
     if (!locator && !nonMlsDeliveryAllowed(await pinnedMlsVersion(channelId), wrapped.version)) {
@@ -904,73 +638,99 @@ async function unwrapCommittedChannelKey(
   return raw;
 }
 
-async function distributeFromDelivery(
+async function computeKeyCommitment(raw: Uint8Array): Promise<string> {
+  // The view itself, not its buffer: an exporter result may share a larger buffer.
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', raw as Uint8Array<ArrayBuffer>));
+  return arrayBufferToBase64(digest).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+async function importChannelKey(raw: Uint8Array): Promise<CryptoKey> {
+  if (raw.byteLength !== 32) throw new Error('Invalid channel key length');
+  return crypto.subtle.importKey('raw', raw as Uint8Array<ArrayBuffer>, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+}
+
+/**
+ * Persist what goes with a version key this device derived from a verified
+ * group envelope (the key itself is in its `mls-key` record): the
+ * commitment it was checked against, and the recovery backup (retried
+ * later if it fails now).
+ */
+export async function storeGroupVersionKey(
   channelId: string,
-  delivery: ChannelKeyDelivery,
-  recipients: Array<{ deviceId: string; identityKey: string }>,
-  device: ActiveDevice,
+  version: number,
+  raw: Uint8Array,
+  keyCommitment: string,
+  scope: ChannelKeyScopeToken,
 ): Promise<void> {
-  const raw = await unwrapCommittedChannelKey(channelId, delivery, device);
-  if (!raw) throw new Error('Channel key commitment verification failed');
+  const device = getActiveDevice();
+  if (raw.byteLength !== 32) throw new Error('Invalid channel key length');
+  await writeSecurityState(device, keyCommitmentStateName(channelId, version), keyCommitment, scope);
   try {
-    const keys = await wrapForRecipients(raw, recipients, {
-      channelId,
-      version: delivery.version,
-      keyCommitment: delivery.keyCommitment,
-    });
-    await api.distributeChannelKeys(channelId, delivery.version, delivery.keyCommitment, keys);
+    await (await import('./recovery.service')).backupRawHistoryKey(channelId, version, raw);
+  } catch {
+    await writeSecurityState(device, `recovery-backup-pending:${channelId}:${version}`, true, scope);
+  }
+}
+
+/**
+ * A version key this device derived from its own group, or null. It is
+ * imported from the derived record itself, never from the per-version key
+ * slot that a restored key also writes [sec-7].
+ */
+async function loadGroupVersionKey(
+  channelId: string,
+  version: number,
+  scope: ChannelKeyScopeToken,
+): Promise<CryptoKey | null> {
+  const device = getActiveDevice();
+  const archived = await readSecurityState<{ raw: string }>(device, `mls-key:${channelId}:${version}`);
+  channelKeyScopes.assertCurrent(scope);
+  if (!archived?.raw) return null;
+  const raw = fromBase64(archived.raw);
+  try {
+    return await importChannelKey(raw);
   } finally {
     raw.fill(0);
   }
 }
 
-async function abortPendingChannelKeyEpoch(
+/**
+ * A key restored from this account's history backup for a group version.
+ * When this device verified that version itself, the commitments must agree.
+ */
+async function loadRecoveredGroupKey(
   channelId: string,
-  state: ChannelKeyRecipientState,
-  device: ActiveDevice,
-): Promise<void> {
-  if (state.pendingVersion === null || state.pendingKeyCommitment === null) {
-    throw new Error('There is no pending channel key epoch to abort');
+  version: number,
+  scope: ChannelKeyScopeToken,
+): Promise<CryptoKey | null> {
+  const device = getActiveDevice();
+  const recovered = await readSecurityState<{ raw: string }>(device, `recovered:${channelId}:${version}`);
+  channelKeyScopes.assertCurrent(scope);
+  if (!recovered?.raw) return null;
+  const verified = await readSecurityState<string>(device, keyCommitmentStateName(channelId, version));
+  channelKeyScopes.assertCurrent(scope);
+  const raw = fromBase64(recovered.raw);
+  try {
+    if (verified && await computeKeyCommitment(raw) !== verified) return null;
+    return await importChannelKey(raw);
+  } finally {
+    raw.fill(0);
   }
-  const signature = await signDevicePayload(serializeChannelKeyEpochAbort({
-    channelId,
-    keyVersion: state.pendingVersion,
-    keyCommitment: state.pendingKeyCommitment,
-    deviceId: device.deviceId,
-  }));
-  await api.abortChannelKeyEpoch(
-    channelId,
-    state.pendingVersion,
-    state.pendingKeyCommitment,
-    signature,
-  );
 }
 
-async function computeKeyCommitment(raw: Uint8Array): Promise<string> {
-  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', raw.buffer as ArrayBuffer));
-  return arrayBufferToBase64(digest).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-
-async function importChannelKey(raw: Uint8Array): Promise<CryptoKey> {
-  return crypto.subtle.importKey('raw', raw.buffer as ArrayBuffer, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
-}
-
-async function wrapForRecipients(
-  raw: Uint8Array,
-  recipients: Array<{ deviceId: string; identityKey: string }>,
-  context: { channelId: string; version: number; keyCommitment: string },
-): Promise<Array<{ deviceId: string; encryptedKey: string; signature: string }>> {
-  return Promise.all(recipients.map(async (recipient) => {
-    const encryptedKey = await wrapChannelKey(raw, recipient.identityKey);
-    const signature = await signDevicePayload(serializeChannelKeyWrap({
-      channelId: context.channelId,
-      keyVersion: context.version,
-      keyCommitment: context.keyCommitment,
-      recipientDeviceId: recipient.deviceId,
-      encryptedKey,
-    }));
-    return { deviceId: recipient.deviceId, encryptedKey, signature };
-  }));
+/**
+ * From where keys must come from a continuous group: the lowest genesis this
+ * device verified, or, while it waits to be added, the server's. Earlier
+ * versions still use the per-device deliveries of before.
+ */
+async function groupKeyStart(channelId: string, scope: ChannelKeyScopeToken): Promise<number | null> {
+  const local = (await localGroupView(channelId)).v4Start;
+  channelKeyScopes.assertCurrent(scope);
+  if (local !== null) return local;
+  const state = await api.getKeyRecipients(channelId);
+  channelKeyScopes.assertCurrent(scope);
+  assertKeyRecipientState(channelId, state);
+  return state.group?.genesisVersion ?? null;
 }
 
 export async function getChannelKeyForVersion(channelId: string, version: number): Promise<CryptoKey | null> {
@@ -993,30 +753,79 @@ export async function getChannelKeysForVersions(
   ) throw new Error('Invalid bounded channel key version request');
   const scope = channelKeyScopes.capture(channelId);
   const device = getActiveDevice();
-  const response = await api.getChannelKeys(channelId, versions, signal);
-  throwIfRequestAborted(signal);
+  const local = await localGroupView(channelId);
+  const legacyHead = await pinnedMlsVersion(channelId);
   channelKeyScopes.assertCurrent(scope);
-  const requested = new Set(versions);
-  if (response.some((delivery) => !requested.has(delivery.version))) {
-    throw new Error('Server returned a channel key outside the requested version set');
+  let groupStart = local.v4Start;
+  const reached = Math.max(local.version ?? 0, legacyHead ?? 0);
+  if (versions.some((version) => version > reached)) {
+    // A version this device has not reached yet: catch up once. The server's
+    // group start also counts while this device still waits to be added.
+    const serverStart = await refreshGroupForHistory(channelId, scope);
+    throwIfRequestAborted(signal);
+    if (serverStart !== null) groupStart = groupStart === null ? serverStart : Math.min(groupStart, serverStart);
   }
-  const loaded = await Promise.all(versions.map(async (version) => {
-    const deliveries = response.filter((delivery) => (
-      delivery.version === version && isDecryptableChannelKeyEpoch(delivery.epochStatus)
-    ));
-    const candidate = await loadChannelKeyDelivery(
-      channelId,
-      deliveries,
-      device,
-      scope,
-      (delivery) => isDecryptableChannelKeyEpoch(delivery.epochStatus),
+  const loaded = new Map<number, CryptoKey | null>();
+  const legacy: number[] = [];
+  for (const version of versions) {
+    if (!requiresGroupKey(version, groupStart)) {
+      legacy.push(version);
+      continue;
+    }
+    loaded.set(
+      version,
+      await loadGroupVersionKey(channelId, version, scope) ?? await loadRecoveredGroupKey(channelId, version, scope),
     );
-    const recovered = await readSecurityState<{ raw: string }>(device, `recovered:${channelId}:${version}`);
-    return [version, candidate?.key ?? (recovered ? await loadPersistedChannelKey(channelStorageId(device, channelId, version)) : null)] as const;
-  }));
+  }
+  if (legacy.length > 0) {
+    // Versions before the first group: the earlier per-device deliveries.
+    const response = await api.getChannelKeys(channelId, legacy, signal);
+    throwIfRequestAborted(signal);
+    channelKeyScopes.assertCurrent(scope);
+    const requested = new Set(legacy);
+    if (response.some((delivery) => !requested.has(delivery.version))) {
+      throw new Error('Server returned a channel key outside the requested version set');
+    }
+    await Promise.all(legacy.map(async (version) => {
+      const deliveries = response.filter((delivery) => (
+        delivery.version === version && isDecryptableChannelKeyEpoch(delivery.epochStatus)
+      ));
+      const candidate = await loadChannelKeyDelivery(
+        channelId,
+        deliveries,
+        device,
+        scope,
+        (delivery) => isDecryptableChannelKeyEpoch(delivery.epochStatus),
+      );
+      const recovered = await readSecurityState<{ raw: string }>(device, `recovered:${channelId}:${version}`);
+      loaded.set(version, candidate?.key ?? (recovered ? await loadPersistedChannelKey(channelStorageId(device, channelId, version)) : null));
+    }));
+  }
   throwIfRequestAborted(signal);
   channelKeyScopes.assertCurrent(scope);
-  return new Map(loaded);
+  return new Map(versions.map((version) => [version, loaded.get(version) ?? null]));
+}
+
+/**
+ * Catch this device's group up for reading, and return where the server's
+ * group starts. Waiting to be added is not an error here; contradicting
+ * verified history is.
+ */
+async function refreshGroupForHistory(channelId: string, scope: ChannelKeyScopeToken): Promise<number | null> {
+  const state = await api.getKeyRecipients(channelId);
+  channelKeyScopes.assertCurrent(scope);
+  assertKeyRecipientState(channelId, state);
+  if (!state.group) return null;
+  // Only a member catches up here; waiting to be added is ensureChannelKey's work.
+  if (state.ownMembership && !state.ownMembership.rejoinRequested) {
+    try {
+      await syncChannelGroup(channelId, state, scope);
+    } catch (error) {
+      if (isGroupEquivocation(error)) throw error;
+    }
+  }
+  channelKeyScopes.assertCurrent(scope);
+  return state.group.genesisVersion;
 }
 
 function throwIfRequestAborted(signal?: AbortSignal): void {
@@ -1237,25 +1046,6 @@ export async function verifyDevicePayload(payload: string, signature: string, id
   }
 }
 
-async function wrapChannelKey(raw: Uint8Array, identityKey: string): Promise<string> {
-  const parsed = JSON.parse(identityKey) as DevicePublicBundle;
-  if (parsed.version !== 1 || parsed.encryptionKey.kty !== 'RSA' || parsed.encryptionKey.alg !== 'RSA-OAEP-256') {
-    throw new Error('Invalid recipient identity key');
-  }
-  const publicKey = await crypto.subtle.importKey(
-    'jwk',
-    parsed.encryptionKey,
-    { name: 'RSA-OAEP', hash: 'SHA-256' },
-    false,
-    ['encrypt'],
-  );
-  return arrayBufferToBase64(await crypto.subtle.encrypt(
-    { name: 'RSA-OAEP' },
-    publicKey,
-    raw.buffer as ArrayBuffer,
-  ));
-}
-
 function channelStorageId(device: ActiveDevice, channelId: string, version: number) {
   return `channel:${device.userId}:${device.deviceId}:${channelId}:${version}`;
 }
@@ -1286,21 +1076,39 @@ function base64ToArrayBuffer(base64: string): ArrayBuffer {
   return bytes.buffer;
 }
 
+/**
+ * Keep a key restored from this account's history backup. A key this device
+ * derived or verified itself is never replaced by a restored one [sec-7].
+ */
 export async function saveRecoveredChannelKey(channelId: string, version: number, raw: Uint8Array) {
   const scope = channelKeyScopes.capture(channelId);
   const device = getActiveDevice();
+  const derived = await readSecurityState<{ raw: string }>(device, `mls-key:${channelId}:${version}`);
+  const verified = await readSecurityState<string>(device, keyCommitmentStateName(channelId, version));
+  channelKeyScopes.assertCurrent(scope);
+  if (derived?.raw || (verified && verified !== await computeKeyCommitment(raw))) return;
   await saveChannelKeyForScope(channelStorageId(device, channelId, version), await importChannelKey(raw), scope, raw);
   await writeSecurityState(device, `recovered:${channelId}:${version}`, { raw: arrayBufferToBase64(raw) }, scope);
 }
+
+/**
+ * The raw key of a version for this account's history backup. From the
+ * first continuous group on, only a key whose commitment this device checked
+ * against a signed envelope is backed up, never a delivery [sec-7].
+ */
 export async function exportHistoryKey(channelId: string, version: number): Promise<Uint8Array | null> {
   const scope = channelKeyScopes.capture(channelId);
   const device = getActiveDevice();
   const cached = await readSecurityState<{raw: string}>(device, `mls-key:${channelId}:${version}`);
-  channelKeyScopes.assertCurrent(scope);
-  if (cached) return fromBase64(cached.raw);
   const recovered = await readSecurityState<{raw: string}>(device, `recovered:${channelId}:${version}`);
   channelKeyScopes.assertCurrent(scope);
+  const local = (await localGroupView(channelId)).v4Start;
+  channelKeyScopes.assertCurrent(scope);
+  if (requiresGroupKey(version, local)) return verifiedGroupKey(channelId, version, [cached, recovered], scope);
+  if (cached) return fromBase64(cached.raw);
   if (recovered?.raw) return fromBase64(recovered.raw);
+  // While this device waits to be added, the server's group decides too.
+  if (requiresGroupKey(version, await groupKeyStart(channelId, scope))) return null;
   const deliveries = (await api.getChannelKeys(channelId, [version]))
     .filter((delivery) => delivery.confirmedAt && isDecryptableChannelKeyEpoch(delivery.epochStatus));
   channelKeyScopes.assertCurrent(scope);
@@ -1311,6 +1119,25 @@ export async function exportHistoryKey(channelId: string, version: number): Prom
     const raw = await unwrapCommittedChannelKey(channelId, delivery, device);
     channelKeyScopes.assertCurrent(scope);
     if (raw) return raw;
+  }
+  return null;
+}
+
+/** The first of `candidates` whose commitment matches the one this device verified for the version. */
+async function verifiedGroupKey(
+  channelId: string,
+  version: number,
+  candidates: ReadonlyArray<{ raw?: string } | null>,
+  scope: ChannelKeyScopeToken,
+): Promise<Uint8Array | null> {
+  const verified = await readSecurityState<string>(getActiveDevice(), keyCommitmentStateName(channelId, version));
+  channelKeyScopes.assertCurrent(scope);
+  if (!verified) return null;
+  for (const candidate of candidates) {
+    if (!candidate?.raw) continue;
+    const raw = fromBase64(candidate.raw);
+    if (await computeKeyCommitment(raw) === verified) return raw;
+    raw.fill(0);
   }
   return null;
 }

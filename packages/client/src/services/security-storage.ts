@@ -57,7 +57,7 @@ export async function writeSecurityState(
   capturedScope?: ChannelKeyScopeToken,
 ): Promise<void> {
   const channelId =
-    /^(?:mls-package|mls-proposal|mls-key|mls-head|key-commitment|recovered|recovery-backup-pending|recovery-sent):([a-f0-9-]{36})(?::|$)/.exec(
+    /^(?:mls-package|mls-proposal|mls-key|mls-head|mls-group|mls-group-pending|mls-chain|mls-member-package|mls-rejoin|key-commitment|recovered|recovery-backup-pending|recovery-sent):([a-f0-9-]{36})(?::|$)/.exec(
       name,
     )?.[1];
   const scope = capturedScope ?? (channelId ? channelKeyScopes.capture(channelId) : undefined);

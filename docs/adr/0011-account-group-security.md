@@ -3,6 +3,7 @@
 - **Status:** Implemented; independent security acceptance pending
 - **Date:** 2026-09-16
 - **Supersedes:** ADR 0007's password-only/device-enrollment limitations and the earlier RSA epoch design for new writes.
+- **Superseded in part (2026-10-07):** the group-protocol decision below (fresh RFC 9420 groups per application epoch, the preserved exact-delivery/all-recipient activation barrier, and offline participants blocking fresh epochs) is replaced by [ADR 0012](./0012-continuous-mls-groups.md). Device approval, transparency, passkeys and recovery remain in force.
 
 ## Decision
 

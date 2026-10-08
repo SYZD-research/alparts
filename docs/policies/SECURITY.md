@@ -51,7 +51,7 @@ Future features listed only in `SPECIFICATION.md`, general product completeness,
 - Protect `AUDIT_INTEGRITY_KEY` and the checkpoint under authority independent from PostgreSQL where possible. Losing or silently changing either breaks the stated audit guarantee.
 - Configure encrypted off-host backup custody, retention, monitoring, and scheduled isolated restore tests. A local backup file alone is not a durability claim.
 
-Device approval, client-verified directory chains, MLS-based epochs, web passkeys, step-up and user-controlled archive recovery are documented in [the account/group security update](../security/ACCOUNT_AND_GROUP_SECURITY.md).
+Device approval, client-verified directory chains, continuous per-channel MLS groups, web passkeys, step-up and user-controlled archive recovery are documented in [the account/group security update](../security/ACCOUNT_AND_GROUP_SECURITY.md).
 
 ## Explicitly unsupported security claims
 

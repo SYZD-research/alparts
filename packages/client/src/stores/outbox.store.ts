@@ -14,9 +14,12 @@ import { ApiError } from '../services/api';
 import { useMessageStore } from './message.store';
 import {
   createOutboxCommand,
+  isKeyRefusal,
   MAX_OUTBOX_COMMANDS_PER_DEVICE,
   outboxItemFromCommand,
+  shouldResealAutomatically,
   transitionOutboxItem,
+  type OutboxCommand,
   type OutboxItem,
 } from './outbox-model';
 import { t } from '../i18n';
@@ -31,6 +34,12 @@ interface OutboxState {
   initialize: () => Promise<void>;
   enqueue: (channelId: string, content: string, refMessageId?: string, mentionedUserIds?: string[], postId?: string) => Promise<string>;
   flushAll: () => Promise<void>;
+  /**
+   * Send again the messages of these channels that were refused for an
+   * older key, after this device got a newer one. Other refusals wait for a
+   * manual retry or a reconnect.
+   */
+  flushKeyRefusals: (channelIds: readonly string[]) => Promise<void>;
   flushItem: (idempotencyKey: string) => Promise<void>;
   retry: (idempotencyKey: string) => void;
   clearError: (channelId: string) => void;
@@ -98,6 +107,52 @@ function validateContent(content: string): void {
     || content.length > MAX_MESSAGE_LENGTH
     || new TextEncoder().encode(content).length > MAX_MESSAGE_LENGTH * 4
   ) throw new Error(t('メッセージが長すぎます'));
+}
+
+/**
+ * Send the items of the channels in scope in creation order. A channel stops
+ * at its first item that is not to be sent now or that stays, so messages
+ * never overtake each other.
+ */
+async function flushMatching(
+  inScope: (item: OutboxItem) => boolean,
+  sendable: (item: OutboxItem) => boolean,
+): Promise<void> {
+  const { getState, setState } = useOutboxStore;
+  if (!isOnline()) return;
+  const lifecycle = captureOutboxLifecycle();
+  try {
+    await getState().initialize();
+    if (!isOutboxLifecycleCurrent(lifecycle)) return;
+  } catch {
+    return;
+  }
+  if (getState().isFlushing) return;
+  const generation = outboxGeneration;
+  setState({ isFlushing: true });
+  try {
+    const attempted = new Set<string>();
+    const blockedChannels = new Set<string>();
+    for (;;) {
+      if (generation !== outboxGeneration || !isOutboxLifecycleCurrent(lifecycle) || !isOnline()) break;
+      const item = Object.values(getState().items)
+        .filter((candidate) => !attempted.has(candidate.id) && !blockedChannels.has(candidate.channelId) && inScope(candidate))
+        .sort((left, right) => left.createdAt.localeCompare(right.createdAt))[0];
+      if (!item) break;
+      attempted.add(item.id);
+      if (!sendable(item)) {
+        blockedChannels.add(item.channelId);
+        continue;
+      }
+      await getState().flushItem(item.id);
+      if (!isOutboxLifecycleCurrent(lifecycle)) break;
+      if (getState().items[item.id]) blockedChannels.add(item.channelId);
+    }
+  } finally {
+    if (generation === outboxGeneration && isOutboxStorageContextCurrent(lifecycle.context)) {
+      setState({ isFlushing: false });
+    }
+  }
 }
 
 export const useOutboxStore = create<OutboxState>((set, get) => ({
@@ -199,42 +254,65 @@ export const useOutboxStore = create<OutboxState>((set, get) => ({
         return;
       }
       if (!isOutboxLifecycleCurrent(lifecycle)) return;
-      let sealed = command.sealed;
-      if (!sealed) {
-        sealed = await useMessageStore.getState().sealMessage(command.channelId, command.content, {
-          refMessageId: command.refMessageId,
-          idempotencyKey: command.idempotencyKey,
-          mentionedUserIds: command.mentionedUserIds ?? [],
-          postId: command.postId,
-        });
-        if (!isOutboxLifecycleCurrent(lifecycle)) return;
-        // Saved before the first attempt: if its response is lost, a later
-        // retry (even after a restart) repeats the very same signed request.
-        const sealedCommand = { ...command, sealed };
-        await queuePersistence(lifecycle.context, command.channelId, () => saveOutboxCommand(
-          lifecycle.context,
-          sealedCommand,
-          () => isOutboxLifecycleCurrent(lifecycle),
-        ));
-        if (!isOutboxLifecycleCurrent(lifecycle)) return;
-      }
-      try {
-        await useMessageStore.getState().sendSealedMessage(command.channelId, command.content, sealed);
-      } catch (error) {
-        // The key is this device's own; a conflict means an earlier attempt
-        // of this message was stored, so it has been delivered.
-        if (!(error instanceof ApiError && error.code === 'IDEMPOTENCY_CONFLICT')) {
-          if (error instanceof ApiError && error.status === 400 && isOutboxLifecycleCurrent(lifecycle)) {
-            // Refused as sent (for example after a key change): seal it
-            // afresh on the next retry.
-            const { sealed: _refused, ...unsealed } = command;
-            await queuePersistence(lifecycle.context, command.channelId, () => saveOutboxCommand(
-              lifecycle.context,
-              unsealed,
-              () => isOutboxLifecycleCurrent(lifecycle),
-            )).catch(() => undefined);
-          }
-          throw error;
+      let current: OutboxCommand = command;
+      for (;;) {
+        let sealed = current.sealed;
+        if (!sealed) {
+          sealed = await useMessageStore.getState().sealMessage(current.channelId, current.content, {
+            refMessageId: current.refMessageId,
+            idempotencyKey: current.idempotencyKey,
+            mentionedUserIds: current.mentionedUserIds ?? [],
+            postId: current.postId,
+          });
+          if (!isOutboxLifecycleCurrent(lifecycle)) return;
+          // Saved before the first attempt: if its response is lost, a later
+          // retry (even after a restart) repeats the very same signed request.
+          const sealedCommand: OutboxCommand = { ...current, sealed };
+          await queuePersistence(lifecycle.context, current.channelId, () => saveOutboxCommand(
+            lifecycle.context,
+            sealedCommand,
+            () => isOutboxLifecycleCurrent(lifecycle),
+          ));
+          if (!isOutboxLifecycleCurrent(lifecycle)) return;
+          current = sealedCommand;
+        }
+        try {
+          await useMessageStore.getState().sendSealedMessage(current.channelId, current.content, sealed);
+          break;
+        } catch (error) {
+          // The key is this device's own; a conflict means an earlier attempt
+          // of this message was stored, so it has been delivered.
+          if (error instanceof ApiError && error.code === 'IDEMPOTENCY_CONFLICT') break;
+          if (!(error instanceof ApiError && error.status === 400 && isOutboxLifecycleCurrent(lifecycle))) throw error;
+          // Refused as sent: seal it afresh. Only a refusal a newer key
+          // resolves is sealed again at once, a few times; anything else
+          // waits for the next retry.
+          const automatic = shouldResealAutomatically(error.reason, current.resealCount);
+          const { sealed: _refused, lastRefusal: _previous, ...rest } = current;
+          const unsealed: OutboxCommand = {
+            ...rest,
+            ...(automatic ? { resealCount: (current.resealCount ?? 0) + 1 } : {}),
+            ...(error.reason ? { lastRefusal: error.reason } : {}),
+          };
+          await queuePersistence(lifecycle.context, current.channelId, () => saveOutboxCommand(
+            lifecycle.context,
+            unsealed,
+            () => isOutboxLifecycleCurrent(lifecycle),
+          )).catch(() => undefined);
+          if (!isOutboxLifecycleCurrent(lifecycle)) throw error;
+          set((state) => {
+            const item = state.items[idempotencyKey];
+            if (!item) return state;
+            const { lastRefusal: _old, ...kept } = item;
+            return {
+              items: {
+                ...state.items,
+                [idempotencyKey]: unsealed.lastRefusal ? { ...kept, lastRefusal: unsealed.lastRefusal } : kept,
+              },
+            };
+          });
+          if (!automatic) throw error;
+          current = unsealed;
         }
       }
       if (!isOutboxLifecycleCurrent(lifecycle)) return;
@@ -265,37 +343,14 @@ export const useOutboxStore = create<OutboxState>((set, get) => ({
     }
   },
 
-  flushAll: async () => {
-    if (!isOnline()) return;
-    const lifecycle = captureOutboxLifecycle();
-    try {
-      await get().initialize();
-      if (!isOutboxLifecycleCurrent(lifecycle)) return;
-    } catch {
-      return;
-    }
-    if (get().isFlushing) return;
-    const generation = outboxGeneration;
-    set({ isFlushing: true });
-    try {
-      const attempted = new Set<string>();
-      const blockedChannels = new Set<string>();
-      for (;;) {
-        if (generation !== outboxGeneration || !isOutboxLifecycleCurrent(lifecycle) || !isOnline()) break;
-        const item = Object.values(get().items)
-          .filter((candidate) => !attempted.has(candidate.id) && !blockedChannels.has(candidate.channelId))
-          .sort((left, right) => left.createdAt.localeCompare(right.createdAt))[0];
-        if (!item) break;
-        attempted.add(item.id);
-        await get().flushItem(item.id);
-        if (!isOutboxLifecycleCurrent(lifecycle)) break;
-        if (get().items[item.id]) blockedChannels.add(item.channelId);
-      }
-    } finally {
-      if (generation === outboxGeneration && isOutboxStorageContextCurrent(lifecycle.context)) {
-        set({ isFlushing: false });
-      }
-    }
+  flushAll: () => flushMatching(() => true, () => true),
+
+  flushKeyRefusals: (channelIds) => {
+    const channels = new Set(channelIds);
+    return flushMatching(
+      (item) => channels.has(item.channelId),
+      (item) => item.status === 'failed' && isKeyRefusal(item.lastRefusal),
+    );
   },
 
   retry: (idempotencyKey) => {

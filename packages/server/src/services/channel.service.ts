@@ -4,11 +4,14 @@ import {
   channelMembers,
   channelPreferences,
   categories,
+  mlsGroups,
+  mlsMemberPackages,
+  mlsRejoinRequests,
   workspaceMembers,
   workspaces,
   users,
 } from '../db/schema.js';
-import { eq, and, asc, inArray, ne, sql } from 'drizzle-orm';
+import { eq, and, asc, inArray, isNull, ne, sql } from 'drizzle-orm';
 import { Permissions } from '@alparts/shared';
 import { auditedTransaction } from '../middleware/audit.js';
 import {
@@ -224,6 +227,12 @@ export async function deleteChannel(channelId: string, actorId: string) {
       // make deletion fail with CHANNEL_IN_USE instead of being cascaded.
       await transaction.delete(channelMembers).where(eq(channelMembers.channelId, channelId));
       await transaction.delete(channelPreferences).where(eq(channelPreferences.channelId, channelId));
+      // Packages and rejoin requests wait for a group commit; they are not
+      // history. Devices publish packages for every channel they see, so an
+      // unused channel has them too. A group's key versions still block.
+      await transaction.delete(mlsMemberPackages).where(eq(mlsMemberPackages.channelId, channelId));
+      await transaction.delete(mlsRejoinRequests).where(eq(mlsRejoinRequests.channelId, channelId));
+      await transaction.delete(mlsGroups).where(and(eq(mlsGroups.channelId, channelId), isNull(mlsGroups.genesisVersion)));
       const [removed] = await transaction.delete(channels)
         .where(and(eq(channels.id, channelId), eq(channels.workspaceId, existing.workspaceId)))
         .returning({ id: channels.id, workspaceId: channels.workspaceId });

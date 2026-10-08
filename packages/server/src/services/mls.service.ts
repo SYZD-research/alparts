@@ -15,6 +15,7 @@ import { verifyDevicePayloadSignature } from '../security/message.js';
 import { lockWorkspaceForAuthorization } from './authorization.service.js';
 import { channels } from '../db/schema.js';
 import { directoryHead } from './directory.service.js';
+import { MAX_KEY_RECIPIENTS } from '../security/limits.js';
 
 export async function publishKeyPackage(
   channelId: string,
@@ -113,7 +114,7 @@ export async function groupPackages(channelId: string, userId: string, deviceId:
           ),
         )
         .orderBy(asc(mlsKeyPackages.deviceId))
-        .limit(400)
+        .limit(MAX_KEY_RECIPIENTS)
     : [];
   return rows.map((row) => {
     const device = state.recipients.find((r) => r.deviceId === row.deviceId)!;
@@ -166,7 +167,7 @@ export async function validateAndStoreMlsEpoch(
     .where(
       and(eq(mlsKeyPackages.channelId, epoch.channelId), eq(mlsKeyPackages.version, epoch.version)),
     )
-    .limit(401);
+    .limit(MAX_KEY_RECIPIENTS + 1);
   for (const member of eligible) {
     const supplied = epoch.roster.find((p) => p.deviceId === member.id);
     const published = packages.find((p: any) => p.deviceId === member.id);
@@ -242,14 +243,18 @@ export async function getMlsEpoch(
       or exists (select 1 from ancestors where version = ${version})`);
     // A newly approved device needs the active signed predecessor to build a
     // fresh proposal. Older unrelated/aborted proposals remain inaccessible.
-    if (version !== state.currentVersion && !allowed.rows.length) throw new Error('MLS_NOT_FOUND');
+    // Continuous groups (protocol 4) are read only through the commit log,
+    // which limits each device to the versions it was a member of.
+    const currentShortcut = version === state.currentVersion && state.protocolVersion === 3;
+    if (!currentShortcut && !allowed.rows.length) throw new Error('MLS_NOT_FOUND');
+    const epoch = await tx.query.channelKeyEpochs.findFirst({
+      where: and(eq(channelKeyEpochs.channelId, channelId), eq(channelKeyEpochs.version, version)),
+    });
+    if (!epoch || epoch.protocolVersion > 3) throw new Error('MLS_NOT_FOUND');
     const row = await tx.query.mlsEpochs.findFirst({
       where: and(eq(mlsEpochs.channelId, channelId), eq(mlsEpochs.version, version)),
     });
     if (!row) throw new Error('MLS_NOT_FOUND');
-    const epoch = await tx.query.channelKeyEpochs.findFirst({
-      where: and(eq(channelKeyEpochs.channelId, channelId), eq(channelKeyEpochs.version, version)),
-    });
-    return { ...row, status: epoch?.status };
+    return { ...row, status: epoch.status };
   });
 }

@@ -12,7 +12,7 @@ import {
   getChannelViewerIdsFromStore,
 } from '../services/authorization.service.js';
 import { db } from '../db/index.js';
-import { messages, channels, channelKeyEpochRecipients } from '../db/schema.js';
+import { messages, channels, channelKeyEpochRecipients, mlsGroupMembers } from '../db/schema.js';
 const router = Router();
 router.get('/directory/:userId', authMiddleware, async (req: AuthRequest, res) => {
   const query = z
@@ -56,12 +56,20 @@ router.get('/directory/:userId', authMiddleware, async (req: AuthRequest, res) =
             eq(channelKeyEpochRecipients.userId, req.params.userId),
           ),
         });
-        if (!viewers.includes(req.params.userId) && !historical && !recipient) {
+        const member = await tx.query.mlsGroupMembers.findFirst({
+          columns: { deviceId: true },
+          where: and(
+            eq(mlsGroupMembers.channelId, channelId),
+            eq(mlsGroupMembers.userId, req.params.userId),
+          ),
+        });
+        if (!viewers.includes(req.params.userId) && !historical && !recipient && !member) {
           throw new Error('NOT_AUTHORIZED');
         }
         if (!viewers.includes(req.params.userId)) {
           // Former members expose only the prefix used by this channel's signed
-          // epochs (or the pinned legacy migration prefix), never future events.
+          // epochs and group commits (or the pinned legacy migration prefix),
+          // never future events.
           const cap = await tx.execute(sql`select greatest(
         coalesce((select sequence from channel_directory_heads
           where channel_id = ${channelId} and user_id = ${req.params.userId}), 0),

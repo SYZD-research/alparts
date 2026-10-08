@@ -58,7 +58,7 @@ Do not overwrite the failed environment. Establish incident scope first:
 4. Validate row counts, object references and bytes, the exact bundled migration journal and PostgreSQL 16 catalog fingerprint, then validate the audit chain with the escrowed integrity key and the known-good external checkpoint.
 5. Deploy the exact compatible immutable application build and configuration. Apply only migrations that are known compatible with the restored schema.
 6. Run startup/readiness, authenticated synthetic read/write, authorization-isolation, attachment roundtrip, audit append/checkpoint, and selected client decrypt checks.
-7. Rotate credentials if exposure is possible; revoke sessions/devices as required; create new channel epochs after membership/device compromise.
+7. Rotate credentials if exposure is possible; revoke sessions/devices as required. Each conversation's group must remove a revoked device before anyone writes there again; an online member's client does this automatically. A restore that predates group commits some devices already followed makes those devices stop for the affected conversations as a suspected rollback; register those devices again.
 8. Put traffic through a controlled gate, observe error/saturation/correctness, then complete cutover.
 9. Create a new verified backup, update off-host inventory, and retain old evidence. Record actual RPO/RTO and corrective work.
 

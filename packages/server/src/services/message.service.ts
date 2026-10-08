@@ -1,4 +1,3 @@
-import { isEpochRosterCurrent } from './key.service.js';
 import { and, desc, eq, inArray, isNotNull, isNull, lt, or, sql } from 'drizzle-orm';
 import {
   MAX_DIRECT_MENTION_RECIPIENTS_PER_MESSAGE,
@@ -9,8 +8,6 @@ import {
 } from '@alparts/shared';
 import { db } from '../db/index.js';
 import {
-  channelKeyEpochRecipients,
-  channelKeyEpochs,
   channels,
   devices,
   forumPostReads,
@@ -37,7 +34,7 @@ import {
   MAX_REACTIONS_PER_MESSAGE,
   MAX_REACTIONS_PER_USER_PER_MESSAGE,
 } from '../security/limits.js';
-import { hasRevokedEpochRecipient } from './key-epoch-state.js';
+import { authorizeGroupWrite } from './mls-group-gate.js';
 import {
   addForumPostTags,
   loadForumPostStates,
@@ -645,7 +642,7 @@ async function lockAndAuthorizeCryptoWrite(
   });
   if (!channelLocation) throw new Error('CHANNEL_NOT_FOUND');
 
-  // Membership, role and key-epoch changes take UPDATE on this workspace row.
+  // Membership, role and group-commit changes take UPDATE on this workspace row.
   // Holding SHARE until the ciphertext event commits prevents authorization
   // from changing between validation and durable acknowledgement.
   await lockWorkspaceForAuthorization(store, channelLocation.workspaceId, 'share');
@@ -674,36 +671,12 @@ async function lockAndAuthorizeCryptoWrite(
     input.broadcastMention
     && (authorization.permissions & Permissions.MENTION_EVERYONE) !== Permissions.MENTION_EVERYONE
   ) throw new Error('BROADCAST_MENTION_FORBIDDEN');
-  if (channel.keyRotationRequired) throw new Error('KEY_ROTATION_REQUIRED');
-
-  const epoch = await store.query.channelKeyEpochs.findFirst({
-    columns: { version: true, createdAt: true },
-    where: and(
-      eq(channelKeyEpochs.channelId, channelId),
-      eq(channelKeyEpochs.version, input.keyVersion),
-      eq(channelKeyEpochs.status, 'active'),
-      eq(channelKeyEpochs.protocolVersion, 3),
-    ),
+  await authorizeGroupWrite(store, {
+    channel,
+    userId,
+    deviceId: input.deviceId,
+    keyVersion: input.keyVersion,
   });
-  if (!epoch) throw new Error('INVALID_KEY_VERSION');
-  if (Date.now() - epoch.createdAt.getTime() >= 24 * 60 * 60_000 || !await isEpochRosterCurrent(store, channel, input.keyVersion)) throw new Error('KEY_ROTATION_REQUIRED');
-  // Device revocation is O(1) regardless of account history. Lock and inspect
-  // this epoch's bounded recipient devices so a concurrent revocation either
-  // linearizes after this event or makes the event fail closed.
-  if (await hasRevokedEpochRecipient(store, channelId, input.keyVersion)) {
-    throw new Error('KEY_ROTATION_REQUIRED');
-  }
-  const recipient = await store.query.channelKeyEpochRecipients.findFirst({
-    columns: { acceptedDeliveryId: true },
-    where: and(
-      eq(channelKeyEpochRecipients.channelId, channelId),
-      eq(channelKeyEpochRecipients.version, input.keyVersion),
-      eq(channelKeyEpochRecipients.deviceId, input.deviceId),
-      eq(channelKeyEpochRecipients.userId, userId),
-      isNotNull(channelKeyEpochRecipients.acceptedDeliveryId),
-    ),
-  });
-  if (!recipient?.acceptedDeliveryId) throw new Error('INVALID_KEY_VERSION');
   const envelope: SignedMessageEnvelope = {
     channelId,
     authorId: userId,

@@ -4,7 +4,7 @@ English | [日本語](INDEX.ja.md)
 
 Last verified: 2026-09-29 against the current working tree.
 
-[Account, group security and migration](./security/ACCOUNT_AND_GROUP_SECURITY.md) documents the 2026-09-16 device approval, transparency, MLS epoch, passkey and history-recovery implementation.
+[Account, group security and migration](./security/ACCOUNT_AND_GROUP_SECURITY.md) documents the 2026-09-16 device approval, transparency, passkey and history-recovery implementation and the 2026-10-07 per-channel MLS groups ([ADR 0012](./adr/0012-continuous-mls-groups.md)).
 
 This is the navigation root for implementation, architecture, security, operations, and recovery material. Statements marked **implemented** are backed by the linked code or tests. Statements marked **target** are not current guarantees.
 

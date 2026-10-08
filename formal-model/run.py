@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run every model and print a verdict table.
 
-  python3 run.py            all models (M3 takes several minutes, ~9 GB peak)
+  python3 run.py            all models (M3 takes about 6 minutes, ~0.9 GB peak)
   python3 run.py M1 M4      selected models only
 
 Exit status: 0 when every check has its expected outcome, 1 when a design

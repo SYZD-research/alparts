@@ -1,6 +1,8 @@
 import { useEffect } from 'react';
 import type { Attachment, Device, Message, Reaction, ReadPosition, UserStatusType } from '@alparts/shared';
 import { getActiveDevice } from '../services/crypto.service';
+import { onChannelGroupAdvanced, scheduleGroupMaintenance } from '../services/mls-group.service';
+import { handleChannelKeyStateEvent, handleChannelMemberAddedEvent } from './channel-key-events';
 import { getSocket } from '../services/socket';
 import type { DirectMessageConversation } from '../services/api';
 import { api } from '../services/api';
@@ -108,10 +110,8 @@ export function useSocketEvents() {
 
     const scheduleKeySync = (channelIds: string[]) => {
       for (const channelId of channelIds) {
-        // DM recipients must acknowledge a newly proposed key even before they
-        // open that conversation. Otherwise both online users can deadlock with
-        // the proposer waiting forever for a recipient that never sees the
-        // channel as "loaded".
+        // Channels of the shown workspace catch up even before they are
+        // opened, so sending later does not wait for it.
         if (isAuthorizedKeySyncChannel(channelId)) pendingKeySyncIds.add(channelId);
       }
       if (keySyncRunning || pendingKeySyncIds.size === 0) return;
@@ -124,7 +124,7 @@ export function useSocketEvents() {
           try {
             await useMessageStore.getState().retryChannelPreparation(channelId);
           } catch {
-            // Another device may complete distribution. Missing/revoked keys
+            // Another device may add this one later. Missing or revoked keys
             // remain fail-closed and surface through the message flow.
           }
         }
@@ -291,7 +291,9 @@ export function useSocketEvents() {
     };
     const onWorkspaceKeyStateDirty = (value: unknown) => {
       const data = parseWorkspaceAuthorizationRefresh(value);
-      if (data) syncLoadedWorkspaceKeys(data.workspaceId);
+      if (!data) return;
+      scheduleGroupMaintenance();
+      syncLoadedWorkspaceKeys(data.workspaceId);
     };
     const onWorkspaceAccessRevoked = (value: unknown) => {
       const data = parseWorkspaceAccessRevokedEvent(value);
@@ -323,14 +325,13 @@ export function useSocketEvents() {
         }
       });
     };
-    const onChannelRecipientsChanged = (value: unknown) => {
-      if (typeof value !== 'object' || value === null) return;
-      const channelId = (value as { channelId?: unknown }).channelId;
-      if (typeof channelId === 'string') {
-        useUiStore.getState().noteAuthorizationChange();
-        scheduleKeySync([channelId]);
-      }
+    const channelKeyEventActions = {
+      noteAuthorizationChange: () => useUiStore.getState().noteAuthorizationChange(),
+      scheduleGroupMaintenance: () => scheduleGroupMaintenance(),
+      scheduleKeySync,
     };
+    const onChannelMemberAdded = (value: unknown) => handleChannelMemberAddedEvent(value, channelKeyEventActions);
+    const onChannelKeyStateChanged = (value: unknown) => handleChannelKeyStateEvent(value, channelKeyEventActions);
     const onPresenceChanged = (data: { userId: string; status: UserStatusType }) => setStatus(data.userId, data.status);
     // Profile (name, picture, self-introduction) or warning changes: refresh
     // the member list of the workspace being shown.
@@ -394,6 +395,7 @@ export function useSocketEvents() {
         enqueueAuthorizationWork(async () => {
           if (!await reconcileWorkspaceMembership()) return;
           rejoinActiveChannel();
+          scheduleGroupMaintenance();
           await flushOutbox();
           resumeFailedUploads();
         });
@@ -430,13 +432,32 @@ export function useSocketEvents() {
     socket.on('channel:permissions-updated', onChannelPermissionsUpdated);
     socket.on('channel:access-revoked', onChannelAccessRemoved);
     socket.on('channel:deleted', onChannelAccessRemoved);
-    socket.on('channel:member-added', onChannelRecipientsChanged);
-    socket.on('channel:key-rotation-required', onChannelRecipientsChanged);
+    socket.on('channel:member-added', onChannelMemberAdded);
+    socket.on('channel:key-rotation-required', onChannelKeyStateChanged);
     const unsubscribeChannelList = useChannelStore.subscribe((state, previous) => {
       if (
         state.workspaceId
         && (state.workspaceId !== previous.workspaceId || state.channels !== previous.channels)
-      ) syncLoadedWorkspaceKeys(state.workspaceId);
+      ) {
+        // A loaded channel list may show channels this device has no package
+        // for yet, in any workspace.
+        scheduleGroupMaintenance();
+        syncLoadedWorkspaceKeys(state.workspaceId);
+      }
+    });
+    // Messages of a channel refused for an older key go out once this device
+    // has a newer one; other refusals wait for a retry or a reconnect.
+    let outboxFlushTimer: ReturnType<typeof setTimeout> | undefined;
+    const advancedChannels = new Set<string>();
+    const unsubscribeGroupAdvance = onChannelGroupAdvanced((channelId) => {
+      advancedChannels.add(channelId);
+      if (outboxFlushTimer) return;
+      outboxFlushTimer = setTimeout(() => {
+        outboxFlushTimer = undefined;
+        const channelIds = [...advancedChannels];
+        advancedChannels.clear();
+        if (!disposed) void useOutboxStore.getState().flushKeyRefusals(channelIds);
+      }, 250);
     });
     // Authentication initializes the socket just before this protected layout
     // mounts. If the handshake already completed, run the same reconciliation
@@ -477,9 +498,11 @@ export function useSocketEvents() {
       socket.off('channel:permissions-updated', onChannelPermissionsUpdated);
       socket.off('channel:access-revoked', onChannelAccessRemoved);
       socket.off('channel:deleted', onChannelAccessRemoved);
-      socket.off('channel:member-added', onChannelRecipientsChanged);
-      socket.off('channel:key-rotation-required', onChannelRecipientsChanged);
+      socket.off('channel:member-added', onChannelMemberAdded);
+      socket.off('channel:key-rotation-required', onChannelKeyStateChanged);
       unsubscribeChannelList();
+      unsubscribeGroupAdvance();
+      if (outboxFlushTimer) clearTimeout(outboxFlushTimer);
     };
   }, [addAttention, addMessages, applyAttachment, applyPinUpdate, applyReactionUpdate, applySocketReadPosition,
     flushOutbox, loadChannels, loadMembers, loadMessages, loadWorkspaces, loadWorkspaceState,

@@ -8,6 +8,7 @@ import {
   channelKeys,
   channels,
   devices,
+  mlsGroupMembers,
   sessions,
   workspaceMembers,
 } from '../db/schema.js';
@@ -250,11 +251,12 @@ export async function revokeDevice(
   deviceId: string,
   userId: string,
   decision?: { actorDeviceId: string; head: DirectoryHead; signature: string },
-): Promise<{ sessionIds: string[]; affectedWorkspaceIds: string[] }> {
+): Promise<{ sessionIds: string[]; affectedWorkspaceIds: string[]; affectedChannelIds: string[] }> {
   const result = await auditedTransaction<{
     boundSessionIds: string[];
     changed: boolean;
     affectedWorkspaceIds: string[];
+    affectedChannelIds: string[];
   }>(async (tx) => {
     await lockKeyProtocol(tx);
     const [device] = await tx.select()
@@ -275,9 +277,9 @@ export async function revokeDevice(
     }) as Array<{ id: string }>;
     if (boundSessions.length > MAX_ACTIVE_SESSIONS_PER_USER) throw new Error('SESSION_INVARIANT_EXCEEDED');
     const changed = device.revokedAt === null;
-    const affectedWorkspaceIds = changed
-      ? await findAffectedWorkspaceIds(tx, deviceId, userId)
-      : [];
+    const affected = changed
+      ? await findAffectedKeyState(tx, deviceId, userId)
+      : { workspaceIds: [], channelIds: [] };
     if (changed) {
       if (!decision) throw new Error('DEVICE_APPROVAL_REQUIRED');
       const event: DirectoryEvent = { kind: 'revoke', deviceId, identityKey: device.identityKey, actorDeviceId: decision.actorDeviceId, signature: decision.signature };
@@ -296,7 +298,9 @@ export async function revokeDevice(
     return {
       boundSessionIds: boundSessions.map((session: { id: string }) => session.id),
       changed,
-      affectedWorkspaceIds,
+      affectedWorkspaceIds: affected.workspaceIds,
+      // Groups that must now remove this device before anyone writes.
+      affectedChannelIds: affected.channelIds,
     };
   }, (committed) => ({
     actorId: userId,
@@ -311,14 +315,38 @@ export async function revokeDevice(
   return {
     sessionIds: result.boundSessionIds,
     affectedWorkspaceIds: result.affectedWorkspaceIds,
+    affectedChannelIds: result.affectedChannelIds,
   };
 }
 
-async function findAffectedWorkspaceIds(
+async function findAffectedKeyState(
   store: any,
   deviceId: string,
   userId: string,
-): Promise<string[]> {
+): Promise<{ workspaceIds: string[]; channelIds: string[] }> {
+  // A current group member blocks writes until a commit removes it.
+  const memberRows = await store.select({
+    workspaceId: channels.workspaceId,
+    channelId: mlsGroupMembers.channelId,
+  }).from(mlsGroupMembers)
+    .innerJoin(channels, eq(channels.id, mlsGroupMembers.channelId))
+    .innerJoin(workspaceMembers, and(
+      eq(workspaceMembers.workspaceId, channels.workspaceId),
+      eq(workspaceMembers.userId, userId),
+    ))
+    .where(and(
+      eq(mlsGroupMembers.deviceId, deviceId),
+      eq(mlsGroupMembers.userId, userId),
+      isNull(mlsGroupMembers.removedVersion),
+    ))
+    .orderBy(asc(channels.workspaceId), asc(mlsGroupMembers.channelId))
+    .limit(MAX_WORKSPACE_MEMBERSHIPS_PER_USER * MAX_TOTAL_CHANNELS_PER_WORKSPACE + 1) as Array<{
+      workspaceId: string;
+      channelId: string;
+    }>;
+  if (memberRows.length > MAX_WORKSPACE_MEMBERSHIPS_PER_USER * MAX_TOTAL_CHANNELS_PER_WORKSPACE) {
+    throw new Error('WORKSPACE_MEMBERSHIP_INVARIANT_EXCEEDED');
+  }
   const rows = await store.selectDistinct({
     workspaceId: channels.workspaceId,
   }).from(channelKeyEpochRecipients)
@@ -338,10 +366,11 @@ async function findAffectedWorkspaceIds(
     ))
     .orderBy(asc(channels.workspaceId))
     .limit(MAX_WORKSPACE_MEMBERSHIPS_PER_USER + 1) as Array<{ workspaceId: string }>;
-  if (rows.length > MAX_WORKSPACE_MEMBERSHIPS_PER_USER) {
+  const workspaceIds = [...new Set([...rows, ...memberRows].map((row) => row.workspaceId))].sort();
+  if (workspaceIds.length > MAX_WORKSPACE_MEMBERSHIPS_PER_USER) {
     throw new Error('WORKSPACE_MEMBERSHIP_INVARIANT_EXCEEDED');
   }
-  return rows.map((row) => row.workspaceId);
+  return { workspaceIds, channelIds: memberRows.map((row) => row.channelId) };
 }
 
 export async function getDeviceById(deviceId: string) {

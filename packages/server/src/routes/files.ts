@@ -4,6 +4,7 @@ import type { Server as SocketServer } from 'socket.io';
 import { z } from 'zod';
 import { MAX_FILE_SIZE } from '@alparts/shared';
 import * as fileService from '../services/file.service.js';
+import { keyWriteErrorDetails } from '../security/key-write-errors.js';
 import { authMiddleware, type AuthRequest } from '../middleware/auth.js';
 import { rateLimit, requestSource } from '../middleware/rate-limit.js';
 import { reserveKnownLengthBody } from '../middleware/body-admission.js';
@@ -328,9 +329,10 @@ function sendFileError(error: unknown, res: Response): boolean {
     || code === 'INVALID_DEVICE'
     || code === 'INVALID_KEY_VERSION'
     || code === 'KEY_ROTATION_REQUIRED'
+    || code === 'KEY_VERSION_STALE'
     || code === 'INVALID_SIGNATURE'
   ) {
-    res.status(400).json({ error: 'VALIDATION', message: 'Invalid attachment upload', statusCode: 400 });
+    res.status(400).json({ error: 'VALIDATION', message: 'Invalid attachment upload', statusCode: 400, ...keyWriteErrorDetails(error) });
     return true;
   }
   return false;

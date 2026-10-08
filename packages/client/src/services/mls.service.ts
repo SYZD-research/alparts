@@ -1,36 +1,26 @@
 import {
-  serializeChannelKeyFreshStart,
-  serializeChannelKeyWrap,
+  MAX_KEY_RECIPIENTS,
   serializeGroupKeyPackage,
   serializeMlsEpoch,
   type MlsEpoch,
-  type GroupKeyPackage,
 } from '@alparts/shared';
 import { channelKeyScopes } from './channel-key-scope';
-import { api, type ChannelKeyRecipientState } from './api';
-import {
-  getActiveDevice,
-  signDevicePayload,
-  verifyDevicePayload,
-  ChannelKeyActivationPendingError,
-} from './crypto.service';
-import { verifiedDirectory, verifyDirectoryDevices } from './directory.service';
-import {
-  generateEpochKeyPackage,
-  createEpochGroup,
-  joinEpochGroup,
-  decodePublicPackage,
-  type EpochKeyPackage,
-} from './mls-crypto';
+import { api } from './api';
+import { getActiveDevice, verifyDevicePayload } from './crypto.service';
+import { verifiedDirectory } from './directory.service';
+import { joinEpochGroup, decodePublicPackage, type EpochKeyPackage } from './mls-crypto';
 import {
   readSecurityState,
   writeSecurityState,
   deleteSecurityState,
-  listSecurityStateNames,
   sha256,
   toBase64,
   fromBase64,
 } from './security-storage';
+
+// Group protocol 3 (one group per version), kept to read history: new
+// versions come from continuous channel groups (mls-group.service.ts).
+
 interface LocalPackage {
   packageId: string;
   material: EpochKeyPackage;
@@ -39,64 +29,10 @@ interface LocalPackage {
 }
 const groupId = (epoch: Pick<MlsEpoch, 'channelId' | 'version' | 'previousTranscript'>) =>
   JSON.stringify(['alparts', epoch.channelId, epoch.version, epoch.previousTranscript]);
-export async function prepareMlsPackage(channelId: string, version: number) {
-  const owner = getActiveDevice();
-  const scope = channelKeyScopes.capture(channelId);
-  const save = (name: string, value: unknown) => writeSecurityState(owner, name, value, scope);
-  const name = `mls-package:${channelId}:${version}`;
-  return navigator.locks.request(`alparts-${name}:${owner.deviceId}`, async () => {
-    await pruneOlderMlsPackages(owner, channelId, version);
-    let stored = await readSecurityState<LocalPackage>(owner, name);
-    if (!stored || Date.now() - stored.createdAt > 6 * 24 * 60 * 60_000) {
-      stored = {
-        packageId: crypto.randomUUID(),
-        material: await generateEpochKeyPackage(owner.deviceId),
-        createdAt: Date.now(),
-      };
-      await save(name, stored);
-    }
-    const pkg = {
-      deviceId: owner.deviceId,
-      packageId: stored.packageId,
-      keyPackage: stored.material.publicPackage,
-    };
-    // ECDSA signatures vary on every call. Persist the signed package so an
-    // unchanged publication does not look like a new roster to other tabs.
-    if (!stored.signature) {
-      stored.signature = await signDevicePayload(serializeGroupKeyPackage(channelId, version, pkg));
-      await save(name, stored);
-    }
-    const signature = stored.signature;
-    await api.securityRequest(`/channels/${channelId}/mls/packages`, {
-      version,
-      packageId: pkg.packageId,
-      keyPackage: pkg.keyPackage,
-      signature,
-    });
-    channelKeyScopes.assertCurrent(scope);
-    return stored;
-  });
-}
-const MAX_RETAINED_OLDER_MLS_PACKAGES = 8;
-/**
- * Packages for abandoned epochs are never consumed. Keep only a bounded number
- * of older ones so a late welcome can still be joined.
- */
-async function pruneOlderMlsPackages(owner: { userId: string; deviceId: string }, channelId: string, version: number) {
-  const prefix = `mls-package:${channelId}:`;
-  const older = (await listSecurityStateNames(owner, prefix, 256))
-    .map((name) => Number(name.slice(prefix.length)))
-    .filter((candidate) => Number.isSafeInteger(candidate) && candidate < version)
-    .sort((left, right) => right - left);
-  for (const stale of older.slice(MAX_RETAINED_OLDER_MLS_PACKAGES)) {
-    await deleteSecurityState(owner, `${prefix}${stale}`);
-    await deleteSecurityState(owner, `mls-proposal:${channelId}:${stale}`);
-  }
-}
 async function validateRoster(epoch: MlsEpoch) {
   if (
     epoch.roster.length < 1 ||
-    epoch.roster.length > 400 ||
+    epoch.roster.length > MAX_KEY_RECIPIENTS ||
     new Set(epoch.roster.map((p) => p.deviceId)).size !== epoch.roster.length
   )
     throw new Error('INVALID_MLS_ROSTER');
@@ -130,112 +66,6 @@ async function validateRoster(epoch: MlsEpoch) {
       ))
     )
       throw new Error('INVALID_MLS_PACKAGE');
-  }
-}
-export async function proposeMlsEpoch(
-  channelId: string,
-  state: ChannelKeyRecipientState,
-  freshStart = false,
-) {
-  const owner = getActiveDevice();
-  const scope = channelKeyScopes.capture(channelId);
-  const save = (name: string, value: unknown) => writeSecurityState(owner, name, value, scope);
-  const local = await prepareMlsPackage(channelId, state.nextVersion);
-  await verifyDirectoryDevices(channelId, state.recipients, 'active');
-  const roster = await api.securityRequest<GroupKeyPackage[]>(
-    `/channels/${channelId}/mls/packages`,
-  );
-  if (
-    roster.length !== state.recipients.length ||
-    state.recipients.some((p) => !roster.some((r) => r.deviceId === p.deviceId))
-  )
-    throw new ChannelKeyActivationPendingError(state.recipients.length - roster.length);
-  const directoryHeads = [];
-  for (const userId of [...new Set(roster.map((p) => p.userId))].sort())
-    directoryHeads.push((await verifiedDirectory(userId, channelId)).head);
-  const parent =
-    state.currentVersion && state.protocolVersion === 3
-      ? await api.securityRequest<{ transcript: string }>(
-          `/channels/${channelId}/mls/epochs/${state.currentVersion}`,
-        )
-      : null;
-  const context = {
-    channelId,
-    version: state.nextVersion,
-    previousVersion: state.currentVersion,
-    previousTranscript: parent?.transcript ?? '0'.repeat(64),
-  };
-  const material = await createEpochGroup(
-    groupId(context),
-    local.material,
-    roster.map((p) => p.keyPackage),
-  );
-  try {
-    const commitment = toBase64(
-      new Uint8Array(
-        await crypto.subtle.digest('SHA-256', material.raw as Uint8Array<ArrayBuffer>),
-      ),
-    )
-      .replace(/\+/g, '-')
-      .replace(/\//g, '_')
-      .replace(/=+$/, '');
-    const unsigned = {
-      ...context,
-      keyCommitment: commitment,
-      welcome: material.welcome,
-      commit: material.commit,
-      roster,
-      directoryHeads,
-      distributorDeviceId: owner.deviceId,
-    };
-    const epoch: MlsEpoch = {
-      ...unsigned,
-      signature: await signDevicePayload(serializeMlsEpoch(unsigned)),
-    };
-    await validateRoster(epoch);
-    const transcript = await sha256(serializeMlsEpoch(epoch));
-    const encryptedKey = toBase64(
-      new TextEncoder().encode(JSON.stringify({ mls: 1, version: epoch.version, transcript })),
-    );
-    const keys = await Promise.all(
-      roster.map(async (p) => ({
-        deviceId: p.deviceId,
-        encryptedKey,
-        signature: await signDevicePayload(
-          serializeChannelKeyWrap({
-            channelId,
-            keyVersion: epoch.version,
-            keyCommitment: commitment,
-            recipientDeviceId: p.deviceId,
-            encryptedKey,
-          }),
-        ),
-      })),
-    );
-    // Persist an exact proposal before sending. A lost response is reconciled by
-    // transcript, never by generating another secret for the same proposal.
-    await save(`mls-proposal:${channelId}:${epoch.version}`, {
-      epoch,
-      keys,
-      transcript,
-      raw: toBase64(material.raw),
-    });
-    const freshStartSignature = freshStart
-      ? await signDevicePayload(
-          serializeChannelKeyFreshStart({
-            channelId,
-            keyVersion: epoch.version,
-            keyCommitment: commitment,
-            deviceId: owner.deviceId,
-          }),
-        )
-      : undefined;
-    await api.securityRequest(
-      `/channels/${channelId}/mls/epochs${freshStart ? '/fresh-start' : ''}`,
-      { epoch, keys, ...(freshStartSignature ? { freshStartSignature } : {}) },
-    );
-  } finally {
-    material.raw.fill(0);
   }
 }
 export async function deriveMlsDelivery(

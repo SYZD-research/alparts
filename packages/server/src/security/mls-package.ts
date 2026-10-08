@@ -1,24 +1,35 @@
-import { decodeMlsMessage, getCiphersuiteFromName, getCiphersuiteImpl } from 'ts-mls';
+import {
+  decodeMlsMessage,
+  encodeMlsMessage,
+  getCiphersuiteFromName,
+  getCiphersuiteImpl,
+  type KeyPackage,
+} from 'ts-mls';
 import { verifyKeyPackage } from 'ts-mls/keyPackage.js';
 import { verifyLeafNodeSignatureKeyPackage } from 'ts-mls/leafNode.js';
-import { MLS_CIPHERSUITE } from '@alparts/shared';
+import { MAX_MLS_KEY_PACKAGE_LENGTH, MLS_CIPHERSUITE } from '@alparts/shared';
 
 const suite = getCiphersuiteImpl(getCiphersuiteFromName(MLS_CIPHERSUITE));
 
-/** Validate RFC 9420 KeyPackage and leaf signatures before accepting a member's package. */
+/**
+ * Validate RFC 9420 KeyPackage and leaf signatures before accepting a member's package.
+ * Only the canonical encoding is accepted: the decoder tolerates longer length
+ * prefixes that still verify, but an Add proposal re-encodes them differently.
+ */
 export async function validateMlsKeyPackage(
   encoded: string,
   deviceId: string,
   now = Date.now(),
-): Promise<void> {
+): Promise<KeyPackage> {
   try {
-    if (encoded.length > 16_384) throw new Error();
+    if (encoded.length > MAX_MLS_KEY_PACKAGE_LENGTH) throw new Error();
     const bytes = Buffer.from(encoded, 'base64');
     if (bytes.toString('base64') !== encoded) throw new Error();
     const decoded = decodeMlsMessage(bytes, 0);
     if (!decoded || decoded[1] !== bytes.length) throw new Error();
     const message = decoded[0];
     if (message.version !== 'mls10' || message.wireformat !== 'mls_key_package') throw new Error();
+    if (!Buffer.from(encodeMlsMessage(message)).equals(bytes)) throw new Error();
     const pkg = message.keyPackage;
     const leaf = pkg.leafNode;
     const seconds = BigInt(Math.floor(now / 1000));
@@ -53,6 +64,7 @@ export async function validateMlsKeyPackage(
     for (const key of [pkg.initKey, leaf.hpkePublicKey]) {
       await cs.hpke.seal(await cs.hpke.importPublicKey(key), new Uint8Array(), new Uint8Array());
     }
+    return pkg;
   } catch {
     throw new Error('INVALID_MLS');
   }

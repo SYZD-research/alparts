@@ -19,6 +19,7 @@ import {
   broadcastReactionUpdated,
 } from '../websocket/message.handler.js';
 import { logError } from '../security/logger.js';
+import { keyWriteErrorDetails } from '../security/key-write-errors.js';
 
 const router = Router();
 const ciphertextMax = Math.ceil((MAX_PADDED_MESSAGE_BYTES + 16) / 3) * 4;
@@ -106,7 +107,7 @@ router.post('/channels/:id/messages', authMiddleware, requireChannelPermission(P
       return;
     }
     if (isInvalidCryptoRequest(error)) {
-      res.status(400).json({ error: 'INVALID_MESSAGE', message: 'Invalid encrypted message', statusCode: 400 });
+      res.status(400).json({ error: 'INVALID_MESSAGE', message: 'Invalid encrypted message', statusCode: 400, ...keyWriteErrorDetails(error) });
       return;
     }
     throw error;
@@ -135,7 +136,7 @@ router.put('/messages/:id', authMiddleware, requireMessagePermission(Permissions
       return;
     }
     if (isInvalidCryptoRequest(error)) {
-      res.status(400).json({ error: 'INVALID_MESSAGE', message: 'Invalid encrypted message', statusCode: 400 });
+      res.status(400).json({ error: 'INVALID_MESSAGE', message: 'Invalid encrypted message', statusCode: 400, ...keyWriteErrorDetails(error) });
       return;
     }
     throw error;
@@ -170,7 +171,7 @@ router.delete('/messages/:id', authMiddleware, requireMessagePermission(Permissi
       return;
     }
     if (isInvalidCryptoRequest(error)) {
-      res.status(400).json({ error: 'INVALID_MESSAGE', message: 'Invalid signed deletion', statusCode: 400 });
+      res.status(400).json({ error: 'INVALID_MESSAGE', message: 'Invalid signed deletion', statusCode: 400, ...keyWriteErrorDetails(error) });
       return;
     }
     throw error;
@@ -278,6 +279,7 @@ function isInvalidCryptoRequest(error: any): boolean {
     'INVALID_DEVICE',
     'INVALID_KEY_VERSION',
     'KEY_ROTATION_REQUIRED',
+    'KEY_VERSION_STALE',
     'INVALID_SIGNATURE',
     'INVALID_REFERENCE',
     'BROADCAST_MENTION_FORBIDDEN',

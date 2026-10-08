@@ -16,6 +16,7 @@ import {
   joinAuthorizedUserToChannelRoom,
   leaveUserChannelRooms,
 } from '../websocket/room-membership.js';
+import { emitChannelKeyState, keyStateChannelIds } from '../websocket/key-state.js';
 
 const router = Router();
 const position = z.number().int().min(0).max(1_000_000);
@@ -113,9 +114,7 @@ router.put('/channels/:id', authMiddleware, requireChannelPermission(Permissions
         await joinAuthorizedUserToChannelRoom(io, userId, req.params.id);
       }
     }
-    if (result.rotationRequired) {
-      io?.to(`channel:${req.params.id}`).emit('channel:key-rotation-required', { channelId: req.params.id });
-    }
+    if (result.rotationRequired || result.gainedUserIds.length > 0) void emitChannelKeyState(io, [req.params.id]);
     io?.to(`channel:${req.params.id}`).emit('channel:updated', result.channel);
     res.json(result.channel);
   } catch (error: any) {
@@ -188,6 +187,7 @@ router.post('/channels/:id/members', authMiddleware, requireChannelPermission(Pe
       }
     }
     io?.to(`channel:${req.params.id}`).emit('channel:member-added', member);
+    void emitChannelKeyState(io, keyStateChannelIds(member.roomEffects));
     res.status(201).json(member);
   } catch (error: any) {
     if (error.name === 'ZodError') {
@@ -220,9 +220,7 @@ router.delete('/channels/:id/members/:userId', authMiddleware, requireChannelPer
       }
     }
     io?.to(`channel:${req.params.id}`).emit('channel:member-removed', result);
-    if (result.rotationRequired) {
-      io?.to(`channel:${req.params.id}`).emit('channel:key-rotation-required', { channelId: req.params.id });
-    }
+    if (result.rotationRequired) void emitChannelKeyState(io, [req.params.id]);
     res.json({ success: true });
   } catch (error: any) {
     if (['CHANNEL_NOT_FOUND', 'PRIVATE_CHANNEL_NOT_FOUND', 'CHANNEL_MEMBER_NOT_FOUND'].includes(error.message)) {
@@ -315,14 +313,12 @@ router.delete('/workspaces/:wid/categories/:categoryId', authMiddleware, require
           await joinAuthorizedUserToChannelRoom(io, userId, effect.channelId);
         }
       }
-      if (effect.rotationRequired) {
-        io?.to(`channel:${effect.channelId}`).emit('channel:key-rotation-required', { channelId: effect.channelId });
-      }
       io?.to(`channel:${effect.channelId}`).emit('channel:permissions-updated', {
         channelId: effect.channelId,
         workspaceId: result.workspaceId,
       });
     }
+    void emitChannelKeyState(io, keyStateChannelIds(result.roomEffects));
     res.json(result);
   } catch (error: any) {
     if (error.message === 'MEMBER_HIERARCHY') {

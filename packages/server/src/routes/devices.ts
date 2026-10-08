@@ -7,6 +7,7 @@ import * as deviceService from '../services/device.service.js';
 import { authMiddleware, type AuthRequest } from '../middleware/auth.js';
 import { expiredSessionCookie } from '../security/cookies.js';
 import { rateLimit, requestSource } from '../middleware/rate-limit.js';
+import { emitChannelKeyState, emitUserKeyState } from '../websocket/key-state.js';
 
 const router = Router();
 const registerSchema = z.object({
@@ -61,6 +62,7 @@ router.post('/', authMiddleware, enrollmentLimit, async (req: AuthRequest, res) 
     for (const workspaceId of dirtyWorkspaceIds) {
       io?.to(`workspace:${workspaceId}`).emit('workspace:key-state-dirty', { workspaceId });
     }
+    void emitUserKeyState(io, req.userId!, dirtyWorkspaceIds);
     res.status(created ? 201 : 200).json(device);
   } catch (error: any) {
     if (error.message === 'SESSION_NOT_FOUND') {
@@ -138,13 +140,15 @@ router.delete('/:id', authMiddleware, revocationLimit, async (req: AuthRequest, 
     return;
   }
   try {
-    const { sessionIds, affectedWorkspaceIds } = await deviceService.revokeDevice(req.params.id, req.userId!, { ...decisionSchema.parse(req.body), actorDeviceId: req.deviceId! });
+    const { sessionIds, affectedWorkspaceIds, affectedChannelIds } = await deviceService.revokeDevice(req.params.id, req.userId!, { ...decisionSchema.parse(req.body), actorDeviceId: req.deviceId! });
     const io = req.app.get('io') as SocketServer | undefined;
     for (const sessionId of sessionIds) io?.in(`session:${sessionId}`).disconnectSockets(true);
     io?.to(`user:${req.userId}`).emit('device:revoked', { deviceId: req.params.id });
     for (const workspaceId of affectedWorkspaceIds) {
       io?.to(`workspace:${workspaceId}`).emit('workspace:key-state-dirty', { workspaceId });
     }
+    // Members of these groups remove the revoked device so writes can resume.
+    void emitChannelKeyState(io, affectedChannelIds);
     if (req.deviceId === req.params.id) res.setHeader('Set-Cookie', expiredSessionCookie());
     res.json({ success: true });
   } catch (error: any) {
@@ -175,6 +179,7 @@ router.post('/:id/approve', authMiddleware, enrollmentLimit, async (req: AuthReq
     const io = req.app.get('io') as SocketServer | undefined;
     io?.to(`user:${req.userId}`).emit('device:approved', { deviceId: req.params.id });
     for (const workspaceId of result.dirtyWorkspaceIds) io?.to(`workspace:${workspaceId}`).emit('workspace:key-state-dirty', { workspaceId });
+    void emitUserKeyState(io, req.userId!, result.dirtyWorkspaceIds);
     res.json({ success: true });
   } catch (error: any) {
     if (!isAccountSecurityError(error)) { next(error); return; }

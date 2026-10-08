@@ -95,6 +95,12 @@ describe('audit details model', () => {
 
   it('uses plain labels instead of internal audit action and target names', () => {
     expect(auditActionLabel('channel.key.epoch.propose')).toBe('チャンネルの利用準備を更新');
+    expect(auditActionLabel('channel.key.group.create')).toBe('チャンネルの利用準備を開始');
+    expect(auditActionLabel('channel.key.group.commit')).toBe('チャンネルの利用準備を更新');
+    expect(auditActionLabel('channel.key.group.replay')).toBe('チャンネルの利用準備を更新');
+    expect(auditActionLabel('channel.key.group.fresh_start')).toBe('過去のメッセージを使わずチャンネルを再開');
+    expect(auditActionLabel('channel.mls.member_package')).toBe('チャンネルへの参加を準備');
+    expect(auditActionLabel('channel.mls.member_package.replay')).toBe('チャンネルへの参加を準備');
     expect(auditActionLabel('internal.unknown.operation')).toBe('管理操作');
     expect(auditTargetLabel('workspace_invitation')).toBe('招待');
     expect(auditTargetLabel('internal_target')).toBeNull();

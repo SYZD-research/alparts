@@ -8,6 +8,7 @@ import { authMiddleware, type AuthRequest } from '../middleware/auth.js';
 import { requireWorkspaceMember, requireWorkspacePermission } from '../middleware/rbac.js';
 import { rateLimit } from '../middleware/rate-limit.js';
 import { leaveUserChannelRooms } from '../websocket/room-membership.js';
+import { emitChannelKeyState } from '../websocket/key-state.js';
 
 const router = Router();
 const uuid = z.string().uuid();
@@ -80,9 +81,7 @@ router.delete('/:id/members/:userId', authMiddleware, requireWorkspacePermission
     for (const channelId of result.allChannelIds) {
       if (io) leaveUserChannelRooms(io, req.params.userId, channelId);
     }
-    for (const channelId of result.keyedChannelIds) {
-      io?.to(`channel:${channelId}`).emit('channel:key-rotation-required', { channelId });
-    }
+    void emitChannelKeyState(io, result.keyedChannelIds);
     io?.to(`workspace:${req.params.id}`).emit('workspace:member-removed', {
       workspaceId: req.params.id,
       userId: req.params.userId,
