@@ -4,6 +4,7 @@ minimumReleaseAge: 10080
 allowBuilds:
   electron-winstaller: false
   esbuild: true
+  mediasoup: true
 overrides:
   esbuild: ^0.28.2
   qs: 6.16.0
