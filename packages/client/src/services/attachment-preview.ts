@@ -17,6 +17,12 @@ export function isPreviewableImageMimeType(mimeType: string): boolean {
   return SAFE_RASTER_IMAGE_MIME_TYPES.has(mimeType.trim().toLowerCase());
 }
 
+/** The allowlisted spelling of a previewable MIME type, or an empty string. */
+export function previewImageMimeType(mimeType: string): string {
+  const normalized = mimeType.trim().toLowerCase();
+  return [...SAFE_RASTER_IMAGE_MIME_TYPES].find((type) => type === normalized) ?? '';
+}
+
 export function canPreviewImage(mimeType: string, sizeBytes: number): boolean {
   return Number.isSafeInteger(sizeBytes)
     && sizeBytes > 0

@@ -21,6 +21,7 @@ import {
   ATTACHMENT_IMAGE_PREVIEW_HEADER_BYTES,
   canPreviewImage,
   matchesPreviewImageSignature,
+  previewImageMimeType,
 } from '../../services/attachment-preview';
 import {
   applyMentionCompletion,
@@ -785,7 +786,8 @@ function PendingFilePreview({ file, onRemove }: { file: File; onRemove: () => vo
           setPreviewUnavailable(true);
           return;
         }
-        setPreviewUrl(URL.createObjectURL(file));
+        // Preview a copy typed as the checked raster image, not the picked file itself.
+        setPreviewUrl(URL.createObjectURL(new Blob([file], { type: previewImageMimeType(file.type) })));
       })
       .catch(() => {
         if (!disposed) setPreviewUnavailable(true);

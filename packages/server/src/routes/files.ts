@@ -7,7 +7,7 @@ import * as fileService from '../services/file.service.js';
 import { keyWriteErrorDetails } from '../security/key-write-errors.js';
 import { authMiddleware, type AuthRequest } from '../middleware/auth.js';
 import { rateLimit, requestSource } from '../middleware/rate-limit.js';
-import { reserveKnownLengthBody } from '../middleware/body-admission.js';
+import { rawRequestBody, reserveKnownLengthBody } from '../middleware/body-admission.js';
 
 const router = Router();
 const base64 = z.string().min(16).max(8192).regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/);
@@ -164,7 +164,8 @@ router.put(
   },
   parseChunkBody,
   async (req: AuthRequest, res) => {
-    if (!Buffer.isBuffer(req.body) || req.body.length !== res.locals.expectedBodyBytes) {
+    const chunk = rawRequestBody(req);
+    if (!chunk || chunk.length !== res.locals.expectedBodyBytes) {
       res.status(400).json({ error: 'VALIDATION', message: 'Invalid attachment chunk', statusCode: 400 });
       return;
     }
@@ -173,7 +174,7 @@ router.put(
         res.locals.uploadId,
         req.userId!,
         res.locals.chunkIndex,
-        req.body,
+        chunk,
       );
       res.status(saved.replaced ? 200 : 201).json(saved);
     } catch (error) {
