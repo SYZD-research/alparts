@@ -8,6 +8,7 @@ import { flushAuditCheckpoint, verifyAuditChain } from './middleware/audit.js';
 import { checkDatabaseSchema, closeDb } from './db/index.js';
 import { closePasswordWorkers } from './security/password-work.js';
 import { resetPresenceAfterStartup } from './websocket/presence.handler.js';
+import { startVoiceSfu } from './websocket/index.js';
 
 const runtime = await acquireRuntimeLease();
 const migrationCount = await checkDatabaseSchema();
@@ -23,6 +24,15 @@ if (config.email.verification === 'required' && emailDelivery() === 'unavailable
 }
 
 const { httpServer, io, beginShutdown } = createApp();
+
+const voiceSfu = await startVoiceSfu(io).catch(async (error) => {
+	beginShutdown();
+	await closePasswordWorkers().catch((cleanupError) => logError('voice.sfu_start_cleanup.password', cleanupError));
+	await closeDb().catch((cleanupError) => logError('voice.sfu_start_cleanup.db', cleanupError));
+	await runtime.close().catch((cleanupError) => logError('voice.sfu_start_cleanup.runtime', cleanupError));
+	throw error;
+});
+
 httpServer.listen(config.port, config.bindHost, () => logInfo('server.started', {
   host: config.bindHost,
   port: config.port,
@@ -46,38 +56,46 @@ uploadCleanup.unref();
 
 let shutdownPromise: Promise<void> | null = null;
 function shutdown(signal: string): Promise<void> {
-  if (shutdownPromise) return shutdownPromise;
-  shutdownPromise = (async () => {
-    logInfo('server.shutdown_started', { signal });
-    beginShutdown();
-    clearInterval(uploadCleanup);
-    io.disconnectSockets(true);
+	if (shutdownPromise) return shutdownPromise;
+	shutdownPromise = (async () => {
+		logInfo('server.shutdown_started', { signal });
+		beginShutdown();
+		clearInterval(uploadCleanup);
+		io.disconnectSockets(true);
 
-    const forceClose = setTimeout(() => {
-      httpServer.closeAllConnections();
-    }, 25_000);
-    forceClose.unref();
-    await new Promise<void>((resolve) => {
-      if (!httpServer.listening) resolve();
-      else httpServer.close(() => resolve());
-    });
-    clearTimeout(forceClose);
-    let auditFlushError: unknown;
-    try {
-      await flushAuditCheckpoint();
-    } catch (error) {
-      auditFlushError = error;
-    }
-    await closePasswordWorkers();
-    await closeDb();
-    await runtime.close();
-    if (auditFlushError) throw auditFlushError;
-    logInfo('server.shutdown_complete');
-  })().catch((error) => {
-    logError('server.shutdown_failed', error);
-    process.exitCode = 1;
-  });
-  return shutdownPromise;
+		const forceClose = setTimeout(() => {
+			httpServer.closeAllConnections();
+		}, 25_000);
+		forceClose.unref();
+		await new Promise<void>((resolve) => {
+			if (!httpServer.listening) resolve();
+			else httpServer.close(() => resolve());
+		});
+		clearTimeout(forceClose);
+
+		try {
+			await voiceSfu?.close();
+		} catch (error) {
+			logError('voice.sfu_shutdown', error);
+			process.exitCode = 1;
+		}
+
+		let auditFlushError: unknown;
+		try {
+			await flushAuditCheckpoint();
+		} catch (error) {
+			auditFlushError = error;
+		}
+		await closePasswordWorkers();
+		await closeDb();
+		await runtime.close();
+		if (auditFlushError) throw auditFlushError;
+		logInfo('server.shutdown_complete');
+	})().catch((error) => {
+		logError('server.shutdown_failed', error);
+		process.exitCode = 1;
+	});
+	return shutdownPromise;
 }
 
 // Without the lease this process must not keep serving; a stuck checkpoint

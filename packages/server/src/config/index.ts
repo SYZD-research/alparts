@@ -173,9 +173,30 @@ export const config = {
   },
 
   voice: {
-    iceServers: parseVoiceIceServers(value('VOICE_ICE_SERVERS_JSON')),
+  	iceServers: parseVoiceIceServers(value('VOICE_ICE_SERVERS_JSON')),
+  	sfu: {
+  		enabled: env.VOICE_SFU_ENABLED === 'true',
+  		bindAddress: parseBindHost(env.VOICE_SFU_BIND_ADDRESS ?? '0.0.0.0'),
+  		announcedAddress: env.VOICE_SFU_ANNOUNCED_ADDRESS?.trim() || (isProduction ? '' : '127.0.0.1'),
+  		basePort: parseBoundedInteger('VOICE_SFU_BASE_PORT', env.VOICE_SFU_BASE_PORT, 40000, 1024, 65535),
+  		workerCount: parseBoundedInteger('VOICE_SFU_WORKERS', env.VOICE_SFU_WORKERS, 1, 1, 64),
+  	},
   },
 } as const;
+
+if (env.VOICE_SFU_ENABLED && !['true', 'false'].includes(env.VOICE_SFU_ENABLED)) {
+	throw new Error('VOICE_SFU_ENABLED must be true or false');
+}
+
+if (config.voice.sfu.enabled) {
+	if (!config.voice.sfu.announcedAddress) {
+		throw new Error('VOICE_SFU_ANNOUNCED_ADDRESS is required');
+	}
+
+	if (config.voice.sfu.basePort + config.voice.sfu.workerCount - 1 > 65535) {
+		throw new Error('VOICE_SFU_PORT_RANGE_EXCEEDED');
+	}
+}
 
 if (env.EMAIL_VERIFICATION?.trim() && !['required', 'disabled'].includes(env.EMAIL_VERIFICATION.trim())) {
   throw new Error('EMAIL_VERIFICATION must be required or disabled');

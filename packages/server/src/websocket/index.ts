@@ -28,6 +28,8 @@ import {
 import { VoiceSignalingHub } from './voice.handler.js';
 import { MAX_WORKSPACE_MEMBERSHIPS_PER_USER } from '../security/limits.js';
 import { rateLimitSource, reportUntrustedForwarding, requestClientAddress } from '../security/client-address.js';
+import { VoiceCoordinator } from '../voice/voice-coordinator.js';
+import { attachVoiceSfuEvents } from './voice.handler.js';
 
 const channelIdSchema = z.string().uuid();
 const maxTimerDelayMs = 2_147_000_000;
@@ -282,5 +284,38 @@ export function isSocketHandshakeOriginAllowed(origin: string | undefined, hasSe
   if (origin !== undefined && !config.cors.origins.includes(origin)) return false;
   return !hasSessionCookie || origin !== undefined;
 }
+
+export async function startVoiceSfu(
+	io: SocketServer,
+): Promise<VoiceCoordinator | null> {
+	const sfu = config.voice.sfu;
+
+	if (!sfu.enabled) {
+		return null;
+	}
+
+	const coordinator = new VoiceCoordinator({
+		bindAddress: sfu.bindAddress,
+		announcedAddress: sfu.announcedAddress,
+		basePort: sfu.basePort,
+		workerCount: sfu.workerCount,
+	});
+
+	try {
+		await coordinator.start();
+		attachVoiceSfuEvents(io, coordinator);
+	} catch (error) {
+		await coordinator.close();
+		throw error;
+	}
+
+	logInfo('voice.sfu_started', {
+		workerCount: sfu.workerCount,
+		basePort: sfu.basePort,
+	});
+
+	return coordinator;
+}
+
 
 export type { AuthenticatedSocket } from './security.js';
