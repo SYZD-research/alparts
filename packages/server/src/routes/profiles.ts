@@ -6,7 +6,7 @@ import { z } from 'zod';
 import { authMiddleware, type AuthRequest } from '../middleware/auth.js';
 import { requireWorkspaceMembership } from '../middleware/rbac.js';
 import { rateLimit, requestSource } from '../middleware/rate-limit.js';
-import { reserveKnownLengthBody } from '../middleware/body-admission.js';
+import { rawRequestBody, reserveKnownLengthBody } from '../middleware/body-admission.js';
 import { displayText } from '../security/display-text.js';
 import { MAX_AVATAR_BYTES, profileBio } from '../security/profile-input.js';
 import { logError } from '../security/logger.js';
@@ -100,8 +100,9 @@ router.patch('/profile', authMiddleware, profileLimit, handle(async (req, res) =
 
 router.put('/profile/avatar', authMiddleware, avatarLimit, reserveKnownLengthBody(MAX_AVATAR_BYTES), parseAvatarBody,
   handle(async (req, res) => {
-    if (!Buffer.isBuffer(req.body)) throw new Error('INVALID_AVATAR');
-    const result = await profileService.setAvatar(req.userId!, req.body);
+    const image = rawRequestBody(req);
+    if (!image) throw new Error('INVALID_AVATAR');
+    const result = await profileService.setAvatar(req.userId!, image);
     await announceProfileChange(req, req.userId!);
     res.json(result);
   }));

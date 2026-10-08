@@ -120,3 +120,14 @@ export function reserveKnownLengthBody(maxBytes: number): RequestHandler {
     next();
   };
 }
+
+/**
+ * The bytes left in `req.body` by an `express.raw` parser, or null when the
+ * request produced none. CodeQL separates request strings from arrays only on a
+ * `typeof` test, not on `Buffer.isBuffer`, so the test is spelled out here.
+ */
+export function rawRequestBody(req: Request): Buffer | null {
+  const body: unknown = req.body;
+  if (typeof body !== 'object' || !Buffer.isBuffer(body)) return null;
+  return body;
+}
