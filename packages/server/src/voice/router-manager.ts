@@ -1,6 +1,6 @@
-
 import type { types } from 'mediasoup';
 import { VoiceWorkerManager } from './worker-manager.js';
+import { VoiceWebRtcServerManager } from './webrtc-server-manager.js';
 
 const AUDIO_CODECS: types.RouterRtpCodecCapability[] = [
 	{
@@ -14,33 +14,42 @@ const AUDIO_CODECS: types.RouterRtpCodecCapability[] = [
 export class VoiceRouterManager {
 	private readonly routers = new Map<string, types.Router[]>();
 	private readonly pending = new Map<string, Promise<types.Router>>();
+	private readonly webRtcServersByRouter = new WeakMap<types.Router, types.WebRtcServer>();
 
-	constructor(private readonly workers: VoiceWorkerManager) {}
+  constructor(private readonly workers: VoiceWorkerManager,
+              private readonly webRtcServers: VoiceWebRtcServerManager,) {}
 
 	async createRouter(channelId: string): Promise<types.Router> {
 		if (!channelId) {
 			throw new Error('INVALID_VOICE_CHANNEL_ID');
 		}
 
-		const worker = this.workers.getWorker();
-		const router = await worker.createRouter({
-			mediaCodecs: AUDIO_CODECS,
-		});
+  	const worker = this.workers.getWorker();
+  	const webRtcServer = await this.webRtcServers.getOrCreate(worker);
 
-		if (router.closed) {
-			throw new Error('VOICE_ROUTER_CLOSED');
-		}
+  	if (worker.closed || webRtcServer.closed) {
+  		throw new Error('VOICE_WORKER_UNAVAILABLE');
+  	}
 
-		const channelRouters = this.routers.get(channelId) ?? [];
-		channelRouters.push(router);
-		this.routers.set(channelId, channelRouters);
+  	const router = await worker.createRouter({
+  		mediaCodecs: AUDIO_CODECS,
+  	});
 
-		router.on('workerclose', () => {
-			this.removeRouter(channelId, router);
-		});
+  	if (router.closed || webRtcServer.closed) {
+  		router.close();
+  		throw new Error('VOICE_ROUTER_CLOSED');
+  	}
 
-		return router;
-	}
+  	this.webRtcServersByRouter.set(router, webRtcServer);
+  	const channelRouters = this.routers.get(channelId) ?? [];
+  	channelRouters.push(router);
+  	this.routers.set(channelId, channelRouters);
+  	router.observer.on('close', () => {
+  		this.removeRouter(channelId, router);
+  	});
+
+  	return router;
+  }
 
 	getRouters(channelId: string): types.Router[] {
 		return (this.routers.get(channelId) ?? []).filter(
@@ -109,5 +118,15 @@ export class VoiceRouterManager {
 		for (const channelId of this.routers.keys()) {
 			this.closeChannel(channelId);
 		}
-	}
+  }
+
+  getWebRtcServer(router: types.Router): types.WebRtcServer {
+  	const server = this.webRtcServersByRouter.get(router);
+
+  	if (!server || server.closed || router.closed) {
+  		throw new Error('VOICE_WEBRTC_SERVER_NOT_FOUND');
+  	}
+
+  	return server;
+    }
 }
