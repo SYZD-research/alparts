@@ -11,7 +11,7 @@ import {
   type OutboxStorageContext,
 } from '../services/local-state.service';
 import { ApiError } from '../services/api';
-import { useMessageStore } from './message.store';
+import { signedReferenceOf, useMessageStore } from './message.store';
 import {
   createOutboxCommand,
   isKeyRefusal,
@@ -193,7 +193,18 @@ export const useOutboxStore = create<OutboxState>((set, get) => ({
       }
       pendingEnqueueReservations += 1;
       reserved = true;
-      const command = createOutboxCommand({ channelId, content, refMessageId, mentionedUserIds, postId });
+      // The quoted message and the post are named as their authors signed
+      // them now, while they are loaded; the message may be sealed later.
+      const messages = useMessageStore.getState();
+      const command = createOutboxCommand({
+        channelId,
+        content,
+        refMessageId,
+        mentionedUserIds,
+        postId,
+        refBinding: refMessageId ? signedReferenceOf(messages, channelId, refMessageId) ?? undefined : undefined,
+        postBinding: postId ? signedReferenceOf(messages, channelId, postId) ?? undefined : undefined,
+      });
       await queuePersistence(
         lifecycle.context,
         channelId,
@@ -263,6 +274,8 @@ export const useOutboxStore = create<OutboxState>((set, get) => ({
             idempotencyKey: current.idempotencyKey,
             mentionedUserIds: current.mentionedUserIds ?? [],
             postId: current.postId,
+            refBinding: current.refBinding,
+            postBinding: current.postBinding,
           });
           if (!isOutboxLifecycleCurrent(lifecycle)) return;
           // Saved before the first attempt: if its response is lost, a later

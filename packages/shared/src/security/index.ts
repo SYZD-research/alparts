@@ -1,6 +1,12 @@
 export const MESSAGE_CRYPTO_VERSION = 3;
 /** Forum-channel events: v3 plus the authenticated post the event belongs to. */
 export const FORUM_MESSAGE_CRYPTO_VERSION = 4;
+/**
+ * Every channel type: the event refMessageId names, and in a forum the first
+ * message of the post, are named as their authors signed them (see
+ * SignedMessageEnvelope.refBinding).
+ */
+export const BOUND_MESSAGE_CRYPTO_VERSION = 5;
 const LEGACY_MESSAGE_CRYPTO_VERSION = 2;
 
 export const ATTACHMENT_CRYPTO_VERSION = 3;
@@ -96,6 +102,16 @@ export function serializeChannelKeyFreshStart(envelope: SignedChannelKeyFreshSta
   ]);
 }
 
+/**
+ * An event as its author signed it. Within a channel the server keeps one
+ * event per author and idempotency key, and it cannot sign for an author, so
+ * it cannot make another event carry this pair.
+ */
+export interface SignedEventReference {
+  authorId: string;
+  idempotencyKey: string;
+}
+
 export interface SignedMessageEnvelope {
   channelId: string;
   authorId: string;
@@ -113,11 +129,67 @@ export interface SignedMessageEnvelope {
    * Undefined keeps the v2/v3 layout used by every other channel type.
    */
   postId?: string | null;
+  /**
+   * Present (an object or null) exactly in v5 envelopes: the event that
+   * refMessageId names, as its author signed it; null when there is none.
+   * Server ids are not signed by the events they name, so without this a
+   * server could serve another message of the same author under the id and
+   * move an edit, a deletion or a quote to it.
+   */
+  refBinding?: SignedEventReference | null;
+  /** v5 forum events: the first message of the post postId names; null for that message itself. */
+  postBinding?: SignedEventReference | null;
   type: 'message' | 'edit' | 'delete';
+}
+
+/** Whether an envelope uses the v5 layout (references bound to what their authors signed). */
+export function isBoundMessageEnvelope(envelope: Pick<SignedMessageEnvelope, 'refBinding'>): boolean {
+  return envelope.refBinding !== undefined;
+}
+
+function boundReference(id: string | null | undefined, binding: SignedEventReference | null | undefined) {
+  if (id === null || id === undefined) {
+    if (binding !== null && binding !== undefined) throw new Error('INVALID_BOUND_ENVELOPE');
+    return null;
+  }
+  if (
+    !binding
+    || typeof binding.authorId !== 'string' || binding.authorId.length === 0
+    || typeof binding.idempotencyKey !== 'string' || binding.idempotencyKey.length === 0
+  ) throw new Error('INVALID_BOUND_ENVELOPE');
+  return [id, binding.authorId, binding.idempotencyKey];
+}
+
+/** The signed context of a v5 envelope: everything but the ciphertext. */
+function boundEnvelopeContext(envelope: Pick<
+  SignedMessageEnvelope,
+  'type' | 'channelId' | 'authorId' | 'deviceId' | 'keyVersion' | 'idempotencyKey' | 'refMessageId' | 'broadcastMention'
+  | 'postId' | 'refBinding' | 'postBinding'
+>): unknown[] {
+  if (typeof envelope.broadcastMention !== 'boolean') throw new Error('INVALID_BOUND_ENVELOPE');
+  const forum = envelope.postId !== undefined;
+  if (forum) assertForumEnvelope(envelope);
+  else if (envelope.postBinding !== undefined && envelope.postBinding !== null) throw new Error('INVALID_BOUND_ENVELOPE');
+  return [
+    BOUND_MESSAGE_CRYPTO_VERSION,
+    forum ? 'forum' : 'text',
+    envelope.type,
+    envelope.channelId,
+    envelope.authorId,
+    envelope.deviceId,
+    envelope.keyVersion,
+    envelope.idempotencyKey,
+    boundReference(envelope.refMessageId, envelope.refBinding),
+    forum ? boundReference(envelope.postId, envelope.postBinding) : null,
+    envelope.broadcastMention,
+  ];
 }
 
 /** A deterministic, protocol-versioned byte representation for message signatures. */
 export function serializeMessageEnvelope(envelope: SignedMessageEnvelope): string {
+  if (isBoundMessageEnvelope(envelope)) {
+    return JSON.stringify([...boundEnvelopeContext(envelope), envelope.contentNonce, envelope.encryptedContent]);
+  }
   if (envelope.postId !== undefined) {
     assertForumEnvelope(envelope);
     return JSON.stringify([
@@ -167,7 +239,9 @@ export function serializeMessageEnvelope(envelope: SignedMessageEnvelope): strin
 export function serializeMessageAad(envelope: Pick<
   SignedMessageEnvelope,
   'type' | 'channelId' | 'authorId' | 'deviceId' | 'keyVersion' | 'idempotencyKey' | 'refMessageId' | 'broadcastMention' | 'postId'
+  | 'refBinding' | 'postBinding'
 >): string {
+  if (isBoundMessageEnvelope(envelope)) return JSON.stringify(boundEnvelopeContext(envelope));
   if (envelope.postId !== undefined) {
     assertForumEnvelope(envelope);
     return JSON.stringify([

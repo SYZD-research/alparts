@@ -912,6 +912,7 @@ export const en = {
   '添付ファイル': 'Attachment',
   '本文なし': 'No text',
   '元のメッセージを表示': 'Show original message',
+  '元のメッセージを表示できません': 'The original message cannot be shown',
   '🔖 保存済み': '🔖 Saved',
   'リアクション': 'React',
   '保存済みメッセージから削除': 'Remove from saved messages',

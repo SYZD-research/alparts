@@ -1,4 +1,4 @@
-import { MAX_DIRECT_MENTION_RECIPIENTS_PER_MESSAGE } from '@alparts/shared';
+import { MAX_DIRECT_MENTION_RECIPIENTS_PER_MESSAGE, type SignedEventReference } from '@alparts/shared';
 import { parseSealedMessage, type SealedMessage } from './sealed-message';
 
 export interface OutboxCommand {
@@ -9,6 +9,9 @@ export interface OutboxCommand {
   refMessageId?: string;
   /** Forum replies: the post the reply is signed for. */
   postId?: string;
+  /** The quoted message and the post as their authors signed them, saved when queued. */
+  refBinding?: SignedEventReference;
+  postBinding?: SignedEventReference;
   mentionedUserIds?: string[];
   createdAt: string;
   /**
@@ -66,7 +69,15 @@ interface CreateOutboxCommandInput {
   content: string;
   refMessageId?: string;
   postId?: string;
+  refBinding?: SignedEventReference;
+  postBinding?: SignedEventReference;
   mentionedUserIds?: string[];
+}
+
+function isReference(value: unknown): value is SignedEventReference {
+  if (!value || typeof value !== 'object') return false;
+  const { authorId, idempotencyKey } = value as Record<string, unknown>;
+  return typeof authorId === 'string' && authorId.length > 0 && typeof idempotencyKey === 'string' && idempotencyKey.length > 0;
 }
 
 export function createOutboxCommand(
@@ -84,6 +95,8 @@ export function createOutboxCommand(
     content: input.content,
     ...(input.refMessageId ? { refMessageId: input.refMessageId } : {}),
     ...(input.postId ? { postId: input.postId } : {}),
+    ...(input.refMessageId && input.refBinding ? { refBinding: { ...input.refBinding } } : {}),
+    ...(input.postId && input.postBinding ? { postBinding: { ...input.postBinding } } : {}),
     ...(mentionedUserIds.length ? { mentionedUserIds } : {}),
     createdAt: now(),
   };
@@ -109,6 +122,8 @@ export function parseOutboxCommand(value: unknown): OutboxCommand | null {
       || candidate.resealCount > MAX_AUTOMATIC_RESEALS
     ))
     || (candidate.postId !== undefined && (typeof candidate.postId !== 'string' || !UUID_PATTERN.test(candidate.postId)))
+    || (candidate.refBinding !== undefined && (candidate.refMessageId === undefined || !isReference(candidate.refBinding)))
+    || (candidate.postBinding !== undefined && (candidate.postId === undefined || !isReference(candidate.postBinding)))
     || (candidate.mentionedUserIds !== undefined && (
       !Array.isArray(candidate.mentionedUserIds)
       || candidate.mentionedUserIds.length > MAX_DIRECT_MENTION_RECIPIENTS_PER_MESSAGE

@@ -159,6 +159,13 @@ export interface Message {
    * v4 envelope. Null on the event that starts a post and outside forums.
    */
   postId?: string | null;
+  /**
+   * What refMessageId and postId name, as their authors signed them (from
+   * the server, checked against the v5 signature; absent or unchecked for
+   * older events).
+   */
+  refBinding?: { authorId: string; idempotencyKey: string } | null;
+  postBinding?: { authorId: string; idempotencyKey: string } | null;
   refMessage?: Message;
   reactions: Reaction[];
   isPinned: boolean;

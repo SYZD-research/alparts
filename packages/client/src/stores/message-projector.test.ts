@@ -1,17 +1,20 @@
 import { describe, expect, it } from 'vitest';
 import type { Attachment, Message, SignedMessageEnvelope, User } from '@alparts/shared';
 import {
+  belongsToPost,
   compareMessageEvents,
   getMessageCryptoVerificationState,
+  hasBoundReferences,
   hasAuthenticatedEnvelopeConflict,
   isMessageKeyUnavailable,
   markMessageCryptoVerification,
   markMessageKeyUnavailable,
   mergeMessageEvents,
   projectMessageEvents,
+  quotedMessage,
   retryMessageKeyVerification,
 } from './message-projector';
-import { channelSecurityError, matchesLocallySignedMessageResponse } from './message.store';
+import { channelSecurityError, matchesLocallySignedMessageResponse, signedReferenceOf } from './message.store';
 
 const author: User = {
   id: 'user-1',
@@ -347,11 +350,112 @@ describe('locally signed REST message responses', () => {
     }, expected, signature)).toBe(false);
   });
 
+  it('rejects a v5 response whose bindings differ from what this device signed', () => {
+    const bound: SignedMessageEnvelope = { ...expected, refBinding: { authorId: author.id, idempotencyKey: 'k-target' } };
+    const served = { ...response, refBinding: { authorId: author.id, idempotencyKey: 'k-target' } };
+    expect(matchesLocallySignedMessageResponse(served, bound, signature)).toBe(true);
+    expect(matchesLocallySignedMessageResponse({ ...served, refBinding: { authorId: author.id, idempotencyKey: 'k-other' } }, bound, signature)).toBe(false);
+    expect(matchesLocallySignedMessageResponse({ ...served, refBinding: null }, bound, signature)).toBe(false);
+  });
+
   it('rejects a forum response that names a different post', () => {
     const forumExpected = { ...expected, postId: 'post-1' };
     expect(matchesLocallySignedMessageResponse({ ...response, postId: 'post-1' }, forumExpected, signature)).toBe(true);
     expect(matchesLocallySignedMessageResponse({ ...response, postId: 'post-2' }, forumExpected, signature)).toBe(false);
     expect(matchesLocallySignedMessageResponse({ ...response, postId: null }, forumExpected, signature)).toBe(false);
+  });
+});
+
+describe('v5 references (formal model M9)', () => {
+  // Two messages of one author; the server serves each under the other's id.
+  const swapped = (bound: boolean) => {
+    const verify = (message: Message) => markMessageCryptoVerification(message, true, bound);
+    const m1 = verify(event({ id: 'id-2', type: 'message', content: 'meet at 10', idempotencyKey: 'k-m1', createdAt: '2026-01-01T00:00:01.000Z' }));
+    const m2 = verify(event({ id: 'id-1', type: 'message', content: 'cancelled', idempotencyKey: 'k-m2', createdAt: '2026-01-01T00:00:02.000Z' }));
+    const binding = { authorId: author.id, idempotencyKey: 'k-m1' };   // signed for M1, which was id-1
+    const edit = verify(event({
+      id: 'id-3', type: 'edit', content: 'meet at 11', refMessageId: 'id-1', refBinding: binding,
+      createdAt: '2026-01-01T00:00:03.000Z',
+    }));
+    const removal = verify(event({
+      id: 'id-4', type: 'delete', refMessageId: 'id-1', refBinding: binding, createdAt: '2026-01-01T00:00:04.000Z',
+    }));
+    const quote = verify(event({
+      id: 'id-5', type: 'message', content: 'ok', authorId: 'user-2', refMessageId: 'id-1', refBinding: binding,
+      idempotencyKey: 'k-q', createdAt: '2026-01-01T00:00:05.000Z',
+    }));
+    return { m1, m2, edit, removal, quote };
+  };
+
+  it('applies a v5 edit or deletion only to the message it was signed for', () => {
+    const { m1, m2, edit, removal } = swapped(true);
+    const shown = projectMessageEvents([m1, m2, edit, removal]);
+    expect(shown.find((message) => message.id === 'id-1')).toMatchObject({ type: 'message', content: 'cancelled' });
+    expect(hasBoundReferences(edit)).toBe(true);
+    // Served under its honest id, the same edit and deletion apply.
+    const honest = projectMessageEvents([{ ...m1, id: 'id-1' }, { ...m2, id: 'id-2' }, edit, removal]);
+    expect(honest.find((message) => message.id === 'id-1')?.type).toBe('delete');
+  });
+
+  it('keeps naming older events by id only (documented limit)', () => {
+    const { m1, m2, edit } = swapped(false);
+    const shown = projectMessageEvents([m1, m2, edit]);
+    expect(shown.find((message) => message.id === 'id-1')).toMatchObject({ type: 'edit', content: 'meet at 11' });
+  });
+
+  it('shows a v5 quote only with the message it quotes', () => {
+    const { m1, m2, quote } = swapped(true);
+    const shown = projectMessageEvents([m1, m2, quote]);
+    expect(quotedMessage(quote, shown)).toBeNull();
+    expect(quotedMessage(quote, projectMessageEvents([{ ...m1, id: 'id-1' }, quote]))?.content).toBe('meet at 10');
+    expect(quotedMessage(quote, projectMessageEvents([quote]))).toBeUndefined();
+  });
+
+  it('keeps the quoted identity of a message across its own edits', () => {
+    const { m1 } = swapped(true);
+    const honest = { ...m1, id: 'id-1' };
+    const ownEdit = markMessageCryptoVerification(event({
+      id: 'id-6', type: 'edit', content: 'meet at 10:30', refMessageId: 'id-1', idempotencyKey: 'k-edit',
+      refBinding: { authorId: author.id, idempotencyKey: 'k-m1' }, createdAt: '2026-01-01T00:00:06.000Z',
+    }), true, true);
+    const { quote } = swapped(true);
+    const shown = projectMessageEvents([honest, ownEdit, quote]);
+    expect(quotedMessage(quote, shown)?.content).toBe('meet at 10:30');
+  });
+
+  it('shows a v5 forum reply only under the post it was signed for', () => {
+    const verify = (message: Message) => markMessageCryptoVerification(message, true, true);
+    const p1 = verify(event({ id: 'post-2', type: 'message', content: 'post 1', idempotencyKey: 'k-p1', postId: null, createdAt: '2026-01-01T00:00:01.000Z' }));
+    const p2 = verify(event({ id: 'post-1', type: 'message', content: 'post 2', idempotencyKey: 'k-p2', postId: null, createdAt: '2026-01-01T00:00:02.000Z' }));
+    const reply = verify(event({
+      id: 'reply', type: 'message', content: 'agreed', authorId: 'user-2', idempotencyKey: 'k-x1', postId: 'post-1',
+      postBinding: { authorId: author.id, idempotencyKey: 'k-p1' }, createdAt: '2026-01-01T00:00:03.000Z',
+    }));
+    const shown = projectMessageEvents([p1, p2, reply]);
+    const root = shown.find((message) => message.id === 'post-1')!;
+    expect(belongsToPost(reply, root)).toBe(false);
+    const honestRoot = projectMessageEvents([{ ...p1, id: 'post-1' }]).find((message) => message.id === 'post-1')!;
+    expect(belongsToPost(reply, honestRoot)).toBe(true);
+  });
+
+  it('names a loaded message by its author and key, whether or not it could be verified', () => {
+    const unreadable = markMessageKeyUnavailable(event({ id: 'id-1', type: 'message', idempotencyKey: 'k-m1', createdAt: '2026-01-01T00:00:01.000Z' }));
+    const unverified = markMessageCryptoVerification(event({ id: 'id-2', type: 'message', idempotencyKey: 'k-m2', createdAt: '2026-01-01T00:00:02.000Z' }), false);
+    const early = event({ id: 'id-3', type: 'message', idempotencyKey: undefined, createdAt: '2026-01-01T00:00:03.000Z' });
+    const state = { eventsByChannel: { 'channel-1': [unreadable, unverified, early] } };
+    // Such a message can still be deleted or quoted; the pair only narrows
+    // what the envelope applies to.
+    expect(signedReferenceOf(state, 'channel-1', 'id-1')).toEqual({ authorId: author.id, idempotencyKey: 'k-m1' });
+    expect(signedReferenceOf(state, 'channel-1', 'id-2')).toEqual({ authorId: author.id, idempotencyKey: 'k-m2' });
+    // Sent before idempotency keys were signed: named by id only.
+    expect(signedReferenceOf(state, 'channel-1', 'id-3')).toBeNull();
+    expect(() => signedReferenceOf(state, 'channel-1', 'id-4')).toThrow();
+  });
+
+  it('treats one event id carrying two different bindings as an equivocation', () => {
+    const { edit } = swapped(true);
+    const [merged] = mergeMessageEvents([edit], [{ ...edit, refBinding: { authorId: author.id, idempotencyKey: 'k-m2' } }]);
+    expect(hasAuthenticatedEnvelopeConflict(merged)).toBe(true);
   });
 });
 

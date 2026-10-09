@@ -95,4 +95,22 @@ describe('stored signed request (SQ-23)', () => {
     expect(parseOutboxCommand({ ...command, sealed: { ...sealed, request: { ...sealed.request, encryptedContent: 'other' } } })).toBeNull();
     expect(parseOutboxCommand({ ...command, sealed: { ...sealed, request: { ...sealed.request, postId: 'post' } } })).toBeNull();
   });
+
+  it('keeps the quoted message as its author signed it, and only a well-formed v5 binding', () => {
+    const target = '00000000-0000-4000-8000-000000000001';
+    const refBinding = { authorId: 'author', idempotencyKey: 'target-key' };
+    const quoting = createOutboxCommand({ channelId: 'channel-1', content: 'hi', refMessageId: target, refBinding },
+      () => 'key-1', () => '2026-01-01T00:00:00.000Z');
+    expect(parseOutboxCommand(JSON.parse(JSON.stringify(quoting)))?.refBinding).toEqual(refBinding);
+    expect(parseOutboxCommand({ ...quoting, refBinding: { authorId: 'author' } })).toBeNull();
+    expect(parseOutboxCommand({ ...command, refBinding })).toBeNull();
+    const bound = {
+      envelope: { ...sealed.envelope, refMessageId: target, refBinding },
+      request: { ...sealed.request, refMessageId: target },
+    };
+    expect(parseOutboxCommand({ ...quoting, sealed: bound })?.sealed).toEqual(bound);
+    expect(parseOutboxCommand({ ...quoting, sealed: { ...bound, envelope: { ...bound.envelope, refBinding: null } } })).toBeNull();
+    expect(parseOutboxCommand({ ...command, sealed: { ...sealed, envelope: { ...sealed.envelope, refBinding: null } } })?.sealed)
+      .toEqual({ ...sealed, envelope: { ...sealed.envelope, refBinding: null } });
+  });
 });

@@ -4,6 +4,7 @@ import {
   Permissions,
   MESSAGES_PER_PAGE,
   type AttentionNotificationKind,
+  type SignedEventReference,
   type SignedMessageEnvelope,
 } from '@alparts/shared';
 import { db } from '../db/index.js';
@@ -118,6 +119,41 @@ export const messageAuthorColumns = {
   createdAt: true,
 } as const;
 
+type EventBindings = Map<string, SignedEventReference>;
+
+/**
+ * The events that refMessageId and postId of these events name, as their
+ * authors signed them (v5 envelopes sign this pair, so a client can tell
+ * whether the event served under an id is the one that was referenced).
+ */
+async function loadEventBindings(
+  store: any,
+  events: Array<{ channelId: string; refMessageId?: string | null; postId?: string | null }>,
+): Promise<EventBindings> {
+  const ids = [...new Set(events.flatMap((event) => [event.refMessageId, event.postId])
+    .filter((value): value is string => typeof value === 'string'))];
+  const channelIds = [...new Set(events.map((event) => event.channelId))];
+  if (ids.length === 0) return new Map();
+  const rows = await store.select({
+    id: messages.id,
+    channelId: messages.channelId,
+    authorId: messages.authorId,
+    idempotencyKey: messages.idempotencyKey,
+  }).from(messages)
+    .where(and(inArray(messages.id, ids), inArray(messages.channelId, channelIds), eq(messages.type, 'message')))
+    .limit(ids.length);
+  const bindings: EventBindings = new Map();
+  for (const row of rows as Array<{ id: string; channelId: string; authorId: string; idempotencyKey: string | null }>) {
+    const idempotencyKey = signedIdempotencyKey(row);
+    if (idempotencyKey) bindings.set(`${row.channelId}:${row.id}`, { authorId: row.authorId, idempotencyKey });
+  }
+  return bindings;
+}
+
+function bindingOf(bindings: EventBindings, channelId: string, id: string | null | undefined): SignedEventReference | null {
+  return id ? bindings.get(`${channelId}:${id}`) ?? null : null;
+}
+
 /** Attach pins, reactions and attachments to stored events (with author) for the wire. */
 export async function hydrateMessageEvents(tx: any, data: any[]) {
   const baseMessageIds = data
@@ -149,6 +185,7 @@ export async function hydrateMessageEvents(tx: any, data: any[]) {
     baseMessageIds,
     tx as unknown as typeof db,
   );
+  const bindings = await loadEventBindings(tx, data);
   const reactionsByMessage = new Map<string, ReactionRow[]>();
   for (const reaction of reactionRows as ReactionRow[]) {
     const grouped = reactionsByMessage.get(reaction.messageId) || [];
@@ -164,6 +201,7 @@ export async function hydrateMessageEvents(tx: any, data: any[]) {
             reactions: summarizeReactions(reactionsByMessage.get(message.id) || []),
           }
         : undefined,
+      bindings,
     ),
     attachments: message.type === 'message' ? attachmentsByMessage.get(message.id) || [] : [],
   }));
@@ -609,7 +647,11 @@ async function insertCryptoEvent(
     throw new Error('IDEMPOTENCY_CONFLICT');
   }
   return {
-    event: formatMessage({ ...event, author: await getUserForMessage(event.authorId, store) }),
+    event: formatMessage(
+      { ...event, author: await getUserForMessage(event.authorId, store) },
+      undefined,
+      await loadEventBindings(store, [event]),
+    ),
     isNewEvent: inserted.length > 0,
   };
 }
@@ -694,7 +736,18 @@ async function lockAndAuthorizeCryptoWrite(
     ...(isForum ? { postId: input.postId } : {}),
     type,
   };
-  if (!verifyMessageEnvelopeSignature(device.identityKey, envelope, input.signature)) {
+  // v5 (current clients) names the referenced events as their authors signed
+  // them; earlier envelopes are still accepted from older clients.
+  const bindings = await loadEventBindings(store, [{ channelId, refMessageId, postId: input.postId }]);
+  const bound: SignedMessageEnvelope = {
+    ...envelope,
+    refBinding: bindingOf(bindings, channelId, refMessageId),
+    ...(isForum ? { postBinding: bindingOf(bindings, channelId, input.postId) } : {}),
+  };
+  if (
+    !verifyMessageEnvelopeSignature(device.identityKey, bound, input.signature)
+    && !verifyMessageEnvelopeSignature(device.identityKey, envelope, input.signature)
+  ) {
     throw new Error('INVALID_SIGNATURE');
   }
   return { ...authorization, channelType: channel.type as string };
@@ -833,7 +886,11 @@ async function getUserForMessage(userId: string, store: any = db) {
   };
 }
 
-function formatMessage(message: any, state?: { reactions: ReturnType<typeof summarizeReactions>; isPinned: boolean }) {
+function formatMessage(
+  message: any,
+  state?: { reactions: ReturnType<typeof summarizeReactions>; isPinned: boolean },
+  bindings: EventBindings = new Map(),
+) {
   const idempotencyKey = signedIdempotencyKey(message);
   return {
     id: message.id,
@@ -851,6 +908,8 @@ function formatMessage(message: any, state?: { reactions: ReturnType<typeof summ
     reactionAction: message.reactionAction ?? null,
     refMessageId: message.refMessageId,
     postId: message.postId ?? null,
+    refBinding: bindingOf(bindings, message.channelId, message.refMessageId),
+    postBinding: bindingOf(bindings, message.channelId, message.postId),
     reactions: state?.reactions || [],
     isPinned: state?.isPinned || false,
     idempotencyKey,

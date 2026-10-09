@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { MAX_FORUM_POST_TITLE_LENGTH, type Message } from '@alparts/shared';
 import { useForumStore } from '../../stores/forum.store';
 import { useMessageStore } from '../../stores/message.store';
+import { belongsToPost } from '../../stores/message-projector';
 import { useWorkspaceStore } from '../../stores/workspace.store';
 import { useAuthStore } from '../../stores/auth.store';
 import { useUiStore } from '../../stores/ui.store';
@@ -59,11 +60,12 @@ export function ForumPostView({ channelId, postId, sendDisabled }: Props) {
   }, [postId]);
 
   const root = messages.find((message) => message.id === postId);
-  // Replies are the verified events signed for this post; the signature binds
-  // them to it, so the server cannot move a reply into another post.
+  // Replies are the verified events signed for this post. A v5 reply also
+  // names the post's first message as its author signed it, so a server that
+  // serves another post under this id cannot show the reply under it.
   const replies = useMemo(
-    () => messages.filter((message) => message.postId === postId && message.type !== 'reaction'),
-    [messages, postId],
+    () => (root ? messages.filter((message) => message.type !== 'reaction' && belongsToPost(message, root)) : []),
+    [messages, root],
   );
   const state = view?.states[postId];
   const display = forumPostDisplay(root);

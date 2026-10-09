@@ -1000,6 +1000,15 @@ try {
   await cleanupObjects?.();
   await closeRuntime?.();
   await closeDb?.();
+  // pool.end() resolves before its connections have closed; dropping the
+  // database under them would surface as an error on the ended pool.
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const { rows } = await admin.query<{ open: number }>(
+      'select count(*)::int as open from pg_stat_activity where datname = $1', [databaseName],
+    );
+    if (rows[0]!.open === 0) break;
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
   await admin.query(`DROP DATABASE IF EXISTS ${databaseName} WITH (FORCE)`);
   await admin.end();
   await rm(directory, { recursive: true, force: true });

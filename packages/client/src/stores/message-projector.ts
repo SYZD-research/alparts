@@ -1,25 +1,89 @@
-import { serializeMessageEnvelope, type Attachment, type Message, type Reaction } from '@alparts/shared';
+import {
+  serializeMessageEnvelope,
+  type Attachment,
+  type Message,
+  type Reaction,
+  type SignedEventReference,
+} from '@alparts/shared';
 
 export type ProjectedMessage = Message & {
   editedAt?: string;
   deletedByUserId?: string;
   deletedByDisplayName?: string;
+  /** The idempotency key the message was sent with (an edit replaces idempotencyKey). */
+  originIdempotencyKey?: string;
 };
 
 const localVerificationState = Symbol('alparts.message.local-verification-state');
+/** The v5 signature verified: refBinding and postBinding are what the author signed. */
+const boundReferences = Symbol('alparts.message.bound-references');
 const authenticatedEnvelopeConflict = Symbol('alparts.message.authenticated-envelope-conflict');
 const channelKeyUnavailable = Symbol('alparts.message.channel-key-unavailable');
 
 type LocallyVerifiedEvent = Message & {
   [localVerificationState]?: boolean;
+  [boundReferences]?: true;
   [authenticatedEnvelopeConflict]?: true;
   [channelKeyUnavailable]?: true;
 };
 
-/** Network JSON cannot manufacture this process-local Symbol marker. */
-export function markMessageCryptoVerification(message: Message, verified: boolean): Message {
-  const { [channelKeyUnavailable]: _unavailable, ...retryable } = withoutLegacyVerificationProperty(message) as LocallyVerifiedEvent;
-  return { ...retryable, [localVerificationState]: verified } as Message;
+/**
+ * Network JSON cannot manufacture these process-local Symbol markers. `bound`
+ * records that the v5 signature verified, so the event's refBinding and
+ * postBinding are what its author signed.
+ */
+export function markMessageCryptoVerification(message: Message, verified: boolean, bound = false): Message {
+  const {
+    [channelKeyUnavailable]: _unavailable,
+    [boundReferences]: _bound,
+    ...retryable
+  } = withoutLegacyVerificationProperty(message) as LocallyVerifiedEvent;
+  return { ...retryable, [localVerificationState]: verified, ...(verified && bound ? { [boundReferences]: true } : {}) } as Message;
+}
+
+/** Whether the event was verified as v5: its references name events as their authors signed them. */
+export function hasBoundReferences(message: Message): boolean {
+  return (message as LocallyVerifiedEvent)[boundReferences] === true
+    && (message as LocallyVerifiedEvent)[localVerificationState] === true;
+}
+
+/** Whether `target` is the event `reference` names: same author, same signed idempotency key. */
+export function isReferencedEvent(
+  target: Pick<ProjectedMessage, 'authorId' | 'idempotencyKey' | 'originIdempotencyKey'>,
+  reference: SignedEventReference | null | undefined,
+): boolean {
+  return Boolean(reference)
+    && target.authorId === reference!.authorId
+    && (target.originIdempotencyKey ?? target.idempotencyKey) === reference!.idempotencyKey;
+}
+
+/**
+ * Whether an event may apply to, or be shown with, the message under the id
+ * it names. A v5 event must name that very message; an older event can only
+ * name an id, so any message under it is taken (documented limit).
+ */
+function namesEvent(
+  event: Message,
+  target: Pick<ProjectedMessage, 'authorId' | 'idempotencyKey' | 'originIdempotencyKey'>,
+  reference: SignedEventReference | null | undefined,
+): boolean {
+  return !hasBoundReferences(event) || isReferencedEvent(target, reference);
+}
+
+/**
+ * The message a quote shows: undefined while the message under its id is not
+ * loaded, null when the message under that id is not the one quoted.
+ */
+export function quotedMessage(message: Message, messages: readonly ProjectedMessage[]): ProjectedMessage | null | undefined {
+  if (!message.refMessageId) return undefined;
+  const target = messages.find((candidate) => candidate.id === message.refMessageId);
+  if (!target) return undefined;
+  return namesEvent(message, target, message.refBinding) ? target : null;
+}
+
+/** Whether a forum message belongs under this post's first message. */
+export function belongsToPost(message: Message, root: ProjectedMessage): boolean {
+  return message.postId === root.id && namesEvent(message, root, message.postBinding);
 }
 
 export function markMessageKeyUnavailable(message: Message): Message {
@@ -93,6 +157,8 @@ function mergeDuplicateEvent(current: Message, incoming: Message): Message {
 
     const currentVerification = getMessageCryptoVerificationState(currentEvent);
     const incomingVerification = getMessageCryptoVerificationState(incomingEvent);
+    const bound = (currentVerification === true && hasBoundReferences(currentEvent))
+      || (incomingVerification === true && hasBoundReferences(incomingEvent));
     const verified = currentVerification === true || incomingVerification === true
       ? true
       : currentVerification === false || incomingVerification === false
@@ -125,6 +191,8 @@ function mergeDuplicateEvent(current: Message, incoming: Message): Message {
       isPinned: incomingEvent.isPinned,
     } as LocallyVerifiedEvent;
     if (verified !== undefined) merged[localVerificationState] = verified;
+    if (bound) merged[boundReferences] = true;
+    else delete merged[boundReferences];
     return merged;
   }
 
@@ -156,7 +224,7 @@ function authenticatedEnvelope(message: Message): string | null {
     broadcastMention: message.broadcastMention,
     encryptedContent: message.encryptedContent,
     contentNonce: message.contentNonce,
-  })}\u0000${message.postId ?? ''}\u0000${message.signature}`;
+  })}\u0000${message.postId ?? ''}\u0000${JSON.stringify([message.refBinding ?? null, message.postBinding ?? null])}\u0000${message.signature}`;
 }
 
 function withoutLegacyVerificationProperty(message: Message): Message {
@@ -249,6 +317,7 @@ export function projectOrderedMessageEvents(orderedEvents: Message[]): Projected
           ? ''
           : event.content,
         reactions: [...(event.reactions || [])],
+        originIdempotencyKey: event.idempotencyKey,
       });
       continue;
     }
@@ -261,6 +330,8 @@ export function projectOrderedMessageEvents(orderedEvents: Message[]): Projected
     if (event.type === 'edit') {
       if (getMessageCryptoVerificationState(event) !== true) continue;
       if (target.type === 'delete' || event.authorId !== target.authorId) continue;
+      // A v5 edit applies only to the message it was signed for.
+      if (!namesEvent(event, target, event.refBinding)) continue;
       projected.set(targetId, {
         ...target,
         type: 'edit',
@@ -280,6 +351,7 @@ export function projectOrderedMessageEvents(orderedEvents: Message[]): Projected
 
     if (event.type === 'delete') {
       if (getMessageCryptoVerificationState(event) !== true) continue;
+      if (!namesEvent(event, target, event.refBinding)) continue;
       projected.set(targetId, {
         ...target,
         type: 'delete',

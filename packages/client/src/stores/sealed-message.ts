@@ -25,6 +25,15 @@ export interface SealedMessage {
 
 const isString = (value: unknown): value is string => typeof value === 'string' && value.length > 0;
 
+/** A v5 binding: null exactly when there is no id to bind, else the signed pair. */
+function validBinding(binding: unknown, id: string | undefined): boolean {
+  if (binding === undefined) return true;
+  if (id === undefined) return binding === null;
+  if (!binding || typeof binding !== 'object') return false;
+  const { authorId, idempotencyKey } = binding as Record<string, unknown>;
+  return isString(authorId) && isString(idempotencyKey);
+}
+
 /** Validate a stored sealed message against the command it was made for. */
 export function parseSealedMessage(
   value: unknown,
@@ -51,6 +60,9 @@ export function parseSealedMessage(
     || (request.refMessageId ?? undefined) !== expected.refMessageId
     || (envelope.postId ?? undefined) !== expected.postId
     || (request.postId ?? undefined) !== expected.postId
+    || !validBinding(envelope.refBinding, expected.refMessageId)
+    || !validBinding(envelope.postBinding, expected.postId)
+    || (envelope.postBinding !== undefined && envelope.refBinding === undefined)
     || (request.mentionedUserIds !== undefined && (
       !Array.isArray(request.mentionedUserIds) || !request.mentionedUserIds.every(isString)
     ))
