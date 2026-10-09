@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { readFile, writeFile, lstat } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
+import { dependencyName } from './third-party-notices.mjs';
 import { artifactDigest, validateManifest } from './update-manifest.mjs';
 
 // This creates reviewable unsigned metadata. The offline signer owns the next step.
@@ -17,7 +18,7 @@ const components = new Map();
 function visit(entries, depth = 0) {
   if (depth > 256) throw new Error('Dependency graph exceeds depth limit');
   for (const [alias, dependency] of Object.entries(entries || {})) {
-    const name = dependency.name || alias;
+    const name = dependencyName(alias, dependency);
     const version = dependency.version;
     if (typeof version !== 'string') throw new Error('Unresolved dependency');
     if (!version.startsWith('link:')) {

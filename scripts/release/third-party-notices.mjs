@@ -49,6 +49,15 @@ export function npmPurl(name, version) {
   return `pkg:npm/${short}@${encodeURIComponent(version)}`;
 }
 
+/**
+ * The package a `pnpm list` entry resolves to. pnpm lists a dependency under
+ * the name it is required by, which for an npm alias (`"x": "npm:y@1"`) is not
+ * the package; `from` names the package itself.
+ */
+export function dependencyName(alias, dependency) {
+  return dependency.from || dependency.name || alias;
+}
+
 function pnpmList(root) {
   return JSON.parse(execFileSync('pnpm', ['-r', 'list', '--prod', '--depth', 'Infinity', '--json'],
     { cwd: root, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }));
@@ -59,7 +68,7 @@ function collectNpmIds(root) {
   const visit = (entries, depth = 0) => {
     if (depth > 256) throw new Error('Dependency graph exceeds depth limit');
     for (const [alias, dependency] of Object.entries(entries || {})) {
-      const name = dependency.name || alias;
+      const name = dependencyName(alias, dependency);
       const version = dependency.version;
       if (typeof version === 'string' && !version.startsWith('link:')) ids.set(`${name}@${version}`, { name, version });
       visit(dependency.dependencies, depth + 1);

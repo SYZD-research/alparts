@@ -4,7 +4,7 @@ import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  normalizeText, licenseExpression, isLicenseFile, mavenLicense, npmPurl,
+  normalizeText, licenseExpression, isLicenseFile, mavenLicense, npmPurl, dependencyName,
   renderNotices, collectAndroidNotices,
 } from './third-party-notices.mjs';
 
@@ -34,6 +34,14 @@ test('mavenLicense returns curated license and rejects unknown groupIds', () => 
   assert.equal(mavenLicense('org.jetbrains.kotlin'), 'Apache-2.0');
   assert.equal(mavenLicense('org.jetbrains'), 'Apache-2.0');
   assert.throws(() => mavenLicense('com.example'), /no curated license/);
+});
+
+test('dependencyName names the package behind an npm alias', () => {
+  // mediasoup-client requires "events-alias": "npm:events@^3.3.0"
+  assert.equal(dependencyName('events-alias', { from: 'events', version: '3.3.0' }), 'events');
+  assert.equal(dependencyName('@types/events-alias', { from: '@types/events', version: '3.0.3' }), '@types/events');
+  assert.equal(dependencyName('zustand', { from: 'zustand', version: '5.0.8' }), 'zustand');
+  assert.equal(dependencyName('legacy', { name: 'legacy', version: '1.0.0' }), 'legacy');
 });
 
 test('npmPurl encodes scoped names like the release SBOM', () => {
