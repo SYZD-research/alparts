@@ -78,7 +78,7 @@ Canonical/current threat model: [`docs/security/THREAT_MODEL.md`](../security/TH
 - Audit checkpointのoperator independenceは別権限mountの場合だけ成立し、external SIEM/WORM/retention alertはない。
 - Backup roundtripはDB rowと最新ciphertext objectの再現だけを検証する。PITR、WORM、off-site、scheduled restore、RTO/RPO、full application DRはない。
 - Single-node/single-DBで、HA、broker、failover、rolling upgrade、cluster migrationはない。
-- P2P DTLS-SRTP音声以外のmedia architecture（SFU/SFrame、映像、画面共有、録音表示、正式なparticipant-change group rekey）はない。Device directory transparencyがないため、malicious serverによるidentity split viewを通話でも形式的に閉じていない。P2P peer/IP metadata露出、TURN credential配布、NAT到達性、mesh scalabilityも残存riskである。
+- 音声はP2P DTLS-SRTPか、operatorが有効にした場合のSFU（各frameを送信端末でSFrame暗号化し、参加・退出ごとに通話keyを替える。ADR 0014）だけで、映像、画面共有、録音表示はない。Device directory transparencyがないため、malicious serverによるidentity split viewを通話でも形式的に閉じていない（SFU通話ではserverが偽のdeviceや自分のdeviceを参加者として加えればframe keyを受け取れる。加えたdeviceは参加者として表示される）。SFU通話のframe keyは対称keyで、serverの協力があれば参加者は他の参加者の音声を装える。P2P peer/IP metadata露出、SFU通話でserverが見る参加者と発言の時刻、TURN credential配布、NAT到達性、mesh scalabilityも残存riskである。
 - Retention/export、Restricted profile、signed update/SLSA、mobile、Bot/Webhook、独立外部security reviewはない。
 - Project codeはAGPL-3.0-onlyで公開している。配布物へのthird-party noticeの同梱は未完了である。
 - Authorized recipientによるcopy/screenshot、受信済みdataの完全消去、serverに対する完全metadata秘匿は提供しない。

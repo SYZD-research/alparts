@@ -101,7 +101,9 @@
 - Socket.IO serverは現在channelを閲覧でき、active deviceへbindingされた参加者だけを最大8人までfresh call-participant IDで登録する。Offer/answer SDPとICE candidateは送信端末のP-256 keyで署名し、channel、送受信participant、sender device、単調sequenceへbindingする。受信clientはdevice directoryのuser-device bindingと署名を検証し、参加中のsenderごとに旧sequence/replayを拒否する。Serverは署名本文を変更せず対象participantへだけ中継し、channel room退出・失権・disconnect時にvoice registryからも除去する。
 - 第三者ICE serviceは既定で設定しない。`VOICE_ICE_SERVERS_JSON=[]` のままではdirect candidateで到達できるnetworkに限られ、Internet/NAT越しの接続性は保証しない。必要なSTUN/TURNはoperatorがセルフホストし、TURN credentialはauthenticated participantへ開示されるものとして短命化する。
 - P2P meshのため送受信帯域とpeer connection数は参加人数に比例し、上限は8人である。正式な同時接続capacity、長時間soak、全browser/mobile network、TURN failover、QoSは検証していない。Peer同士は相手のnetwork addressをICE情報から観測し得て、server/TURN/operatorは参加者、時刻、SDP/ICE、traffic量などのmetadataを観測できる。
-- 専用の常設voice channel type、clientのSFU対応、SFrame、映像、camera切替、画面共有、録音・録画と継続表示、録音Bot、通話group-key ceremonyは未実装である。Serverにはmediasoupを使うSFU（`VOICE_SFU_ENABLED`、既定で無効）があるが、DTLS-SRTPをserver側で終端するため、serverが通話音声を復号できる（`MEDIA-08` を満たさない。形式モデル M8 VE2、RISK_REGISTER R-052）。有効にする前にframe暗号化が必要。Pairwise DTLS keyはpeer connectionごとに新規確立されるが、`MEDIA-08..13` 全体、特にmalicious directory serverに対するkey transparencyと正式なparticipant-change rekeyを完了したとは扱わない。
+- Operatorが `VOICE_SFU_ENABLED=true` にすると、そのdeploymentの全通話はself-hostのmediasoup SFUを経由する（ADR 0014）。SFUはDTLS-SRTPを終端するが、音声frameは送信browserのworkerでSFrame（RFC 9605、`AES_128_GCM_SHA256_128`）により暗号化され、serverが読めるのはheaderとciphertextだけである。Frame keyは参加者ごと・通話ごとの乱数keyで、受信deviceの暗号化keyへwrapし送信deviceのP-256 keyで署名して参加者ごとに送る。誰かが参加・退出するたびに全員が新しいkeyへ替える（`MEDIA-09`）。`RTCRtpScriptTransform` を持たないbrowserはSFU通話へ参加しない。形式モデル M8 VE2・M8k、`formal-model/conformance/voice-sfu-e2e.mts`（実mediasoupとChromium）で確認した。
+- SFU通話でも、偽のdevice directoryを返すserverはframe keyを受け取れる（P2Pの署名SDPやmessageと同じdirectory信頼。M8 VE2-directory）。通話の参加者一覧はserverが決めるため、serverが加えたdeviceはkeyを受け取るが、通話の参加者として表示される（VE2-members）。Frame keyは対称keyなので、serverの協力があれば参加者は他の参加者の音声を装える（VE2-forge。どちらか単独ではできない）。Serverは誰が参加しているかと、packetの時刻と大きさから誰がいつ話しているかを観測できる（VE2-metadata）。SFU通話の上限もP2Pと同じ8人で、同時接続capacityやsoakは検証していない。
+- 専用の常設voice channel type、映像、camera切替、画面共有、録音・録画と継続表示、録音Botは未実装である。P2P通話のpairwise DTLS keyはpeer connectionごとに新規確立されるが、`MEDIA-08..13` 全体、特にmalicious directory serverに対するkey transparencyを完了したとは扱わない。
 
 ### Audit
 
@@ -147,7 +149,7 @@
 | Retention、user/org export、Restricted profile | 延期 |
 | SBOM/SLSA、release signing、signed update/downgrade protection | 延期 |
 | Project license選定、copyright/third-party notice、再配布条件の法務確認 | 延期 |
-| P2P音声以外のmedia（専用voice channel、video/screen sharing、SFrame、self-hosted SFU、recording controls） | 延期 |
+| 音声以外のmedia（専用voice channel、video/screen sharing、recording controls） | 延期。音声のself-hosted SFUとSFrameは実装済み |
 | Bot/Webhook identity、scoped API、external integration | 延期 |
 | 独立外部security review、full accessibility/i18n/performance assurance | 延期 |
 
