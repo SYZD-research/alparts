@@ -11,7 +11,10 @@ import common
 import conformance
 import harness
 import m1_authorization
+import m5v_audit_view
 import m6_profiles
+import m8_voice
+import m9_messages
 import run
 from authz import Channel, Role, Workspace
 
@@ -122,6 +125,37 @@ class EvidenceTests(unittest.TestCase):
     def test_empty_requested_sample_is_rejected(self):
         with self.assertRaises(ValueError):
             conformance.run(cases=0)
+
+    def test_projector_harness_errors_and_gaps_are_not_passes(self):
+        complete = {'histories': 5000, 'results': {p: {'violations': 0, 'example': None} for p in m9_messages.PROPERTIES}}
+        missing = copy.deepcopy(complete)
+        del missing['results']['MI-reply']
+        for output in (harness.HarnessError('missing runtime'), missing, {**complete, 'histories': 3}, None):
+            with self.subTest(output=str(output)[:40]):
+                common.RESULTS.clear()
+                effect = {'side_effect': output} if isinstance(output, Exception) else {'return_value': output}
+                with patch.object(m9_messages, 'run_harness', **effect):
+                    m9_messages.run()
+                self.assert_incomplete()
+
+    def test_unfinished_sfu_exploration_is_not_a_pass(self):
+        for output in (harness.HarnessError('timed out'), {'complete': False, 'states': 100, 'violations': []},
+                       {'complete': True, 'states': 1, 'violations': []}):
+            with self.subTest(output=str(output)[:40]):
+                common.RESULTS.clear()
+                effect = {'side_effect': output} if isinstance(output, Exception) else {'return_value': output}
+                with patch.object(m8_voice, 'run_harness', **effect):
+                    m8_voice.run_m8b()
+                self.assert_incomplete()
+
+    def test_unclassified_audit_action_is_a_model_gap(self):
+        actions = m5v_audit_view.source_actions() | {'channel.something.new'}
+        with patch.object(m5v_audit_view, 'source_actions', return_value=actions), \
+                patch.object(m5v_audit_view, 'run_harness', side_effect=harness.HarnessError('skip')):
+            m5v_audit_view.run()
+        verdicts = {r.check_id: r.verdict for r in common.RESULTS}
+        self.assertEqual(verdicts['AV-catalog'], 'MODEL-GAP')
+        self.assertEqual(verdicts['AV-case'], 'MODEL-GAP')
 
     def test_incomplete_result_sets_runner_exit_failure(self):
         with patch.object(conformance, 'run_harness', side_effect=harness.HarnessError('missing')):

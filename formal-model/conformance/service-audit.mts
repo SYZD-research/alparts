@@ -85,7 +85,7 @@ try {
   const profiles = await import('../../packages/server/src/services/profile.service.ts');
   const roles = await import('../../packages/server/src/services/role.service.ts');
   const audit = await import('../../packages/server/src/middleware/audit.ts');
-  const { sanitizeAvatarPng } = await import('../../packages/server/src/security/profile-input.ts');
+  const { MAX_AVATAR_BYTES, sanitizeAvatarPng } = await import('../../packages/server/src/security/profile-input.ts');
   const storage = await import('../../packages/server/src/services/object-storage.ts');
   cleanupObjects = async () => {
     for (const user of await db.query.users.findMany({ columns: { avatarObjectKey: true } })) {
@@ -211,7 +211,7 @@ try {
     const challenge = deviceService.issueDeviceChallenge(userId, session.id);
     const { device } = await deviceService.registerDevice(userId, session.id, 'Formal device', identityKey, challenge,
       signText(shared.serializeDeviceChallengeProof(userId, challenge)));
-    return { ...device, signText, cookie: `alparts_session=${authentication.token}` };
+    return { ...device, signText, sessionId: session.id, cookie: `alparts_session=${authentication.token}` };
   }
 
   await check('M3c-orphan-proposal', 'Only a group member orders a commit; a device outside the group replaces it only by confirmed fresh start, and only when no usable member is left (M3 KL-orphan, §5.3.4)', async () => {
@@ -546,6 +546,309 @@ try {
   const objectAdmin = {
     removeObject: (bucket: string, key: string) => objectClient.send(new DeleteObjectCommand({ Bucket: bucket, Key: key })),
   };
+  // === 2026-10-09: the defects the re-verification found (M3r, M4s, M5v, M6, M8) ===
+  const ORIGIN = 'http://localhost:5173';
+  const setup = (ok: boolean, message: string) => { if (!ok) throw new Error(`fixture: ${message}`); };
+  /** The real app on a free port, with the runtime lease this process holds. */
+  async function serve(body: (base: string, io: any) => Promise<void>) {
+    if (!closeRuntime) {
+      const runtime = await (await import('../../packages/server/src/security/runtime-lease.ts')).acquireRuntimeLease();
+      closeRuntime = () => runtime.close();
+    }
+    const { httpServer, io } = (await import('../../packages/server/src/app.ts')).createApp();
+    await new Promise<void>(resolve => httpServer.listen(0, '127.0.0.1', resolve));
+    const address = httpServer.address() as import('node:net').AddressInfo;
+    try {
+      await body(`http://127.0.0.1:${address.port}`, io);
+    } finally {
+      io.disconnectSockets(true);
+      httpServer.closeAllConnections();
+      await new Promise<void>(resolve => io.close(() => resolve()));
+    }
+  }
+  async function send(base: string, device: { cookie: string }, method: string, path: string, body?: unknown, stepUp?: string) {
+    const response = await fetch(base + path, {
+      method,
+      headers: { Cookie: device.cookie, Origin: ORIGIN, 'Content-Type': 'application/json', ...(stepUp ? { 'X-Alparts-Step-Up': stepUp } : {}) },
+      body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(10_000),
+    });
+    return { status: response.status, body: await response.json().catch(() => null) as any };
+  }
+  /** Like the app: when the server asks to confirm exactly this request, confirm it and send it again. */
+  async function sendConfirmed(base: string, device: { cookie: string }, password: string, method: string, path: string, body?: unknown) {
+    const first = await send(base, device, method, path, body);
+    if (first.status !== 428 || first.body?.error !== 'STEP_UP_REQUIRED') return first;
+    const purpose = first.body.purpose;
+    const options = await send(base, device, 'POST', '/api/auth/step-up/options', { purpose });
+    setup(options.status === 200, `step-up options ${options.status}`);
+    const verified = await send(base, device, 'POST', '/api/auth/step-up/verify', { id: options.body.id, purpose, password });
+    setup(verified.status === 200, `step-up verify ${verified.status}`);
+    return send(base, device, method, path, body, verified.body.token);
+  }
+  async function withPassword(userId: string) {
+    const { hashPassword } = await import('../../packages/server/src/security/password-work.ts');
+    const password = randomUUID() + randomUUID();
+    await db.update(schema.users).set({ passwordHash: await hashPassword(password, 12) }).where(eq(schema.users.id, userId));
+    return password;
+  }
+
+  await check('M5c-case-uuid', 'A request naming a workspace or member in capital letters is refused, so no change escapes the audit view (M5v AV-case)', async () => {
+    const f = await fixture();
+    const auditLog = await import('../../packages/server/src/services/audit-log.service.ts');
+    const password = await withPassword(f.manager);
+    const manager = await register(f.manager);
+    const flags = async () => (await db.select().from(schema.profileFlags).where(eq(schema.profileFlags.userId, f.subject))).length;
+    const inChain = async () => (await db.select().from(schema.auditLogs).where(eq(schema.auditLogs.action, 'profile.flag')))
+      .filter((row: any) => row.targetId?.toLowerCase() === f.subject).length;
+    const inView = async () => (await auditLog.listWorkspaceAuditLogs(f.workspaceId, f.owner, { limit: 100 })).data
+      .filter((row: any) => row.action === 'profile.flag' && row.targetId === f.subject).length;
+    const letter = [...f.workspaceId].findIndex(c => /[a-f]/.test(c));
+    setup(letter >= 0, 'a workspace id without letters');
+    const encoded = f.workspaceId.slice(0, letter) + '%' + (f.workspaceId.charCodeAt(letter) - 32).toString(16).toUpperCase()
+      + f.workspaceId.slice(letter + 1);
+    await serve(async (base) => {
+      // Before the fix these went through once confirmed and wrote the
+      // workspace id as sent: the owner's audit view (text comparison) missed the row.
+      for (const path of [
+        `/api/workspaces/${f.workspaceId.toUpperCase()}/members/${f.subject}/profile-flag`,
+        `/api/workspaces/${encoded}/members/${f.subject}/profile-flag`,
+        `/api/workspaces/${f.workspaceId}/members/${f.subject.toUpperCase()}/profile-flag`,
+      ]) {
+        const response = await sendConfirmed(base, manager, password, 'PUT', path);
+        assert.equal(response.status, 404, `${path} answered ${response.status} ${JSON.stringify(response.body)}`);
+      }
+      assert.deepEqual([await flags(), await inChain()], [0, 0], 'a request with an id in capital letters changed the warning');
+      const response = await sendConfirmed(base, manager, password, 'PUT', `/api/workspaces/${f.workspaceId}/members/${f.subject}/profile-flag`);
+      assert.equal(response.status, 200, `the canonical request answered ${response.status} ${JSON.stringify(response.body)}`);
+      assert.deepEqual([await flags(), await inChain(), await inView()], [1, 1, 1], 'the warning is missing from the owner\'s audit view');
+    });
+  });
+
+  await check('M5c-member-package-view', 'Who publishes packages in a private channel is shown only to audit viewers who can see the channel (M5v AV-class)', async () => {
+    const f = await fixture();
+    const shared = await import('../../packages/shared/src/index.ts');
+    const groups = await import('../../packages/server/src/services/mls-group.service.ts');
+    const auditLog = await import('../../packages/server/src/services/audit-log.service.ts');
+    const mls = await import('../../packages/client/src/services/mls-crypto.ts');
+    // An audit viewer of the workspace who is not in the private channel.
+    const auditor = randomUUID(), auditRole = randomUUID();
+    await db.insert(schema.users).values({ id: auditor, email: auditor + '@formal.invalid', passwordHash: 'disabled-test-fixture', displayName: 'Auditor' });
+    await db.insert(schema.roles).values({ id: auditRole, workspaceId: f.workspaceId, name: 'Auditor', position: 50, permissions: P.VIEW_CHANNELS | P.VIEW_AUDIT_LOG });
+    const [membership] = await db.insert(schema.workspaceMembers).values({ workspaceId: f.workspaceId, userId: auditor }).returning();
+    await db.insert(schema.memberRoles).values({ memberId: membership.id, roleId: auditRole });
+    await channels.updateChannel(f.channelId, { isPrivate: true }, f.owner);
+    await channels.addChannelMember(f.channelId, f.subject, f.owner);
+    const device = await register(f.subject);
+    const material = await mls.generateMemberPackage(device.id);
+    const packageId = randomUUID();
+    await groups.publishMemberPackage(f.channelId, f.subject, device.id, {
+      packageId, keyPackage: material.publicPackage,
+      signature: device.signText(shared.serializeMlsMemberPackage(f.channelId, { deviceId: device.id, packageId, keyPackage: material.publicPackage })),
+    });
+    const rows = async (viewer: string) => (await auditLog.listWorkspaceAuditLogs(f.workspaceId, viewer, { limit: 100 })).data
+      .filter((row: any) => row.targetId === f.channelId && row.action.startsWith('channel.mls.')).length;
+    setup(await rows(f.owner) === 1, 'the owner does not see the package row');
+    assert.equal(await rows(auditor), 0, 'an audit viewer outside the private channel saw which of its members publish packages');
+    await channels.addChannelMember(f.channelId, auditor, f.owner);
+    assert.equal(await rows(auditor), 1, 'a viewer of the channel does not see its package row');
+  });
+
+  await check('M4c-stale-step-up', 'A confirmation taken before its session was revoked no longer lets that session change the password or sign out the others (M4s AS1, AS2)', async () => {
+    const f = await fixture();
+    const auth = await import('../../packages/server/src/services/auth.service.ts');
+    const passkeys = await import('../../packages/server/src/services/passkey.service.ts');
+    const { actionPurpose } = await import('../../packages/server/src/security/action-purpose.ts');
+    const password = await withPassword(f.subject);
+    const stolen = await register(f.subject);
+    /** The route's two steps: the confirmation is taken (T1), the change made later (T2). */
+    const confirm = async (purpose: string) => {
+      const options = await passkeys.authenticationOptions(purpose, f.subject, stolen.sessionId);
+      const { token } = await passkeys.finishStepUp(f.subject, stolen.sessionId, options.id, purpose, undefined, password);
+      const proof = await passkeys.consumeStepUp(stolen.sessionId, purpose, token);
+      setup(proof !== null, 'the confirmation was not taken');
+      return proof!;
+    };
+    const recheck = (proof: Awaited<ReturnType<typeof confirm>>) =>
+      (transaction: any) => passkeys.assertStepUpStillValid(transaction, proof, f.subject, stolen.sessionId);
+    const hash = async () => (await db.query.users.findFirst({ where: eq(schema.users.id, f.subject) }))!.passwordHash;
+    const alive = async (sessionId: string) => Boolean(await db.query.sessions.findFirst({ where: eq(schema.sessions.id, sessionId) }));
+    // A confirmation that still holds goes through.
+    const extra = await register(f.subject);
+    assert.equal(await auth.revokeSession(f.subject, extra.sessionId, recheck(await confirm(actionPurpose('DELETE', `/api/auth/sessions/${extra.sessionId}`, undefined)))), true);
+    // The session confirms both changes, then the owner revokes it from another session.
+    const own = await register(f.subject);
+    const replacement = randomUUID() + randomUUID();
+    const changeProof = await confirm(actionPurpose('PUT', '/api/auth/password', { newPassword: replacement }));
+    const signOutProof = await confirm(actionPurpose('DELETE', '/api/auth/sessions', undefined));
+    assert.equal(await auth.revokeSession(f.subject, stolen.sessionId, async () => undefined), true);
+    const before = await hash();
+    await assert.rejects(auth.changePassword(f.subject, stolen.sessionId, replacement, recheck(changeProof)), /STEP_UP_STALE/,
+      'a revoked session changed the password with a confirmation taken before the revocation');
+    assert.equal(await hash(), before);
+    await assert.rejects(auth.revokeAllSessions(f.subject, recheck(signOutProof)), /STEP_UP_STALE/,
+      'a revoked session signed out the owner\'s other sessions');
+    assert.equal(await alive(own.sessionId), true);
+    // Without the check inside the transaction (before the fix) the change commits: the window is real.
+    await auth.changePassword(f.subject, stolen.sessionId, randomUUID(), async () => undefined);
+    setup(await hash() !== before, 'the change without the check did not commit');
+  });
+
+  await check('M4c-socket-recheck', 'A socket whose session is revoked while it connects is closed (M4s WS1)', async () => {
+    const f = await fixture();
+    const auth = await import('../../packages/server/src/services/auth.service.ts');
+    const { io: connect } = require('socket.io-client');
+    const device = await register(f.subject);
+    await serve(async (base, io) => {
+      const blocker = new pg.Client({ connectionString: process.env.DATABASE_URL });
+      await blocker.connect();
+      let socket: any;
+      try {
+        // The handshake reads the session, then the device: hold it in between.
+        await blocker.query('begin');
+        await blocker.query('lock table devices in access exclusive mode');
+        socket = connect(base, { transports: ['websocket'], reconnection: false, extraHeaders: { Cookie: device.cookie, Origin: ORIGIN } });
+        const ended = new Promise<string>(resolve => {
+          socket.once('disconnect', (reason: string) => resolve(`disconnect: ${reason}`));
+          socket.once('connect_error', (error: Error) => resolve(`connect_error: ${error.message}`));
+        });
+        const deadline = Date.now() + 10_000;
+        while ((await blocker.query(`select count(*)::int as n from pg_locks where relation = 'devices'::regclass and not granted`)).rows[0].n === 0) {
+          setup(Date.now() < deadline, 'the handshake never reached the device read');
+          await delay(10);
+        }
+        // Revoked as the route does it: the session row, then the sockets in its room (none yet).
+        assert.equal(await auth.revokeSession(f.subject, device.sessionId, async () => undefined), true);
+        io.in(`session:${device.sessionId}`).disconnectSockets(true);
+        await blocker.query('commit');
+        const outcome = await Promise.race([ended, delay(5_000).then(() => 'still connected')]);
+        assert.notEqual(outcome, 'still connected', 'a socket whose session was revoked during its handshake stayed connected');
+        assert.equal((await io.in(`session:${device.sessionId}`).fetchSockets()).length, 0);
+      } finally {
+        socket?.disconnect();
+        await blocker.query('rollback').catch(() => undefined);
+        await blocker.end();
+      }
+    });
+  });
+
+  await check('M4c-step-up-budget', 'A stolen session that uses up its confirmations cannot keep the owner\'s other session from confirming and revoking it', async () => {
+    const f = await fixture();
+    const { actionPurpose } = await import('../../packages/server/src/security/action-purpose.ts');
+    const password = await withPassword(f.subject);
+    const stolen = await register(f.subject);
+    const own = await register(f.subject);
+    // Both are the user's approved devices (fixture: the second one is approved directly).
+    await db.update(schema.devices).set({ approvedAt: new Date() }).where(eq(schema.devices.id, own.id));
+    await serve(async (base) => {
+      // The stolen session guesses the password until it is refused, then floods the requests for a challenge.
+      const purpose = actionPurpose('DELETE', `/api/auth/sessions/${own.sessionId}`, undefined);
+      let guesses = 0, requests = 0;
+      for (; guesses < 11; guesses++) {
+        const options = await send(base, stolen, 'POST', '/api/auth/step-up/options', { purpose });
+        setup(options.status === 200, `the stolen session's challenge ${guesses} answered ${options.status}`);
+        const guess = await send(base, stolen, 'POST', '/api/auth/step-up/verify', { id: options.body.id, purpose, password: `wrong-${guesses}` });
+        if (guess.status === 429) break;
+      }
+      setup(guesses === 10, `the stolen session was refused after ${guesses} wrong passwords`);
+      for (; requests < 240; requests++) {
+        if ((await send(base, stolen, 'POST', '/api/auth/step-up/options', { purpose })).status === 429) break;
+      }
+      setup(requests < 240, 'the stolen session\'s challenge requests were never refused');
+      // The owner confirms from its own session and revokes the stolen one.
+      const path = `/api/auth/sessions/${stolen.sessionId}`;
+      const asked = await send(base, own, 'DELETE', path);
+      setup(asked.status === 428, `the revocation answered ${asked.status} before confirming`);
+      const options = await send(base, own, 'POST', '/api/auth/step-up/options', { purpose: asked.body.purpose });
+      assert.equal(options.status, 200, `the owner could not start a confirmation after the stolen session used up its own (${JSON.stringify(options.body)})`);
+      const verified = await send(base, own, 'POST', '/api/auth/step-up/verify', { id: options.body.id, purpose: asked.body.purpose, password });
+      assert.equal(verified.status, 200, 'the owner\'s correct password was refused after the stolen session\'s wrong guesses');
+      const revoked = await send(base, own, 'DELETE', path, undefined, verified.body.token);
+      assert.equal(revoked.status, 200, JSON.stringify(revoked.body));
+      assert.equal(Boolean(await db.query.sessions.findFirst({ where: eq(schema.sessions.id, stolen.sessionId) })), false);
+    });
+  });
+
+  await check('M3c-identical-retry', 'The same commit sent again gets the replay answer, whichever check finds its version taken (M3r K2)', async () => {
+    const f = await fixture();
+    const shared = await import('../../packages/shared/src/index.ts');
+    const groups = await import('../../packages/server/src/services/mls-group.service.ts');
+    const { directoryHead } = await import('../../packages/server/src/services/directory.service.ts');
+    const mls = await import('../../packages/client/src/services/mls-crypto.ts');
+    const device = await register(f.owner);
+    // Statements outside transactions go through the pool; a transaction has a client of its own.
+    const pool = (db as any).$client;
+    const query = pool.query;
+    try {
+      for (const [window, table] of [['after its replay check', 'mls_epochs'], ['after its unlocked checks', 'mls_member_packages']]) {
+        const channelId = randomUUID();
+        await db.insert(schema.channels).values({ id: channelId, workspaceId: f.workspaceId, name: 'retry', type: 'text', isPrivate: false });
+        const material = await mls.generateMemberPackage(device.id);
+        const packageId = randomUUID();
+        const published = {
+          packageId, keyPackage: material.publicPackage,
+          signature: device.signText(shared.serializeMlsMemberPackage(channelId, { deviceId: device.id, packageId, keyPackage: material.publicPackage })),
+        };
+        await groups.publishMemberPackage(channelId, f.owner, device.id, published);
+        const entry = { deviceId: device.id, userId: f.owner, identityKey: device.identityKey, ...published };
+        const groupId = shared.mlsGroupId(channelId, 1);
+        const genesis = await mls.createChannelGroup(groupId, material, [], new Map([[device.id, mls.readMemberPackage(entry.keyPackage).signatureKey]]));
+        const raw = await mls.exportChannelKey(genesis.newState, groupId, 1);
+        const unsigned = {
+          channelId, version: 1, previousVersion: 0, previousTranscript: '0'.repeat(64), groupId, epoch: 1, kind: 'create' as const,
+          added: [entry], removed: [], members: [{ deviceId: device.id, userId: f.owner, leafIndex: 0 }],
+          keyCommitment: createHash('sha256').update(raw).digest('base64url'), commit: genesis.commit, welcome: genesis.welcome,
+          directoryHeads: [await directoryHead(db, f.owner)], committerDeviceId: device.id,
+        };
+        const commit = { ...unsigned, signature: device.signText(shared.serializeMlsGroupCommit(unsigned)) };
+        // The resend (its first answer was lost) is held after one read until the first send is accepted.
+        let armed = true, held!: () => void, release!: () => void;
+        const reached = new Promise<void>(resolve => { held = resolve; });
+        const released = new Promise<void>(resolve => { release = resolve; });
+        pool.query = async function(this: unknown, config: any, values?: unknown[]) {
+          const result = await query.call(this, config, values);
+          const text = typeof config === 'string' ? config : config?.text ?? '';
+          if (armed && text.includes(`from "${table}"`) && (values ?? []).includes(channelId)) {
+            armed = false;
+            held();
+            await released;
+          }
+          return result;
+        };
+        const resend = groups.admitGroupCommit(f.owner, device.id, commit, null).then(result => result, (error: Error) => error);
+        await Promise.race([reached, delay(10_000).then(() => setup(false, `the resend never read ${table}`))]);
+        const first = await groups.admitGroupCommit(f.owner, device.id, commit, null);
+        release();
+        const second = await resend;
+        pool.query = query;
+        setup(first.replay === false, `${window}: the first send was not accepted`);
+        assert.ok(!(second instanceof Error), `${window}: the resend of the accepted bytes was refused (${second instanceof Error ? second.message : ''})`);
+        assert.equal((second as { replay: boolean }).replay, true, `${window}: the resend was accepted a second time`);
+      }
+    } finally { pool.query = query; }
+  });
+
+  await check('M6c-avatar-read-failure', 'An upload compared with a current picture that cannot be read does not count as a change; a missing one does (M6 A3)', async () => {
+    for (const fault of ['unreadable', 'missing'] as const) {
+      const f = await fixture();
+      await profiles.setAvatar(f.subject, samePixelsPng(0));
+      const user = await db.query.users.findFirst({ where: eq(schema.users.id, f.subject) });
+      await profiles.flagProfile(f.workspaceId, f.owner, f.subject);
+      // A read that fails takes the same branch as an object the store
+      // answers with but that is not a picture of an allowed size.
+      if (fault === 'unreadable') await storage.putStoredObject(user!.avatarObjectKey!, Buffer.alloc(MAX_AVATAR_BYTES + 1));
+      else await objectAdmin.removeObject(config.s3.bucket, user!.avatarObjectKey!);
+      await delay(5);
+      const upload = await profiles.setAvatar(f.subject, samePixelsPng(0)).then(() => 'saved', () => 'refused');
+      if (fault === 'unreadable') {
+        await assert.rejects(profiles.requestProfileAppeal(f.workspaceId, f.subject), /PROFILE_APPEAL_NEEDS_CHANGE/,
+          `a current picture that could not be read counted as a change after the warning (upload ${upload})`);
+      } else {
+        assert.equal(upload, 'saved', 'an upload replacing a missing picture was refused');
+        await profiles.requestProfileAppeal(f.workspaceId, f.subject);
+      }
+    }
+  });
+
   await check('M5c-concurrent-checks', 'Concurrent readiness/full verification and appends never report a false rollback', async () => {
     for (let batch = 0; batch < 3; batch++) {
       await Promise.all(Array.from({ length: 4 }, async (_, i) => {

@@ -1,0 +1,242 @@
+// M9: runs the real client message projector (packages/client/src/stores/
+// message-projector.ts) on every history a malicious server can build from a
+// fixed set of genuine signed events, within the bounds below, and checks what
+// the client would show against what the authors signed.
+//
+// The server cannot forge a signature or an AEAD tag (EUF-CMA, INT-CTXT), so
+// it only serves genuine envelopes. It chooses which events to serve, their
+// server ids (permuted among the served events, or a fresh id for a second
+// copy), their createdAt, and in two deliveries (a page, then a later page or
+// socket event that repeats some events). The client's verification step is
+// modeled as passing for every genuine envelope, which is what decryptMessages
+// does for them (signature, directory binding, AEAD with the loaded channel's
+// key).
+//
+// The display rules are the client's: the projected message under an id
+// (MessageItem quotes, ForumPostView root by id), replies of a post by postId
+// (ForumPostView), files by attachment-crypto's v3 binding (message id and the
+// message's signed idempotency key) or the legacy v2 binding (message id).
+//
+// Input (stdin): { scenario: 'forum' | 'text', maxSecondDelivery: number }
+// Output: { histories, results: { [property]: { violations, example } } }
+import { readFileSync } from 'node:fs';
+
+const projector = await import('../../packages/client/src/stores/message-projector.ts');
+const { serializeMessageEnvelope } = await import('../../packages/shared/src/security/index.ts');
+
+type Message = Parameters<typeof projector.mergeMessageEvents>[0][number];
+
+interface Genuine {
+  name: string;
+  type: 'message' | 'edit' | 'delete';
+  authorId: string;
+  key: string;
+  refName: string | null;      // genuine target (edit, delete, quote)
+  postName: string | null;     // forum: genuine post (null for a root)
+  content: string;
+  fileBinding?: 'v3' | 'v2';   // an attachment signed with this message
+}
+
+const input = JSON.parse(readFileSync(0, 'utf8')) as { scenario: 'forum' | 'text'; maxSecondDelivery: number };
+const CHANNEL = '00000000-0000-4000-8000-0000000000c1';
+const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
+
+// Genuine events as written through an honest server. Ids are the honest ids.
+const genuine: Genuine[] = input.scenario === 'forum'
+  ? [
+    { name: 'P1', type: 'message', authorId: 'A', key: 'k-p1', refName: null, postName: null, content: 'post 1: vote yes' },
+    { name: 'P2', type: 'message', authorId: 'A', key: 'k-p2', refName: null, postName: null, content: 'post 2: vote no' },
+    { name: 'X1', type: 'message', authorId: 'B', key: 'k-x1', refName: null, postName: 'P1', content: 'reply to post 1: agreed' },
+    { name: 'E1', type: 'edit', authorId: 'A', key: 'k-e1', refName: 'P1', postName: 'P1', content: 'post 1 (edited): vote yes!' },
+  ]
+  : [
+    { name: 'M1', type: 'message', authorId: 'A', key: 'k-m1', refName: null, postName: null, content: 'meet at 10', fileBinding: 'v3' },
+    { name: 'M2', type: 'message', authorId: 'A', key: 'k-m2', refName: null, postName: null, content: 'cancelled', fileBinding: 'v2' },
+    { name: 'Q3', type: 'message', authorId: 'B', key: 'k-q3', refName: 'M1', postName: null, content: 'ok, see you' },
+    { name: 'E1', type: 'edit', authorId: 'A', key: 'k-e1', refName: 'M1', postName: null, content: 'meet at 11' },
+  ];
+const honestId = new Map(genuine.map((g, i) => [g.name, id(i + 1)]));
+const byName = new Map(genuine.map((g) => [g.name, g]));
+
+function envelopeOf(g: Genuine) {
+  return {
+    type: g.type,
+    channelId: CHANNEL,
+    authorId: g.authorId,
+    deviceId: `device-${g.authorId}`,
+    keyVersion: 1,
+    idempotencyKey: g.key,
+    refMessageId: g.refName ? honestId.get(g.refName)! : null,
+    broadcastMention: false,
+    encryptedContent: `ct(${g.name})`,
+    contentNonce: `n(${g.name})`,
+    ...(input.scenario === 'forum' ? { postId: g.postName ? honestId.get(g.postName)! : null } : {}),
+  };
+}
+// The genuine signature is a function of the signed bytes only.
+const signature = (g: Genuine) => `sig(${serializeMessageEnvelope(envelopeOf(g) as never)})`;
+
+function served(g: Genuine, serverId: string, time: number): Message {
+  const envelope = envelopeOf(g);
+  const event = {
+    id: serverId,
+    channelId: envelope.channelId,
+    authorId: g.authorId,
+    author: { id: g.authorId, displayName: g.authorId },
+    deviceId: envelope.deviceId,
+    content: g.type === 'delete' ? '' : g.content,
+    encryptedContent: envelope.encryptedContent,
+    contentNonce: envelope.contentNonce,
+    keyVersion: 1,
+    signature: signature(g),
+    broadcastMention: false,
+    type: g.type,
+    refMessageId: envelope.refMessageId,
+    ...(input.scenario === 'forum' ? { postId: envelope.postId } : {}),
+    reactions: [],
+    isPinned: false,
+    idempotencyKey: g.key,
+    createdAt: new Date(Date.UTC(2026, 9, 1, 0, 0, time)).toISOString(),
+  } as unknown as Message;
+  return projector.markMessageCryptoVerification(event, true);
+}
+
+function permutations<T>(items: T[]): T[][] {
+  if (items.length <= 1) return [items];
+  return items.flatMap((item, i) => permutations([...items.slice(0, i), ...items.slice(i + 1)]).map((rest) => [item, ...rest]));
+}
+function subsets<T>(items: T[]): T[][] {
+  return items.reduce<T[][]>((out, item) => out.concat(out.map((s) => [...s, item])), [[]]);
+}
+
+const results: Record<string, { violations: number; example: string[] | null }> = {};
+const note = (property: string, trace: string[]) => {
+  const entry = results[property] ??= { violations: 0, example: null };
+  entry.violations++;
+  if (!entry.example || trace.length < entry.example.length) entry.example = trace;
+};
+for (const property of ['MI-replay', 'MI-redate', 'MI-edit', 'MI-reply', 'MI-quote', 'MI-file-v3', 'MI-file-v2', 'MI-latest']) {
+  results[property] = { violations: 0, example: null };
+}
+
+let histories = 0;
+const names = genuine.map((g) => g.name);
+for (const chosen of subsets(names)) {
+  if (chosen.length === 0) continue;
+  for (const ids of permutations(chosen.map((n) => honestId.get(n)!))) {
+    for (const order of permutations(chosen)) {
+      // Optional second delivery: repeat up to N events under the same id with a later time
+      // (re-dating), or under a fresh id (replay as a new event).
+      const repeats: Array<Array<{ name: string; fresh: boolean }>> = [[]];
+      if (input.maxSecondDelivery > 0) {
+        for (const name of chosen) {
+          repeats.push([{ name, fresh: false }], [{ name, fresh: true }]);
+        }
+      }
+      for (const repeat of repeats) {
+        histories++;
+        const idOf = new Map(chosen.map((n, i) => [n, ids[i]]));
+        const timeOf = new Map(order.map((n, i) => [n, i + 1]));
+        const first = chosen.map((n) => served(byName.get(n)!, idOf.get(n)!, timeOf.get(n)!));
+        const second = repeat.map(({ name, fresh }) => served(byName.get(name)!, fresh ? id(90) : idOf.get(name)!, 50));
+        const trace = [
+          ...chosen.map((n) => `serve ${n} (honest id ${honestId.get(n)!.slice(-2)}) as id ${idOf.get(n)!.slice(-2)} at t${timeOf.get(n)}`),
+          ...repeat.map(({ name, fresh }) => `serve ${name} again as ${fresh ? 'a new id 90' : 'the same id'} at t50`),
+        ];
+        const merged = projector.mergeMessageEvents(first, second);
+        const shown = projector.projectOrderedMessageEvents(merged);
+        check(shown, merged, idOf, trace, repeat.length > 0);
+        // MI-redate: delivering an event the client already holds again, under
+        // the same id, changes nothing the client shows.
+        if (repeat.length && repeat.every(({ fresh }) => !fresh)) {
+          const before = projector.projectOrderedMessageEvents(projector.mergeMessageEvents(first));
+          const view = (list: typeof shown) => JSON.stringify(list.map((m) => [m.id, m.type, m.content]));
+          if (view(before) !== view(shown)) {
+            note('MI-redate', [...trace, `=> shown before: ${view(before)}`, `=> shown after: ${view(shown)}`]);
+          }
+        }
+      }
+    }
+  }
+}
+
+function genuineOf(message: { signature: string | null; idempotencyKey: string; authorId: string }): Genuine | undefined {
+  return genuine.find((g) => g.authorId === message.authorId && g.key === message.idempotencyKey && signature(g) === message.signature);
+}
+
+function check(shown: ReturnType<typeof projector.projectOrderedMessageEvents>, merged: Message[], idOf: Map<string, string>,
+  trace: string[], second: boolean) {
+  const visible = shown.filter((m) => m.type !== 'delete' && m.content !== '');
+  // MI-replay: one signed operation (channel, author, key) is shown at most once.
+  const counts = new Map<string, number>();
+  for (const m of visible) {
+    const g = genuineOf(m);
+    if (g) counts.set(g.name, (counts.get(g.name) ?? 0) + 1);
+  }
+  for (const [name, count] of counts) if (count > 1) note('MI-replay', [...trace, `=> ${name} is shown ${count} times`]);
+  // MI-edit: edited content is shown on the message the edit was signed for.
+  for (const m of visible) {
+    if (m.type !== 'edit') continue;
+    const edit = genuineOf(m);
+    const base = merged.find((e) => e.id === m.id && e.type === 'message');
+    const baseGenuine = base && genuineOf(base);
+    if (edit && baseGenuine && edit.refName !== baseGenuine.name) {
+      note('MI-edit', [...trace, `=> ${edit.name} ("${edit.content}") is shown on ${baseGenuine.name} ("${baseGenuine.content}")`]);
+    }
+  }
+  // MI-reply (forum): replies are shown under the post they were signed for.
+  if (input.scenario === 'forum') {
+    for (const root of shown.filter((m) => !m.postId && m.type !== 'delete')) {
+      const rootBase = merged.find((e) => e.id === root.id && e.type === 'message');
+      const rootGenuine = rootBase && genuineOf(rootBase);
+      if (!rootGenuine) continue;
+      for (const reply of shown.filter((m) => m.postId === root.id && m.content !== '')) {
+        const replyBase = merged.find((e) => e.id === reply.id && e.type === 'message');
+        const replyGenuine = replyBase && genuineOf(replyBase);
+        if (replyGenuine && replyGenuine.postName !== rootGenuine.name) {
+          note('MI-reply', [...trace, `=> reply ${replyGenuine.name} (signed for ${replyGenuine.postName}) is shown under ${rootGenuine.name} ("${rootGenuine.content}")`]);
+        }
+      }
+    }
+  }
+  // MI-quote: a quote shows the message it was signed for.
+  for (const m of visible) {
+    if (m.type !== 'message' || !m.refMessageId) continue;
+    const quoting = genuineOf(m);
+    const target = shown.find((x) => x.id === m.refMessageId);
+    const targetBase = target && merged.find((e) => e.id === target.id && e.type === 'message');
+    const targetGenuine = targetBase && genuineOf(targetBase);
+    if (quoting && targetGenuine && quoting.refName !== targetGenuine.name) {
+      note('MI-quote', [...trace, `=> ${quoting.name} quotes ${quoting.refName} but is shown quoting ${targetGenuine.name} ("${targetGenuine.content}")`]);
+    }
+  }
+  // MI-file: an attachment opens only on the message it was signed with.
+  for (const owner of genuine.filter((g) => g.fileBinding)) {
+    const fileMessageId = honestId.get(owner.name)!;   // the manifest signs the honest id
+    for (const m of shown.filter((x) => x.id === fileMessageId && x.type !== 'delete')) {
+      // attachment-crypto uses the original (unedited) event under that id.
+      const base = merged.find((e) => e.id === m.id && e.type === 'message');
+      const baseGenuine = base && genuineOf(base);
+      if (!baseGenuine || baseGenuine.name === owner.name) continue;
+      const opens = owner.fileBinding === 'v2' || base!.idempotencyKey === owner.key;
+      if (opens) note(owner.fileBinding === 'v3' ? 'MI-file-v3' : 'MI-file-v2',
+        [...trace, `=> the file signed with ${owner.name} opens on ${baseGenuine.name} ("${baseGenuine.content}")`]);
+    }
+  }
+  // MI-latest (documented limit): with every genuine event served once under
+  // its honest id, a message shows its latest edit (the server picks the order).
+  if (!second && idOf.size === genuine.length) {
+    for (const g of genuine.filter((x) => x.type === 'message')) {
+      const edits = genuine.filter((x) => x.type === 'edit' && x.refName === g.name);
+      if (!edits.length || ![g, ...edits].every((x) => idOf.has(x.name))) continue;
+      const allHonestIds = [...idOf.entries()].every(([n, v]) => v === honestId.get(n));
+      if (!allHonestIds) continue;
+      const m = shown.find((x) => x.id === honestId.get(g.name));
+      if (m && m.content !== edits.at(-1)!.content && m.content !== '') {
+        note('MI-latest', [...trace, `=> ${g.name} shows "${m.content}", not its latest edit`]);
+      }
+    }
+  }
+}
+
+process.stdout.write(JSON.stringify({ histories, results }));
