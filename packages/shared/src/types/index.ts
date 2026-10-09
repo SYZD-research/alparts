@@ -369,8 +369,6 @@ export interface AuditLog {
   targetType: string | null;
   targetId: string | null;
   details: Record<string, unknown> | null;
-  prevHash: string | null;
-  hash: string;
   createdAt: string;
 }
 

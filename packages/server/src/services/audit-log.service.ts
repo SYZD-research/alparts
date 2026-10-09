@@ -114,6 +114,9 @@ export async function getAuditIntegrity(workspaceId: string, actorId: string) {
   return integrity;
 }
 
+// The chain hashes are not returned. A viewer cannot check them (the chain
+// is keyed), and since the chain is global they would show that rows the
+// viewer may not see were written in between, and when (formal model M5v).
 function formatAuditLog(row: typeof auditLogs.$inferSelect) {
   return {
     id: row.id,
@@ -122,8 +125,6 @@ function formatAuditLog(row: typeof auditLogs.$inferSelect) {
     targetType: row.targetType,
     targetId: row.targetId,
     details: row.details,
-    prevHash: row.prevHash,
-    hash: row.hash,
     createdAt: row.createdAt.toISOString(),
   };
 }

@@ -653,6 +653,16 @@ try {
     assert.equal(await rows(auditor), 1, 'a viewer of the channel does not see its package row');
   });
 
+  await check('M5c-view-chain-fields', 'The audit view returns no chain hashes that would show rows written in between (M5v AV-links)', async () => {
+    const f = await fixture();
+    const auditLog = await import('../../packages/server/src/services/audit-log.service.ts');
+    await channels.updateChannel(f.channelId, { name: 'renamed' }, f.owner);
+    const rows = (await auditLog.listWorkspaceAuditLogs(f.workspaceId, f.owner, { limit: 100 })).data as Array<Record<string, unknown>>;
+    setup(rows.length > 0, 'the view is empty');
+    assert.deepEqual(rows.filter(row => 'prevHash' in row || 'hash' in row).map(row => row.action), [],
+      'the view returns the chain hashes of its rows');
+  });
+
   await check('M4c-stale-step-up', 'A confirmation taken before its session was revoked no longer lets that session change the password or sign out the others (M4s AS1, AS2)', async () => {
     const f = await fixture();
     const auth = await import('../../packages/server/src/services/auth.service.ts');

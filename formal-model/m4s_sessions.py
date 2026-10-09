@@ -8,9 +8,11 @@ Written from the implementation at commit ce09b19:
                      revokeSession(s): one audited transaction, run after the
                      route's own work (new-password KDF, audit queue).
   operator reset     scripts/reset-password.ts -> account-state.service.ts:
-                     new password, password login on, every session deleted,
-                     passkeys and devices kept. Exclusive DRAIN lock: it runs
-                     between audited transactions, never inside one.
+                     new password, password login on, every session and
+                     every passkey deleted (since 2026-10-09; devices are
+                     kept: revoking one needs a device-signed entry).
+                     Exclusive DRAIN lock: it runs between audited
+                     transactions, never inside one.
   socket handshake   websocket/index.ts: io.use reads the session, then the
                      connection handler joins `session:<id>`; revocation
                      deletes the row, then disconnects that room.
@@ -53,6 +55,7 @@ class V:
     t2_session_check: bool = True      # CONTROL: False commits T2 without rechecking (before 2026-10-09)
     socket_recheck: bool = True        # CONTROL: False skips the recheck after the room join (before 2026-10-09)
     budget_per_session: bool = True    # CONTROL: False counts confirmations per account (before 2026-10-09)
+    reset_removes_passkeys: bool = True  # CONTROL: False keeps every passkey on reset (before 2026-10-09)
     attacker_passkey: bool = False     # the attacker registered a passkey beforehand
     max_started: int = 4
     reset: bool = True
@@ -135,8 +138,10 @@ def successors(s: St, v: V):
             out.append((f'{owner}: T2 commits revocation of {arg}', _disconnect(t, {arg})))
     # Operator reset (between audited transactions).
     if v.reset and 'reset' not in s.events:
-        t = s._replace(password='pO', known=frozenset({'U'}), sessions=frozenset(), events=s.events | {'reset'})
-        out.append(('operator: reset-password (new password to U, every session ends)',
+        t = s._replace(password='pO', known=frozenset({'U'}), sessions=frozenset(), events=s.events | {'reset'},
+                       passkeys=frozenset() if v.reset_removes_passkeys else s.passkeys)
+        out.append(('operator: reset-password (new password to U, every session ends'
+                    + (', every passkey removed)' if v.reset_removes_passkeys else ')'),
                     _disconnect(t, {sid for sid, _ in s.sessions})))
     # Socket handshake steps.
     for i, sock in enumerate(s.sockets):
@@ -210,7 +215,8 @@ def run() -> None:
     print('== M4s: credentials, sessions and sockets under concurrent requests ==')
     results = {}
     for name, v in (('implementation', V()), ('attacker passkey', V(attacker_passkey=True)),
-                    ('before the fix', V(t2_session_check=False, socket_recheck=False, budget_per_session=False))):
+                    ('before the fix', V(t2_session_check=False, socket_recheck=False, budget_per_session=False)),
+                    ('attacker passkey, before the fix', V(attacker_passkey=True, reset_removes_passkeys=False))):
         results[name] = bfs(v)
         print(f'  M4s {name}: {len(results[name][0]):,} states')
 
@@ -230,9 +236,12 @@ def run() -> None:
           'HOLDS', 'WS1', 'implementation')
     check('AS4', 'a session that uses up its confirmations (wrong passwords, challenge requests) never keeps U\'s own '
                  'session from confirming, for example to revoke it', 'HOLDS', 'AS4', 'implementation')
-    check('AS3-pk', 'a passkey X registered before the reset still signs X in afterwards (the reset keeps passkeys '
-                    'and devices)', 'LIMIT', 'AS3-pk', 'attacker passkey',
-          'reset-password resets the password and ends sessions; revoke X\'s devices and passkeys as well')
+    for prop in ('AS3', 'AS3-pk'):
+        check(prop if prop == 'AS3-pk' else 'AS3-pk-sessions',
+              'after an operator reset, X never signs in again, even with a passkey it registered before (the reset '
+              'removes passkeys)' if prop == 'AS3-pk' else
+              'with a passkey of X registered before, X still never knows the password or holds a session after '
+              'the reset', 'HOLDS', prop, 'attacker passkey')
     check('AS1-ctl', 'before the fix: a change confirmed before its session ended still committed', 'CONTROL',
           'AS1', 'before the fix')
     check('AS2-ctl', 'before the fix: X\'s change confirmed before U\'s change committed after it and ended U\'s '
@@ -243,6 +252,8 @@ def run() -> None:
           'CONTROL', 'WS1', 'before the fix')
     check('AS4-ctl', 'before the fix: the budgets were counted per account, so X\'s stolen session kept U from '
                      'confirming and from revoking it', 'CONTROL', 'AS4', 'before the fix')
+    check('AS3-pk-ctl', 'before the fix: the reset kept every passkey, and the one X registered signed X in again',
+          'CONTROL', 'AS3-pk', 'attacker passkey, before the fix')
 
 
 if __name__ == '__main__':

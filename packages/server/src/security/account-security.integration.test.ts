@@ -1997,10 +1997,12 @@ process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
     const refused = await request('/api/auth/login', { email: user.email, password: newPassword }, '');
     assert.equal(refused.status, 401, 'the right password no longer signs in');
 
-    // An operator reset sets a new password, turns password login back on and ends every login.
+    // An operator reset sets a new password, turns password login back on,
+    // removes every passkey (one could be an attacker's) and ends every login.
     assert.notEqual((await reset('too-short')).code, 0);
     const restored = await reset(password);
     assert.equal(restored.code, 0, restored.stderr);
+    assert.equal(await db.query.passkeys.findFirst({ where: (p, { eq }) => eq(p.userId, userId) }), undefined);
     assert.equal((await request('/api/auth/me')).status, 401);
     cookie = await login(password);
     assert.deepEqual(await json(await request('/api/auth/password-login')), { enabled: true });

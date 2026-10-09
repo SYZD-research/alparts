@@ -22,7 +22,11 @@ every audit viewer"), and checks:
               would store them as given and so leave the text-compared scope
               (the real canonical-id checks, on generated paths)
 
-and records two properties of the design as LIMITs.
+  AV-links    the view returns no chain hashes, which would show that rows the
+              viewer may not see were written in between (the fields the
+              implementation's formatter returns)
+
+and records one property of the design as a LIMIT.
 """
 from __future__ import annotations
 
@@ -110,6 +114,34 @@ def implementation_patterns() -> tuple[list[str], list[str]]:
     return patterns('CHANNEL_ACTIVITY_ACTIONS'), patterns('PERSONAL_ACTIONS')
 
 
+CHAIN_FIELDS = ('prevHash', 'hash')
+# formatAuditLog at ce09b19, before the 2026-10-09 fix (the control's input).
+FORMATTER_BEFORE_FIX = """
+function formatAuditLog(row: typeof auditLogs.$inferSelect) {
+  return {
+    id: row.id,
+    actorId: row.actorId,
+    action: row.action,
+    targetType: row.targetType,
+    targetId: row.targetId,
+    details: row.details,
+    prevHash: row.prevHash,
+    hash: row.hash,
+    createdAt: row.createdAt.toISOString(),
+  };
+}
+"""
+
+
+def view_fields(text: str | None = None) -> list[str]:
+    """The fields formatAuditLog returns for each row of the view."""
+    text = AUDIT_LOG_SERVICE.read_text() if text is None else text
+    match = re.search(r'function formatAuditLog\([^)]*\) \{\s*return \{(.*?)\};\s*\}', text, re.S)
+    if not match:
+        raise HarnessError('formatAuditLog not found in audit-log.service.ts')
+    return re.findall(r'^\s*(\w+):', match.group(1), re.M)
+
+
 def like(value: str, pattern: str) -> bool:
     return re.fullmatch(re.escape(pattern).replace('%', '.*').replace('_', '.'), value) is not None
 
@@ -183,9 +215,19 @@ def run() -> None:
                                  'refused (400 generated paths, percent-encoded too)', 'HOLDS', bool(mismatched),
                witness=mismatched[:12])
 
-    record('M5v', 'AV-L-links', 'a viewer can tell that hidden rows exist between two rows it sees, and when '
-                                '(rows carry the chain hashes; the chain is global)', 'LIMIT', True,
-           'returned rows include prevHash and hash: b.prevHash != a.hash means rows were appended in between')
+    try:
+        fields = view_fields()
+    except HarnessError as error:
+        record('M5v', 'AV-links', 'the view returns no chain hashes', 'HOLDS', False, str(error), incomplete=True)
+    else:
+        leaked = [f for f in fields if f in CHAIN_FIELDS]
+        record('M5v', 'AV-links', 'a viewer cannot tell from the view that rows it may not see were written between '
+                                  'two rows it sees (no chain hashes in the view)', 'HOLDS', bool(leaked),
+               f'formatAuditLog returns {", ".join(leaked)}: b.prevHash != a.hash means rows were appended in between'
+               if leaked else '')
+        before = [f for f in view_fields(FORMATTER_BEFORE_FIX) if f in CHAIN_FIELDS]
+        record('M5v', 'AV-links-ctl', 'before the fix: the view returned prevHash and hash', 'CONTROL', bool(before),
+               witness=[f'formatAuditLog returned {", ".join(before)}'] if before else [])
     record('M5v', 'AV-L-now', 'channel activity follows the viewer\'s current access, so gaining access to a '
                               'channel shows its earlier rows and losing it hides them', 'LIMIT', True,
            'visibleChannelIds() evaluates the current authorization snapshot for every historical row')
