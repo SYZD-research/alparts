@@ -10,9 +10,11 @@ export interface VoiceWebRtcServerConfig {
 export class VoiceWebRtcServerManager {
 	private readonly servers = new Map<types.Worker, types.WebRtcServer>();
 	private readonly pending = new Map<types.Worker, Promise<types.WebRtcServer>>();
+	/** The port of each worker: basePort plus its slot, kept when an attempt fails (the port may be busy for a moment). */
+	private readonly ports = new Map<types.Worker, number>();
 	private readonly bindAddress: string;
 	private readonly announcedAddress: string;
-	private nextPort: number;
+	private readonly basePort: number;
 	private closed = false;
 
 	constructor(config: VoiceWebRtcServerConfig) {
@@ -25,7 +27,7 @@ export class VoiceWebRtcServerManager {
 
 		this.bindAddress = config.bindAddress;
 		this.announcedAddress = config.announcedAddress;
-		this.nextPort = config.basePort;
+		this.basePort = config.basePort;
 	}
 
 	async getOrCreate(worker: types.Worker): Promise<types.WebRtcServer> {
@@ -55,11 +57,31 @@ export class VoiceWebRtcServerManager {
 		}
 	}
 
-	private async createServer(worker: types.Worker): Promise<types.WebRtcServer> {
-		if (this.nextPort > 65535) {
+	/** The lowest port from basePort that no other open worker listens on, once per worker. */
+	private portOf(worker: types.Worker): number {
+		const assigned = this.ports.get(worker);
+		if (assigned !== undefined) {
+			return assigned;
+		}
+		for (const [other] of this.ports) {
+			if (other.closed) {
+				this.ports.delete(other);
+			}
+		}
+		const taken = new Set(this.ports.values());
+		let port = this.basePort;
+		while (taken.has(port)) {
+			port += 1;
+		}
+		if (port > 65535) {
 			throw new Error('VOICE_WEBRTC_PORT_EXHAUSTED');
 		}
-		const port = this.nextPort++;
+		this.ports.set(worker, port);
+		return port;
+	}
+
+	private async createServer(worker: types.Worker): Promise<types.WebRtcServer> {
+		const port = this.portOf(worker);
 		const listenInfos: types.TransportListenInfo[] = [
 			{
 				protocol: 'udp',
