@@ -447,8 +447,8 @@ describe('v5 references (formal model M9)', () => {
     // what the envelope applies to.
     expect(signedReferenceOf(state, 'channel-1', 'id-1')).toEqual({ authorId: author.id, idempotencyKey: 'k-m1' });
     expect(signedReferenceOf(state, 'channel-1', 'id-2')).toEqual({ authorId: author.id, idempotencyKey: 'k-m2' });
-    // Sent before idempotency keys were signed: named by id only.
-    expect(signedReferenceOf(state, 'channel-1', 'id-3')).toBeNull();
+    // Stored without a signed idempotency key: it cannot be named, so it is not edited, deleted, quoted or replied to.
+    expect(() => signedReferenceOf(state, 'channel-1', 'id-3')).toThrow(/編集・削除・引用・返信できません/);
     expect(() => signedReferenceOf(state, 'channel-1', 'id-4')).toThrow();
   });
 

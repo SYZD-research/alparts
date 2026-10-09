@@ -14,7 +14,7 @@
 | [0010](./0010-schema-image-coupling.md) | Exact migration journal plus bounded PostgreSQL 16 catalog fingerprint | Accepted for Phase 1 |
 | [0011](./0011-account-group-security.md) | Approved devices, transparency, MLS-based epochs, passkeys and user-controlled recovery | Implemented; assurance pending; group protocol superseded by 0012 |
 | [0012](./0012-continuous-mls-groups.md) | One continuing MLS group per channel; server-ordered commits active on acceptance, replacing the all-recipient barrier | Implemented; assurance pending |
-| [0013](./0013-signed-message-references.md) | Edits, deletions, quotes and forum replies name the referenced message by its author and signed idempotency key (message protocol v5) | Implemented; assurance pending |
+| [0013](./0013-signed-message-references.md) | Edits, deletions, quotes and forum replies name the referenced message by its author and signed idempotency key (message protocol v5, the only layout accepted for them) | Implemented; assurance pending |
 | [0014](./0014-sfu-frame-encryption.md) | SFU calls encrypt every audio frame (SFrame) under per-call sender keys, wrapped and signed per device and replaced on every join and leave | Implemented; assurance pending |
 
 ADRs describe deliberate decisions, including their limits. They do not override current code, tests, risk register, or deployment acceptance evidence.

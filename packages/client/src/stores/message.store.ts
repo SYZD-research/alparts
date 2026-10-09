@@ -38,6 +38,7 @@ import {
   type ProjectedMessage,
 } from './message-projector';
 import { useChannelStore } from './channel.store';
+import { signedEnvelopeCandidates } from './message-envelope';
 import type { SealedMessage } from './sealed-message';
 import { encodeForumPostContent } from '../services/forum-post-model';
 import { TAMPERED_MESSAGE_MARKER, UNAVAILABLE_MESSAGE_MARKER, UNVERIFIED_MESSAGE_MARKER } from '../services/message-display';
@@ -274,25 +275,24 @@ export function isForumChannel(channelId: string): boolean {
  * it was sent with: what a v5 envelope signs for the message it edits,
  * deletes, quotes or replies in. The pair only narrows what the envelope can
  * apply to, so a message that could not be verified (or read) can still be
- * deleted or quoted. Null for a message sent before idempotency keys were
- * signed, which the older layout names by id only.
+ * deleted or quoted. A message stored without a signed idempotency key cannot
+ * be named, and the server refuses references in the older layouts.
  */
 export function signedReferenceOf(
   state: Pick<MessageState, 'eventsByChannel'>,
   channelId: string,
   messageId: string,
-): SignedEventReference | null {
+): SignedEventReference {
   const base = (state.eventsByChannel[channelId] || []).find((event) => event.id === messageId && event.type === 'message');
   if (!base) throw new Error(t('メッセージを確認できませんでした。再読み込みしてお試しください。'));
-  return base.idempotencyKey ? { authorId: base.authorId, idempotencyKey: base.idempotencyKey } : null;
+  if (!base.idempotencyKey) throw new Error(t('このメッセージは編集・削除・引用・返信できません'));
+  return { authorId: base.authorId, idempotencyKey: base.idempotencyKey };
 }
 
 /**
- * The v5 fields of an envelope that references another message. An envelope
- * without references keeps the older layout, which signs the same fields, so
- * clients that have not been updated still verify it. A referenced message
- * from before signed idempotency keys cannot be named by its pair; such an
- * envelope also keeps the older layout, which names it by id only.
+ * The v5 fields of an envelope that references another message (the only
+ * layout accepted for it). An envelope without references keeps the older
+ * layout, which signs the same fields.
  */
 function boundFields(
   forum: boolean,
@@ -303,7 +303,9 @@ function boundFields(
 ): Pick<SignedMessageEnvelope, 'refBinding' | 'postBinding'> {
   const postReference = forum && Boolean(postId);
   if (!refMessageId && !postReference) return {};
-  if ((refMessageId && !refBinding) || (postReference && !postBinding)) return {};
+  if ((refMessageId && !refBinding) || (postReference && !postBinding)) {
+    throw new Error(t('このメッセージは編集・削除・引用・返信できません'));
+  }
   return {
     refBinding: refMessageId ? refBinding : null,
     ...(forum ? { postBinding: postId ? postBinding : null } : {}),
@@ -1042,51 +1044,25 @@ export const useMessageStore = create<MessageState>((set, get) => ({
             return markMessageCryptoVerification({ ...message, content: UNAVAILABLE_MESSAGE_MARKER }, false);
           }
           const identity = identities.get(message.deviceId);
-          const legacy: SignedMessageEnvelope = {
-            type: message.type,
-            channelId: message.channelId,
-            authorId: message.authorId,
-            deviceId: message.deviceId,
-            keyVersion: message.keyVersion,
-            idempotencyKey: message.idempotencyKey,
-            refMessageId: message.refMessageId,
-            broadcastMention: message.broadcastMention ?? null,
-            encryptedContent: message.encryptedContent,
-            contentNonce: message.contentNonce,
-            // The signed layout follows the channel type (the channel id is
-            // signed), so a server cannot pick v3 or v4 by adding a field.
-            ...(forumChannel ? { postId: message.postId ?? null } : {}),
-          };
-          // v5 names the referenced events as their authors signed them; the
-          // server serves that pair with the event. Older envelopes verify
-          // without it and keep naming their targets by id only. The layouts
-          // never share bytes, so the order only saves work: events without
-          // references are usually signed in the older layout.
-          const bound: SignedMessageEnvelope = {
-            ...legacy,
-            refBinding: message.refBinding ?? null,
-            ...(forumChannel ? { postBinding: message.postBinding ?? null } : {}),
-          };
           const authentic = Boolean(identity)
             && identity!.userId === message.authorId
             && message.author.id === message.authorId;
-          const references = Boolean(message.refMessageId) || (forumChannel && Boolean(message.postId));
-          let verifiedEnvelope: SignedMessageEnvelope | null = null;
+          // An edit, a deletion, a quote or a forum reply counts only in v5,
+          // which names what it references as that message's author signed it.
+          let envelope: SignedMessageEnvelope | null = null;
           if (authentic) {
-            for (const candidate of references ? [bound, legacy] : [legacy, bound]) {
+            for (const candidate of signedEnvelopeCandidates(message, forumChannel)) {
               if (await verifyMessageSignature(candidate, message.signature, identity!.identityKey).catch(() => false)) {
-                verifiedEnvelope = candidate;
+                envelope = candidate;
                 break;
               }
             }
           }
-          const invalidSignature = verifiedEnvelope === null;
-          const envelope = verifiedEnvelope ?? legacy;
-          const isBound = verifiedEnvelope === bound;
-          if (invalidSignature) {
+          if (!envelope) {
             if (message.type !== 'message') return null;
             return markMessageCryptoVerification({ ...message, content: UNVERIFIED_MESSAGE_MARKER }, false);
           }
+          const isBound = isBoundMessageEnvelope(envelope);
           if (message.type === 'delete') return markMessageCryptoVerification(message, true, isBound);
           const key = keysByVersion.get(message.keyVersion) ?? null;
           if (!key) return markMessageKeyUnavailable(message);

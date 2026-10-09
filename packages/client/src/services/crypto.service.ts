@@ -1017,7 +1017,14 @@ export async function verifyAttachmentSignature(
   signature: string,
   identityKey: string,
 ): Promise<boolean> {
-  return verifyDevicePayload(serializeAttachmentEnvelope(envelope), signature, identityKey);
+  let payload: string;
+  try {
+    payload = serializeAttachmentEnvelope(envelope);
+  } catch {
+    // Only the layout bound to the message's idempotency key exists.
+    return false;
+  }
+  return verifyDevicePayload(payload, signature, identityKey);
 }
 
 export async function verifyVoiceSignalSignature(

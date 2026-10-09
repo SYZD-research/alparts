@@ -703,6 +703,7 @@ export const en = {
   // Messages
   '安全のため、このチャンネルの履歴の読み込みを停止しました': 'Loading this channel’s history was stopped for your safety',
   'メッセージを確認できませんでした。再読み込みしてお試しください。': 'Could not verify the message. Reload and try again.',
+  'このメッセージは編集・削除・引用・返信できません': 'This message cannot be edited, deleted, quoted or replied to',
   'チャンネルの認可状態が変更されました': 'Your access to this channel changed',
   'これ以上の履歴を表示できません。再読み込みしてお試しください。': 'No more history can be shown. Reload and try again.',
   '過去のメッセージを読み込めませんでした': 'Could not load earlier messages',

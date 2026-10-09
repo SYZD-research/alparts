@@ -48,7 +48,7 @@ afterEach(() => {
 });
 
 describe('envelope layouts (formal model M9)', () => {
-  it('signs a message without references in the older layout, which clients that were not updated verify', async () => {
+  it('signs a message without references in the v3 layout: it names no other message', async () => {
     const sealed = await useMessageStore.getState().sealMessage(textId, 'hello');
     expect(sealed.envelope.refBinding).toBeUndefined();
     expect(serializeMessageEnvelope(sealed.envelope)).toMatch(/^\[3,/);
@@ -61,11 +61,10 @@ describe('envelope layouts (formal model M9)', () => {
     expect(serializeMessageEnvelope(sealed.envelope)).toMatch(/^\[5,"text","message",/);
   });
 
-  it('keeps the older layout for a quote of a message sent before idempotency keys were signed', async () => {
+  it('does not quote a message stored without a signed idempotency key (the older layout is refused)', async () => {
     useMessageStore.setState({ eventsByChannel: { [textId]: [loaded(textId, 'quoted', undefined)] } });
-    const sealed = await useMessageStore.getState().sealMessage(textId, 'ok', { refMessageId: 'quoted' });
-    expect(sealed.envelope.refBinding).toBeUndefined();
-    expect(serializeMessageEnvelope(sealed.envelope)).toMatch(/^\[3,/);
+    await expect(useMessageStore.getState().sealMessage(textId, 'ok', { refMessageId: 'quoted' }))
+      .rejects.toThrow(/編集・削除・引用・返信できません/);
   });
 
   it('signs a forum reply in v5, naming the post by its first message', async () => {

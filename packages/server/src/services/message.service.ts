@@ -3,6 +3,7 @@ import {
   MAX_DIRECT_MENTION_RECIPIENTS_PER_MESSAGE,
   Permissions,
   MESSAGES_PER_PAGE,
+  referencesOtherMessages,
   type AttentionNotificationKind,
   type SignedEventReference,
   type SignedMessageEnvelope,
@@ -736,17 +737,21 @@ async function lockAndAuthorizeCryptoWrite(
     ...(isForum ? { postId: input.postId } : {}),
     type,
   };
-  // v5 (current clients) names the referenced events as their authors signed
-  // them; earlier envelopes are still accepted from older clients.
+  // An event that names another message counts only in v5, which also signs
+  // what it names (as that message's author signed it). The older layouts
+  // name the target by server id only, so they are refused for such events;
+  // an event without references may keep its v3/v4 layout.
   const bindings = await loadEventBindings(store, [{ channelId, refMessageId, postId: input.postId }]);
-  const bound: SignedMessageEnvelope = {
-    ...envelope,
-    refBinding: bindingOf(bindings, channelId, refMessageId),
-    ...(isForum ? { postBinding: bindingOf(bindings, channelId, input.postId) } : {}),
-  };
-  if (
-    !verifyMessageEnvelopeSignature(device.identityKey, bound, input.signature)
-    && !verifyMessageEnvelopeSignature(device.identityKey, envelope, input.signature)
+  const refBinding = bindingOf(bindings, channelId, refMessageId);
+  const postBinding = isForum ? bindingOf(bindings, channelId, input.postId) : null;
+  const bound: SignedMessageEnvelope = { ...envelope, refBinding, ...(isForum ? { postBinding } : {}) };
+  if (referencesOtherMessages(envelope)) {
+    // A message stored without a signed idempotency key cannot be named.
+    if ((refMessageId && !refBinding) || (isForum && input.postId && !postBinding)) throw new Error('INVALID_REFERENCE');
+    if (!verifyMessageEnvelopeSignature(device.identityKey, bound, input.signature)) throw new Error('INVALID_SIGNATURE');
+  } else if (
+    !verifyMessageEnvelopeSignature(device.identityKey, envelope, input.signature)
+    && !verifyMessageEnvelopeSignature(device.identityKey, bound, input.signature)
   ) {
     throw new Error('INVALID_SIGNATURE');
   }

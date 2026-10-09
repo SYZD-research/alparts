@@ -8,14 +8,15 @@
 // server ids (permuted among the served events, or a fresh id for a second
 // copy), their createdAt, and in two deliveries (a page, then a later page or
 // socket event that repeats some events). The client's verification step is
-// modeled as passing for every genuine envelope, which is what decryptMessages
-// does for them (signature, directory binding, AEAD with the loaded channel's
-// key).
+// the client's own choice of signed layouts (message-envelope.ts, as
+// decryptMessages uses it) checked against the genuine signature; directory
+// binding and AEAD pass for genuine envelopes. An edit or deletion that does
+// not verify is dropped, a message is kept as one that could not be verified.
 //
 // The display rules are the client's: a quote shows quotedMessage (MessageItem),
 // a post shows the replies belongsToPost accepts under the root served by id
-// (ForumPostView), files open by attachment-crypto's v3 binding (message id and
-// the message's signed idempotency key) or the legacy v2 binding (message id).
+// (ForumPostView), files open by attachment-crypto's binding (message id and
+// the message's signed idempotency key) on a verified message.
 //
 // Protocol: in 'v5', every event that references another message is signed
 // in v5, which also signs what its references name (the author and signed
@@ -23,15 +24,21 @@
 // first message); the server serves that pair with each event and the client
 // checks it (quotedMessage, belongsToPost, the projector's edit and delete
 // rules). Events without references keep the older layout, as current clients
-// sign them. In 'legacy', every event is in the older layout (v3/v4, still
-// accepted from older clients), which names targets by server id only.
+// sign them. In 'older', every event is in the older layout (v3/v4), which
+// names targets by server id only; the client refuses it for references, and
+// the second file is signed in the unbound v2 layout. The mutation
+// 'accept-older-layouts' is the client before that refusal: references verify
+// in the older layout too, and a v2 file opens for its message id.
 //
-// Input (stdin): { scenario: 'forum' | 'text', maxSecondDelivery: number, protocol: 'v5' | 'legacy' }
+// Input (stdin): { scenario: 'forum' | 'text', maxSecondDelivery: number, protocol: 'v5' | 'older', mutation? }
 // Output: { histories, results: { [property]: { violations, example } } }
 import { readFileSync } from 'node:fs';
 
 const projector = await import('../../packages/client/src/stores/message-projector.ts');
-const { serializeMessageEnvelope } = await import('../../packages/shared/src/security/index.ts');
+const { signedEnvelopeCandidates, signedEnvelopeLayouts } = await import('../../packages/client/src/stores/message-envelope.ts');
+const { isBoundMessageEnvelope, serializeMessageEnvelope } = await import('../../packages/shared/src/security/index.ts');
+/** What decryptMessages puts in place of a message it cannot verify (services/message-display.ts). */
+const UNVERIFIED_MESSAGE_MARKER = '[メッセージを検証できませんでした]';
 
 type Message = Parameters<typeof projector.mergeMessageEvents>[0][number];
 
@@ -49,9 +56,12 @@ interface Genuine {
 const input = JSON.parse(readFileSync(0, 'utf8')) as {
   scenario: 'forum' | 'text';
   maxSecondDelivery: number;
-  protocol: 'v5' | 'legacy';
+  protocol: 'v5' | 'older';
+  mutation?: 'accept-older-layouts';
 };
+if (input.mutation !== undefined && input.mutation !== 'accept-older-layouts') throw new Error(`unknown mutation ${input.mutation}`);
 const bound = input.protocol === 'v5';
+const acceptOlder = input.mutation === 'accept-older-layouts';
 const forum = input.scenario === 'forum';
 const CHANNEL = '00000000-0000-4000-8000-0000000000c1';
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
@@ -106,7 +116,7 @@ function envelopeOf(g: Genuine) {
 const signatures = new Map(genuine.map((g) => [g.name, `sig(${serializeMessageEnvelope(envelopeOf(g) as never)})`]));
 const signature = (g: Genuine) => signatures.get(g.name)!;
 
-function served(g: Genuine, serverId: string, time: number): Message {
+function served(g: Genuine, serverId: string, time: number): Message | null {
   const envelope = envelopeOf(g);
   const event = {
     id: serverId,
@@ -131,8 +141,24 @@ function served(g: Genuine, serverId: string, time: number): Message {
     idempotencyKey: g.key,
     createdAt: new Date(Date.UTC(2026, 9, 1, 0, 0, time)).toISOString(),
   } as unknown as Message;
-  return projector.markMessageCryptoVerification(event, true, signsBound(g));
+  // The client tries its signed layouts for this event against the genuine signature.
+  const { older, bound: boundLayout } = signedEnvelopeLayouts(event, forum);
+  const candidates = acceptOlder ? [boundLayout, older] : signedEnvelopeCandidates(event, forum);
+  const layout = candidates.find((candidate) => {
+    try {
+      return `sig(${serializeMessageEnvelope(candidate)})` === event.signature;
+    } catch {
+      return false;
+    }
+  });
+  if (!layout) {
+    return g.type === 'message'
+      ? projector.markMessageCryptoVerification({ ...event, content: UNVERIFIED_MESSAGE_MARKER }, false)
+      : null;
+  }
+  return projector.markMessageCryptoVerification(event, true, isBoundMessageEnvelope(layout));
 }
+const verified = (event: Message | undefined) => Boolean(event) && projector.getMessageCryptoVerificationState(event!) === true;
 
 function permutations<T>(items: T[]): T[][] {
   if (items.length <= 1) return [items];
@@ -170,8 +196,8 @@ for (const chosen of subsets(names)) {
         histories++;
         const idOf = new Map(chosen.map((n, i) => [n, ids[i]]));
         const timeOf = new Map(order.map((n, i) => [n, i + 1]));
-        const first = chosen.map((n) => served(byName.get(n)!, idOf.get(n)!, timeOf.get(n)!));
-        const second = repeat.map(({ name, fresh }) => served(byName.get(name)!, fresh ? id(90) : idOf.get(name)!, 50));
+        const first = chosen.flatMap((n) => served(byName.get(n)!, idOf.get(n)!, timeOf.get(n)!) ?? []);
+        const second = repeat.flatMap(({ name, fresh }) => served(byName.get(name)!, fresh ? id(90) : idOf.get(name)!, 50) ?? []);
         const trace = [
           ...chosen.map((n) => `serve ${n} (honest id ${honestId.get(n)!.slice(-2)}) as id ${idOf.get(n)!.slice(-2)} at t${timeOf.get(n)}`),
           ...repeat.map(({ name, fresh }) => `serve ${name} again as ${fresh ? 'a new id 90' : 'the same id'} at t50`),
@@ -180,9 +206,9 @@ for (const chosen of subsets(names)) {
         const shown = projector.projectOrderedMessageEvents(merged);
         check(shown, merged, idOf, trace, repeat.length > 0);
         // The history an honest server serves: everything once, under its own
-        // id, in the order it was written.
+        // id, in the order it was written (in v5; the older layout is refused).
         if (
-          repeat.length === 0 && chosen.length === genuine.length
+          bound && repeat.length === 0 && chosen.length === genuine.length
           && chosen.every((n) => idOf.get(n) === honestId.get(n)) && order.every((n, i) => n === names[i])
         ) checkHonest(shown, trace);
         // MI-redate: delivering an event the client already holds again, under
@@ -258,7 +284,8 @@ function check(shown: ReturnType<typeof projector.projectOrderedMessageEvents>, 
       if (!rootGenuine) continue;
       for (const reply of shown.filter((m) => m.type !== 'reaction' && m.content !== '' && projector.belongsToPost(m, root))) {
         const replyBase = merged.find((e) => e.id === reply.id && e.type === 'message');
-        const replyGenuine = replyBase && genuineOf(replyBase);
+        // A reply the client could not verify is shown as such, not as the author's.
+        const replyGenuine = verified(replyBase) && genuineOf(replyBase!);
         if (replyGenuine && replyGenuine.postName !== rootGenuine.name) {
           note('MI-reply', [...trace, `=> reply ${replyGenuine.name} (signed for ${replyGenuine.postName}) is shown under ${rootGenuine.name} ("${rootGenuine.content}")`]);
         }
@@ -269,7 +296,8 @@ function check(shown: ReturnType<typeof projector.projectOrderedMessageEvents>, 
   // what quotedMessage returns; null shows that the original cannot be shown).
   for (const m of visible) {
     if (m.type !== 'message' || !m.refMessageId) continue;
-    const quoting = genuineOf(m);
+    // A quote the client could not verify is shown as such, not as the author's.
+    const quoting = verified(merged.find((e) => e.id === m.id && e.type === 'message')) && genuineOf(m);
     const target = projector.quotedMessage(m, shown);
     const targetBase = target && merged.find((e) => e.id === target.id && e.type === 'message');
     const targetGenuine = targetBase && genuineOf(targetBase);
@@ -295,14 +323,16 @@ function check(shown: ReturnType<typeof projector.projectOrderedMessageEvents>, 
       const base = merged.find((e) => e.id === m.id && e.type === 'message');
       const baseGenuine = base && genuineOf(base);
       if (!baseGenuine || baseGenuine.name === owner.name) continue;
-      const opens = owner.fileBinding === 'v2' || base!.idempotencyKey === owner.key;
+      // attachment-crypto opens a file only on a verified message, signed for its idempotency key;
+      // the client before the refusal also opened an unbound (v2) file for the message id.
+      const opens = verified(base) && (owner.fileBinding === 'v3' ? base!.idempotencyKey === owner.key : acceptOlder);
       if (opens) note(owner.fileBinding === 'v3' ? 'MI-file-v3' : 'MI-file-v2',
         [...trace, `=> the file signed with ${owner.name} opens on ${baseGenuine.name} ("${baseGenuine.content}")`]);
     }
   }
   // MI-latest (documented limit): with every genuine event served once under
   // its honest id, a message shows its latest edit (the server picks the order).
-  if (!second && idOf.size === genuine.length) {
+  if (bound && !second && idOf.size === genuine.length) {
     for (const g of genuine.filter((x) => x.type === 'message')) {
       const edits = genuine.filter((x) => x.type === 'edit' && x.refName === g.name);
       if (!edits.length || ![g, ...edits].every((x) => idOf.has(x.name))) continue;

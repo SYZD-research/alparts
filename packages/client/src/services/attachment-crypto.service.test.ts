@@ -3,6 +3,7 @@ import {
   MAX_FILE_SIZE,
   serializeAttachmentEnvelope,
   type Attachment,
+  type SignedAttachmentEnvelope,
 } from '@alparts/shared';
 import {
   ApiError,
@@ -140,7 +141,9 @@ describe('attachment crypto protocol', () => {
       identityKey,
     )).toBe(false);
     const { messageIdempotencyKey: _bound, ...legacy } = envelope;
-    expect(await verifyAttachmentSignature(legacy, signature, identityKey)).toBe(false);
+    expect(await verifyAttachmentSignature(legacy as SignedAttachmentEnvelope, signature, identityKey)).toBe(false);
+    // A message stored without a signed idempotency key has no files.
+    expect(() => buildSignedAttachmentEnvelope({ ...message, idempotencyKey: '' }, attachment)).toThrow(/ファイル情報/);
     expect(() => buildSignedAttachmentEnvelope(message, { ...attachment, channelId: null }))
       .toThrow(/ファイル情報/);
     expect(() => buildSignedAttachmentEnvelope(message, { ...attachment, keyVersion: 2 }))

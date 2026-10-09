@@ -4,14 +4,15 @@ export const FORUM_MESSAGE_CRYPTO_VERSION = 4;
 /**
  * Every channel type: the event refMessageId names, and in a forum the first
  * message of the post, are named as their authors signed them (see
- * SignedMessageEnvelope.refBinding).
+ * SignedMessageEnvelope.refBinding). The only layout accepted for an event
+ * that names another message (referencesOtherMessages); an event without
+ * references may keep v3/v4.
  */
 export const BOUND_MESSAGE_CRYPTO_VERSION = 5;
 const LEGACY_MESSAGE_CRYPTO_VERSION = 2;
 
+/** Attachments are bound to their message's signed idempotency key (the unbound v2 layout is refused). */
 export const ATTACHMENT_CRYPTO_VERSION = 3;
-/** Attachments signed before they were bound to their message's idempotency key. */
-const LEGACY_ATTACHMENT_CRYPTO_VERSION = 2;
 export const ATTACHMENT_PLAINTEXT_CHUNK_BYTES = 5 * 1024 * 1024;
 export const ATTACHMENT_GCM_TAG_BYTES = 16;
 export const ATTACHMENT_NONCE_PREFIX_BYTES = 8;
@@ -146,6 +147,16 @@ export interface SignedMessageEnvelope {
 /** Whether an envelope uses the v5 layout (references bound to what their authors signed). */
 export function isBoundMessageEnvelope(envelope: Pick<SignedMessageEnvelope, 'refBinding'>): boolean {
   return envelope.refBinding !== undefined;
+}
+
+/**
+ * Whether an event names another message: an edit or a deletion, a quote, or
+ * in a forum any event after the post's first message. Such an event counts
+ * only in v5, which also signs what it names; the older layouts name their
+ * targets by server id only, which a server can serve another message under.
+ */
+export function referencesOtherMessages(envelope: Pick<SignedMessageEnvelope, 'refMessageId' | 'postId'>): boolean {
+  return Boolean(envelope.refMessageId) || typeof envelope.postId === 'string';
 }
 
 function boundReference(id: string | null | undefined, binding: SignedEventReference | null | undefined) {
@@ -316,10 +327,9 @@ export interface SignedAttachmentEnvelope {
   /**
    * The idempotency key signed into the message the file belongs to. The
    * server assigns message ids, but cannot give another message this key, so
-   * a file cannot be moved to a different message. Absent only in legacy v2
-   * signatures.
+   * a file cannot be moved to a different message.
    */
-  messageIdempotencyKey?: string;
+  messageIdempotencyKey: string;
 }
 
 /** A deterministic, protocol-versioned representation for attachment signatures. */
@@ -339,8 +349,8 @@ export function serializeAttachmentEnvelope(envelope: SignedAttachmentEnvelope):
     envelope.plaintextSize,
     envelope.chunkCount,
   ];
-  if (envelope.messageIdempotencyKey === undefined) {
-    return JSON.stringify([LEGACY_ATTACHMENT_CRYPTO_VERSION, ...fields]);
+  if (typeof envelope.messageIdempotencyKey !== 'string' || envelope.messageIdempotencyKey.length === 0) {
+    throw new Error('INVALID_ATTACHMENT_ENVELOPE');
   }
   return JSON.stringify([ATTACHMENT_CRYPTO_VERSION, ...fields, envelope.messageIdempotencyKey]);
 }

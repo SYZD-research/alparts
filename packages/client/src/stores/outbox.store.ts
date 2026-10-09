@@ -202,8 +202,8 @@ export const useOutboxStore = create<OutboxState>((set, get) => ({
         refMessageId,
         mentionedUserIds,
         postId,
-        refBinding: refMessageId ? signedReferenceOf(messages, channelId, refMessageId) ?? undefined : undefined,
-        postBinding: postId ? signedReferenceOf(messages, channelId, postId) ?? undefined : undefined,
+        refBinding: refMessageId ? signedReferenceOf(messages, channelId, refMessageId) : undefined,
+        postBinding: postId ? signedReferenceOf(messages, channelId, postId) : undefined,
       });
       await queuePersistence(
         lifecycle.context,

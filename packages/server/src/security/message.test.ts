@@ -11,6 +11,7 @@ import {
   serializeChannelKeyEpochAbort,
   serializeChannelKeyFreshStart,
   serializeChannelKeyWrap,
+  referencesOtherMessages,
   serializeMessageAad,
   serializeMessageEnvelope,
   type SignedAttachmentEnvelope,
@@ -296,6 +297,16 @@ describe('signed message envelopes', () => {
     assert.match(serializeMessageEnvelope(legacy), /^\[3,/);
   });
 
+  it('names the events that count only in v5: edits, deletions, quotes and everything inside a forum post', () => {
+    const id = '00000000-0000-4000-8000-000000000005';
+    assert.equal(referencesOtherMessages({ refMessageId: null }), false);
+    assert.equal(referencesOtherMessages({ refMessageId: undefined }), false);
+    assert.equal(referencesOtherMessages({ refMessageId: id }), true);
+    // A forum post's first message names nothing; its replies, edits and deletions name the post.
+    assert.equal(referencesOtherMessages({ refMessageId: null, postId: null }), false);
+    assert.equal(referencesOtherMessages({ refMessageId: null, postId: id }), true);
+  });
+
   it('rejects forum envelopes without an explicit mention flag or post for mutations', () => {
     const base = {
       channelId: '00000000-0000-4000-8000-000000000001',
@@ -470,15 +481,15 @@ describe('attachment crypto protocol', () => {
       noncePrefix: 'BwcHBwcHBwc=',
       plaintextSize: 5_242_881,
       chunkCount: 2,
+      messageIdempotencyKey: 'message-key',
     };
     assert.equal(
       serializeAttachmentEnvelope(envelope),
-      '[2,"attachment","00000000-0000-4000-8000-000000000001","00000000-0000-4000-8000-000000000002","00000000-0000-4000-8000-000000000003","00000000-0000-4000-8000-000000000005","00000000-0000-4000-8000-000000000004",7,"ZmlsZW5hbWU=","application/octet-stream","d3JhcHBlZA==","BwcHBwcHBwc=",5242881,2]',
-    );
-    assert.equal(
-      serializeAttachmentEnvelope({ ...envelope, messageIdempotencyKey: 'message-key' }),
       '[3,"attachment","00000000-0000-4000-8000-000000000001","00000000-0000-4000-8000-000000000002","00000000-0000-4000-8000-000000000003","00000000-0000-4000-8000-000000000005","00000000-0000-4000-8000-000000000004",7,"ZmlsZW5hbWU=","application/octet-stream","d3JhcHBlZA==","BwcHBwcHBwc=",5242881,2,"message-key"]',
     );
+    // The unbound v2 layout, which named the message by server id only, is gone.
+    const { messageIdempotencyKey: _bound, ...unbound } = envelope;
+    assert.throws(() => serializeAttachmentEnvelope(unbound as SignedAttachmentEnvelope), /INVALID_ATTACHMENT_ENVELOPE/);
     assert.equal(
       serializeAttachmentFilenameAad(envelope.messageId),
       'alparts-attachment-filename-v1\0' + envelope.messageId,
@@ -525,6 +536,7 @@ describe('attachment crypto protocol', () => {
       noncePrefix: 'BwcHBwcHBwc=',
       plaintextSize: 1,
       chunkCount: 1,
+      messageIdempotencyKey: 'message-key',
     };
     const canonical = serializeAttachmentEnvelope(envelope);
     const mutations: SignedAttachmentEnvelope[] = [
@@ -540,6 +552,7 @@ describe('attachment crypto protocol', () => {
       { ...envelope, noncePrefix: 'CAgICAgICAg=' },
       { ...envelope, plaintextSize: 2 },
       { ...envelope, chunkCount: 2 },
+      { ...envelope, messageIdempotencyKey: 'another-message-key' },
     ];
     for (const mutation of mutations) assert.notEqual(serializeAttachmentEnvelope(mutation), canonical);
   });
@@ -560,6 +573,7 @@ describe('attachment crypto protocol', () => {
       noncePrefix: 'BwcHBwcHBwc=',
       plaintextSize: 1,
       chunkCount: 1,
+      messageIdempotencyKey: 'message-key',
     };
     const signature = sign('sha256', Buffer.from(serializeAttachmentEnvelope(envelope)), {
       key: keys.signingPrivateKey,
