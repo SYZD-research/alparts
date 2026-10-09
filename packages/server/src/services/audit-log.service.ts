@@ -11,9 +11,13 @@ import {
 
 // A member's own channel settings and bookmarks are never shown in the log.
 const PERSONAL_ACTIONS = ['channel.preference.%', 'message.bookmark.%'];
-// Activity inside a channel (messages, DMs, membership, keys, files) is shown
-// only to viewers who can see that channel, and to the member who did it.
-const CHANNEL_ACTIVITY_ACTIONS = ['message.%', 'dm.%', 'channel.member.%', 'channel.key.%', 'forum.post.%', 'attachment.%'];
+// Activity inside a channel (messages, DMs, membership, keys, group packages,
+// files) is shown only to viewers who can see that channel, and to the member
+// who did it. A device publishes a group package for every channel it can
+// see, so those rows would otherwise show who is in private channels and DMs.
+const CHANNEL_ACTIVITY_ACTIONS = [
+  'message.%', 'dm.%', 'channel.member.%', 'channel.key.%', 'channel.mls.%', 'forum.post.%', 'attachment.%',
+];
 
 function workspaceAuditScope(workspaceId: string) {
   return or(

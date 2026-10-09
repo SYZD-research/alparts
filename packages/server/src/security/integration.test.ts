@@ -3282,6 +3282,22 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     })).status, 400);
     const stored = await db.query.forumPosts.findFirst({ where: eq(forumPostTable.messageId, postId) });
     assert.ok(stored?.deletedAt);
+    // A reply deleted after its post sends no post state: one would put the
+    // deleted post back into every client's list (formal model M7 FV1). A
+    // deleted post is not found for members and managers alike. (In a function
+    // of its own: this test is near the type checker's flow-analysis depth.)
+    await (async () => {
+      const lateRemoval = asOwner({ type: 'delete', refMessageId: replyEvent.id, postId, plaintext: '' });
+      const removedReply = await messageService.deleteMessage(replyEvent.id, owner.user.id, {
+        deviceId: ownerDevice.id, keyVersion: 1, idempotencyKey: lateRemoval.envelope.idempotencyKey,
+        signature: lateRemoval.body.signature, postId, encryptedContent: '', contentNonce: '', broadcastMention: false,
+      });
+      assert.deepEqual([removedReply.isNewEvent, removedReply.forumPost], [true, null]);
+      const lockStatuses = await Promise.all([member.cookie, owner.cookie].map(async (cookie) => (
+        await request(`/api/forum/posts/${postId}/lock`, { method: 'PUT', cookie, body: { locked: false } })
+      ).status));
+      assert.deepEqual(lockStatuses, [404, 404]);
+    })();
 
     // A privacy change that commits while a forum request waits for the
     // workspace lock is the state that request must be judged against. The

@@ -40,3 +40,24 @@ const expected = new Set([
 export function isAccountSecurityError(error: unknown): boolean {
   return error instanceof Error && (error.name === 'ZodError' || expected.has(error.message));
 }
+
+/** What the passkey and step-up routes answer for an error; null hands it to the central error handler. */
+export function passkeyRouteError(error: unknown): { status: number; body: Record<string, string | number> } | null {
+  // A passkey sign-in at the session limit is answered as a password one (routes/auth.ts).
+  if (error instanceof Error && error.message === 'SESSION_LIMIT_REACHED') {
+    return {
+      status: 409,
+      body: { error: 'SESSION_LIMIT_REACHED', message: 'Revoke an existing session before signing in again', statusCode: 409 },
+    };
+  }
+  if (!isAccountSecurityError(error)) return null;
+  const message = (error as Error).message;
+  if (message === 'LAST_PASSKEY') {
+    return { status: 409, body: { error: 'LAST_PASSKEY', message: 'Register another passkey before deleting this one.' } };
+  }
+  if (message === 'DEVICE_APPROVAL_REQUIRED') {
+    return { status: 403, body: { error: 'DEVICE_APPROVAL_REQUIRED', message: 'Use an approved device.' } };
+  }
+  // Parser, verifier, challenge and unknown credential failures have one public result.
+  return { status: 403, body: { error: 'AUTHENTICATION_FAILED', message: 'Identity confirmation failed. Try again.' } };
+}

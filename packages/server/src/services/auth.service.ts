@@ -250,8 +250,14 @@ export async function listSessions(userId: string, currentSessionId: string) {
   }));
 }
 
-export async function revokeSession(userId: string, sessionId: string): Promise<boolean> {
+/** `recheck` confirms, inside the transaction, that the confirmation still holds. */
+export async function revokeSession(
+  userId: string,
+  sessionId: string,
+  recheck: (transaction: any) => Promise<void>,
+): Promise<boolean> {
   const result = await auditedTransaction(async (transaction) => {
+    await recheck(transaction);
     const removed = await transaction.delete(sessions)
       .where(and(eq(sessions.id, sessionId), eq(sessions.userId, userId)))
       .returning({ id: sessions.id });
@@ -266,8 +272,10 @@ export async function revokeSession(userId: string, sessionId: string): Promise<
   return result.removed;
 }
 
-export async function revokeAllSessions(userId: string): Promise<string[]> {
+/** `recheck` confirms, inside the transaction, that the confirmation still holds. */
+export async function revokeAllSessions(userId: string, recheck: (transaction: any) => Promise<void>): Promise<string[]> {
   return auditedTransaction(async (transaction) => {
+    await recheck(transaction);
     await transaction.execute(sql`select pg_advisory_xact_lock(hashtext(${`sessions:${userId}`})::bigint)`);
     await transaction.delete(sessions).where(and(
       eq(sessions.userId, userId),
@@ -290,11 +298,19 @@ export async function revokeAllSessions(userId: string): Promise<string[]> {
 /**
  * Sets a new password after the session confirmed the user's identity. Every
  * other login ends, and confirmations made with the old password stop working.
+ * `recheck` confirms, inside the transaction, that the confirmation still
+ * holds (its session can end while the new password is hashed).
  * Returns the ended sessions so their connections can be closed.
  */
-export async function changePassword(userId: string, currentSessionId: string, newPassword: string): Promise<string[]> {
+export async function changePassword(
+  userId: string,
+  currentSessionId: string,
+  newPassword: string,
+  recheck: (transaction: any) => Promise<void>,
+): Promise<string[]> {
   const passwordHash = await hashNewPassword(newPassword);
   return auditedTransaction(async (transaction) => {
+    await recheck(transaction);
     await transaction.execute(sql`select pg_advisory_xact_lock(hashtext(${`sessions:${userId}`})::bigint)`);
     const [user] = await transaction.select({ disabledAt: users.disabledAt })
       .from(users)
@@ -324,12 +340,19 @@ export async function isPasswordLoginEnabled(userId: string): Promise<boolean> {
 /**
  * Turns password login on or off. Turning it off needs a passkey to sign in
  * with, and ends the other logins that were opened with the password.
+ * `recheck` confirms, inside the transaction, that the confirmation still holds.
  * Returns the ended sessions so their connections can be closed.
  */
-export async function setPasswordLogin(userId: string, currentSessionId: string, enabled: boolean): Promise<string[]> {
+export async function setPasswordLogin(
+  userId: string,
+  currentSessionId: string,
+  enabled: boolean,
+  recheck: (transaction: any) => Promise<void>,
+): Promise<string[]> {
   return auditedTransaction(async (transaction) => {
     // The passkey lock orders this with passkey removal.
     await transaction.execute(sql`select pg_advisory_xact_lock(hashtext(${`passkeys:${userId}`})::bigint)`);
+    await recheck(transaction);
     await transaction.execute(sql`select pg_advisory_xact_lock(hashtext(${`sessions:${userId}`})::bigint)`);
     const [user] = await transaction.select({ disabledAt: users.disabledAt })
       .from(users)

@@ -40,7 +40,7 @@
 
 ### 認証、端末、承認
 
-- 招待制のpassword認証に加えて、Web版のPasskeyと重要操作のstep-upを実装した。Passkey登録後のpassword fallbackは禁止する。Passwordはstep-up付きで変更でき、変更時は他のsessionを終了する。Passkeyを登録した利用者はpasswordでのloginを無効にでき、運用者はCLIでpasswordを再設定できる（再設定はpassword loginを有効に戻し、全sessionを終了する）。Step-upは利用者ごとに15分あたり120操作まで、本人確認の失敗はこれとは別に15分あたり10回までに制限する。OIDC、組織による認証器数の強制、nativeアプリのWebAuthn連携は未実装。
+- 招待制のpassword認証に加えて、Web版のPasskeyと重要操作のstep-upを実装した。Passkey登録後のpassword fallbackは禁止する。Passwordはstep-up付きで変更でき、変更時は他のsessionを終了する。Passkeyを登録した利用者はpasswordでのloginを無効にでき、運用者はCLIでpasswordを再設定できる（再設定はpassword loginを有効に戻し、全sessionを終了する）。Step-upはsessionごとに15分あたり120操作まで、本人確認の失敗はこれとは別に15分あたり10回までに制限する（盗まれたsessionが上限を使い切っても、本人の別sessionからの確認と失効は妨げられない）。OIDC、組織による認証器数の強制、nativeアプリのWebAuthn連携は未実装。
 - bcryptは固定2本のWorker threadで実行し、active 2 / pending 16 / 待機5秒を超えると503でrejectする。保存hashの形式/costを処理前に検証し、実行が30秒を超えたWorkerは失敗として終了する。新端末step-upのKDFはaudit/key/DB row lockより前に完了させる。これはsingle-processのCPU隔離であり、複数replicaを合算したrate limitや外部DDoS防御ではない。
 - Sessionは1つの端末にbindingされ、追加端末は既存端末の承認または復旧コードによる確認が必要。端末attestationと組織支援型・閾値型recoveryは未実装。
 - 新端末登録時のpending epoch cleanup（group protocol 4以降は新しいpending epochを作らず、migration 0023で残りを中止済み）は最大50 workspace membershipを安定順にlockし、各workspaceの最大300 channel内でset-basedに実施する。他tenantがaccount-globalな小さい上限を消費して端末回復を恒久妨害する設計ではないが、上限全体を処理する登録は通常より高latencyになり得てstatement timeout内に完了しなければ安全にrollbackする。
@@ -100,7 +100,7 @@
 - Socket.IO serverは現在channelを閲覧でき、active deviceへbindingされた参加者だけを最大8人までfresh call-participant IDで登録する。Offer/answer SDPとICE candidateは送信端末のP-256 keyで署名し、channel、送受信participant、sender device、単調sequenceへbindingする。受信clientはdevice directoryのuser-device bindingと署名を検証し、参加中のsenderごとに旧sequence/replayを拒否する。Serverは署名本文を変更せず対象participantへだけ中継し、channel room退出・失権・disconnect時にvoice registryからも除去する。
 - 第三者ICE serviceは既定で設定しない。`VOICE_ICE_SERVERS_JSON=[]` のままではdirect candidateで到達できるnetworkに限られ、Internet/NAT越しの接続性は保証しない。必要なSTUN/TURNはoperatorがセルフホストし、TURN credentialはauthenticated participantへ開示されるものとして短命化する。
 - P2P meshのため送受信帯域とpeer connection数は参加人数に比例し、上限は8人である。正式な同時接続capacity、長時間soak、全browser/mobile network、TURN failover、QoSは検証していない。Peer同士は相手のnetwork addressをICE情報から観測し得て、server/TURN/operatorは参加者、時刻、SDP/ICE、traffic量などのmetadataを観測できる。
-- 専用の常設voice channel type、SFU、SFrame、映像、camera切替、画面共有、録音・録画と継続表示、録音Bot、通話group-key ceremonyは未実装である。Pairwise DTLS keyはpeer connectionごとに新規確立されるが、`MEDIA-08..13` 全体、特にmalicious directory serverに対するkey transparencyと正式なparticipant-change rekeyを完了したとは扱わない。
+- 専用の常設voice channel type、clientのSFU対応、SFrame、映像、camera切替、画面共有、録音・録画と継続表示、録音Bot、通話group-key ceremonyは未実装である。Serverにはmediasoupを使うSFU（`VOICE_SFU_ENABLED`、既定で無効）があるが、DTLS-SRTPをserver側で終端するため、serverが通話音声を復号できる（`MEDIA-08` を満たさない。形式モデル M8 VE2、RISK_REGISTER R-052）。有効にする前にframe暗号化が必要。Pairwise DTLS keyはpeer connectionごとに新規確立されるが、`MEDIA-08..13` 全体、特にmalicious directory serverに対するkey transparencyと正式なparticipant-change rekeyを完了したとは扱わない。
 
 ### Audit
 

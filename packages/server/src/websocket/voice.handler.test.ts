@@ -7,7 +7,8 @@ process.env.S3_SECRET_KEY ||= 'test-secret-key';
 process.env.AUDIT_INTEGRITY_KEY ||= 'test-audit-integrity-key-at-least-32-bytes';
 process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
 
-const { VoiceParticipantRegistry, parseVoiceSignal } = await import('./voice.handler.js');
+const { VoiceParticipantRegistry, VoiceSignalingHub, parseVoiceSignal } = await import('./voice.handler.js');
+const { voicePresenceRoom } = await import('./voice-rooms.js');
 
 const channelA = '00000000-0000-4000-8000-000000000001';
 const channelB = '00000000-0000-4000-8000-000000000002';
@@ -90,5 +91,45 @@ describe('voice signaling admission', () => {
     assert.equal(parseVoiceSignal({ ...valid, sequence: 0 }), null);
     assert.equal(parseVoiceSignal({ ...valid, extra: true }), null);
     assert.equal(parseVoiceSignal({ ...valid, sdp: 'x'.repeat(32 * 1024 + 1) }), null);
+  });
+});
+
+describe('voice presence watch', () => {
+  it('does not list a channel whose presence room the socket left while later channels were checked', async () => {
+    const handlers = new Map<string, (...args: any[]) => unknown>();
+    const rooms = new Set<string>(['socket_w']);
+    const socket = {
+      id: 'socket_w',
+      userId: 'user-w',
+      connected: true,
+      rooms,
+      on: (event: string, handler: (...args: any[]) => unknown) => { handlers.set(event, handler); },
+      once: () => undefined,
+      join: async (room: string) => { rooms.add(room); },
+      leave: async (room: string) => { rooms.delete(room); },
+    };
+    const io = {
+      of: () => ({ adapter: { on: () => undefined } }),
+      to: () => ({ emit: () => undefined }),
+      sockets: { sockets: new Map() },
+    };
+    const registry = new VoiceParticipantRegistry();
+    registry.join('socket_p', 'user-p', deviceA, channelA, new Date(), 'participant_p');
+    const hub = new VoiceSignalingHub(io as never, registry, []);
+    // The database check is replaced: access to channel A is revoked (its rooms
+    // are left) while channel B is being checked.
+    (hub as unknown as { joinPresenceUnderAuthorizationLock: unknown }).joinPresenceUnderAuthorizationLock = async (
+      _socket: unknown,
+      channelId: string,
+    ) => {
+      rooms.add(voicePresenceRoom(channelId));
+      if (channelId === channelB) rooms.delete(voicePresenceRoom(channelA));
+      return true;
+    };
+    hub.attach(socket as never);
+    let reply: { ok: boolean; channels: Array<{ channelId: string; participants: unknown[] }> } | undefined;
+    await handlers.get('voice:watch')!({ channelIds: [channelA, channelB] }, (result: typeof reply) => { reply = result; });
+    assert.equal(reply?.ok, true);
+    assert.deepEqual(reply?.channels.map((entry) => entry.channelId), [channelB]);
   });
 });

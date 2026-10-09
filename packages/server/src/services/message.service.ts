@@ -352,7 +352,11 @@ export async function deleteMessage(messageId: string, userId: string, input: Cr
         }
       }
       forumPostRemoved = original.id === forumPostId;
-      if (!forumPostRemoved) forumPost = (await loadForumPostStates(transaction, [forumPostId]))[0] ?? null;
+      // A reply deleted inside a deleted post changes nothing anyone lists:
+      // its state would put the deleted post back into clients' lists.
+      if (!forumPostRemoved && !lockedPost?.deletedAt) {
+        forumPost = (await loadForumPostStates(transaction, [forumPostId]))[0] ?? null;
+      }
     }
     return {
       messageId,

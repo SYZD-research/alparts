@@ -1,10 +1,11 @@
 import type { Server as SocketServer } from 'socket.io';
 import { z } from 'zod';
+import { canonicalUuid } from '../security/canonical-id.js';
 import { Permissions } from '@alparts/shared';
 import { logError } from '../security/logger.js';
 import { authorizeSocketChannel, consumeSocketRate, type AuthenticatedSocket } from './security.js';
 
-const schema = z.object({ channelId: z.string().uuid() }).strict();
+const schema = z.object({ channelId: canonicalUuid }).strict();
 
 export function handleTypingEvents(_io: SocketServer, socket: AuthenticatedSocket) {
   const emit = async (data: unknown, isTyping: boolean) => {

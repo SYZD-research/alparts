@@ -1,5 +1,6 @@
 import type { Server as SocketServer } from 'socket.io';
 import { z } from 'zod';
+import { canonicalUuid } from '../security/canonical-id.js';
 import {
   MAX_DIRECT_MENTION_RECIPIENTS_PER_MESSAGE,
   MAX_MESSAGE_LENGTH,
@@ -28,7 +29,7 @@ const contentNonce = z.string().length(16).regex(/^[A-Za-z0-9+/]+$/);
 // Forum replies only; posts are started over HTTP with their tags.
 const postId = z.string().uuid().optional();
 const sendSchema = z.object({
-  channelId: z.string().uuid(),
+  channelId: canonicalUuid,
   encryptedContent,
   contentNonce,
   refMessageId: z.string().uuid().optional(),
@@ -42,7 +43,7 @@ const sendSchema = z.object({
 }).strict();
 const editSchema = z.object({
   messageId: z.string().uuid(),
-  channelId: z.string().uuid(),
+  channelId: canonicalUuid,
   encryptedContent,
   contentNonce,
   broadcastMention: z.boolean(),
@@ -51,7 +52,7 @@ const editSchema = z.object({
 }).strict();
 const deleteSchema = z.object({
   messageId: z.string().uuid(),
-  channelId: z.string().uuid(),
+  channelId: canonicalUuid,
   postId,
   ...cryptoFields,
 }).strict();

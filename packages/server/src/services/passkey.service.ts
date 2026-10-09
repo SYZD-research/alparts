@@ -484,6 +484,39 @@ async function validateStepUpAuthentication(
   } else throw new Error('AUTHENTICATION_FAILED');
   return device;
 }
+const STALE_STEP_UP_ERRORS = new Set(['AUTHENTICATION_FAILED', 'DEVICE_APPROVAL_REQUIRED', 'PASSKEY_REQUIRED', 'INVALID_CREDENTIALS']);
+
+/**
+ * Checks again, inside the transaction that makes a sensitive change, that
+ * its confirmation still holds: the session is live on an approved device and
+ * the credential used still exists. Without this, a change confirmed just
+ * before its session was revoked (by another session, a device revocation or
+ * an operator reset) would still commit afterwards.
+ */
+export async function assertStepUpStillValid(
+  tx: any,
+  proof: StepUpProof | undefined,
+  userId: string,
+  sessionId: string,
+) {
+  if (
+    !proof ||
+    !stepUpProofs.has(proof) ||
+    proof.userId !== userId ||
+    proof.sessionId !== sessionId ||
+    proof.expiresAt <= Date.now()
+  )
+    throw new Error('STEP_UP_STALE');
+  const authentication = stepUpProofs.get(proof);
+  stepUpProofs.delete(proof);
+  try {
+    await validateStepUpAuthentication(tx, userId, sessionId, authentication);
+  } catch (error) {
+    if (error instanceof Error && STALE_STEP_UP_ERRORS.has(error.message)) throw new Error('STEP_UP_STALE');
+    throw error;
+  }
+}
+
 export async function assertFreshStartStepUp(
   tx: any,
   proof: StepUpProof | undefined,

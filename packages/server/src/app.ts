@@ -14,6 +14,7 @@ import mlsRoutes from './routes/mls.js';
 import mlsGroupRoutes from './routes/mls-group.js';
 import directoryRoutes from './routes/directory.js';
 import passkeyRoutes from './routes/passkeys.js';
+import { hasNonCanonicalUuid } from './security/canonical-id.js';
 import { sensitiveActionBoundary } from './middleware/step-up.js';
 import workspaceRoutes from './routes/workspaces.js';
 import channelRoutes from './routes/channels.js';
@@ -233,6 +234,16 @@ export function createApp() {
       res.type('text/plain; version=0.0.4').send(renderPrometheusMetrics());
     });
   }
+
+  // A path that names an id in another letter case is not found: services
+  // would otherwise record and compare it as given (see canonical-id.ts).
+  app.use('/api', (req, res, next) => {
+    if (hasNonCanonicalUuid(req.path)) {
+      res.status(404).json({ error: 'NOT_FOUND', message: 'Not found', statusCode: 404 });
+      return;
+    }
+    next();
+  });
 
   // API Routes
   app.use('/api', sensitiveActionBoundary);

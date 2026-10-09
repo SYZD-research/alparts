@@ -2,6 +2,7 @@ import type { VoiceCoordinator } from '../voice/voice-coordinator.js';
 import type { Server as SocketServer } from 'socket.io';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
+import { canonicalUuid } from '../security/canonical-id.js';
 import {
   MAX_VOICE_PARTICIPANTS,
   Permissions,
@@ -24,7 +25,8 @@ import { MAX_CHANNELS_PER_WORKSPACE } from '../security/limits.js';
 import { authorizeSocketChannel, consumeSocketRate, type AuthenticatedSocket } from './security.js';
 import { VOICE_PRESENCE_ROOM_PREFIX, voicePresenceRoom } from './voice-rooms.js';
 
-const uuid = z.string().uuid();
+// Channel ids name rooms; only the stored (lowercase) form is accepted.
+const uuid = canonicalUuid;
 const participantId = z.string().min(1).max(128).regex(/^[A-Za-z0-9_-]+$/);
 const signature = z.string().length(88).regex(/^[A-Za-z0-9+/]{86}==$/);
 const nullableText = z.string().max(256).nullable();
@@ -265,10 +267,14 @@ export class VoiceSignalingHub {
           if (this.watchVersions.get(socket.id) === version && socket.connected) {
             // Snapshot all authorized rooms in one JS turn so an older per-room
             // snapshot cannot overwrite a newer presence event at the client.
-            const visible = visibleChannelIds.map((channelId) => ({
-              channelId,
-              participants: this.registry.list(channelId),
-            }));
+            // A channel whose access was revoked while later channels were
+            // checked has already left its room; it is not listed.
+            const visible = visibleChannelIds
+              .filter((channelId) => socket.rooms.has(voicePresenceRoom(channelId)))
+              .map((channelId) => ({
+                channelId,
+                participants: this.registry.list(channelId),
+              }));
             acknowledge?.({ ok: true, channels: visible });
           }
         } catch (error) {

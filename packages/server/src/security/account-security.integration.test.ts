@@ -1989,7 +1989,7 @@ process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
     const changed = await login(newPassword);
 
     // Password login can be turned off only with a passkey; it ends password logins.
-    await assert.rejects(auth.setPasswordLogin(legacyUser, randomUUID(), false), /PASSKEY_REQUIRED/);
+    await assert.rejects(auth.setPasswordLogin(legacyUser, randomUUID(), false, async () => undefined), /PASSKEY_REQUIRED/);
     assert.deepEqual(await json(await request('/api/auth/password-login')), { enabled: true });
     assert.equal((await json(await sensitive('/api/auth/password-login', { enabled: false }, 'PUT'))).enabled, false);
     assert.equal((await request('/api/auth/me', undefined, changed)).status, 401);
