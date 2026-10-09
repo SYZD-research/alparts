@@ -17,6 +17,7 @@ export const ATTACHMENT_GCM_TAG_BYTES = 16;
 export const ATTACHMENT_NONCE_PREFIX_BYTES = 8;
 export const VOICE_SIGNAL_PROTOCOL_VERSION = 1;
 export const MAX_VOICE_PARTICIPANTS = 8;
+export const VOICE_KEY_PROTOCOL_VERSION = 1;
 export const ATTACHMENT_CHUNK_AAD_FORMAT =
   'alparts-attachment-chunk-v1\\0{uploadId}\\0{messageId}\\0{index}\\0{chunkCount}\\0{plaintextSize}';
 
@@ -405,6 +406,43 @@ export function serializeVoiceSignalEnvelope(envelope: SignedVoiceSignalEnvelope
     envelope.sdpMid,
     envelope.sdpMLineIndex,
     envelope.usernameFragment,
+  ]);
+}
+
+/**
+ * One sender's frame key for an SFU call, sent to one other participant. The
+ * key is encrypted to the recipient device (RSA-OAEP-256 with the encryption
+ * key of its directory bundle) and the envelope is signed by the sender
+ * device, so the server relays it without reading or changing it. Frames
+ * under the key carry `keyId` as their SFrame key id.
+ */
+export interface SignedVoiceKeyEnvelope {
+  type: 'voice-key';
+  /** Strictly increasing for one sender and target participant. */
+  sequence: number;
+  channelId: string;
+  senderParticipantId: string;
+  senderDeviceId: string;
+  /** Chosen at random by the target when it joined, so a key sent to an earlier call is refused. */
+  targetParticipantId: string;
+  targetDeviceId: string;
+  keyId: number;
+  wrappedKey: string;
+}
+
+/** Stable representation used by the browser device P-256 signature. */
+export function serializeVoiceKeyEnvelope(envelope: SignedVoiceKeyEnvelope): string {
+  return JSON.stringify([
+    VOICE_KEY_PROTOCOL_VERSION,
+    envelope.type,
+    envelope.sequence,
+    envelope.channelId,
+    envelope.senderParticipantId,
+    envelope.senderDeviceId,
+    envelope.targetParticipantId,
+    envelope.targetDeviceId,
+    envelope.keyId,
+    envelope.wrappedKey,
   ]);
 }
 

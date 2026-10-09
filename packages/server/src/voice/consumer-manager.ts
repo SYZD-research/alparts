@@ -1,9 +1,11 @@
 
 import type { types } from 'mediasoup';
+import { MAX_VOICE_PARTICIPANTS } from '@alparts/shared';
 import { VoiceTransportManager } from './transport-manager.js';
 import { VoiceProducerManager } from './producer-manager.js';
 
-const MAX_VOICE_CONSUMERS = 4;
+/** Every participant hears every other participant. */
+export const MAX_VOICE_CONSUMERS = MAX_VOICE_PARTICIPANTS - 1;
 const CHANNEL_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const PARTICIPANT_ID = /^[A-Za-z0-9_-]{1,128}$/;
 
@@ -21,7 +23,10 @@ export class VoiceConsumerManager {
 	constructor(
 		private readonly transports: VoiceTransportManager,
 		private readonly producers: VoiceProducerManager,
-	) {}
+		private readonly maxConsumers = MAX_VOICE_CONSUMERS,
+	) {
+		if (!Number.isSafeInteger(maxConsumers) || maxConsumers < 1) throw new Error('INVALID_VOICE_CONSUMER_LIMIT');
+	}
 
 	async createConsumer(
 		channelId: string,
@@ -79,7 +84,7 @@ export class VoiceConsumerManager {
 			throw new Error('VOICE_CONSUMER_ALREADY_EXISTS');
 		}
 
-		if (state.consumers.size + state.pending.size >= MAX_VOICE_CONSUMERS) {
+		if (state.consumers.size + state.pending.size >= this.maxConsumers) {
 			throw new Error('VOICE_CONSUMER_LIMIT_REACHED');
 		}
 

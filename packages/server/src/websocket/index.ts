@@ -95,8 +95,12 @@ export function scheduleSessionExpiry(socket: ExpiringSocket, expiresAtMs: numbe
   expireOrReschedule();
 }
 
+/** The call registry of each Socket.IO server, for the media server started later. */
+const voiceHubs = new WeakMap<SocketServer, VoiceSignalingHub>();
+
 export function setupWebSocket(io: SocketServer) {
   const voiceSignaling = new VoiceSignalingHub(io);
+  voiceHubs.set(io, voiceSignaling);
   io.use(async (socket: AuthenticatedSocket, next) => {
     const cookieToken = readCookie(socket.handshake.headers.cookie, config.auth.cookieName);
     const origin = socket.handshake.headers.origin;
@@ -314,9 +318,13 @@ export async function startVoiceSfu(
 		workerCount: sfu.workerCount,
 	});
 
+	const hub = voiceHubs.get(io);
+
 	try {
+		if (!hub) throw new Error('VOICE_SIGNALING_NOT_READY');
 		await coordinator.start();
-		attachVoiceSfuEvents(io, coordinator);
+		attachVoiceSfuEvents(io, coordinator, hub);
+		hub.enableSfu();
 	} catch (error) {
 		await coordinator.close();
 		throw error;

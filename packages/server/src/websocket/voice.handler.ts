@@ -6,6 +6,7 @@ import { canonicalUuid } from '../security/canonical-id.js';
 import {
   MAX_VOICE_PARTICIPANTS,
   Permissions,
+  type SignedVoiceKeyEnvelope,
   type SignedVoiceSignalEnvelope,
   type VoiceChannelPresence,
   type VoiceIceServer,
@@ -72,8 +73,40 @@ const voiceSignalSchema = z.discriminatedUnion('kind', [
     usernameFragment: nullableText,
   }).strict(),
 ]);
-const joinSchema = z.object({ channelId: uuid }).strict();
+// A client may pick its own participant id (a fresh random UUID per call), so
+// that key messages sent to it in an earlier call cannot be presented again.
+const joinSchema = z.object({ channelId: uuid, participantId: uuid.optional() }).strict();
+const sfuJoinSchema = z.object({ channelId: uuid }).strict();
 const leaveSchema = z.object({ channelId: uuid }).strict();
+const voiceKeySchema = z.object({
+  type: z.literal('voice-key'),
+  sequence: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
+  channelId: uuid,
+  senderParticipantId: participantId,
+  senderDeviceId: uuid,
+  targetParticipantId: participantId,
+  targetDeviceId: uuid,
+  keyId: z.number().int().min(0).max(0xffff_ffff),
+  // RSA-OAEP of 32 bytes under a 2048- to 8192-bit key, base64.
+  wrappedKey: z.string().min(344).max(1368).regex(/^[A-Za-z0-9+/]+={0,2}$/),
+  signature,
+}).strict();
+/** Media parameters are checked by mediasoup itself; here only their size is bounded. */
+const MAX_MEDIA_PARAMETERS_BYTES = 16 * 1024;
+const mediaParameters = z.record(z.string(), z.unknown()).refine((value) => {
+  try {
+    return JSON.stringify(value).length <= MAX_MEDIA_PARAMETERS_BYTES;
+  } catch {
+    return false;
+  }
+});
+const mediaId = z.string().min(1).max(64).regex(/^[0-9a-f-]+$/);
+const direction = z.enum(['send', 'recv']);
+const sfuTransportSchema = z.object({ channelId: uuid, direction }).strict();
+const sfuConnectSchema = z.object({ channelId: uuid, direction, transportId: mediaId, dtlsParameters: mediaParameters }).strict();
+const sfuProduceSchema = z.object({ channelId: uuid, rtpParameters: mediaParameters }).strict();
+const sfuConsumeSchema = z.object({ channelId: uuid, sourceParticipantId: participantId, rtpCapabilities: mediaParameters }).strict();
+const sfuResumeSchema = z.object({ channelId: uuid, consumerId: mediaId }).strict();
 const watchSchema = z.object({
   channelIds: z.array(uuid).max(MAX_CHANNELS_PER_WORKSPACE).refine((ids) => new Set(ids).size === ids.length),
 }).strict();
@@ -211,6 +244,8 @@ type JoinAcknowledgement = (result: {
   self?: VoiceParticipant;
   participants?: VoiceParticipant[];
   iceServers?: VoiceIceServer[];
+  /** Present when calls go through the media server; absent for direct (P2P) calls. */
+  media?: 'sfu';
 }) => void;
 
 type BasicAcknowledgement = (result: { ok: boolean }) => void;
@@ -218,6 +253,8 @@ type WatchAcknowledgement = (result: { ok: boolean; channels: VoiceChannelPresen
 
 export class VoiceSignalingHub {
   readonly registry: VoiceParticipantRegistry;
+  /** 'sfu' once the media server has started: calls then go through it, with frame encryption. */
+  private media: 'p2p' | 'sfu' = 'p2p';
   private readonly watchVersions = new Map<string, number>();
   private readonly watchQueues = new Map<string, Promise<void>>();
 
@@ -230,6 +267,15 @@ export class VoiceSignalingHub {
     this.io.of('/').adapter.on('leave-room', (room, socketId) => {
       if (room.startsWith('channel:')) this.removeIfChannelRoomLeft(socketId, room.slice('channel:'.length));
     });
+  }
+
+  /** Route calls through the media server (startVoiceSfu calls this once it has started). */
+  enableSfu(): void {
+    this.media = 'sfu';
+  }
+
+  get sfuEnabled(): boolean {
+    return this.media === 'sfu';
   }
 
   attach(socket: AuthenticatedSocket): void {
@@ -301,6 +347,12 @@ export class VoiceSignalingHub {
         acknowledge?.({ ok: false, error: 'DEVICE_REQUIRED' });
         return;
       }
+      // Calls through the media server need clients that encrypt frames, and
+      // those pick their own participant id.
+      if (this.sfuEnabled && !parsed.data.participantId) {
+        acknowledge?.({ ok: false, error: 'INVALID_REQUEST' });
+        return;
+      }
       try {
         const authorized = await this.joinUnderAuthorizationLock(socket, parsed.data.channelId);
         if (!authorized) {
@@ -312,6 +364,8 @@ export class VoiceSignalingHub {
           socket.userId!,
           socket.deviceId,
           parsed.data.channelId,
+          new Date(),
+          parsed.data.participantId,
         );
         // Authorization revocation can finish between the database lock being
         // released and this continuation resuming. Registry mutation and this
@@ -343,6 +397,7 @@ export class VoiceSignalingHub {
           self: joined.participant,
           participants: joined.existing,
           iceServers: this.iceServers,
+          ...(this.sfuEnabled ? { media: 'sfu' as const } : {}),
         });
       } catch (error) {
         if (this.registry.get(socket.id)?.channelId !== parsed.data.channelId) {
@@ -392,7 +447,8 @@ export class VoiceSignalingHub {
     });
 
     socket.on('voice:signal', (value: unknown, acknowledge?: BasicAcknowledgement) => {
-      if (!consumeSocketRate(socket, 'voice-signal', 600, 60_000)) {
+      // Calls through the media server have no direct connections to set up.
+      if (this.sfuEnabled || !consumeSocketRate(socket, 'voice-signal', 600, 60_000)) {
         acknowledge?.({ ok: false });
         return;
       }
@@ -420,6 +476,44 @@ export class VoiceSignalingHub {
       targetSocket.emit('voice:signal', {
         envelope: envelope as SignedVoiceSignalEnvelope,
         signature: signalSignature,
+      });
+      acknowledge?.({ ok: true });
+    });
+
+    // Frame keys of calls through the media server: relayed, like signals,
+    // only between two current participants of the same call. The server
+    // cannot read them (they are encrypted to the target device) or change
+    // them (they are signed by the sender device).
+    socket.on('voice:key', (value: unknown, acknowledge?: BasicAcknowledgement) => {
+      if (!this.sfuEnabled || !consumeSocketRate(socket, 'voice-key', 600, 60_000)) {
+        acknowledge?.({ ok: false });
+        return;
+      }
+      const parsed = voiceKeySchema.safeParse(value);
+      if (!parsed.success) {
+        acknowledge?.({ ok: false });
+        return;
+      }
+      const { signature: keySignature, ...envelope } = parsed.data;
+      const senderParticipant = this.registry.get(socket.id);
+      const targetParticipant = this.registry.getByParticipantId(envelope.targetParticipantId);
+      const targetSocket = targetParticipant
+        ? this.io.sockets.sockets.get(targetParticipant.socketId)
+        : undefined;
+      if (
+        envelope.senderParticipantId !== senderParticipant?.participantId
+        || envelope.senderDeviceId !== socket.deviceId
+        || envelope.targetDeviceId !== targetParticipant?.deviceId
+        || !this.registry.canRoute(socket.id, envelope.targetParticipantId, envelope.channelId)
+        || !socket.rooms.has(`channel:${envelope.channelId}`)
+        || !targetSocket?.rooms.has(`channel:${envelope.channelId}`)
+      ) {
+        acknowledge?.({ ok: false });
+        return;
+      }
+      targetSocket.emit('voice:key', {
+        envelope: envelope as SignedVoiceKeyEnvelope,
+        signature: keySignature,
       });
       acknowledge?.({ ok: true });
     });
@@ -532,6 +626,8 @@ type VoiceSfuJoinAcknowledgement = (result:
 		ok: true;
 		participantId: string;
 		rtpCapabilities: Awaited<ReturnType<VoiceCoordinator['joinParticipant']>>;
+		/** Streams already being sent in the call, by participant. */
+		producers: Array<{ participantId: string; producerId: string }>;
 	}
 	| {
 		ok: false;
@@ -539,9 +635,20 @@ type VoiceSfuJoinAcknowledgement = (result:
 	}
 ) => void;
 
+type ResultAcknowledgement<T> = (result: ({ ok: true } & T) | { ok: false }) => void;
+
+/**
+ * Media through the SFU for the participants of the call registry: the SFU
+ * session of a socket is that of its registry participant (same id, same
+ * channel), and ends with it, since leaving the call or losing access leaves
+ * the channel room. Frames are encrypted end to end by the clients (SFrame);
+ * the SFU forwards them.
+ */
 export function attachVoiceSfuEvents(
 	io: SocketServer,
 	coordinator: VoiceCoordinator,
+	hub: VoiceSignalingHub,
+	authorize: (socket: AuthenticatedSocket, channelId: string) => Promise<boolean> = authorizeSfuVoiceChannel,
 ): void {
 	const sessions = new Map<string, {
 		channelId: string;
@@ -567,6 +674,58 @@ export function attachVoiceSfuEvents(
 		}
 	});
 
+	/** The socket's current SFU session in this channel, still in the call registry and the room. */
+	const current = (socket: AuthenticatedSocket, channelId: string) => {
+		const session = sessions.get(socket.id);
+		const registered = hub.registry.get(socket.id);
+		if (
+			!session
+			|| session.channelId !== channelId
+			|| registered?.channelId !== channelId
+			|| registered.participantId !== session.participantId
+			|| !socket.connected
+			|| !socket.rooms.has(`channel:${channelId}`)
+		) {
+			return null;
+		}
+		return session;
+	};
+
+	/** One media request: rate limited, validated, on the current session, answered once. */
+	const handle = <S extends z.ZodTypeAny, T extends object>(
+		socket: AuthenticatedSocket,
+		event: string,
+		limit: number,
+		schema: S,
+		run: (session: { channelId: string; participantId: string }, input: z.infer<S>) => Promise<T>,
+	) => {
+		socket.on(event, async (value: unknown, acknowledge?: ResultAcknowledgement<T>) => {
+			if (!consumeSocketRate(socket, event.replaceAll(':', '-'), limit, 60_000)) {
+				acknowledge?.({ ok: false });
+				return;
+			}
+			const parsed = schema.safeParse(value);
+			const session = parsed.success ? current(socket, (parsed.data as { channelId: string }).channelId) : null;
+			if (!parsed.success || !session) {
+				acknowledge?.({ ok: false });
+				return;
+			}
+			try {
+				const result = await run(session, parsed.data);
+				if (current(socket, session.channelId) !== session) {
+					acknowledge?.({ ok: false });
+					return;
+				}
+				acknowledge?.({ ok: true, ...result });
+			} catch (error) {
+				if (!(error instanceof Error) || !/^VOICE_|^INVALID_/.test(error.message)) {
+					logError(`websocket.${event.replaceAll(':', '_')}`, error);
+				}
+				acknowledge?.({ ok: false });
+			}
+		});
+	};
+
 	io.on('connection', (socket: AuthenticatedSocket) => {
 		socket.on('voice:sfu:join', async (
 			value: unknown,
@@ -577,7 +736,7 @@ export function attachVoiceSfuEvents(
 				return;
 			}
 
-			const parsed = joinSchema.safeParse(value);
+			const parsed = sfuJoinSchema.safeParse(value);
 
 			if (!parsed.success) {
 				acknowledge?.({ ok: false, error: 'INVALID_REQUEST' });
@@ -589,15 +748,23 @@ export function attachVoiceSfuEvents(
 				return;
 			}
 
+			// Only a participant of the call registry gets media, under its own id.
+			const registered = hub.registry.get(socket.id);
+
+			if (registered?.channelId !== parsed.data.channelId) {
+				acknowledge?.({ ok: false, error: 'FORBIDDEN' });
+				return;
+			}
+
 			const session = {
 				channelId: parsed.data.channelId,
-				participantId: randomUUID(),
+				participantId: registered.participantId,
 			};
 
 			sessions.set(socket.id, session);
 
 			try {
-				const authorized = await authorizeSfuVoiceChannel(
+				const authorized = await authorize(
 					socket,
 					session.channelId,
 				);
@@ -611,11 +778,7 @@ export function attachVoiceSfuEvents(
 					session.participantId,
 				);
 
-				if (
-					!socket.connected
-					|| sessions.get(socket.id) !== session
-					|| !socket.rooms.has(`channel:${session.channelId}`)
-				) {
+				if (current(socket, session.channelId) !== session) {
 					throw new Error('VOICE_SFU_FORBIDDEN');
 				}
 
@@ -623,6 +786,8 @@ export function attachVoiceSfuEvents(
 					ok: true,
 					participantId: session.participantId,
 					rtpCapabilities,
+					producers: coordinator.getProducers(session.channelId)
+						.filter((producer) => producer.participantId !== session.participantId),
 				});
 			} catch (error) {
 				if (sessions.get(socket.id) === session) {
@@ -656,6 +821,54 @@ export function attachVoiceSfuEvents(
 
 			release(socket.id);
 			acknowledge?.({ ok: true });
+		});
+
+		handle(socket, 'voice:sfu:transport', 20, sfuTransportSchema, async (session, input) => ({
+			transport: await coordinator.createTransport(session.channelId, session.participantId, input.direction),
+		}));
+
+		handle(socket, 'voice:sfu:connect', 20, sfuConnectSchema, async (session, input) => {
+			await coordinator.connectTransport(
+				session.channelId,
+				session.participantId,
+				input.direction,
+				input.transportId,
+				input.dtlsParameters as never,
+			);
+			return {};
+		});
+
+		handle(socket, 'voice:sfu:produce', 20, sfuProduceSchema, async (session, input) => {
+			const producerId = await coordinator.createProducer(
+				session.channelId,
+				session.participantId,
+				input.rtpParameters as never,
+			);
+			// Everyone else in the call starts receiving the new stream.
+			for (const [socketId, other] of sessions) {
+				if (socketId !== socket.id && other.channelId === session.channelId) {
+					io.to(socketId).emit('voice:sfu:producer', {
+						channelId: session.channelId,
+						participantId: session.participantId,
+						producerId,
+					});
+				}
+			}
+			return { producerId };
+		});
+
+		handle(socket, 'voice:sfu:consume', 120, sfuConsumeSchema, async (session, input) => ({
+			consumer: await coordinator.createConsumer(
+				session.channelId,
+				session.participantId,
+				input.sourceParticipantId,
+				input.rtpCapabilities as never,
+			),
+		}));
+
+		handle(socket, 'voice:sfu:resume', 120, sfuResumeSchema, async (session, input) => {
+			await coordinator.resumeConsumer(session.channelId, session.participantId, input.consumerId);
+			return {};
 		});
 
 		socket.once('disconnect', () => {

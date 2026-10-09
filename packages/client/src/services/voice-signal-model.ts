@@ -21,6 +21,8 @@ export interface VoiceJoinResult {
   self?: VoiceParticipant;
   participants?: VoiceParticipant[];
   iceServers?: VoiceIceServer[];
+  /** The call goes through the media server (with frame encryption); otherwise it is direct. */
+  media?: 'sfu';
 }
 
 export interface VoiceWatchResult {
@@ -157,14 +159,16 @@ export function parseVoiceJoinResult(value: unknown): VoiceJoinResult | null {
     return { ok: false, error: error as VoiceJoinResult['error'] };
   }
   if (candidate.ok !== true) return null;
-  if (!isExactObject(candidate, ['ok', 'self', 'participants', 'iceServers'])) return null;
+  const media = candidate.media;
+  if (!isExactObject(candidate, ['ok', 'self', 'participants', 'iceServers', ...(media === undefined ? [] : ['media'])])) return null;
+  if (media !== undefined && media !== 'sfu') return null;
   const self = parseVoiceParticipant(candidate.self);
   if (!self || !Array.isArray(candidate.participants) || candidate.participants.length > 8) return null;
   const participants = candidate.participants.map(parseVoiceParticipant);
   if (participants.some((participant) => !participant)) return null;
   const iceServers = normalizeVoiceIceServers(candidate.iceServers);
   if (!iceServers) return null;
-  return { ok: true, self, participants: participants as VoiceParticipant[], iceServers };
+  return { ok: true, self, participants: participants as VoiceParticipant[], iceServers, ...(media === 'sfu' ? { media } : {}) };
 }
 
 export function parseVoiceChannelPresence(value: unknown): VoiceChannelPresence | null {
@@ -257,7 +261,7 @@ function isSignalSequence(value: unknown): value is number {
   return Number.isSafeInteger(value) && (value as number) >= 1;
 }
 
-function isExactObject(value: unknown, keys: string[]): value is Record<string, unknown> {
+export function isExactObject(value: unknown, keys: string[]): value is Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const actual = Object.keys(value as Record<string, unknown>).sort();
   const expected = [...keys].sort();

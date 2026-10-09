@@ -133,3 +133,173 @@ describe('voice presence watch', () => {
     assert.deepEqual(reply?.channels.map((entry) => entry.channelId), [channelB]);
   });
 });
+
+const { attachVoiceSfuEvents } = await import('./voice.handler.js');
+
+/** A socket that records its handlers and what it was sent. */
+function fakeSocket(id: string, deviceId: string, rooms: string[]) {
+  const handlers = new Map<string, (...args: any[]) => unknown>();
+  const sent: Array<{ event: string; payload: unknown }> = [];
+  const socket = {
+    id,
+    userId: `user-${id}`,
+    deviceId,
+    connected: true,
+    rooms: new Set<string>([id, ...rooms]),
+    on: (event: string, handler: (...args: any[]) => unknown) => { handlers.set(event, handler); },
+    once: (event: string, handler: (...args: any[]) => unknown) => { handlers.set(event, handler); },
+    join: async (room: string | string[]) => { for (const entry of [room].flat()) socket.rooms.add(entry); },
+    leave: async (room: string) => { socket.rooms.delete(room); },
+    emit: (event: string, payload: unknown) => { sent.push({ event, payload }); },
+  };
+  const call = async (event: string, payload: unknown) => new Promise<any>((resolve) => {
+    void handlers.get(event)!(payload, resolve);
+  });
+  return { socket, handlers, sent, call };
+}
+
+function fakeIo(sockets: Array<ReturnType<typeof fakeSocket>>) {
+  const leaveListeners: Array<(room: string, socketId: string) => void> = [];
+  let connection: ((socket: unknown) => void) | null = null;
+  const io = {
+    of: () => ({ adapter: { on: (_event: string, listener: (room: string, socketId: string) => void) => { leaveListeners.push(listener); } } }),
+    to: (socketId: string) => ({ emit: (event: string, payload: unknown) => sockets.find((entry) => entry.socket.id === socketId)?.sent.push({ event, payload }) }),
+    on: (_event: string, listener: (socket: unknown) => void) => { connection = listener; },
+    sockets: { sockets: new Map(sockets.map((entry) => [entry.socket.id, entry.socket])) },
+  };
+  return {
+    io,
+    connect: (entry: ReturnType<typeof fakeSocket>) => connection!(entry.socket),
+    leaveRoom: (entry: ReturnType<typeof fakeSocket>, room: string) => {
+      entry.socket.rooms.delete(room);
+      for (const listener of leaveListeners) listener(room, entry.socket.id);
+    },
+  };
+}
+
+describe('calls through the media server', () => {
+  const room = `channel:${channelA}`;
+  const wrappedKey = 'A'.repeat(342) + '==';
+  const keyMessage = {
+    type: 'voice-key',
+    sequence: 1,
+    channelId: channelA,
+    senderParticipantId: 'participant_a',
+    senderDeviceId: deviceA,
+    targetParticipantId: 'participant_b',
+    targetDeviceId: deviceB,
+    keyId: 0xffff_ffff,
+    wrappedKey,
+    signature: `${'A'.repeat(86)}==`,
+  };
+
+  function call(options: { sfu: boolean }) {
+    const a = fakeSocket('socket_a', deviceA, [room]);
+    const b = fakeSocket('socket_b', deviceB, [room]);
+    const { io, connect, leaveRoom } = fakeIo([a, b]);
+    const registry = new VoiceParticipantRegistry();
+    registry.join('socket_a', 'user-a', deviceA, channelA, new Date(), 'participant_a');
+    registry.join('socket_b', 'user-b', deviceB, channelA, new Date(), 'participant_b');
+    const hub = new VoiceSignalingHub(io as never, registry, []);
+    if (options.sfu) hub.enableSfu();
+    hub.attach(a.socket as never);
+    hub.attach(b.socket as never);
+    return { a, b, io, connect, leaveRoom, hub, registry };
+  }
+
+  it('relays a key message only between two current participants of the same call', async () => {
+    const { a, b } = call({ sfu: true });
+    assert.deepEqual(await a.call('voice:key', keyMessage), { ok: true });
+    const delivered = b.sent.find((entry) => entry.event === 'voice:key')?.payload as { envelope: Record<string, unknown>; signature: string };
+    assert.equal(delivered.signature, keyMessage.signature);
+    const { signature: _signature, ...envelope } = keyMessage;
+    assert.deepEqual(delivered.envelope, envelope);
+    for (const refused of [
+      { ...keyMessage, senderParticipantId: 'participant_b' },
+      { ...keyMessage, senderDeviceId: deviceB },
+      { ...keyMessage, targetDeviceId: deviceA },
+      { ...keyMessage, channelId: channelB },
+      { ...keyMessage, targetParticipantId: 'participant_x' },
+      { ...keyMessage, keyId: 0x1_0000_0000 },
+      { ...keyMessage, wrappedKey: 'A'.repeat(100) },
+      { ...keyMessage, extra: true },
+    ]) {
+      assert.deepEqual(await a.call('voice:key', refused), { ok: false });
+    }
+    b.socket.rooms.delete(room);
+    assert.deepEqual(await a.call('voice:key', keyMessage), { ok: false });
+  });
+
+  it('relays no key messages for direct calls, and no direct signals through the media server', async () => {
+    const direct = call({ sfu: false });
+    assert.deepEqual(await direct.a.call('voice:key', keyMessage), { ok: false });
+    const media = call({ sfu: true });
+    const signal = {
+      type: 'voice-signal', signalId: '00000000-0000-4000-8000-000000000020', sequence: 1, channelId: channelA,
+      senderParticipantId: 'participant_a', senderDeviceId: deviceA, targetParticipantId: 'participant_b',
+      kind: 'offer', descriptionType: 'offer', sdp: 'v=0\r\n', candidate: null, sdpMid: null, sdpMLineIndex: null,
+      usernameFragment: null, signature: `${'A'.repeat(86)}==`,
+    };
+    assert.deepEqual(await media.a.call('voice:signal', signal), { ok: false });
+  });
+
+  it('joins with the participant id the client chose, which a call through the media server requires', async () => {
+    const c = fakeSocket('socket_c', '00000000-0000-4000-8000-000000000013', []);
+    const { io } = fakeIo([c]);
+    const hub = new VoiceSignalingHub(io as never, new VoiceParticipantRegistry(), []);
+    hub.enableSfu();
+    (hub as unknown as { joinUnderAuthorizationLock: unknown }).joinUnderAuthorizationLock = async () => {
+      c.socket.rooms.add(room);
+      return true;
+    };
+    hub.attach(c.socket as never);
+    assert.deepEqual(await c.call('voice:join', { channelId: channelA }), { ok: false, error: 'INVALID_REQUEST' });
+    const chosen = '00000000-0000-4000-8000-0000000000c3';
+    const joined = await c.call('voice:join', { channelId: channelA, participantId: chosen });
+    assert.equal(joined.ok, true);
+    assert.equal(joined.self.participantId, chosen);
+    assert.equal(joined.media, 'sfu');
+  });
+
+  it('gives media only to the call participant of the socket, under its id, and ends it with the call', async () => {
+    const { a, b, io, connect, leaveRoom, hub } = call({ sfu: true });
+    const outsider = fakeSocket('socket_o', '00000000-0000-4000-8000-000000000014', [room]);
+    const coordinator = {
+      joined: [] as string[],
+      left: [] as string[],
+      producers: [] as Array<{ participantId: string; producerId: string }>,
+      async joinParticipant(_channelId: string, participantId: string) { this.joined.push(participantId); return { codecs: [] }; },
+      leaveParticipant(participantId: string) { this.left.push(participantId); },
+      getProducers() { return this.producers; },
+      async createProducer(_channelId: string, participantId: string) {
+        const producerId = `producer-${participantId}`;
+        this.producers.push({ participantId, producerId });
+        return producerId;
+      },
+      async createTransport() { return { id: 'transport', iceParameters: {}, iceCandidates: [], dtlsParameters: {} }; },
+    };
+    attachVoiceSfuEvents(io as never, coordinator as never, hub, async () => true);
+    connect(a);
+    connect(b);
+    connect(outsider);
+    assert.deepEqual(await outsider.call('voice:sfu:join', { channelId: channelA }), { ok: false, error: 'FORBIDDEN' });
+    const joinedA = await a.call('voice:sfu:join', { channelId: channelA });
+    assert.equal(joinedA.ok, true);
+    assert.equal(joinedA.participantId, 'participant_a');
+    assert.deepEqual(await a.call('voice:sfu:produce', { channelId: channelA, rtpParameters: { codecs: [] } }), { ok: true, producerId: 'producer-participant_a' });
+    const joinedB = await b.call('voice:sfu:join', { channelId: channelA });
+    // B learns of A's stream from the join, and A of B's when B starts sending.
+    assert.deepEqual(joinedB.producers, [{ participantId: 'participant_a', producerId: 'producer-participant_a' }]);
+    await b.call('voice:sfu:produce', { channelId: channelA, rtpParameters: { codecs: [] } });
+    assert.deepEqual(a.sent.filter((entry) => entry.event === 'voice:sfu:producer').map((entry) => entry.payload), [
+      { channelId: channelA, participantId: 'participant_b', producerId: 'producer-participant_b' },
+    ]);
+    // Media parameters are bounded before they reach the media server.
+    assert.deepEqual(await a.call('voice:sfu:transport', { channelId: channelA, direction: 'sideways' }), { ok: false });
+    assert.deepEqual(await a.call('voice:sfu:produce', { channelId: channelA, rtpParameters: { blob: 'x'.repeat(17 * 1024) } }), { ok: false });
+    // Leaving the call (the channel room) ends the media session.
+    leaveRoom(a, room);
+    assert.deepEqual(coordinator.left, ['participant_a']);
+    assert.deepEqual(await a.call('voice:sfu:transport', { channelId: channelA, direction: 'send' }), { ok: false });
+  });
+});

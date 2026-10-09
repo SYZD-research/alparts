@@ -16,6 +16,9 @@ const PARTICIPANT_ID = /^[A-Za-z0-9_-]{1,128}$/;
 
 export interface VoiceCoordinatorConfig extends VoiceWebRtcServerConfig {
 	workerCount?: number;
+	/** Speakers per channel and streams per listener (the defaults let everyone in a call speak and hear everyone). */
+	maxProducersPerChannel?: number;
+	maxConsumersPerParticipant?: number;
 }
 
 export interface VoiceConsumerParameters {
@@ -44,8 +47,8 @@ export class VoiceCoordinator {
 	private readonly webRtcServers: VoiceWebRtcServerManager;
 	private readonly routers: VoiceRouterManager;
 	private readonly transports = new VoiceTransportManager();
-	private readonly producers = new VoiceProducerManager(this.transports);
-	private readonly consumers = new VoiceConsumerManager(this.transports, this.producers);
+	private readonly producers: VoiceProducerManager;
+	private readonly consumers: VoiceConsumerManager;
 	private readonly sessions = new Map<string, VoiceSession>();
 	private readonly channels = new Map<string, Set<string>>();
 	private readonly pendingJoins = new Set<Promise<types.Router>>();
@@ -57,6 +60,8 @@ export class VoiceCoordinator {
 
 	constructor(config: VoiceCoordinatorConfig) {
 		this.workerCount = config.workerCount;
+		this.producers = new VoiceProducerManager(this.transports, config.maxProducersPerChannel);
+		this.consumers = new VoiceConsumerManager(this.transports, this.producers, config.maxConsumersPerParticipant);
 		this.webRtcServers = new VoiceWebRtcServerManager(config);
 		this.routers = new VoiceRouterManager(this.workers, this.webRtcServers);
 	}

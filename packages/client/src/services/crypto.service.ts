@@ -24,9 +24,11 @@ import {
   serializeChannelKeyWrap,
   serializeMessageAad,
   serializeMessageEnvelope,
+  serializeVoiceKeyEnvelope,
   serializeVoiceSignalEnvelope,
   type SignedAttachmentEnvelope,
   type SignedMessageEnvelope,
+  type SignedVoiceKeyEnvelope,
   type SignedVoiceSignalEnvelope,
   type User,
 } from '@alparts/shared';
@@ -993,6 +995,10 @@ export async function signVoiceSignalEnvelope(envelope: SignedVoiceSignalEnvelop
   return signDevicePayload(serializeVoiceSignalEnvelope(envelope));
 }
 
+export async function signVoiceKeyEnvelope(envelope: SignedVoiceKeyEnvelope): Promise<string> {
+  return signDevicePayload(serializeVoiceKeyEnvelope(envelope));
+}
+
 export async function signDevicePayload(payload: string): Promise<string> {
   const signature = await crypto.subtle.sign(
     { name: 'ECDSA', hash: 'SHA-256' },
@@ -1020,6 +1026,39 @@ export async function verifyVoiceSignalSignature(
   identityKey: string,
 ): Promise<boolean> {
   return verifyDevicePayload(serializeVoiceSignalEnvelope(envelope), signature, identityKey);
+}
+
+export async function verifyVoiceKeySignature(
+  envelope: SignedVoiceKeyEnvelope,
+  signature: string,
+  identityKey: string,
+): Promise<boolean> {
+  return verifyDevicePayload(serializeVoiceKeyEnvelope(envelope), signature, identityKey);
+}
+
+/** A call frame key encrypted to another device's directory bundle (RSA-OAEP-256). */
+export async function wrapVoiceKey(key: Uint8Array, recipientIdentityKey: string): Promise<string> {
+  const parsed = JSON.parse(recipientIdentityKey) as DevicePublicBundle;
+  if (parsed.version !== 1 || parsed.encryptionKey?.kty !== 'RSA' || parsed.encryptionKey.alg !== 'RSA-OAEP-256') {
+    throw new Error('Invalid device encryption key');
+  }
+  const publicKey = await crypto.subtle.importKey(
+    'jwk',
+    { kty: 'RSA', n: parsed.encryptionKey.n, e: parsed.encryptionKey.e, alg: 'RSA-OAEP-256', ext: true },
+    { name: 'RSA-OAEP', hash: 'SHA-256' },
+    false,
+    ['encrypt'],
+  );
+  return arrayBufferToBase64(await crypto.subtle.encrypt({ name: 'RSA-OAEP' }, publicKey, key as Uint8Array<ArrayBuffer>));
+}
+
+/** A call frame key encrypted to this device. */
+export async function unwrapVoiceKey(wrappedKey: string): Promise<Uint8Array> {
+  return new Uint8Array(await crypto.subtle.decrypt(
+    { name: 'RSA-OAEP' },
+    getActiveDevice().encryptionPrivateKey,
+    base64ToArrayBuffer(wrappedKey),
+  ));
 }
 
 export async function verifyDevicePayload(payload: string, signature: string, identityKey: string): Promise<boolean> {

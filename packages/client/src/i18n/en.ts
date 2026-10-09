@@ -751,6 +751,7 @@ export const en = {
   '利用できるマイクが見つかりません': 'No microphone found',
   'マイクをほかのアプリが使用しているため開始できません': 'Another app is using the microphone',
   '音声通話を開始できませんでした。もう一度お試しください': 'Could not start the voice call. Please try again',
+  'このブラウザーでは通話を安全に行えないため、参加できません。ブラウザーかアプリを最新にしてお試しください': 'This browser cannot keep the call private, so you cannot join. Update your browser or the app and try again',
 
   // Server responses
   'この端末を追加するには、もう一度ログインしてください。': 'Sign in again to add this device.',
