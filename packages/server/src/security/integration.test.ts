@@ -1,4 +1,4 @@
-import assert from 'node:assert/strict';
+import strictAssert from 'node:assert/strict';
 import {
   constants,
   createCipheriv,
@@ -65,6 +65,19 @@ import {
   type SignedMessageEnvelope,
   type SignedVoiceSignalEnvelope,
 } from '@alparts/shared';
+
+/**
+ * The scenario tests in this file are long. Every call with an assertion
+ * signature (`asserts actual is T`) makes the type checker's flow analysis
+ * recurse once more for each later reference, which overflows its stack in
+ * functions this size. The equality checks here narrow nothing, so they get
+ * plain signatures; assert.ok keeps its narrowing.
+ */
+type ScenarioAssert = Omit<typeof strictAssert, 'equal' | 'deepEqual'> & {
+  equal(actual: unknown, expected: unknown, message?: string | Error): void;
+  deepEqual(actual: unknown, expected: unknown, message?: string | Error): void;
+};
+const assert: ScenarioAssert = strictAssert;
 
 const enabled = process.env.RUN_INTEGRATION === '1';
 const fixtureKeys = new Map<string, ReturnType<typeof deviceFixture>>();
@@ -3283,21 +3296,20 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     const stored = await db.query.forumPosts.findFirst({ where: eq(forumPostTable.messageId, postId) });
     assert.ok(stored?.deletedAt);
     // A reply deleted after its post sends no post state: one would put the
-    // deleted post back into every client's list (formal model M7 FV1). A
-    // deleted post is not found for members and managers alike. (In a function
-    // of its own: this test is near the type checker's flow-analysis depth.)
-    await (async () => {
-      const lateRemoval = asOwner({ type: 'delete', refMessageId: replyEvent.id, postId, plaintext: '' });
-      const removedReply = await messageService.deleteMessage(replyEvent.id, owner.user.id, {
-        deviceId: ownerDevice.id, keyVersion: 1, idempotencyKey: lateRemoval.envelope.idempotencyKey,
-        signature: lateRemoval.body.signature, postId, encryptedContent: '', contentNonce: '', broadcastMention: false,
-      });
-      assert.deepEqual([removedReply.isNewEvent, removedReply.forumPost], [true, null]);
-      const lockStatuses = await Promise.all([member.cookie, owner.cookie].map(async (cookie) => (
-        await request(`/api/forum/posts/${postId}/lock`, { method: 'PUT', cookie, body: { locked: false } })
-      ).status));
-      assert.deepEqual(lockStatuses, [404, 404]);
-    })();
+    // deleted post back into every client's list (formal model M7 FV1).
+    const lateRemoval = asOwner({ type: 'delete', refMessageId: replyEvent.id, postId, plaintext: '' });
+    const removedReply = await messageService.deleteMessage(replyEvent.id, owner.user.id, {
+      deviceId: ownerDevice.id, keyVersion: 1, idempotencyKey: lateRemoval.envelope.idempotencyKey,
+      signature: lateRemoval.body.signature, postId, encryptedContent: '', contentNonce: '', broadcastMention: false,
+    });
+    assert.equal(removedReply.isNewEvent, true);
+    assert.equal(removedReply.forumPost, null);
+    // A deleted post is not found for members and managers alike.
+    for (const cookie of [member.cookie, owner.cookie]) {
+      assert.equal((await request(`/api/forum/posts/${postId}/lock`, {
+        method: 'PUT', cookie, body: { locked: false },
+      })).status, 404);
+    }
 
     // A privacy change that commits while a forum request waits for the
     // workspace lock is the state that request must be judged against. The
