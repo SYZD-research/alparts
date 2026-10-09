@@ -2800,5 +2800,1468 @@
       "Clients that have not been updated cannot verify v5 events; the desktop and Android apps bundle the client.",
       "FINDING M8 VE2 (SFU calls) is open; the SFU is disabled by default."
     ]
+  },
+  "follow_up_sfu": {
+    "date": "2026-10-09",
+    "scope": "Second same-day follow-up: SFU calls encrypt every audio frame in the sender's browser (SFrame, RFC 9605) under per-call sender keys, wrapped for and signed by device keys and replaced on every join and leave (ADR 0014, R-052); the SFU session belongs to the socket's call participant (M8a VP7). M8 VE2 holds; new M8k explores the real call key manager of three clients; voice-sfu-e2e.mts checks real mediasoup and Chromium against a server that reads, relabels and replays frames. The M8b and M8k harnesses now keep violations recorded during a step in the state fingerprint. Results are for the worktree with these changes.",
+    "model_summary": {
+      "PASS": 156,
+      "LIMIT": 31,
+      "FINDING": 0,
+      "MODEL-GAP": 0,
+      "VACUOUS": 0
+    },
+    "model_runs": [
+      {
+        "command": "python3 formal-model/run.py M1c M1 M2 M2c M3r M4 M4s M5 M5v M6 M7 M9",
+        "exit_code": 0,
+        "elapsed_seconds": 339,
+        "summary": {
+          "PASS": 106,
+          "LIMIT": 23,
+          "FINDING": 0,
+          "MODEL-GAP": 0,
+          "VACUOUS": 0
+        },
+        "checks": [
+          {
+            "model": "M1c",
+            "check": "C0",
+            "title": "an allow-wins evaluator is detected as non-conforming",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M1c",
+            "check": "C1",
+            "title": "Python evaluator equals TypeScript implementation (400 random workspaces, 1833 masks)",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M1",
+            "check": "A1",
+            "title": "a held channel-level deny always removes the bit (non-owner)",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M1",
+            "check": "A2",
+            "title": "a held channel-level allow always grants unless also denied there",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M1",
+            "check": "A3",
+            "title": "overrides never change workspace-scope bits (MANAGE_*, AUDIT, KICK, ...)",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M1",
+            "check": "A4",
+            "title": "a private channel is invisible to non-members, including the owner",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M1",
+            "check": "A5",
+            "title": "a voice channel is never visible without CONNECT_VOICE",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M1",
+            "check": "A6",
+            "title": "the owner can never be denied a channel-scoped bit",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M1",
+            "check": "A7",
+            "title": "a deny on a low role overrides an allow from a higher role held by the same member",
+            "verdict": "LIMIT"
+          },
+          {
+            "model": "M1",
+            "check": "A8",
+            "title": "adding a role can remove channel visibility (evaluation is not monotone in roles)",
+            "verdict": "LIMIT"
+          },
+          {
+            "model": "M1",
+            "check": "A4-ctl",
+            "title": "without the private-membership gate a non-member sees a private channel",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M1",
+            "check": "A3-ctl",
+            "title": "without override mask validation an override grants a workspace-scope bit",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M1",
+            "check": "A6-ctl",
+            "title": "without the owner grant the owner can be locked out",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M2",
+            "check": "H1",
+            "title": "no management operation grants a permission the actor lacks",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M2",
+            "check": "H3",
+            "title": "the owner never loses permissions, visibility or membership",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M2",
+            "check": "H2a",
+            "title": "unassign, kick and private-member removal never affect an equal-or-higher member",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M2",
+            "check": "H2b",
+            "title": "no other operation affects an equal-or-higher member",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M2",
+            "check": "H2c",
+            "title": "assigning a role never reduces an equal-or-higher member",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M2",
+            "check": "H2b-ctl",
+            "title": "without assertNoSuperiorAccessLoss, overrides and role edits reduce a superior",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M2",
+            "check": "H2d-ctl",
+            "title": "without the guard, a lower channel manager removes a superior from a private channel",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M2",
+            "check": "H2-privacy-ctl",
+            "title": "without the guard, privacy can reduce superior access",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M2",
+            "check": "H2-moveChannel-ctl",
+            "title": "without the guard, moveChannel can reduce superior access",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M2",
+            "check": "H2-deleteChannel-ctl",
+            "title": "without the guard, deleteChannel can reduce superior access",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M2",
+            "check": "H2-category-grant",
+            "title": "moving/deleting a category preserves category-only superior grants",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M2",
+            "check": "H2-deleteCategory-ctl",
+            "title": "without the guard, deleting a category removes a superior grant",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M2",
+            "check": "H2a-ctl",
+            "title": "without the F-P2F-040 rank check, unassign affects a superior",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M2c",
+            "check": "HC0",
+            "title": "the corpus exercises allowed and refused changes",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M2c",
+            "check": "HC1",
+            "title": "real superior guard equals M2 predicate",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M3r",
+            "check": "K2",
+            "title": "a resend of an accepted envelope always gets the replay answer, whichever check sees it taken",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M3r",
+            "check": "K1",
+            "title": "A never loses the state of its own accepted commit (closed tab, resend, B racing) when refusals follow the state",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M3r",
+            "check": "K1-transient",
+            "title": "a resend refused for a passing reason (429, an expired session) while a send from a closed tab is still outstanding makes A drop its record; when that send is accepted, A must rejoin",
+            "verdict": "LIMIT"
+          },
+          {
+            "model": "M3r",
+            "check": "K1-stamp",
+            "title": "with each send stamped before it starts, transient refusals no longer lose the state",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M3r",
+            "check": "K1-late",
+            "title": "even with stamps, a request that outlives the five minutes the client allows (nothing bounds a request once the server admitted it) can be accepted after A gave it up",
+            "verdict": "LIMIT"
+          },
+          {
+            "model": "M3r",
+            "check": "K2-ctl",
+            "title": "before the fix: a resend that passed the replay check just before its first send was accepted got 409",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M4",
+            "check": "D1",
+            "title": "the attacker gets an approved device exactly when the specification allows it (32 capability/account combinations)",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M4",
+            "check": "D2",
+            "title": "no session survives revocation of its device or account disabling",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M4",
+            "check": "D3",
+            "title": "a stolen fresh passkey cookie on an account that never had a device yields an approved device (TOFU)",
+            "verdict": "LIMIT"
+          },
+          {
+            "model": "M4",
+            "check": "D4",
+            "title": "a user who approves an unrecognised device (skipping the confirmation code) hands over access",
+            "verdict": "LIMIT"
+          },
+          {
+            "model": "M4",
+            "check": "D1-ctl",
+            "title": "without the 10-minute passkey window a stale cookie plus a recovery code is enough",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M4s",
+            "check": "AS1",
+            "title": "a password change, password-login change or session revocation commits only while the session that confirmed it is live",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M4s",
+            "check": "AS2",
+            "title": "once U changed the password from its session, X (without a passkey) never knows the current password or holds a session again",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M4s",
+            "check": "AS3",
+            "title": "after an operator reset, X (without a passkey) never knows the current password or holds a session",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M4s",
+            "check": "WS1",
+            "title": "once a session ends and its sockets are closed, no socket of that session stays connected",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M4s",
+            "check": "AS4",
+            "title": "a session that uses up its confirmations (wrong passwords, challenge requests) never keeps U's own session from confirming, for example to revoke it",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M4s",
+            "check": "AS3-pk-sessions",
+            "title": "with a passkey of X registered before, X still never knows the password or holds a session after the reset",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M4s",
+            "check": "AS3-pk",
+            "title": "after an operator reset, X never signs in again, even with a passkey it registered before (the reset removes passkeys)",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M4s",
+            "check": "AS1-ctl",
+            "title": "before the fix: a change confirmed before its session ended still committed",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M4s",
+            "check": "AS2-ctl",
+            "title": "before the fix: X's change confirmed before U's change committed after it and ended U's session",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M4s",
+            "check": "AS3-ctl",
+            "title": "before the fix: X's change confirmed before the operator reset replaced the reset password",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M4s",
+            "check": "WS1-ctl",
+            "title": "before the fix: a socket whose handshake read the session before it ended stayed connected",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M4s",
+            "check": "AS4-ctl",
+            "title": "before the fix: the budgets were counted per account, so X's stolen session kept U from confirming and from revoking it",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M4s",
+            "check": "AS3-pk-ctl",
+            "title": "before the fix: the reset kept every passkey, and the one X registered signed X in again",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M5",
+            "check": "AU1",
+            "title": "a database owner without the key cannot change or remove any checkpointed row without it being refused at the next startup",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M5",
+            "check": "AU1-run",
+            "title": "while the process runs, a database owner can change a checkpointed row before the checkpoint unnoticed (running checks cover the anchor rows and the rows after the checkpoint)",
+            "verdict": "LIMIT"
+          },
+          {
+            "model": "M5",
+            "check": "AU2",
+            "title": "with the integrity key, rows up to the checkpoint still cannot be changed (refused at the next startup)",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M5",
+            "check": "AU3",
+            "title": "with key and checkpoint file, rows up to the witness still cannot be changed (refused at the next startup)",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M5",
+            "check": "AU4a",
+            "title": "replaying an older checkpoint copy is rejected while the process runs",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M5",
+            "check": "AU4b",
+            "title": "replaying an older checkpoint copy is rejected after a restart",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M5",
+            "check": "AU-L1",
+            "title": "a row committed but not yet checkpointed (crash window) can be removed without the key",
+            "verdict": "LIMIT"
+          },
+          {
+            "model": "M5",
+            "check": "AU-L1h",
+            "title": "a row whose checkpoint reached the local file but not yet the separate head (crash, or the head store failing) can be removed by a database owner who also replays the file, after a restart",
+            "verdict": "LIMIT"
+          },
+          {
+            "model": "M5",
+            "check": "AU-L2",
+            "title": "with key, database, checkpoint file AND object-store head, unwitnessed history can be rewritten",
+            "verdict": "LIMIT"
+          },
+          {
+            "model": "M5",
+            "check": "AU-L3",
+            "title": "even with a witness, rows after the witnessed row can be rewritten by a full compromise",
+            "verdict": "LIMIT"
+          },
+          {
+            "model": "M5",
+            "check": "AU-L4",
+            "title": "rollback of ALL durable anchors and database cannot be detected locally after restart",
+            "verdict": "LIMIT"
+          },
+          {
+            "model": "M5",
+            "check": "AU1-ctl",
+            "title": "without per-row hash verification a database owner can modify rows",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M5",
+            "check": "AU4a-ctl",
+            "title": "without lastAcceptedCheckpoint an older checkpoint copy is accepted at runtime",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M5",
+            "check": "AU4b-ctl",
+            "title": "without the durable head, old checkpoints pass again after restart",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M5v",
+            "check": "AV-catalog",
+            "title": "the catalog covers every audit action name in the server source",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M5v",
+            "check": "AV-class",
+            "title": "every action is shown as its class requires (channel activity only to viewers of the channel and the actor; personal settings to nobody)",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M5v",
+            "check": "AV-case",
+            "title": "a request path or socket channel id that names an id in another letter case is refused (400 generated paths, percent-encoded too)",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M5v",
+            "check": "AV-links",
+            "title": "a viewer cannot tell from the view that rows it may not see were written between two rows it sees (no chain hashes in the view)",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M5v",
+            "check": "AV-links-ctl",
+            "title": "before the fix: the view returned prevHash and hash",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M5v",
+            "check": "AV-L-now",
+            "title": "channel activity follows the viewer's current access, so gaining access to a channel shows its earlier rows and losing it hides them",
+            "verdict": "LIMIT"
+          },
+          {
+            "model": "M6",
+            "check": "A3-concurrent",
+            "title": "stale preflight reads cannot count an identical save after a warning",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M6",
+            "check": "A3-concurrent-ctl",
+            "title": "without the locked recheck, two identical saves bypass the change requirement",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M6",
+            "check": "A1",
+            "title": "one clearing request per account, across all workspaces",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M6",
+            "check": "A4",
+            "title": "only MANAGE_MEMBERS/owner can warn, clear or deny, and only strictly lower members",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M6",
+            "check": "A5",
+            "title": "every warning on a current member can be cleared by someone in that workspace",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M6",
+            "check": "A6",
+            "title": "leaving, rejoining or editing never removes a warning",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M6",
+            "check": "A3",
+            "title": "a request is possible only after the profile actually changed since the warning",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M6",
+            "check": "A7",
+            "title": "a warned member with audit-log access can see who warned them",
+            "verdict": "LIMIT"
+          },
+          {
+            "model": "M6",
+            "check": "A3r",
+            "title": "alternative: a profile revision is also immune to clock differences",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M6",
+            "check": "A4-ctl",
+            "title": "without the rank rule a lower manager can warn a higher one",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M6",
+            "check": "A1-ctl",
+            "title": "with a per-workspace allowance two requests succeed",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M6",
+            "check": "A6-ctl",
+            "title": "if leaving deleted warnings, leave+rejoin would clear one",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M6",
+            "check": "A5-ctl",
+            "title": "if ownership could move to a warned member, nobody could clear it",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M6",
+            "check": "A3-ctl1",
+            "title": "before the fix: an unchanged save counted as a change",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M6",
+            "check": "A3-ctl2",
+            "title": "before the fix: an app clock ahead of the DB clock counted an earlier edit",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M6",
+            "check": "A3-ctl3",
+            "title": "before the fix: the same picture uploaded while the stored one could not be read counted as a change",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M6",
+            "check": "B1",
+            "title": "concurrent requests in two workspaces: still one (users row FOR UPDATE)",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M6",
+            "check": "B1-ctl",
+            "title": "without the row lock both concurrent requests succeed",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M6",
+            "check": "V1",
+            "title": "with an up-to-date client, a warned member's avatar is never shown in that workspace",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M6",
+            "check": "V2",
+            "title": "until the change reaches a client, its old member list still shows the avatar",
+            "verdict": "LIMIT"
+          },
+          {
+            "model": "M6",
+            "check": "V3",
+            "title": "the avatar route serves only the owner and users sharing a workspace",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M6",
+            "check": "V4",
+            "title": "a viewer keeps an already-fetched avatar after no longer sharing a workspace",
+            "verdict": "LIMIT"
+          },
+          {
+            "model": "M6",
+            "check": "V1-ctl",
+            "title": "before the fix: a former member's messages showed the avatar again",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M6",
+            "check": "V3-ctl",
+            "title": "without the shared-workspace check anyone can fetch it",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M6",
+            "check": "S1",
+            "title": "with clean commits/rollbacks the row never points at a missing object",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M6",
+            "check": "S2",
+            "title": "with clean commits/rollbacks no object is left unreferenced",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M6",
+            "check": "S1a",
+            "title": "with ambiguous commits, lost deletes and crashes the row never points at a missing object",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M6",
+            "check": "S1a-ctl",
+            "title": "before the fix: an ambiguous commit deleted the referenced object",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M6",
+            "check": "S3",
+            "title": "crashes or lost deletes leave unreferenced objects behind",
+            "verdict": "LIMIT"
+          },
+          {
+            "model": "M6",
+            "check": "S2-ctl",
+            "title": "without FOR UPDATE two concurrent uploads orphan an object",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M6",
+            "check": "E1",
+            "title": "accepts exactly the well-formed 256x256 RGB/RGBA PNGs of the corpus",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M6",
+            "check": "E2",
+            "title": "an accepted avatar carries nothing but the image (no bytes beyond the pixel stream)",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M6",
+            "check": "E3",
+            "title": "the corpus decompression bomb is rejected within 500 ms",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M7",
+            "check": "FI1",
+            "title": "a post's reply count equals its live replies (deleting a reply of a deleted post included)",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M7",
+            "check": "FI2",
+            "title": "no reply enters a deleted post, nor a locked post unless a manager writes it",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M7",
+            "check": "FI3",
+            "title": "only the author or a manager deletes a reply",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M7",
+            "check": "FI4",
+            "title": "a quote stays inside its post",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M7",
+            "check": "FV1",
+            "title": "a client's post list never shows a post after it was deleted",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M7",
+            "check": "FI2-ctl1",
+            "title": "without the live-post check a reply enters a deleted post",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M7",
+            "check": "FI2-ctl2",
+            "title": "without the lock check a member replies to a locked post",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M7",
+            "check": "FI3-ctl",
+            "title": "without the author-or-manager rule a member deletes another member's reply",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M7",
+            "check": "FI4-ctl",
+            "title": "without the same-post rule a reply quotes another post",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M7",
+            "check": "FV1-ctl",
+            "title": "before the fix: deleting a reply of a deleted post broadcast its state and the post reappeared",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M9",
+            "check": "MI-replay",
+            "title": "one signed operation is shown at most once (a copy under another id is quarantined)",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M9",
+            "check": "MI-redate",
+            "title": "an event the client already holds, sent again under its id with another time, changes nothing the client shows",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M9",
+            "check": "MI-file-v3",
+            "title": "a v3 file opens only on the message it was signed with",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M9",
+            "check": "MI-edit",
+            "title": "v5: edited text is shown on the message the edit was signed for",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M9",
+            "check": "MI-reply",
+            "title": "v5: a forum reply is shown under the post it was signed for",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M9",
+            "check": "MI-quote",
+            "title": "v5: a quote shows the message it was signed for, or that it cannot be shown",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M9",
+            "check": "MI-delete",
+            "title": "v5: a deletion removes only the message it was signed for",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M9",
+            "check": "MI-honest",
+            "title": "served honestly, every edit, deletion, quote and reply is shown where it was signed for",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M9",
+            "check": "MI-edit-legacy",
+            "title": "older clients: an edit can be shown on another message of the same author (documented)",
+            "verdict": "LIMIT"
+          },
+          {
+            "model": "M9",
+            "check": "MI-reply-legacy",
+            "title": "older clients: a forum reply can be shown under another post (documented)",
+            "verdict": "LIMIT"
+          },
+          {
+            "model": "M9",
+            "check": "MI-quote-legacy",
+            "title": "older clients: a quote can show another message (documented)",
+            "verdict": "LIMIT"
+          },
+          {
+            "model": "M9",
+            "check": "MI-delete-legacy",
+            "title": "older clients: a deletion can remove another message (documented)",
+            "verdict": "LIMIT"
+          },
+          {
+            "model": "M9",
+            "check": "MI-file-v2",
+            "title": "a legacy v2 file can be moved to another message of the same author (documented)",
+            "verdict": "LIMIT"
+          },
+          {
+            "model": "M9",
+            "check": "MI-latest",
+            "title": "served once in a server-chosen order, a message can show an older version (reordering and omission are documented as undetected)",
+            "verdict": "LIMIT"
+          }
+        ]
+      },
+      {
+        "command": "python3 formal-model/run.py M3",
+        "exit_code": 0,
+        "elapsed_seconds": 418,
+        "summary": {
+          "PASS": 15,
+          "LIMIT": 3,
+          "FINDING": 0,
+          "MODEL-GAP": 0,
+          "VACUOUS": 0
+        },
+        "checks": [
+          {
+            "model": "M3",
+            "check": "KC",
+            "title": "whenever a message can be written, only devices of users who can see the channel can derive or hold its key (removal, joining, fresh start, restore)",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M3",
+            "check": "KC-dev",
+            "title": "whenever a message can be written, no revoked device can derive or holds its key from the group",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M3",
+            "check": "KI",
+            "title": "the server accepts one commit per version: the version chain never forks",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M3",
+            "check": "KA",
+            "title": "a device that may read the channel derives, from the commit log alone, every version of each membership it joined (versions from an envelope it could not read on are exempt)",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M3",
+            "check": "KA-unjoined",
+            "title": "a membership that ended before the device joined it is not recovered from the log (only from the user's backups)",
+            "verdict": "LIMIT"
+          },
+          {
+            "model": "M3",
+            "check": "KC-dev-restore",
+            "title": "a device that restored its user's backups and was then revoked holds the current key until the next commit (at most 24 hours)",
+            "verdict": "LIMIT"
+          },
+          {
+            "model": "M3",
+            "check": "KL",
+            "title": "while one online usable member can follow the log, every online eligible device reaches a writable state by protocol steps alone (no fresh start)",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M3",
+            "check": "KL-orphan",
+            "title": "with no such member (none left, or none able to read an envelope), a fresh start makes every online eligible device writable again",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M3",
+            "check": "KL-lost",
+            "title": "a member that goes offline for good (Y1) never blocks the others: every online eligible device still reaches a writable state",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M3",
+            "check": "KC-server",
+            "title": "a server that ignores channel visibility can let a non-viewer's device derive the key of messages written later (F-E2E-001)",
+            "verdict": "LIMIT"
+          },
+          {
+            "model": "M3",
+            "check": "KC-ctl",
+            "title": "writing before the Remove is accepted lets a user who lost the channel read new messages",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M3",
+            "check": "KC-dev-ctl",
+            "title": "writing before the Remove is accepted lets a revoked device read new messages",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M3",
+            "check": "KI-ctl",
+            "title": "without the version compare-and-swap, two commits extend the same version",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M3",
+            "check": "KA-ctl",
+            "title": "serving the log only to current members leaves a device removed while offline without keys of versions it was a member at",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M3",
+            "check": "KA-rejoin-ctl",
+            "title": "asking to be added again when an envelope of an already ended membership cannot be read leaves the device out of the membership that added it (client before the fix)",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M3",
+            "check": "KL-poison-ctl",
+            "title": "without rejoin and fresh start, a device that cannot read one envelope never writes again",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M3",
+            "check": "KL-orphan-ctl",
+            "title": "without fresh start, a channel whose usable members are gone stays unwritable",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M3",
+            "check": "KL-lost-ctl",
+            "title": "without the 72-hour rule, a member that went offline for good keeps a non-manager waiting",
+            "verdict": "PASS"
+          }
+        ]
+      },
+      {
+        "command": "python3 formal-model/run.py M8",
+        "exit_code": 0,
+        "elapsed_seconds": 1570,
+        "summary": {
+          "PASS": 35,
+          "LIMIT": 5,
+          "FINDING": 0,
+          "MODEL-GAP": 0,
+          "VACUOUS": 0
+        },
+        "checks": [
+          {
+            "model": "M8",
+            "check": "VP1",
+            "title": "a P2P call participant is always in the call room of its channel",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M8",
+            "check": "VP2",
+            "title": "the socket is in a call or presence room only while it may join the channel (or until the revocation's room removal runs)",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M8",
+            "check": "VP3",
+            "title": "every SFU coordinator session belongs to the socket's current SFU session or to a join still in progress; an acknowledged one is in the call room",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M8",
+            "check": "VP4",
+            "title": "a voice:watch reply never lists the participants of a channel whose rooms the socket already left on revocation",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M8",
+            "check": "VP6",
+            "title": "after revocation and once its handlers finish, no call state of the channel remains",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M8",
+            "check": "VP7",
+            "title": "an SFU session is acknowledged only for the socket's participant of that call, under its id",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M8",
+            "check": "VP4-ctl",
+            "title": "before the fix: a watch reply listed a channel revoked while later channels were checked",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M8",
+            "check": "VP2-ctl",
+            "title": "checking authorization without the workspace lock lets a join enter a room after the revocation left it",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M8",
+            "check": "VP1-ctl",
+            "title": "registering a P2P participant without rechecking the room keeps a participant after revocation",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M8",
+            "check": "VP6-ctl",
+            "title": "without the SFU leave-room listener the SFU session outlives the revocation",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M8",
+            "check": "VP7-ctl",
+            "title": "SFU sessions of their own (before media signaling) are granted to sockets outside the call",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M8",
+            "check": "I1",
+            "title": "media flows only between a producer and a consumer of the same channel and router",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M8",
+            "check": "I2",
+            "title": "media flows only to and from participants whose session is current",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M8",
+            "check": "I3",
+            "title": "every open transport, producer and consumer is registered and belongs to a current session (no leak)",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M8",
+            "check": "I4",
+            "title": "at most the configured producers per channel and consumers per participant (four in the harness)",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M8",
+            "check": "I5",
+            "title": "a session never keeps a closed router; a channel has at most one open router",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M8",
+            "check": "I6",
+            "title": "once nothing is pending, no router stays open for a channel without participants",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M8",
+            "check": "I7",
+            "title": "after close() every object is closed, in Node and in the worker",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M8",
+            "check": "J1",
+            "title": "a join that succeeds leaves its session on a live router",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M8",
+            "check": "I3-ctl",
+            "title": "without closing transports on leave, a departed participant keeps a transport",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M8",
+            "check": "I6-ctl",
+            "title": "without closing the router of an emptied channel, the router stays open",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M8",
+            "check": "I3c-ctl",
+            "title": "creating consumers without the reservation and recheck leaves a consumer unregistered",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M8",
+            "check": "I4-ctl",
+            "title": "producers created without the pending reservation exceed the speaker limit",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M8",
+            "check": "KJ",
+            "title": "a participant who joins receives only keys made after the others knew it joined (no earlier audio)",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M8",
+            "check": "KL",
+            "title": "once a participant knows someone left, it sends that one no key and never sends under a key that one received (no later audio)",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M8",
+            "check": "KR",
+            "title": "a key is accepted at most once, never after a newer one of its sender, and only as its maker's key",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M8",
+            "check": "KH",
+            "title": "once the server delivered everything, the participants hold each other's current keys, and none that a former participant received",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M8",
+            "check": "KL-ctl",
+            "title": "before the fix: a key that reached someone who left while it was signed was still sent and used",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M8",
+            "check": "KJ-ctl",
+            "title": "giving a newcomer the key in use lets it read audio from before it joined",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M8",
+            "check": "KR-ctl",
+            "title": "without the sequence and key id checks a repeated key message is accepted again",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M8",
+            "check": "VE1-relay",
+            "title": "P2P calls: a server that relays and drops signaling cannot obtain call audio",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M8",
+            "check": "VE1-turn",
+            "title": "P2P calls: a server that operates the TURN relay cannot obtain call audio",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M8",
+            "check": "VE1-directory",
+            "title": "P2P calls: a server that serves a false device directory can take part in the DTLS handshake (as F-E2E-001 for messages)",
+            "verdict": "LIMIT"
+          },
+          {
+            "model": "M8",
+            "check": "VE2",
+            "title": "SFU calls: a server that runs the SFU and relays signaling and key messages cannot obtain call audio (frames are encrypted end to end)",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M8",
+            "check": "VE2-ctl",
+            "title": "SFU calls without frame encryption: the server reads every frame",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M8",
+            "check": "VE2-directory",
+            "title": "SFU calls: a server that serves a false device directory can obtain a frame key (as VE1-directory)",
+            "verdict": "LIMIT"
+          },
+          {
+            "model": "M8",
+            "check": "VE2-members",
+            "title": "SFU calls: the server decides who is in a call, so a device it adds receives the frame keys",
+            "verdict": "LIMIT"
+          },
+          {
+            "model": "M8",
+            "check": "VE2-attribution",
+            "title": "SFU calls: neither the server nor a participant alone can pass off audio as another participant's",
+            "verdict": "PASS"
+          },
+          {
+            "model": "M8",
+            "check": "VE2-forge",
+            "title": "SFU calls: a participant, with the server's help, can pass off audio as another participant's",
+            "verdict": "LIMIT"
+          },
+          {
+            "model": "M8",
+            "check": "VE2-metadata",
+            "title": "SFU calls: the server sees who is in a call and when each participant speaks, not what is said",
+            "verdict": "LIMIT"
+          }
+        ]
+      }
+    ],
+    "model_counts": {
+      "M8a implementation": 420041,
+      "M8b one channel": 268337,
+      "M8b one channel, failing requests": 46075,
+      "M8b two channels": 101677,
+      "M8b speaker and listener": 247117,
+      "M8b speaker and listener, failing requests": 18469,
+      "M8b listener in another channel": 252962,
+      "M8b five speakers": 126971,
+      "M8k C joins": 14197,
+      "M8k C joins, every key message delivered up to twice": 100001,
+      "M8k C joins and leaves": 1449401
+    },
+    "service_conformance_summary": {
+      "PASS": 34,
+      "FINDING": 0
+    },
+    "voice_e2e": {
+      "checks": [
+        {
+          "id": "VE2-e2e-audio",
+          "title": "Through the SFU, each participant hears the others",
+          "verdict": "PASS",
+          "measured": {
+            "a hears b": 0.3903,
+            "b hears a": 0.3423
+          }
+        },
+        {
+          "id": "VE2-e2e-ciphertext",
+          "title": "Every frame the SFU forwards is an SFrame ciphertext under a key its sender announced in a signed key message",
+          "verdict": "PASS",
+          "measured": {
+            "a frames read at the SFU": 83,
+            "b frames read at the SFU": 100
+          }
+        },
+        {
+          "id": "VK-e2e-join",
+          "title": "A newcomer gets only keys made after it joined, and hears everyone",
+          "verdict": "PASS",
+          "measured": {
+            "c hears a": 0.3541,
+            "c hears b": 0.3184,
+            "a hears c": 0.369,
+            "b hears c": 0.3492,
+            "a frames read at the SFU": 75
+          }
+        },
+        {
+          "id": "VK-e2e-attribution",
+          "title": "A stream the server serves as another participant's is not played",
+          "verdict": "PASS",
+          "measured": {
+            "b plays a's frames served as c's": 0,
+            "b hears a": 0.3383
+          }
+        },
+        {
+          "id": "VK-e2e-leave",
+          "title": "After someone leaves, the others send only under keys it never received",
+          "verdict": "PASS",
+          "measured": {
+            "a frames read at the SFU": 100,
+            "b frames read at the SFU": 100,
+            "a hears b": 0.3285,
+            "b hears a": 0.3421
+          }
+        },
+        {
+          "id": "VK-e2e-replay",
+          "title": "Frames the server holds back reach a participant once; served again, they are not played",
+          "verdict": "PASS",
+          "measured": {
+            "b plays the held-back frames": 0.3466,
+            "b plays them again": 0
+          }
+        }
+      ],
+      "consecutive_runs_all_pass": 3,
+      "control_plaintext_frames": [
+        {
+          "id": "VE2-e2e-audio",
+          "title": "Through the SFU, each participant hears the others",
+          "verdict": "PASS",
+          "measured": {
+            "a hears b": 0.354,
+            "b hears a": 0.4124
+          }
+        },
+        {
+          "id": "VE2-e2e-ciphertext",
+          "title": "Every frame the SFU forwards is an SFrame ciphertext under a key its sender announced in a signed key message",
+          "verdict": "FINDING",
+          "detail": "a: a forwarded frame is under key 9148809554374834000, which a never announced",
+          "measured": {
+            "a frames read at the SFU": 56
+          }
+        },
+        {
+          "id": "VK-e2e-join",
+          "title": "A newcomer gets only keys made after it joined, and hears everyone",
+          "verdict": "FINDING",
+          "detail": "a: a forwarded payload is not an SFrame ciphertext",
+          "measured": {
+            "c hears a": 0.3678,
+            "c hears b": 0.3527,
+            "a hears c": 0.3829,
+            "b hears c": 0.3585,
+            "a frames read at the SFU": 42
+          }
+        },
+        {
+          "id": "VK-e2e-attribution",
+          "title": "A stream the server serves as another participant's is not played",
+          "verdict": "FINDING",
+          "detail": "b plays a's frames as c's (level 0.3156)",
+          "measured": {
+            "b plays a's frames served as c's": 0.3156
+          }
+        },
+        {
+          "id": "VK-e2e-leave",
+          "title": "After someone leaves, the others send only under keys it never received",
+          "verdict": "FINDING",
+          "detail": "a: a forwarded payload is not an SFrame ciphertext",
+          "measured": {
+            "a frames read at the SFU": 56
+          }
+        },
+        {
+          "id": "VK-e2e-replay",
+          "title": "Frames the server holds back reach a participant once; served again, they are not played",
+          "verdict": "FINDING",
+          "detail": "b played a's frames a second time (level 0.3160)",
+          "measured": {
+            "b plays the held-back frames": 0.3191,
+            "b plays them again": 0.316
+          }
+        }
+      ]
+    },
+    "suites": {
+      "server-unit": {
+        "tests": 179,
+        "pass": 178,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 1
+      },
+      "integration (root)": {
+        "tests": 16,
+        "pass": 15,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0
+      },
+      "checkpoint-write-failure (unprivileged user)": {
+        "tests": 2,
+        "pass": 2,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0
+      },
+      "account-security": {
+        "tests": 17,
+        "pass": 17,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0
+      },
+      "client-unit": {
+        "tests": 378,
+        "pass": 378,
+        "fail": 0
+      },
+      "release-scripts": {
+        "tests": 17,
+        "pass": 17,
+        "fail": 0
+      },
+      "dependency-scripts": {
+        "tests": 12,
+        "pass": 12,
+        "fail": 0
+      }
+    },
+    "suite_notes": [
+      "As before, the one integration failure as root is the checkpoint write-failure test; run as an unprivileged user, both of its tests pass."
+    ],
+    "harness_regressions": {
+      "pass": 19,
+      "fail": 0
+    },
+    "static_checks": {
+      "workspace_typecheck": "PASS",
+      "oxlint_packages": "PASS",
+      "conformance_typecheck": "PASS",
+      "oxlint_conformance_and_client_e2e": "PASS",
+      "notices_check": "PASS",
+      "build": "PASS",
+      "secret_scan": "PASS",
+      "pnpm_audit_prod_moderate": "PASS (no known vulnerabilities)"
+    },
+    "source_sha256": {
+      "docs/RISK_REGISTER.md": "5c3391eaf9dbea84a4b5769877a356d6a54e085a8ee7a1d8a31404a97e3d0372",
+      "docs/SYSTEM_INVENTORY.md": "3587bad78d1675cafcb9acd7af6e20f857b87fa21b00d60ea0e1acac2e339dae",
+      "docs/adr/0014-sfu-frame-encryption.md": "aa053c644b42c2e107a95ea55618744927124904dd3f6be307bd7a70012a9dfe",
+      "docs/adr/README.md": "39edb56994570f4540be0814a4ac008dab961bf37c3b2ef0abb3efd5508448b8",
+      "docs/policies/IMPLEMENTATION_TODO.md": "b5269eb64eb672169894917e86fdc8dd74e0445df116eb0f9e7bbdf10dd34724",
+      "docs/policies/LIMITATIONS.md": "c528f5d465dd15b4b14098d5229c61869df39c3668c78e6b1840a53cc73374b4",
+      "docs/policies/THREAT_MODEL.md": "9680588ffa335ca498f2f97b502b26ce4b6d8d66dfcc5f536404e91cbf9cedbb",
+      "docs/security/THREAT_MODEL.md": "32317144b3daed784b41b88010058bf64d0d8f5c3b8cf9d7eee922410c58a6fe",
+      "formal-model/README.md": "715abffc05cf166972e8fdce7b455617cd181c6b7ecb1cf3d85099d3622733d6",
+      "formal-model/REVERIFICATION.ja.md": "c62eb0916f62db0bd3cb6f3d168a19a05481436bd4cdad72ebdf32a92526efe2",
+      "formal-model/harness.py": "528ea2cdb3820174bda700b9093ca3920b1485f4f4d42f84a79137590d08ea22",
+      "formal-model/m8_voice.py": "9d83c236583a3584d7da405c7de024c665aba96745f6409aee33139749bbde3f",
+      "formal-model/test_harness.py": "3cb34ba305185a2e9a09e3becd5de8c255ce842a1226dd92afb9337733ad9438",
+      "formal-model/conformance/voice-keys-harness.mts": "57a9330a8279d04fc618bfb94651e9fdb3150baf702e3ceda611e3ff8b9ceeda",
+      "formal-model/conformance/voice-sfu-e2e.mts": "56c2b7331007be5ac24f1029ec00df4f00ef0873f5d522c9cdb713fef4142bb4",
+      "formal-model/conformance/voice-sfu-harness.mts": "ecc574002947e6c60303f4ea73ff6a2df4ffe0fa5eebb4e114dbe0df42d7870b",
+      "packages/shared/src/security/index.ts": "2bfb24ca1e22f4292261bb1722dcd953a05730ba687c327b8916693c373af03d",
+      "packages/server/package.json": "db6c6b8e1ef74b368458aec1b6db3112aa1745fafba66ed090171b7ba6d036ec",
+      "packages/server/src/voice/consumer-manager.ts": "29cdaefff3db191ad47d0e0d4b18ebb2d12015dd565cfdeaf95e109306afcc51",
+      "packages/server/src/voice/producer-manager.ts": "77f7861cbc3e1e58f5859c507278611179db72c24dd9dcc83697182c06abc605",
+      "packages/server/src/voice/voice-coordinator.ts": "a2de513c5e026919022770ae88a2de06be5f1c0004d0fcb12376ce608c2a3981",
+      "packages/server/src/websocket/index.ts": "3bf33b2270c386cb262d45a20595f54c3b3392d8a0a9df0dd7a1099b5735c9ff",
+      "packages/server/src/websocket/voice.handler.ts": "0cb64e3f2f20b1f843fb82f1bf9d129dbd9beef5aa32cd7e1c0c75698320aa41",
+      "packages/server/src/websocket/voice.handler.test.ts": "c0775604484096883568912e6cbba5ed8d38d62b91c7a5ae8006f8bb1a5b5a90",
+      "packages/client/package.json": "abeb8078171aecabf6e1d9425bd73544bd9f409ff3dcc059b9cf5f3c281c9a57",
+      "packages/client/e2e/voice-call.html": "6ad03f3cc263661fb50515067fa51feaf8349bc045592466835ee9c04f3c9e0c",
+      "packages/client/e2e/plaintext-frames.worker.js": "fb0ae9e08f93c8cba9ec6a0738e482da4a27d2d27a0ffcafb350a21fc2cae058",
+      "packages/client/src/e2e/voice-call-harness.ts": "6c76613823a3194b27210b299d49b322b48b6bb30bebfb1cf259f109cbe08d7f",
+      "packages/client/src/i18n/en.ts": "40bfc0babafb3636f8db741a909c774bd1be2d5036bf54341dcd3eb6bc374148",
+      "packages/client/src/services/crypto.service.ts": "82ff4cedeb6bdb9cd78aa6d376ce1663b776188dd3d3b512f9c85005d3404c60",
+      "packages/client/src/services/sframe.ts": "b926cb82ad06a2f3ec87c1b81db71be549bafd20a12c428cc4fd3d0a6f2bab77",
+      "packages/client/src/services/sframe.test.ts": "e0bf8675ec90efe0172c7a6aa98ce06448986195f9f037ce7fa2869675e061ab",
+      "packages/client/src/services/sframe-header-vectors.json": "35a01fcaf8fb4c13a44fb25c45ff542b00bd15897623784aa5878afc99afd061",
+      "packages/client/src/services/voice-frame-keys.ts": "a0a869a8b8b30a08f28a46493732a2af9b82baba80fefda686c93cd095e63386",
+      "packages/client/src/services/voice-frame-keys.test.ts": "da23ed102ac8eef9382ef45f1157b7de70d34c3807a50b5cf385456d509ac800",
+      "packages/client/src/services/voice-frame-transform.ts": "856cadcc587a5599fed3535a7991a9e9009ee985a7e6191787f3fd5da742e099",
+      "packages/client/src/services/voice-frame.worker.ts": "7561175908baf6ed76f1891f14fdfcc41ac6b60a6b1c687e1ff3c4723f230f2b",
+      "packages/client/src/services/voice-sfu-model.ts": "a490490d5e0aef8e1d84ca363537cd592d440f09bdf4a8ee765d35e8280d8466",
+      "packages/client/src/services/voice-sfu.ts": "c41e578a9ce55976bc5b5166e9ac3f628ffeb3dc85b93e0144308c94ddde8aac",
+      "packages/client/src/services/voice-signal-model.ts": "a76994bca71a5f185b1bdd356c292fef1530614051de8861d731eb6ebcde767c",
+      "packages/client/src/stores/voice.store.ts": "efaa627d18ca698a4dfa46c94df9bebbc25323a9de89520a5424e0ed9ed33885",
+      "packages/client/src/stores/voice-negotiation.test.ts": "b272fc9c1359aa7b6040939f1257fa4b648e922a05d89158b8d72dbc266caae2",
+      "pnpm-lock.yaml": "a86ad8661cce6b6d17a9ceb31f0dc40dfb6d720d470ce521d646b69bd28a5a20",
+      "packages/server/src/voice/webrtc-server-manager.ts": "67ae141cc25cd9f238539952f083ebb21d5cf7cff957d092eb41440d2dec3c19",
+      "packages/server/src/voice/webrtc-server-manager.test.ts": "565ef96ddeacb3c5994ffdefda471ce7d85faf29470511880e9b11bab828098c",
+      "packages/client/public/THIRD_PARTY_NOTICES.txt": "3e945d5443d836ac59fd6e615daf076ee98d18257f93c6476548a8515595657a",
+      "scripts/release/third-party-notices.mjs": "282ebef96a9cee17d2346448c43d62d6dfd82c8b561421d37f23e5e4ac3b5aa4",
+      "scripts/release/third-party-notices.test.mjs": "231053652c52f2d1e68b1c2ea6bf7ccd65d9d839aeffee3b06ef5bb663fb5706",
+      "scripts/release/create-release.mjs": "d007f241b4ef970dc1ac39db329d0847c799d0cbcd53a091e9e47166a8a318e0",
+      ".env.example": "bef24bc7b19e041765850a9f3cb0e36943c7c8ea42b5381196d65e52bde0669b",
+      "docs/OPERATIONS.md": "b93b6d862d58a704ed61b0f2a35f5d8c16311cb8e5a1d16bbf448d9df635d0dd",
+      "docs/OPERATIONS.ja.md": "d18cde2fa48653bdd1310930d81d7c961020404ba9a759606f0942662140a5aa",
+      "formal-model/conformance/service-audit.mts": "9b07a37be0d63212869c8db346c2547590ade4ce885e40ed02e9ad96c8c32642"
+    },
+    "log_sha256": {
+      "sfu-models-rest.log": "c32fd1ec3721a9d13a3ca3916e2200bd5952ab7d0f5757ca8d1a0393804167f5",
+      "sfu-models-M3.log": "2f057449fd59919c0265e9f1e23f45c39976b0eaa7e393d166f984146239447f",
+      "sfu-models-M8.log": "bfeb272546bbc3427332b3600537ded4078719bc7ea02a18f68447851ae671b7",
+      "sfu-harness-tests.log": "c99d78122fdd198ab219c227ea15a4e235a66de18a02c40be971e1f7d15f3e6e",
+      "sfu-service-audit.txt": "6ca8c69b520d47bb593c0aad042a04226110655ad3e957d7f1bcc161b73895c7",
+      "voice-e2e-sfu1.txt": "796d77514f565d7b3647aa61006f2d130cde340ee12bd9ffefd39d0a0dd3d76d",
+      "voice-e2e-sfu2.txt": "02d59eb75b435c2f629ca048c36d60d79bbd14f056d68354d42a5b473d1b22c9",
+      "voice-e2e-sfu3.txt": "d34d6810766925e84c6d030f00bea298164deb2bd373af102957fbb124b8b2f3",
+      "voice-e2e-sfu-control.txt": "f41c0859839c6cefd02cbde7f219167e8c0c7984640edb50c57ca2546e750fbe",
+      "sfu-server-unit.txt": "81e24e85be56a78abfb2b40abfca8f45f930fbf01969225e59df296fb0b1b421",
+      "sfu-client-unit.txt": "c352cf0e8dbf0b503133b35a33636e7b31c018724c8f373c25e38770dff97096",
+      "sfu-integration.txt": "d4f7f042789748bdf344e856db60207f464b20b97ea588d9b2e817bb18311cb6",
+      "sfu-account-security.txt": "f645f24b095d8a1ec83d15950f0d69fd45de384d74b2bdb923c952017f8d70a6",
+      "sfu-checkpoint-nonroot.txt": "9383e89fbb76044fcdbbd06e52b814600406d4cbe5e73c942083862e6d24a5e1"
+    },
+    "cleanup": {
+      "disposable_databases_dropped": true,
+      "credentials_outside_repository": true,
+      "existing_development_or_production_resources_modified": false
+    },
+    "limitations": [
+      "A server that serves a false device directory, or adds a device of its own to a call (shown as a participant), receives frame keys (M8 VE2-directory, VE2-members, LIMIT).",
+      "Frame keys are symmetric: a participant helped by the server can pass off audio as another participant's (VE2-forge, LIMIT); the server sees membership and speaking times (VE2-metadata, LIMIT).",
+      "M8k is bounded to three clients (two in the call, one that joins and leaves) with symbolic wrapping and signing.",
+      "Browsers without RTCRtpScriptTransform cannot join SFU calls."
+    ]
   }
 }

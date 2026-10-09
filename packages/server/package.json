@@ -11,6 +11,7 @@
     "typecheck": "tsc --noEmit",
     "test": "tsx --test src/**/*.test.ts",
     "test:formal-conformance": "RUN_FORMAL_CONFORMANCE=1 tsx ../../formal-model/conformance/service-audit.mts",
+    "test:voice-e2e": "RUN_VOICE_E2E=1 tsx ../../formal-model/conformance/voice-sfu-e2e.mts",
     "test:integration": "RUN_INTEGRATION=1 tsx --test --test-concurrency=1 src/security/audit-checkpoint-write-failure.integration.test.ts src/security/integration.test.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",

@@ -10,9 +10,18 @@ Written from the implementation at commit ce09b19:
   M8b  the SFU coordinator (voice/*.ts) run as real code against a scripted
        stand-in for mediasoup (conformance/voice-sfu-harness.mts): every
        interleaving of joins, leaves, transports, producers and consumers.
+  M8k  the frame keys of SFU calls (client services/voice-frame-keys.ts) run
+       as real code for three clients under a server that chooses every
+       delivery, repetition and notification order
+       (conformance/voice-keys-harness.mts).
   M8c  who can obtain call audio: P2P (signed SDP, DTLS-SRTP between the
        endpoints, TURN relays ciphertext) versus the SFU (DTLS ends at the
-       server).
+       server; frames are encrypted end to end above it).
+
+Updated 2026-10-09 for SFU calls: the SFU session belongs to the socket's
+call participant (VP7), speaker and listener limits are configuration (the
+harness uses four), and every frame is encrypted by the sender (M8k, M8c).
+The real-media check is conformance/voice-sfu-e2e.mts (mediasoup, Chromium).
 
 Common assumptions: one Node.js process, so a synchronous run between two
 awaits is atomic; Socket.IO's in-memory adapter emits 'leave-room'
@@ -54,6 +63,7 @@ class S(NamedTuple):
     acked: frozenset        # SFU participants whose join was acknowledged
     leaked: frozenset       # ghost: channels whose presence was sent after their rooms were left
     watched: bool
+    foreign: bool = False   # ghost: an SFU session was acknowledged for another than the socket's call participant
 
 
 @dataclass(frozen=True)
@@ -64,6 +74,7 @@ class Variant:
     p2p_postcondition: bool = True    # CONTROL: False registers a P2P participant without rechecking the room
     sfu_listener: bool = True         # CONTROL: False drops the SFU 'leave-room' listener
     watch_room_filter: bool = True    # CONTROL: False lists every checked channel (before the 2026-10-09 fix)
+    sfu_requires_call: bool = True    # CONTROL: False gives SFU sessions of their own (before the SFU media signaling)
     revoke: tuple = CH                # channels whose access is revoked once during the run
 
 
@@ -194,10 +205,12 @@ def _step(s: S, i: int, v: Variant):
             if (pid, c) not in s.coord:
                 return 'sfu join cancelled', _set_thread(_sfu_fail(s, c, pid), i, None)
             return 'sfu router ready', _set_thread(s, i, (kind, c, 9, a, b))
-        if pc == 9:
-            if not s.connected or s.sfu != (c, pid) or ('ch', c) not in s.rooms:
+        if pc == 9:                                  # current(): still the call participant, in the room
+            if not s.connected or s.sfu != (c, pid) or ('ch', c) not in s.rooms \
+                    or (v.sfu_requires_call and s.reg != (c, pid)):
                 return 'sfu join FORBIDDEN after router', _set_thread(_sfu_fail(s, c, pid), i, None)
-            return f'sfu join acknowledged (p{pid})', _set_thread(s._replace(acked=s.acked | {pid}), i, None)
+            s = s._replace(acked=s.acked | {pid}, foreign=s.foreign or s.reg != (c, pid))
+            return f'sfu join acknowledged (p{pid})', _set_thread(s, i, None)
     if kind == 'W':                                  # voice:watch [C1, C2], a = index, b = (listed, read/result)
         listed, r = b
         if pc == 1:
@@ -251,9 +264,16 @@ def m8a_successors(s: S, v: Variant):
             elif op.startswith('S') and not op.startswith('SL'):
                 if t.sfu is not None:
                     continue                       # ALREADY_JOINED, nothing changes
-                t = t._replace(sfu=(c, t.pid), pid=t.pid + 1)
-                out.append((f'event voice:sfu:join {c} (p{s.pid})',
-                            t._replace(threads=t.threads + (('S', c, 1, s.pid, None),))))
+                if v.sfu_requires_call:
+                    if t.reg is None or t.reg[0] != c:
+                        continue                   # FORBIDDEN: not a participant of this call
+                    pid = t.reg[1]                 # the call participant's own id
+                else:
+                    pid = t.pid
+                    t = t._replace(pid=t.pid + 1)
+                t = t._replace(sfu=(c, pid))
+                out.append((f'event voice:sfu:join {c} (p{pid})',
+                            t._replace(threads=t.threads + (('S', c, 1, pid, None),))))
             elif op.startswith('L'):
                 if t.reg is None or t.reg[0] != c:
                     continue
@@ -310,6 +330,8 @@ def m8a_violations(s: S, v: Variant):
             out.append(('VP3', f'coordinator keeps p{pid} in {c} with no socket session'))
     if s.leaked:
         out.append(('VP4', f'voice:watch reply lists participants of {sorted(s.leaked)} after the socket left its rooms'))
+    if s.foreign:
+        out.append(('VP7', 'an SFU session was acknowledged for a socket that is not that call\'s participant'))
     for k, c in enumerate(CH):
         if s.revs[k] == 3 and not any(t[1] == c or t[0] == 'W' for t in s.threads):
             if s.reg is not None and s.reg[0] == c or s.sfu is not None and s.sfu[0] == c \
@@ -370,6 +392,7 @@ def run_m8a() -> None:
     holds('VP4', 'a voice:watch reply never lists the participants of a channel whose rooms the socket already '
                  'left on revocation', 'VP4')
     holds('VP6', 'after revocation and once its handlers finish, no call state of the channel remains', 'VP6')
+    holds('VP7', 'an SFU session is acknowledged only for the socket\'s participant of that call, under its id', 'VP7')
 
     def control(check_id, title, prop, variant):
         st, fd, _ = bfs(m8a_initial(), lambda s: m8a_successors(s, variant), lambda s: m8a_violations(s, variant),
@@ -386,6 +409,8 @@ def run_m8a() -> None:
                        'revocation', 'VP1', Variant(p2p_postcondition=False, revoke=('C1',)))
     control('VP6-ctl', 'without the SFU leave-room listener the SFU session outlives the revocation', 'VP6',
             Variant(sfu_listener=False, revoke=('C1',)))
+    control('VP7-ctl', 'SFU sessions of their own (before media signaling) are granted to sockets outside the call',
+            'VP7', Variant(sfu_requires_call=False, revoke=('C1',)))
 
 
 # ---------------------------------------------------------------------------
@@ -411,14 +436,14 @@ M8B_CONTROLS = [
      'empty-channel-keeps-router', 'one channel'),
     ('I3c-ctl', 'creating consumers without the reservation and recheck leaves a consumer unregistered', 'I3',
      'consumer-without-recheck', 'speaker and listener'),
-    ('I4-ctl', 'producers created without the pending reservation exceed the four-speaker limit', 'I4',
+    ('I4-ctl', 'producers created without the pending reservation exceed the speaker limit', 'I4',
      'producer-without-reservation', 'five speakers'),
 ]
 M8B_PROPERTIES = [
     ('I1', 'media flows only between a producer and a consumer of the same channel and router'),
     ('I2', 'media flows only to and from participants whose session is current'),
     ('I3', 'every open transport, producer and consumer is registered and belongs to a current session (no leak)'),
-    ('I4', 'at most four producers per channel and four consumers per participant'),
+    ('I4', 'at most the configured producers per channel and consumers per participant (four in the harness)'),
     ('I5', 'a session never keeps a closed router; a channel has at most one open router'),
     ('I6', 'once nothing is pending, no router stays open for a channel without participants'),
     ('I7', 'after close() every object is closed, in Node and in the worker'),
@@ -456,26 +481,92 @@ def run_m8b() -> None:
 
 
 # ---------------------------------------------------------------------------
+# M8k: frame keys of SFU calls, real code under a malicious server
+# ---------------------------------------------------------------------------
+
+M8K_WORKERS = 4
+M8K_RUNS = [
+    ('C joins', dict(scenario='join')),
+    ('C joins, every key message delivered up to twice', dict(scenario='join', duplicates=True)),
+    ('C joins and leaves', dict(scenario='join-leave')),
+]
+M8K_PROPERTIES = [
+    ('KJ', 'a participant who joins receives only keys made after the others knew it joined (no earlier audio)'),
+    ('KL', 'once a participant knows someone left, it sends that one no key and never sends under a key that one '
+           'received (no later audio)'),
+    ('KR', 'a key is accepted at most once, never after a newer one of its sender, and only as its maker\'s key'),
+    ('KH', 'once the server delivered everything, the participants hold each other\'s current keys, and none that '
+           'a former participant received'),
+]
+M8K_CONTROLS = [
+    ('KL-ctl', 'before the fix: a key that reached someone who left while it was signed was still sent and used',
+     'KL', 'pre-fix-rotation', 'C joins and leaves'),
+    ('KJ-ctl', 'giving a newcomer the key in use lets it read audio from before it joined', 'KJ',
+     'join-sends-current-key', 'C joins'),
+    ('KR-ctl', 'without the sequence and key id checks a repeated key message is accepted again', 'KR',
+     'receive-without-replay-check', 'C joins, every key message delivered up to twice'),
+]
+
+
+def run_m8k() -> None:
+    by_run = {}
+    controls = {}
+    try:
+        for name, options in M8K_RUNS:
+            out = run_harness('voice-keys-harness.mts', {**options, 'maxStates': 3_000_000, 'workers': M8K_WORKERS},
+                              timeout=3600)
+            if not isinstance(out, dict) or not out.get('complete') or out.get('states', 0) < 10:
+                raise HarnessError(f'key harness did not finish {name}: {str(out)[:200]}')
+            by_run[name] = out
+            print(f'  M8k {name}: {out["states"]:,} states, {out["executions"]:,} executions of the real key manager')
+        for check_id, _, prop, mutation, run_name in M8K_CONTROLS:
+            options = dict(next(o for n, o in M8K_RUNS if n == run_name))
+            controls[check_id] = run_harness('voice-keys-harness.mts', {**options, 'mutation': mutation, 'stop': [prop],
+                                                                       'workers': M8K_WORKERS}, timeout=3600)
+    except HarnessError as error:
+        for prop, title in M8K_PROPERTIES:
+            record('M8', prop, title, 'HOLDS', False, str(error), incomplete=True)
+        return
+    for prop, title in M8K_PROPERTIES:
+        hits = [(name, v) for name, out in by_run.items() for v in out['violations'] if v['property'] == prop]
+        witness = [f'[{hits[0][0]}]'] + hits[0][1]['trace'] + ['=> ' + hits[0][1]['message']] if hits else []
+        record('M8', prop, title, 'HOLDS', bool(hits), witness=witness)
+    for check_id, title, prop, _, _ in M8K_CONTROLS:
+        hit = next((v for v in controls[check_id].get('violations', []) if v['property'] == prop), None)
+        record('M8', check_id, title, 'CONTROL', hit is not None,
+               witness=(hit['trace'] + ['=> ' + hit['message']]) if hit else [])
+
+
+# ---------------------------------------------------------------------------
 # M8c: who can obtain call audio
 # ---------------------------------------------------------------------------
 
-def audio_readers(mode: str, capability: str) -> set[str]:
-    """Parties that end up holding the SRTP keys of A's audio to B.
+def audio_readers(mode: str, capability: str, frame_encryption: bool = True) -> set[str]:
+    """Parties that can read A's audio to B.
 
     P2P: A and B run DTLS-SRTP with each other. Each accepts the peer's DTLS
     certificate only if its fingerprint is in an SDP signed by the peer's
     device key, which it looks up in the directory the server serves
     (voice.store.ts processIncomingSignal). TURN relays SRTP packets.
-    SFU: the client runs DTLS-SRTP with the server's WebRtcTransport, whose
-    DTLS parameters the server sends (transport-manager.ts); the SFU decrypts
-    and re-encrypts every packet. No frame encryption is applied above SRTP.
+    SFU: DTLS-SRTP ends at the server's WebRtcTransport, so the SFU reads
+    every RTP payload. Each payload is a frame encrypted by the sender's frame
+    transform (voice-frame-transform.ts, SFrame) under the sender's call key,
+    which reaches each participant wrapped for its device key and signed by
+    the sender's device key, both as the directory names them
+    (voice-frame-keys.ts, conformance/voice-keys-harness.mts for M8k).
+    Capabilities: 'relay' runs the SFU and relays signaling and key messages,
+    'turn' operates the TURN relay, 'directory' serves a false device
+    directory, 'members' tells participants that a device of its own is in
+    the call.
     """
     readers = {'A', 'B'}
-    if mode == 'sfu':
-        readers.add('server')               # the SFU terminates DTLS in either case
-        return readers
     if capability == 'directory':
-        readers.add('server')               # a substituted device key signs the server's own SDP
+        readers.add('server')               # a substituted device key signs SDP / unwraps a frame key
+    if mode == 'sfu':
+        if not frame_encryption:
+            readers.add('server')           # the SFU terminates DTLS-SRTP
+        if capability == 'members':
+            readers.add('server')           # its device is a participant: every key is sent to it
     return readers
 
 
@@ -488,18 +579,61 @@ def run_m8c() -> None:
                                   'DTLS handshake (as F-E2E-001 for messages)', 'LIMIT',
            'server' in audio_readers('p2p', 'directory'),
            'signed SDP is checked against the directory the server itself serves')
-    record('M8', 'VE2', 'SFU calls: only the participants obtain call audio', 'HOLDS',
+    record('M8', 'VE2', 'SFU calls: a server that runs the SFU and relays signaling and key messages cannot obtain '
+                        'call audio (frames are encrypted end to end)', 'HOLDS',
            'server' in audio_readers('sfu', 'relay'),
-           'the SFU ends DTLS-SRTP, so the server process reads every frame. Not reachable today: clients do not '
-           'use the SFU and VOICE_SFU_ENABLED is false by default. Decide before wiring it: frame encryption '
-           '(SFrame / encoded transforms keyed from the channel\'s MLS exporter) or a documented change of the '
-           'threat model')
+           'frame keys: M8k; checked against real mediasoup and Chromium by conformance/voice-sfu-e2e.mts')
+    record('M8', 'VE2-ctl', 'SFU calls without frame encryption: the server reads every frame', 'CONTROL',
+           'server' in audio_readers('sfu', 'relay', frame_encryption=False))
+    record('M8', 'VE2-directory', 'SFU calls: a server that serves a false device directory can obtain a frame key '
+                                  '(as VE1-directory)', 'LIMIT',
+           'server' in audio_readers('sfu', 'directory'),
+           'frame keys are wrapped for, and signed by, device keys as the directory the server serves names them')
+    record('M8', 'VE2-members', 'SFU calls: the server decides who is in a call, so a device it adds receives the '
+                                'frame keys', 'LIMIT',
+           'server' in audio_readers('sfu', 'members'),
+           'the device is shown in the call as a participant (with its user), like everyone else in it')
+    record('M8', 'VE2-attribution', 'SFU calls: neither the server nor a participant alone can pass off audio as '
+                                    'another participant\'s', 'HOLDS',
+           passes_off('server') or passes_off('participant'),
+           'a frame counts only on the stream of its key\'s owner; conformance/voice-sfu-e2e.mts relabels streams')
+    record('M8', 'VE2-forge', 'SFU calls: a participant, with the server\'s help, can pass off audio as another '
+                              'participant\'s', 'LIMIT', passes_off('participant+server'),
+           'every receiver holds the sender\'s frame key (frame keys are symmetric; frames are not signed per sender)')
+    seen = server_observes('sfu')
+    record('M8', 'VE2-metadata', 'SFU calls: the server sees who is in a call and when each participant speaks, '
+                                 'not what is said', 'LIMIT', {'members', 'speaking'} <= seen and 'audio' not in seen,
+           'voice activity shows in the packet rate (DTX) and size')
+
+
+def passes_off(attacker: str) -> bool:
+    """Can the attacker make B play audio as A's, in a call of A, B and C?
+
+    B's frame transform accepts a frame on A's stream only under a key id A
+    owns (VoiceFrameCrypto.decrypt). C holds A's key, as every receiver does;
+    the server holds none. Only A puts frames on A's stream, unless the SFU
+    relabels another stream as A's.
+    """
+    holds_key = 'participant' in attacker
+    on_a_stream = 'server' in attacker
+    return holds_key and on_a_stream
+
+
+def server_observes(mode: str) -> set[str]:
+    """What the server learns about a call it carries."""
+    seen = {'members'}                      # the call registry: who joined and left, when
+    if mode == 'sfu':
+        seen.add('speaking')                # every RTP packet passes it; DTX sends few packets in silence
+        if 'server' in audio_readers('sfu', 'relay'):
+            seen.add('audio')
+    return seen
 
 
 def run() -> None:
-    print('== M8: voice calls (room grants, call registries, SFU) ==')
+    print('== M8: voice calls (room grants, call registries, SFU, call keys) ==')
     run_m8a()
     run_m8b()
+    run_m8k()
     run_m8c()
 
 

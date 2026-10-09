@@ -329,12 +329,16 @@ interface Execution {
   violations: Array<{ property: string; message: string }>;
 }
 
+/** Speakers per channel and streams per listener: small enough that five participants exceed it. */
+const LIMIT = 4;
+
 const drain = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 async function fresh(): Promise<Execution> {
   const world = new World();
   const coordinator: any = new VoiceCoordinator({
     bindAddress: '127.0.0.1', announcedAddress: '127.0.0.1', basePort: 40000, workerCount: input.workers,
+    maxProducersPerChannel: LIMIT, maxConsumersPerParticipant: LIMIT,
   });
   const workers = coordinator.workers;
   workers.start = async (count: number) => {
@@ -387,7 +391,7 @@ function applyMutation(coordinator: any): void {
           producers.channels.set(channelId, state);
         }
         if (state.producers.has(participantId)) throw new Error('VOICE_PRODUCER_ALREADY_EXISTS');
-        if (state.producers.size >= 4) throw new Error('VOICE_SPEAKER_LIMIT_REACHED');
+        if (state.producers.size >= LIMIT) throw new Error('VOICE_SPEAKER_LIMIT_REACHED');
         const producer = await transport.produce({ kind: 'audio', rtpParameters, appData: { channelId, participantId } });
         state.producers.set(participantId, producer);
         return producer;
@@ -586,12 +590,12 @@ function check(execution: Execution): Array<{ property: string; message: string 
   // I4: limits.
   for (const [channel, state] of producerState) {
     const open = [...state.producers.values()].filter((p) => !p.closed).length;
-    if (open > 4) out.push({ property: 'I4', message: `${open} producers in ${channelOfUuid(channel)}` });
+    if (open > LIMIT) out.push({ property: 'I4', message: `${open} producers in ${channelOfUuid(channel)}` });
   }
   for (const [, channel] of consumerState) {
     for (const [p, state] of channel) {
       const open = [...state.consumers.values()].filter((x) => !x.closed).length;
-      if (open > 4) out.push({ property: 'I4', message: `${open} consumers for ${p}` });
+      if (open > LIMIT) out.push({ property: 'I4', message: `${open} consumers for ${p}` });
     }
   }
   // I5: sessions use live routers; at most one live router per channel.
@@ -650,6 +654,8 @@ function fingerprint(execution: Execution): string {
     calls: execution.calls.map((call) => [call.label, call.settled ? call.outcome ?? '' : '…']),
     flags: [c.ready, c.closed, execution.started, execution.joins, execution.closeCalled, execution.closeSettled],
     known: [[...execution.transportIds.entries()].sort(), [...execution.consumerIds.entries()].sort()],
+    // A violation found when a call answered (J1): another schedule can reach the same objects without it.
+    violations: execution.violations.map((v) => `${v.property} ${v.message}`).sort(),
   };
   return JSON.stringify(state);
 }

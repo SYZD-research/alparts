@@ -148,6 +148,28 @@ class EvidenceTests(unittest.TestCase):
                     m8_voice.run_m8b()
                 self.assert_incomplete()
 
+    def test_unfinished_key_exploration_is_not_a_pass(self):
+        for output in (harness.HarnessError('timed out'), {'complete': False, 'states': 100, 'violations': []},
+                       {'complete': True, 'states': 1, 'violations': []}):
+            with self.subTest(output=str(output)[:40]):
+                common.RESULTS.clear()
+                effect = {'side_effect': output} if isinstance(output, Exception) else {'return_value': output}
+                with patch.object(m8_voice, 'run_harness', **effect):
+                    m8_voice.run_m8k()
+                self.assert_incomplete()
+
+    def test_key_harness_keeps_a_violation_apart_from_an_equal_state(self):
+        # Sending the key to C after learning that C left reaches the same clients as sending it just before;
+        # the search must still report the first (it once merged the two by their client state).
+        try:
+            out = harness.run_harness('voice-keys-harness.mts', {'scenario': 'join-leave', 'mutation': 'pre-fix-rotation',
+                                                                 'stop': ['KL']}, timeout=120)
+        except harness.HarnessError as error:
+            self.skipTest(str(error))
+        self.assertTrue(out['complete'])
+        self.assertEqual([v['property'] for v in out['violations']], ['KL'])
+        self.assertEqual(out['violations'][0]['trace'][-2:], ['tell a that c left', 'resolve sign(a#3)'])
+
     def test_unclassified_audit_action_is_a_model_gap(self):
         actions = m5v_audit_view.source_actions() | {'channel.something.new'}
         with patch.object(m5v_audit_view, 'source_actions', return_value=actions), \

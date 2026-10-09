@@ -15,7 +15,7 @@ class HarnessError(Exception):
     pass
 
 
-def run_harness(name: str, payload=None):
+def run_harness(name: str, payload=None, timeout: int = 300):
     node = shutil.which('node')
     if node is None or not LOADER.exists():
         raise HarnessError('Node >=24.8 and the installed server tsx loader are required')
@@ -27,7 +27,7 @@ def run_harness(name: str, payload=None):
         result = subprocess.run(
             [node, '--import', str(LOADER), str(ROOT / 'conformance' / name)],
             input=json.dumps(payload) if payload is not None else None,
-            capture_output=True, text=True, cwd=REPO / 'packages/server', timeout=300,
+            capture_output=True, text=True, cwd=REPO / 'packages/server', timeout=timeout,
         )
         if result.returncode:
             raise HarnessError(f'{name} failed: {result.stderr.strip()[-800:]}')
