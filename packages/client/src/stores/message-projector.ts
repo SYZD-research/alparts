@@ -116,6 +116,10 @@ function mergeDuplicateEvent(current: Message, incoming: Message): Message {
       // replace either value merely by copying the signed ciphertext.
       content: trustedContent,
       author: trustedAuthor,
+      // The server time of an event never changes. A copy with another time
+      // must not move an event already held, which would let a server put an
+      // old edit back on top.
+      createdAt: currentEvent.createdAt,
       reactions: incomingEvent.reactions || currentEvent.reactions,
       attachments: mergeAttachments(currentEvent.attachments, incomingEvent.attachments),
       isPinned: incomingEvent.isPinned,

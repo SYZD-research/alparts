@@ -11,7 +11,7 @@ import {
   projectMessageEvents,
   retryMessageKeyVerification,
 } from './message-projector';
-import { matchesLocallySignedMessageResponse } from './message.store';
+import { channelSecurityError, matchesLocallySignedMessageResponse } from './message.store';
 
 const author: User = {
   id: 'user-1',
@@ -176,6 +176,34 @@ describe('projectMessageEvents', () => {
     // The quarantine survives later merges, even without the original.
     const later = mergeMessageEvents(merged.filter((item) => item.id !== 'edit-1'), [event({ id: 'message-2', type: 'message', createdAt: '2026-01-01T00:00:05.000Z' })]);
     expect(hasAuthenticatedEnvelopeConflict(later.find((item) => item.id === 'edit-3')!)).toBe(true);
+  });
+
+  it('keeps the first time of an event when the server sends it again with a later one', () => {
+    const base = event({ id: 'message-1', type: 'message', content: 'v0', createdAt: '2026-01-01T00:00:01.000Z' });
+    const edit = event({
+      id: 'edit-1', type: 'edit', refMessageId: base.id, content: 'v1', idempotencyKey: 'edit-key-1',
+      createdAt: '2026-01-01T00:00:02.000Z',
+    });
+    const other = event({ id: 'message-2', type: 'message', content: 'next', createdAt: '2026-01-01T00:00:03.000Z' });
+    const held = mergeMessageEvents([base, edit, other]);
+    expect(projectMessageEvents(held).map((item) => item.content)).toEqual(['v1', 'next']);
+
+    // The same base message, later in time, would otherwise drop its edit
+    // (the edit would come before its target) and move the message down.
+    const later = mergeMessageEvents(held, [{ ...base, createdAt: '2026-01-01T00:00:09.000Z' }]);
+    expect(later.find((item) => item.id === base.id)!.createdAt).toBe(base.createdAt);
+    expect(projectMessageEvents(later).map((item) => item.content)).toEqual(['v1', 'next']);
+  });
+
+  it('keeps a channel stopped while a quarantined copy is held, even after its error is cleared', () => {
+    const original = event({ id: 'message-1', type: 'message', content: 'hello', idempotencyKey: 'send-key', createdAt: '2026-01-01T00:00:01.000Z' });
+    const replay = { ...original, id: 'message-9', createdAt: '2026-01-01T00:00:09.000Z' };
+    const held = mergeMessageEvents([original, replay]);
+    // A later load of the same history clears the stored error.
+    const state = { securityErrors: { 'channel-1': null }, eventsByChannel: { 'channel-1': held } };
+    expect(channelSecurityError(state, 'channel-1')).toBeTruthy();
+    expect(channelSecurityError({ ...state, eventsByChannel: { 'channel-1': [original] } }, 'channel-1')).toBeNull();
+    expect(channelSecurityError({ securityErrors: { 'channel-1': 'other' }, eventsByChannel: {} }, 'channel-1')).toBe('other');
   });
 
   it('quarantines a copied message and ignores unverified events that reuse a key', () => {

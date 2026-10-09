@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useChannelStore } from '../../stores/channel.store';
-import { useMessageStore } from '../../stores/message.store';
+import { channelSecurityError, useMessageStore } from '../../stores/message.store';
 import { usePresenceStore } from '../../stores/presence.store';
 import { useWorkspaceStore } from '../../stores/workspace.store';
 import { MessageList } from '../message/MessageList';
@@ -22,7 +22,8 @@ export function ChatArea({ visible = true }: { visible?: boolean }) {
   const loadMessages = useMessageStore((state) => state.loadMessages);
   const retryChannelPreparation = useMessageStore((state) => state.retryChannelPreparation);
   const startChannelWithoutHistory = useMessageStore((state) => state.startChannelWithoutHistory);
-  const securityError = useMessageStore((state) => activeChannelId ? state.securityErrors[activeChannelId] : null);
+  const securityError = useMessageStore((state) => activeChannelId ? channelSecurityError(state, activeChannelId) : null);
+  const clearChannel = useMessageStore((state) => state.clearChannel);
   const channelKeyPending = useMessageStore((state) => activeChannelId ? state.channelKeyPending[activeChannelId] : null);
   const channelRecoveryPending = useMessageStore((state) => activeChannelId ? state.channelRecoveryPending[activeChannelId] : false);
   const operationError = useMessageStore((state) => activeChannelId ? state.operationErrors[activeChannelId] : null);
@@ -185,7 +186,12 @@ export function ChatArea({ visible = true }: { visible?: boolean }) {
           <p>{t('このチャンネルを安全に表示できませんでした。')}</p>
           <button
             type="button"
-            onClick={() => { void loadMessages(activeChannelId); }}
+            onClick={() => {
+              // Read the channel again from scratch: held copies that
+              // conflicted are dropped and checked again.
+              clearChannel(activeChannelId);
+              void loadMessages(activeChannelId);
+            }}
             className="rounded bg-discord-hover px-3 py-2 text-sm text-discord-text hover:text-white"
           >
             {t('再試行')}

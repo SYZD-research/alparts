@@ -241,6 +241,18 @@ function channelUpdate(state: MessageState, channelId: string, events: Message[]
   return update;
 }
 
+/**
+ * The channel stays stopped while an event with conflicting signed copies is
+ * held. Loading the same events again, or a later key check, does not lift
+ * it; only dropping the channel's events and reading it again does.
+ */
+export function channelSecurityError(state: Pick<MessageState, 'securityErrors' | 'eventsByChannel'>, channelId: string): string | null {
+  return state.securityErrors[channelId]
+    ?? (state.eventsByChannel[channelId]?.some(hasAuthenticatedEnvelopeConflict)
+      ? t('安全のため、このチャンネルの履歴の読み込みを停止しました')
+      : null);
+}
+
 /** Forum channels sign every event with its post (v4); the type, not the payload, decides. */
 export function isForumChannel(channelId: string): boolean {
   return useChannelStore.getState().channels.find((channel) => channel.id === channelId)?.type === 'forum';
