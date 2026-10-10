@@ -56,8 +56,8 @@ importers:
         specifier: ^19.3.0
         version: 19.3.0(react@19.3.0)
       react-markdown:
-        specifier: ^9.0.1
-        version: 9.1.0(@types/react@19.3.0)(react@19.3.0)(supports-color@11.0.0)
+        specifier: ^10.1.0
+        version: 10.1.0(@types/react@19.3.0)(react@19.3.0)(supports-color@11.0.0)
       react-router-dom:
         specifier: ^7.18.4
         version: 7.18.4(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
@@ -159,8 +159,8 @@ importers:
         specifier: ^5.2.1
         version: 5.2.1(supports-color@11.0.0)
       helmet:
-        specifier: ^7.1.0
-        version: 7.2.0
+        specifier: ^8.3.0
+        version: 8.3.0
       jsonwebtoken:
         specifier: ^9.0.2
         version: 9.0.3
@@ -2004,9 +2004,9 @@ packages:
   hast-util-whitespace@3.0.0:
     resolution: {integrity: sha512-88JUN06ipLwsnv+dVn+OIYOvAuvBMy/Qoi6O7mQHxdPXpjy+Cd6xRkWwux7DKO+4sYILtLBRIKgsdpS2gQc7qw==}
 
-  helmet@7.2.0:
-    resolution: {integrity: sha512-ZRiwvN089JfMXokizgqEPXsl2Guk094yExfoDXR0cBYWxtBbaSww/w+vT4WEJsBW2iTUi1GgZ6swmoug3Oy4Xw==}
-    engines: {node: '>=16.0.0'}
+  helmet@8.3.0:
+    resolution: {integrity: sha512-Qgpiaws3Sm30Av8Eah6sjMCZZwjlBu+E68rhpCWBshY1lb09HtLwj5GviX0OyQIn+ulUS0iX0AxN5n3tLZzz1w==}
+    engines: {node: '>=18.0.0'}
 
   hosted-git-info@4.1.0:
     resolution: {integrity: sha512-kyCuEOWjJqZuDbRHzL8V93NzQhwIB71oFWSyzVo+KPZI+pnQPPxucdkrOZvkLRnrf5URsQM+IJ09Dw29cRALIA==}
@@ -2891,8 +2891,8 @@ packages:
     peerDependencies:
       react: ^19.3.0
 
-  react-markdown@9.1.0:
-    resolution: {integrity: sha512-xaijuJB0kzGiUdG7nc2MOMDUDBWPyGAjZtUrow9XxUeua8IqeP+VlIfAZ3bphpcLTnSZXz6z9jcVC/TCwbfgdw==}
+  react-markdown@10.1.0:
+    resolution: {integrity: sha512-qKxVopLT/TyA6BX3Ue5NwabOsAzm0Q7kAPwq6L+wWDwisYs7R8vZ0nRXqq6rkueboxpkjvLGU9fWifiX/ZZFxQ==}
     peerDependencies:
       '@types/react': '>=18'
       react: '>=18'
@@ -5588,7 +5588,7 @@ snapshots:
     dependencies:
       '@types/hast': 3.0.5
 
-  helmet@7.2.0: {}
+  helmet@8.3.0: {}
 
   hosted-git-info@4.1.0:
     dependencies:
@@ -6608,7 +6608,7 @@ snapshots:
       react: 19.3.0
       scheduler: 0.28.0
 
-  react-markdown@9.1.0(@types/react@19.3.0)(react@19.3.0)(supports-color@11.0.0):
+  react-markdown@10.1.0(@types/react@19.3.0)(react@19.3.0)(supports-color@11.0.0):
     dependencies:
       '@types/hast': 3.0.5
       '@types/mdast': 4.0.4
