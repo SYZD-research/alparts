@@ -40,7 +40,7 @@
 
 ### 認証、端末、承認
 
-- 招待制のpassword認証に加えて、Web版のPasskeyと重要操作のstep-upを実装した。Passkey登録後のpassword fallbackは禁止する。Passwordはstep-up付きで変更でき、変更時は他のsessionを終了する。Passkeyを登録した利用者はpasswordでのloginを無効にでき、運用者はCLIでpasswordを再設定できる（再設定はpassword loginを有効に戻し、全sessionを終了する）。Step-upは利用者ごとに15分あたり120操作まで、本人確認の失敗はこれとは別に15分あたり10回までに制限する。OIDC、組織による認証器数の強制、nativeアプリのWebAuthn連携は未実装。
+- 招待制のpassword認証に加えて、Web版のPasskeyと重要操作のstep-upを実装した。Passkey登録後のpassword fallbackは禁止する。Passwordはstep-up付きで変更でき、変更時は他のsessionを終了する。Passkeyを登録した利用者はpasswordでのloginを無効にでき、運用者はCLIでpasswordを再設定できる（再設定はpassword loginを有効に戻し、全passkeyを削除し、全sessionを終了する。端末は残るので、本人が見覚えのない端末を失効させる）。Step-upはsessionごとに15分あたり120操作まで、本人確認の失敗はこれとは別に15分あたり10回までに制限する（盗まれたsessionが上限を使い切っても、本人の別sessionからの確認と失効は妨げられない）。OIDC、組織による認証器数の強制、nativeアプリのWebAuthn連携は未実装。
 - bcryptは固定2本のWorker threadで実行し、active 2 / pending 16 / 待機5秒を超えると503でrejectする。保存hashの形式/costを処理前に検証し、実行が30秒を超えたWorkerは失敗として終了する。新端末step-upのKDFはaudit/key/DB row lockより前に完了させる。これはsingle-processのCPU隔離であり、複数replicaを合算したrate limitや外部DDoS防御ではない。
 - Sessionは1つの端末にbindingされ、追加端末は既存端末の承認または復旧コードによる確認が必要。端末attestationと組織支援型・閾値型recoveryは未実装。
 - 新端末登録時のpending epoch cleanup（group protocol 4以降は新しいpending epochを作らず、migration 0023で残りを中止済み）は最大50 workspace membershipを安定順にlockし、各workspaceの最大300 channel内でset-basedに実施する。他tenantがaccount-globalな小さい上限を消費して端末回復を恒久妨害する設計ではないが、上限全体を処理する登録は通常より高latencyになり得てstatement timeout内に完了しなければ安全にrollbackする。
@@ -50,6 +50,7 @@
 ### E2EEと鍵管理
 
 - Message/attachmentはbrowserでAES-256-GCM暗号化し、message protocol v3では認証user ID、mutation target、broadcast-mention flagを含むcontext付きenvelopeへP-256 device keyで署名する。Server/clientはuser-device bindingを再確認し、channel keyがない場合はplaintextへfallbackせず停止する。旧protocol v1 ciphertextは互換復号せずfail closedになり、protocol v2 messageはlegacy互換としてbroadcast mention権限を持たない。
+- Message protocol v5は、編集・削除・引用・forum返信の対象を作者と署名済みidempotency keyでも指し、参照を持つeventはこの形式でだけ受理する。Server IDだけで対象を指す旧形式（v3/v4）の参照と、message IDだけに束縛した旧v2のfile署名は、serverもclientも拒否する（形式モデルM9、RISK_REGISTER R-051）。署名済みidempotency keyのないmessageは編集・削除・引用・返信できない。v5より前のclientは編集・削除・引用・返信ができず、そうしたeventを反映もできない（正式リリース前に決めたため、互換性は保たない）。
 - Channel keyはMLSライブラリのgroup/commit/Welcome/exporterで作る。Channelごとに一つのMLS groupを継続し、端末の追加・削除と定期更新をcommitで反映する（group protocol 4、[ADR 0012](../adr/0012-continuous-mls-groups.md)）。長期の履歴鍵を別途保存するため、message単位の完全なforward secrecyは主張しない。他のMLS実装との相互運用、external commit/join、MLS application messageによるmessage単位のratchetは提供しない。独立reviewは未実施。
 - Serverはchannelごとにcommitを順序付け、1 versionに1 commitだけを、直前versionとそのtranscriptのcompare-and-swapで受理する。受理したcommitはその場で`active`になり、pending、全員の受領確認、abortはない。Serverはcommit envelopeの署名、roster、Add/Removeとpackageの一致、Welcomeの宛先、UpdatePathのleaf credentialを検証するが、MLSの秘密値（path secret、exporter）は検証できない。同じbyte列の再送には同じ結果を返す。端末directoryの追記型chainとclient checkpoint照合を実装したが、独立witnessはない。
 - Offline端末は書き込みを止めない（例外は、移行直後のchannelで最初のgroupを待つ間。次項）。戻った端末は保存されたcommit logを順に処理して追いつく。書き込みが止まるのは、groupに資格を失った端末（失効・未承認・channel閲覧権の喪失）が残っている間と、group更新（genesis、Remove付きcommit、空commit）が24時間受理されていない間だけで、onlineの利用可能なmember 1台がRemoveまたは更新のcommitを出せば再開する。送信する端末自身が利用可能なmemberなら、公式clientは送信前にそのcommitを出す。追加待ちの端末は書き込みを止めない。
@@ -100,7 +101,9 @@
 - Socket.IO serverは現在channelを閲覧でき、active deviceへbindingされた参加者だけを最大8人までfresh call-participant IDで登録する。Offer/answer SDPとICE candidateは送信端末のP-256 keyで署名し、channel、送受信participant、sender device、単調sequenceへbindingする。受信clientはdevice directoryのuser-device bindingと署名を検証し、参加中のsenderごとに旧sequence/replayを拒否する。Serverは署名本文を変更せず対象participantへだけ中継し、channel room退出・失権・disconnect時にvoice registryからも除去する。
 - 第三者ICE serviceは既定で設定しない。`VOICE_ICE_SERVERS_JSON=[]` のままではdirect candidateで到達できるnetworkに限られ、Internet/NAT越しの接続性は保証しない。必要なSTUN/TURNはoperatorがセルフホストし、TURN credentialはauthenticated participantへ開示されるものとして短命化する。
 - P2P meshのため送受信帯域とpeer connection数は参加人数に比例し、上限は8人である。正式な同時接続capacity、長時間soak、全browser/mobile network、TURN failover、QoSは検証していない。Peer同士は相手のnetwork addressをICE情報から観測し得て、server/TURN/operatorは参加者、時刻、SDP/ICE、traffic量などのmetadataを観測できる。
-- 専用の常設voice channel type、SFU、SFrame、映像、camera切替、画面共有、録音・録画と継続表示、録音Bot、通話group-key ceremonyは未実装である。Pairwise DTLS keyはpeer connectionごとに新規確立されるが、`MEDIA-08..13` 全体、特にmalicious directory serverに対するkey transparencyと正式なparticipant-change rekeyを完了したとは扱わない。
+- Operatorが `VOICE_SFU_ENABLED=true` にすると、そのdeploymentの全通話はself-hostのmediasoup SFUを経由する（ADR 0014）。SFUはDTLS-SRTPを終端するが、音声frameは送信browserのworkerでSFrame（RFC 9605、`AES_128_GCM_SHA256_128`）により暗号化され、serverが読めるのはheaderとciphertextだけである。Frame keyは参加者ごと・通話ごとの乱数keyで、受信deviceの暗号化keyへwrapし送信deviceのP-256 keyで署名して参加者ごとに送る。誰かが参加・退出するたびに全員が新しいkeyへ替える（`MEDIA-09`）。`RTCRtpScriptTransform` を持たないbrowserはSFU通話へ参加しない。形式モデル M8 VE2・M8k、`formal-model/conformance/voice-sfu-e2e.mts`（実mediasoupとChromium）で確認した。
+- SFU通話でも、偽のdevice directoryを返すserverはframe keyを受け取れる（P2Pの署名SDPやmessageと同じdirectory信頼。M8 VE2-directory）。通話の参加者一覧はserverが決めるため、serverが加えたdeviceはkeyを受け取るが、通話の参加者として表示される（VE2-members）。Frame keyは対称keyなので、serverの協力があれば参加者は他の参加者の音声を装える（VE2-forge。どちらか単独ではできない）。Serverは誰が参加しているかと、packetの時刻と大きさから誰がいつ話しているかを観測できる（VE2-metadata）。SFU通話の上限もP2Pと同じ8人で、同時接続capacityやsoakは検証していない。
+- 専用の常設voice channel type、映像、camera切替、画面共有、録音・録画と継続表示、録音Botは未実装である。P2P通話のpairwise DTLS keyはpeer connectionごとに新規確立されるが、`MEDIA-08..13` 全体、特にmalicious directory serverに対するkey transparencyを完了したとは扱わない。
 
 ### Audit
 
@@ -146,7 +149,7 @@
 | Retention、user/org export、Restricted profile | 延期 |
 | SBOM/SLSA、release signing、signed update/downgrade protection | 延期 |
 | Project license選定、copyright/third-party notice、再配布条件の法務確認 | 延期 |
-| P2P音声以外のmedia（専用voice channel、video/screen sharing、SFrame、self-hosted SFU、recording controls） | 延期 |
+| 音声以外のmedia（専用voice channel、video/screen sharing、recording controls） | 延期。音声のself-hosted SFUとSFrameは実装済み |
 | Bot/Webhook identity、scoped API、external integration | 延期 |
 | 独立外部security review、full accessibility/i18n/performance assurance | 延期 |
 

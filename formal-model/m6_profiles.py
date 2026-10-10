@@ -42,6 +42,8 @@ OWNER0 = 'O'
 class Rules:
     change_check: str = 'timestamp'     # 'timestamp' (implementation) | 'revision' (alternative)
     noop_edit_bumps: bool = False       # CONTROL (before fix): an unchanged save set profileUpdatedAt
+    unreadable_avatar_counts: bool = False  # CONTROL (before the 2026-10-09 fix): re-uploading the same picture
+                                            # while the stored one could not be read counted as a change
     skew: int = 0                       # CONTROL (before fix): profileUpdatedAt used the app clock
     rank_check: bool = True             # CONTROL: False drops the strictly-higher-rank rule
     global_once: bool = True            # CONTROL: False makes the request once per workspace
@@ -191,6 +193,11 @@ def a_transitions(s: A, rules: Rules):
     for value in (0, 1):
         real = value != s.content
         if not real and not rules.noop_edit_bumps:
+            # isCurrentAvatar: the same picture while the stored one cannot be
+            # read. The fixed code fails the upload; before, it was a change.
+            if rules.unreadable_avatar_counts:
+                yield 'T', f'upload the same picture ({value}) while the stored one cannot be read', replace(
+                    s, pua=now + rules.skew, **tick), 'edit', []
             continue
         changed = s.changed_since | {f[0] for f in s.flags if f[1] == 'T'} if real else s.changed_since
         yield 'T', f'edit({value})', replace(s, content=value, rev=s.rev + (1 if real else 0), pua=now + rules.skew,
@@ -573,6 +580,8 @@ def run(depth: int = 5) -> None:
         ('A5-ctl', 'if ownership could move to a warned member, nobody could clear it', Rules(owner_transfer=True), 'A5'),
         ('A3-ctl1', 'before the fix: an unchanged save counted as a change', Rules(noop_edit_bumps=True), 'A3'),
         ('A3-ctl2', 'before the fix: an app clock ahead of the DB clock counted an earlier edit', Rules(skew=2), 'A3'),
+        ('A3-ctl3', 'before the fix: the same picture uploaded while the stored one could not be read counted as '
+                    'a change', Rules(unreadable_avatar_counts=True), 'A3'),
     ):
         control, _ = a_explore(rules, depth)
         record('M6', check, title, 'CONTROL', prop in control, witness=control.get(prop))

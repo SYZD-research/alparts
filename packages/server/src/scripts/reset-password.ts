@@ -40,11 +40,13 @@ try {
     }
     throw error;
   });
-  await withOperatorMutation(async () => {
+  const { passkeysRemoved } = await withOperatorMutation(async () => {
     if (!(await verifyAuditChain()).valid) throw new Error('AUDIT_CHAIN_INVALID');
-    await resetPassword(userId, passwordHash);
+    return resetPassword(userId, passwordHash);
   });
-  process.stdout.write('Password reset completed. Every session of the account was signed out.\n');
+  process.stdout.write('Password reset completed. Every session of the account was signed out'
+    + ` and ${passkeysRemoved} passkey(s) were removed. Ask the user to sign in with the new password,`
+    + ' revoke devices they do not recognize, and register a passkey again.\n');
 } finally {
   await closePasswordWorkers();
   await closeDb();

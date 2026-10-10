@@ -111,14 +111,14 @@ Last verified: 2026-09-04. This inventory covers first-party source, build, test
 ### Realtime, presence, typing, and voice
 
 - **Location:** `packages/server/src/websocket`, client `socket.ts`, presence/voice stores and voice UI.
-- **Purpose/responsibility:** authenticated rooms, message notifications, presence/typing, signed WebRTC SDP/ICE relay, bounded participant registry.
-- **Non-responsibility:** durable queue, offline push, SFU/SFrame, recording, video/screen sharing, distributed room state.
-- **Input/output:** Socket.IO events and signed signaling; room/event delivery and peer-to-peer DTLS-SRTP media.
+- **Purpose/responsibility:** authenticated rooms, message notifications, presence/typing, signed WebRTC SDP/ICE relay or SFU media signaling with signed call-key relay, bounded participant registry.
+- **Non-responsibility:** durable queue, offline push, recording, video/screen sharing, distributed room state.
+- **Input/output:** Socket.IO events and signed signaling; room/event delivery and peer-to-peer DTLS-SRTP media, or SFrame-encrypted frames forwarded by the SFU.
 - **Dependencies/persistence:** Socket.IO in process; PostgreSQL live session/authorization. Typing/voice registry is ephemeral; presence and device activity timestamps are advisory PostgreSQL telemetry that may be omitted and are never authorization inputs.
 - **Security boundary:** handshake is admitted before DB work, room joins are serialized with authorization revision checks, signaling binds channel/participant/device/sequence, clients verify before WebRTC use.
 - **Failure/retry/idempotency:** disconnect clears ephemeral state; reconnect rehydrates bounded memberships. Presence/typing/activity loss degrades safely and stays outside authoritative audit admission; messages remain durable via REST/DB.
-- **Scaling/availability:** one process, maximum 8 voice participants/channel; P2P mesh and NAT traversal depend on configured STUN/TURN.
-- **Operate/test:** socket expiry/origin/budget/room-race and voice tests plus integration.
+- **Scaling/availability:** one process, maximum 8 voice participants/channel; P2P mesh and NAT traversal depend on configured STUN/TURN. With `VOICE_SFU_ENABLED=true`, calls go through the server's mediasoup worker processes instead, each frame encrypted by its sender (ADR 0014); the media ports from `VOICE_SFU_BASE_PORT` must be reachable.
+- **Operate/test:** socket expiry/origin/budget/room-race and voice tests plus integration; `pnpm --filter @alparts/server test:voice-e2e` runs SFU calls with real mediasoup and Chromium.
 
 ### Attachment workflow and object storage adapter
 

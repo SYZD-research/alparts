@@ -1,6 +1,6 @@
 import { displayText } from '../security/display-text.js';
 import { Router, type NextFunction } from 'express';
-import { isAccountSecurityError } from '../security/account-errors.js';
+import { passkeyRouteError } from '../security/account-errors.js';
 import { z } from 'zod';
 import type { AuthenticationResponseJSON, RegistrationResponseJSON } from '@simplewebauthn/server';
 import { authMiddleware, type AuthRequest } from '../middleware/auth.js';
@@ -13,13 +13,16 @@ const router = Router();
 router.use('/passkeys', rateLimit({ windowMs: 15 * 60_000, max: 40 }));
 // Each sensitive action takes one options and one verify request. Wrong
 // passwords and failed passkey checks have their own, much smaller budget.
+// Both are counted per session: a stolen session that uses up its budget
+// must not keep the owner's other sessions from confirming, for example to
+// revoke it.
 router.use(
   '/step-up',
   authMiddleware,
   rateLimit({
     windowMs: 15 * 60_000,
     max: 240,
-    key: (req) => (req as AuthRequest).userId!,
+    key: (req) => (req as AuthRequest).sessionId!,
   }),
 );
 router.use(
@@ -27,7 +30,7 @@ router.use(
   rateLimit({
     windowMs: 15 * 60_000,
     max: 10,
-    key: (req) => (req as AuthRequest).userId!,
+    key: (req) => (req as AuthRequest).sessionId!,
     failuresOnly: true,
   }),
 );
@@ -48,30 +51,13 @@ const handle =
   async (req: AuthRequest, res: any, next: NextFunction) => {
     try {
       await handler(req, res);
-    } catch (error: any) {
-      if (!isAccountSecurityError(error)) {
+    } catch (error) {
+      const answer = passkeyRouteError(error);
+      if (!answer) {
         next(error);
         return;
       }
-      if (error.message === 'LAST_PASSKEY') {
-        res.status(409).json({
-          error: 'LAST_PASSKEY',
-          message: 'Register another passkey before deleting this one.',
-        });
-        return;
-      }
-      if (error.message === 'DEVICE_APPROVAL_REQUIRED') {
-        res.status(403).json({
-          error: 'DEVICE_APPROVAL_REQUIRED',
-          message: 'Use an approved device.',
-        });
-        return;
-      }
-      // Parser, verifier, challenge and unknown credential failures have one public result.
-      res.status(403).json({
-        error: 'AUTHENTICATION_FAILED',
-        message: 'Identity confirmation failed. Try again.',
-      });
+      res.status(answer.status).json(answer.body);
     }
   };
 router.get(

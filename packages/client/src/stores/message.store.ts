@@ -5,7 +5,9 @@ import {
   type Attachment,
   type Message,
   type Reaction,
+  type SignedEventReference,
   type SignedMessageEnvelope,
+  isBoundMessageEnvelope,
 } from '@alparts/shared';
 import { api, ApiError } from '../services/api';
 import {
@@ -36,6 +38,7 @@ import {
   type ProjectedMessage,
 } from './message-projector';
 import { useChannelStore } from './channel.store';
+import { signedEnvelopeCandidates } from './message-envelope';
 import type { SealedMessage } from './sealed-message';
 import { encodeForumPostContent } from '../services/forum-post-model';
 import { TAMPERED_MESSAGE_MARKER, UNAVAILABLE_MESSAGE_MARKER, UNVERIFIED_MESSAGE_MARKER } from '../services/message-display';
@@ -82,7 +85,16 @@ interface MessageState {
   sealMessage: (
     channelId: string,
     content: string,
-    options?: { refMessageId?: string; idempotencyKey?: string; allowEmpty?: boolean; mentionedUserIds?: string[]; postId?: string },
+    options?: {
+      refMessageId?: string;
+      idempotencyKey?: string;
+      allowEmpty?: boolean;
+      mentionedUserIds?: string[];
+      postId?: string;
+      /** The quoted message and the post as their authors signed them (saved with a queued message). */
+      refBinding?: SignedEventReference;
+      postBinding?: SignedEventReference;
+    },
   ) => Promise<SealedMessage>;
   /** Send (or send again) a sealed message exactly as it was sealed. */
   sendSealedMessage: (channelId: string, content: string, sealed: SealedMessage) => Promise<Message>;
@@ -241,9 +253,69 @@ function channelUpdate(state: MessageState, channelId: string, events: Message[]
   return update;
 }
 
+/**
+ * The channel stays stopped while an event with conflicting signed copies is
+ * held. Loading the same events again, or a later key check, does not lift
+ * it; only dropping the channel's events and reading it again does.
+ */
+export function channelSecurityError(state: Pick<MessageState, 'securityErrors' | 'eventsByChannel'>, channelId: string): string | null {
+  return state.securityErrors[channelId]
+    ?? (state.eventsByChannel[channelId]?.some(hasAuthenticatedEnvelopeConflict)
+      ? t('安全のため、このチャンネルの履歴の読み込みを停止しました')
+      : null);
+}
+
 /** Forum channels sign every event with its post (v4); the type, not the payload, decides. */
 export function isForumChannel(channelId: string): boolean {
   return useChannelStore.getState().channels.find((channel) => channel.id === channelId)?.type === 'forum';
+}
+
+/**
+ * The loaded message under an id, named by its author and the idempotency key
+ * it was sent with: what a v5 envelope signs for the message it edits,
+ * deletes, quotes or replies in. The pair only narrows what the envelope can
+ * apply to, so a message that could not be verified (or read) can still be
+ * deleted or quoted. A message stored without a signed idempotency key cannot
+ * be named, and the server refuses references in the older layouts.
+ */
+export function signedReferenceOf(
+  state: Pick<MessageState, 'eventsByChannel'>,
+  channelId: string,
+  messageId: string,
+): SignedEventReference {
+  const base = (state.eventsByChannel[channelId] || []).find((event) => event.id === messageId && event.type === 'message');
+  if (!base) throw new Error(t('メッセージを確認できませんでした。再読み込みしてお試しください。'));
+  if (!base.idempotencyKey) throw new Error(t('このメッセージは編集・削除・引用・返信できません'));
+  return { authorId: base.authorId, idempotencyKey: base.idempotencyKey };
+}
+
+/**
+ * The v5 fields of an envelope that references another message (the only
+ * layout accepted for it). An envelope without references keeps the older
+ * layout, which signs the same fields.
+ */
+function boundFields(
+  forum: boolean,
+  refMessageId: string | null | undefined,
+  refBinding: SignedEventReference | null,
+  postId: string | null | undefined,
+  postBinding: SignedEventReference | null,
+): Pick<SignedMessageEnvelope, 'refBinding' | 'postBinding'> {
+  const postReference = forum && Boolean(postId);
+  if (!refMessageId && !postReference) return {};
+  if ((refMessageId && !refBinding) || (postReference && !postBinding)) {
+    throw new Error(t('このメッセージは編集・削除・引用・返信できません'));
+  }
+  return {
+    refBinding: refMessageId ? refBinding : null,
+    ...(forum ? { postBinding: postId ? postBinding : null } : {}),
+  };
+}
+
+function sameReference(left: SignedEventReference | null | undefined, right: SignedEventReference | null | undefined): boolean {
+  return (left ?? null) === null
+    ? (right ?? null) === null
+    : Boolean(right) && left!.authorId === right!.authorId && left!.idempotencyKey === right!.idempotencyKey;
 }
 
 /** The post a verified forum message belongs to: its own id if it started the post. */
@@ -302,7 +374,11 @@ export function matchesLocallySignedMessageResponse(
     && event.broadcastMention === expected.broadcastMention
     && event.encryptedContent === expected.encryptedContent
     && event.contentNonce === expected.contentNonce
-    && event.signature === expectedSignature;
+    && event.signature === expectedSignature
+    && (!isBoundMessageEnvelope(expected) || (
+      sameReference(event.refBinding, expected.refBinding)
+      && (expected.postId === undefined || sameReference(event.postBinding, expected.postBinding))
+    ));
 }
 
 function requireLocallySignedMessageResponse(
@@ -313,7 +389,7 @@ function requireLocallySignedMessageResponse(
   if (!matchesLocallySignedMessageResponse(event, expected, expectedSignature)) {
     throw new Error('Server returned a message event that does not match the signed request');
   }
-  return markMessageCryptoVerification(event, true);
+  return markMessageCryptoVerification(event, true, isBoundMessageEnvelope(expected));
 }
 
 /**
@@ -566,6 +642,9 @@ export const useMessageStore = create<MessageState>((set, get) => ({
 
   sealMessage: async (channelId, content, options = {}) => {
     const { refMessageId, allowEmpty = false, mentionedUserIds = [], postId } = options;
+    // v5: the quoted message and the post are named as their authors signed them.
+    const refBinding = refMessageId ? options.refBinding ?? signedReferenceOf(get(), channelId, refMessageId) : null;
+    const postBinding = postId ? options.postBinding ?? signedReferenceOf(get(), channelId, postId) : null;
     if ((!content && !allowEmpty) || content.length > MAX_MESSAGE_LENGTH || new TextEncoder().encode(content).length > MAX_MESSAGE_LENGTH * 4) {
       throw new Error('Message is too long');
     }
@@ -586,6 +665,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       refMessageId: refMessageId ?? null,
       broadcastMention,
       ...(forum ? { postId: postId! } : {}),
+      ...boundFields(forum, refMessageId, refBinding, postId, postBinding),
     };
     const encrypted = await encryptMessage(content, channelKey.key, unsigned);
     const envelope: SignedMessageEnvelope = { ...unsigned, encryptedContent: encrypted.encrypted, contentNonce: encrypted.nonce };
@@ -760,6 +840,13 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         refMessageId: messageId,
         broadcastMention,
         ...(postId ? { postId } : {}),
+        ...boundFields(
+          Boolean(postId),
+          messageId,
+          signedReferenceOf(get(), channelId, messageId),
+          postId,
+          postId ? signedReferenceOf(get(), channelId, postId) : null,
+        ),
       };
       const encrypted = await encryptMessage(content, channelKey.key, unsigned);
       const envelope: SignedMessageEnvelope = { ...unsigned, encryptedContent: encrypted.encrypted, contentNonce: encrypted.nonce };
@@ -814,6 +901,13 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         encryptedContent: '',
         contentNonce: '',
         ...(postId ? { postId } : {}),
+        ...boundFields(
+          Boolean(postId),
+          messageId,
+          signedReferenceOf(get(), channelId, messageId),
+          postId,
+          postId ? signedReferenceOf(get(), channelId, postId) : null,
+        ),
       };
       const signature = await signMessageEnvelope(envelope);
       const request = {
@@ -950,36 +1044,30 @@ export const useMessageStore = create<MessageState>((set, get) => ({
             return markMessageCryptoVerification({ ...message, content: UNAVAILABLE_MESSAGE_MARKER }, false);
           }
           const identity = identities.get(message.deviceId);
-          const envelope: SignedMessageEnvelope = {
-            type: message.type,
-            channelId: message.channelId,
-            authorId: message.authorId,
-            deviceId: message.deviceId,
-            keyVersion: message.keyVersion,
-            idempotencyKey: message.idempotencyKey,
-            refMessageId: message.refMessageId,
-            broadcastMention: message.broadcastMention ?? null,
-            encryptedContent: message.encryptedContent,
-            contentNonce: message.contentNonce,
-            // The signed layout follows the channel type (the channel id is
-            // signed), so a server cannot pick v3 or v4 by adding a field.
-            ...(forumChannel ? { postId: message.postId ?? null } : {}),
-          };
-          const invalidSignature = (
-            !identity
-            || identity.userId !== message.authorId
-            || message.author.id !== message.authorId
-            || !await verifyMessageSignature(envelope, message.signature, identity.identityKey).catch(() => false)
-          );
-          if (invalidSignature) {
+          const authentic = Boolean(identity)
+            && identity!.userId === message.authorId
+            && message.author.id === message.authorId;
+          // An edit, a deletion, a quote or a forum reply counts only in v5,
+          // which names what it references as that message's author signed it.
+          let envelope: SignedMessageEnvelope | null = null;
+          if (authentic) {
+            for (const candidate of signedEnvelopeCandidates(message, forumChannel)) {
+              if (await verifyMessageSignature(candidate, message.signature, identity!.identityKey).catch(() => false)) {
+                envelope = candidate;
+                break;
+              }
+            }
+          }
+          if (!envelope) {
             if (message.type !== 'message') return null;
             return markMessageCryptoVerification({ ...message, content: UNVERIFIED_MESSAGE_MARKER }, false);
           }
-          if (message.type === 'delete') return markMessageCryptoVerification(message, true);
+          const isBound = isBoundMessageEnvelope(envelope);
+          if (message.type === 'delete') return markMessageCryptoVerification(message, true, isBound);
           const key = keysByVersion.get(message.keyVersion) ?? null;
           if (!key) return markMessageKeyUnavailable(message);
           try {
-            return markMessageCryptoVerification({ ...message, content: await decryptMessage(envelope, key) }, true);
+            return markMessageCryptoVerification({ ...message, content: await decryptMessage(envelope, key) }, true, isBound);
           } catch {
             return markMessageCryptoVerification({ ...message, content: TAMPERED_MESSAGE_MARKER }, false);
           }

@@ -11,9 +11,13 @@ import {
 
 // A member's own channel settings and bookmarks are never shown in the log.
 const PERSONAL_ACTIONS = ['channel.preference.%', 'message.bookmark.%'];
-// Activity inside a channel (messages, DMs, membership, keys, files) is shown
-// only to viewers who can see that channel, and to the member who did it.
-const CHANNEL_ACTIVITY_ACTIONS = ['message.%', 'dm.%', 'channel.member.%', 'channel.key.%', 'forum.post.%', 'attachment.%'];
+// Activity inside a channel (messages, DMs, membership, keys, group packages,
+// files) is shown only to viewers who can see that channel, and to the member
+// who did it. A device publishes a group package for every channel it can
+// see, so those rows would otherwise show who is in private channels and DMs.
+const CHANNEL_ACTIVITY_ACTIONS = [
+  'message.%', 'dm.%', 'channel.member.%', 'channel.key.%', 'channel.mls.%', 'forum.post.%', 'attachment.%',
+];
 
 function workspaceAuditScope(workspaceId: string) {
   return or(
@@ -110,6 +114,9 @@ export async function getAuditIntegrity(workspaceId: string, actorId: string) {
   return integrity;
 }
 
+// The chain hashes are not returned. A viewer cannot check them (the chain
+// is keyed), and since the chain is global they would show that rows the
+// viewer may not see were written in between, and when (formal model M5v).
 function formatAuditLog(row: typeof auditLogs.$inferSelect) {
   return {
     id: row.id,
@@ -118,8 +125,6 @@ function formatAuditLog(row: typeof auditLogs.$inferSelect) {
     targetType: row.targetType,
     targetId: row.targetId,
     details: row.details,
-    prevHash: row.prevHash,
-    hash: row.hash,
     createdAt: row.createdAt.toISOString(),
   };
 }

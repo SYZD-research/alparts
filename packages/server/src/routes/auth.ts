@@ -1,7 +1,7 @@
 import { displayText } from '../security/display-text.js';
 import { consumeLoginChallenge, issueLoginChallenge } from '../security/login-challenge.js';
 import { normalizeEmail } from '../security/email.js';
-import { Router } from 'express';
+import { Router, type Response } from 'express';
 import type { Server as SocketServer } from 'socket.io';
 import { z } from 'zod';
 import * as authService from '../services/auth.service.js';
@@ -15,6 +15,7 @@ import {
 import { config } from '../config/index.js';
 import { expiredSessionCookie, sessionCookie } from '../security/cookies.js';
 import { emailLocale } from '../services/email-messages.js';
+import { assertStepUpStillValid } from '../services/passkey.service.js';
 
 const router = Router();
 const password = z.string().min(12).max(72).refine((value) => Buffer.byteLength(value, 'utf8') <= 72);
@@ -183,17 +184,31 @@ router.post('/reauthenticate', authMiddleware, reauthenticateLimit, async (req: 
   }
 });
 
+/** The confirmation stopped holding before the change; nothing changed. */
+function sendStaleStepUp(req: AuthRequest, res: Response) {
+  res.status(428).json({
+    error: 'STEP_UP_REQUIRED',
+    purpose: req.stepUpProof?.purpose,
+    message: 'Confirm your identity to continue.',
+  });
+}
+
 // Both password settings need a step-up confirmation (isSensitiveAction).
 router.put('/password', authMiddleware, passwordSettingsLimit, async (req: AuthRequest, res) => {
   try {
     const body = changePasswordSchema.parse(req.body);
-    const revoked = await authService.changePassword(req.userId!, req.sessionId!, body.newPassword);
+    const revoked = await authService.changePassword(req.userId!, req.sessionId!, body.newPassword,
+      (transaction) => assertStepUpStillValid(transaction, req.stepUpProof, req.userId!, req.sessionId!));
     disconnectSessions(req, revoked);
     res.setHeader('Cache-Control', 'no-store');
     res.json({ success: true, revoked: revoked.length });
   } catch (error: any) {
     if (error.name === 'ZodError' || error.message === 'INVALID_PASSWORD_LENGTH') {
       res.status(400).json({ error: 'VALIDATION', message: 'Invalid password data', statusCode: 400 });
+      return;
+    }
+    if (error.message === 'STEP_UP_STALE') {
+      sendStaleStepUp(req, res);
       return;
     }
     if (error.message === 'INVALID_CREDENTIALS') {
@@ -212,13 +227,18 @@ router.get('/password-login', authMiddleware, async (req: AuthRequest, res) => {
 router.put('/password-login', authMiddleware, passwordSettingsLimit, async (req: AuthRequest, res) => {
   try {
     const body = passwordLoginSchema.parse(req.body);
-    const revoked = await authService.setPasswordLogin(req.userId!, req.sessionId!, body.enabled);
+    const revoked = await authService.setPasswordLogin(req.userId!, req.sessionId!, body.enabled,
+      (transaction) => assertStepUpStillValid(transaction, req.stepUpProof, req.userId!, req.sessionId!));
     disconnectSessions(req, revoked);
     res.setHeader('Cache-Control', 'no-store');
     res.json({ success: true, enabled: body.enabled, revoked: revoked.length });
   } catch (error: any) {
     if (error.name === 'ZodError') {
       res.status(400).json({ error: 'VALIDATION', message: 'Invalid setting', statusCode: 400 });
+      return;
+    }
+    if (error.message === 'STEP_UP_STALE') {
+      sendStaleStepUp(req, res);
       return;
     }
     if (error.message === 'PASSKEY_REQUIRED') {
@@ -249,7 +269,20 @@ router.get('/sessions', authMiddleware, async (req: AuthRequest, res) => {
 });
 
 router.delete('/sessions/:id', authMiddleware, async (req: AuthRequest, res) => {
-  if (!sessionIdSchema.safeParse(req.params.id).success || !await authService.revokeSession(req.userId!, req.params.id)) {
+  let removed = false;
+  if (sessionIdSchema.safeParse(req.params.id).success) {
+    try {
+      removed = await authService.revokeSession(req.userId!, req.params.id,
+        (transaction) => assertStepUpStillValid(transaction, req.stepUpProof, req.userId!, req.sessionId!));
+    } catch (error) {
+      if (error instanceof Error && error.message === 'STEP_UP_STALE') {
+        sendStaleStepUp(req, res);
+        return;
+      }
+      throw error;
+    }
+  }
+  if (!removed) {
     res.status(404).json({ error: 'NOT_FOUND', message: 'Session not found', statusCode: 404 });
     return;
   }
@@ -260,7 +293,17 @@ router.delete('/sessions/:id', authMiddleware, async (req: AuthRequest, res) => 
 });
 
 router.delete('/sessions', authMiddleware, async (req: AuthRequest, res) => {
-  const sessionIds = await authService.revokeAllSessions(req.userId!);
+  let sessionIds: string[];
+  try {
+    sessionIds = await authService.revokeAllSessions(req.userId!,
+      (transaction) => assertStepUpStillValid(transaction, req.stepUpProof, req.userId!, req.sessionId!));
+  } catch (error) {
+    if (error instanceof Error && error.message === 'STEP_UP_STALE') {
+      sendStaleStepUp(req, res);
+      return;
+    }
+    throw error;
+  }
   disconnectSessions(req, sessionIds);
   res.setHeader('Set-Cookie', expiredSessionCookie());
   res.json({ success: true, revoked: sessionIds.length });

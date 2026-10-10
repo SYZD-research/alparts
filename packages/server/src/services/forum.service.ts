@@ -170,8 +170,9 @@ export async function markForumPostRead(postId: string, userId: string, shownAct
 export async function setForumPostLocked(postId: string, actorId: string, locked: boolean) {
   return auditedTransaction(async (tx) => {
     const { channel, authorization } = await authorizeForumPost(tx, postId, actorId, 'update');
-    if (!canManage(authorization)) throw new Error('NOT_AUTHORIZED');
+    // A deleted post is not found for everyone, as resolve and tags answer.
     const post = await lockLivePost(tx, postId, channel.id);
+    if (!canManage(authorization)) throw new Error('NOT_AUTHORIZED');
     const changed = (post.lockedAt !== null) !== locked;
     if (changed) {
       await tx.update(forumPosts)

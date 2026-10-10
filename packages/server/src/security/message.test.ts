@@ -11,6 +11,7 @@ import {
   serializeChannelKeyEpochAbort,
   serializeChannelKeyFreshStart,
   serializeChannelKeyWrap,
+  referencesOtherMessages,
   serializeMessageAad,
   serializeMessageEnvelope,
   type SignedAttachmentEnvelope,
@@ -180,6 +181,130 @@ describe('signed message envelopes', () => {
     ]) {
       assert.equal(verifyMessageEnvelopeSignature(keys.identityKey, tampered, signature), false);
     }
+  });
+
+  it('keeps the v5 serialization vectors stable and binds the events they name (formal model M9)', () => {
+    const keys = fixture();
+    const target = { authorId: '00000000-0000-4000-8000-000000000004', idempotencyKey: '00000000-0000-4000-8000-000000000006' };
+    const edit: SignedMessageEnvelope = {
+      type: 'edit',
+      channelId: '00000000-0000-4000-8000-000000000001',
+      authorId: '00000000-0000-4000-8000-000000000004',
+      deviceId: '00000000-0000-4000-8000-000000000002',
+      encryptedContent: 'Y2lwaGVydGV4dA==',
+      contentNonce: 'AAAAAAAAAAAAAAAA',
+      keyVersion: 7,
+      idempotencyKey: '00000000-0000-4000-8000-000000000003',
+      refMessageId: '00000000-0000-4000-8000-000000000005',
+      broadcastMention: false,
+      refBinding: target,
+    };
+    assert.equal(
+      serializeMessageAad(edit),
+      '[5,"text","edit","00000000-0000-4000-8000-000000000001","00000000-0000-4000-8000-000000000004","00000000-0000-4000-8000-000000000002",7,"00000000-0000-4000-8000-000000000003",["00000000-0000-4000-8000-000000000005","00000000-0000-4000-8000-000000000004","00000000-0000-4000-8000-000000000006"],null,false]',
+    );
+    assert.equal(
+      serializeMessageEnvelope(edit),
+      '[5,"text","edit","00000000-0000-4000-8000-000000000001","00000000-0000-4000-8000-000000000004","00000000-0000-4000-8000-000000000002",7,"00000000-0000-4000-8000-000000000003",["00000000-0000-4000-8000-000000000005","00000000-0000-4000-8000-000000000004","00000000-0000-4000-8000-000000000006"],null,false,"AAAAAAAAAAAAAAAA","Y2lwaGVydGV4dA=="]',
+    );
+    const reply: SignedMessageEnvelope = {
+      ...edit,
+      type: 'message',
+      refMessageId: null,
+      refBinding: null,
+      postId: '00000000-0000-4000-8000-000000000007',
+      postBinding: { authorId: '00000000-0000-4000-8000-000000000008', idempotencyKey: '00000000-0000-4000-8000-000000000009' },
+    };
+    assert.equal(
+      serializeMessageAad(reply),
+      '[5,"forum","message","00000000-0000-4000-8000-000000000001","00000000-0000-4000-8000-000000000004","00000000-0000-4000-8000-000000000002",7,"00000000-0000-4000-8000-000000000003",null,["00000000-0000-4000-8000-000000000007","00000000-0000-4000-8000-000000000008","00000000-0000-4000-8000-000000000009"],false]',
+    );
+    // A post's first message names no post; its layout still says forum.
+    assert.equal(
+      serializeMessageAad({ ...reply, postId: null, postBinding: null }),
+      '[5,"forum","message","00000000-0000-4000-8000-000000000001","00000000-0000-4000-8000-000000000004","00000000-0000-4000-8000-000000000002",7,"00000000-0000-4000-8000-000000000003",null,null,false]',
+    );
+
+    // The signature covers who wrote the named event and the key they signed
+    // it with, so serving another message under the id breaks it, and so does
+    // presenting the event in an older layout.
+    const editSignature = sign('sha256', Buffer.from(serializeMessageEnvelope(edit)), {
+      key: keys.signingPrivateKey,
+      dsaEncoding: 'ieee-p1363',
+    }).toString('base64');
+    assert.equal(verifyMessageEnvelopeSignature(keys.identityKey, edit, editSignature), true);
+    for (const tampered of [
+      { ...edit, refBinding: { ...target, idempotencyKey: '00000000-0000-4000-8000-000000000099' } },
+      { ...edit, refBinding: { ...target, authorId: '00000000-0000-4000-8000-000000000099' } },
+      { ...edit, refMessageId: '00000000-0000-4000-8000-000000000099' },
+      { ...edit, refBinding: undefined },
+      { ...edit, postId: '00000000-0000-4000-8000-000000000007', postBinding: target },
+    ] satisfies SignedMessageEnvelope[]) {
+      assert.equal(verifyMessageEnvelopeSignature(keys.identityKey, tampered, editSignature), false);
+    }
+    const replySignature = sign('sha256', Buffer.from(serializeMessageEnvelope(reply)), {
+      key: keys.signingPrivateKey,
+      dsaEncoding: 'ieee-p1363',
+    }).toString('base64');
+    assert.equal(verifyMessageEnvelopeSignature(keys.identityKey, reply, replySignature), true);
+    for (const tampered of [
+      { ...reply, postBinding: { ...reply.postBinding!, idempotencyKey: '00000000-0000-4000-8000-000000000099' } },
+      { ...reply, postBinding: undefined, refBinding: undefined },
+      { ...reply, postId: undefined, postBinding: undefined },
+    ] satisfies SignedMessageEnvelope[]) {
+      assert.equal(verifyMessageEnvelopeSignature(keys.identityKey, tampered, replySignature), false);
+    }
+  });
+
+  it('rejects v5 envelopes whose references and bindings disagree', () => {
+    const base: SignedMessageEnvelope = {
+      type: 'edit',
+      channelId: '00000000-0000-4000-8000-000000000001',
+      authorId: '00000000-0000-4000-8000-000000000004',
+      deviceId: '00000000-0000-4000-8000-000000000002',
+      encryptedContent: '',
+      contentNonce: '',
+      keyVersion: 1,
+      idempotencyKey: '00000000-0000-4000-8000-000000000003',
+      refMessageId: '00000000-0000-4000-8000-000000000005',
+      broadcastMention: false,
+      refBinding: { authorId: '00000000-0000-4000-8000-000000000004', idempotencyKey: '00000000-0000-4000-8000-000000000006' },
+    };
+    const malformed: SignedMessageEnvelope[] = [
+      // A reference needs the event it names, and no reference names none.
+      { ...base, refBinding: null },
+      { ...base, refMessageId: null },
+      { ...base, refBinding: { authorId: '', idempotencyKey: '00000000-0000-4000-8000-000000000006' } },
+      { ...base, refBinding: { authorId: '00000000-0000-4000-8000-000000000004', idempotencyKey: '' } },
+      // Only forum events name a post.
+      { ...base, postBinding: base.refBinding },
+      // A forum reply names the post's first message.
+      { ...base, type: 'message', refMessageId: null, refBinding: null, postId: '00000000-0000-4000-8000-000000000007', postBinding: null },
+      { ...base, type: 'message', refMessageId: null, refBinding: null, postId: null, postBinding: base.refBinding },
+      // Forum edits and deletions stay inside their post.
+      { ...base, postId: null, postBinding: null },
+      { ...base, broadcastMention: null },
+      { ...base, broadcastMention: undefined },
+    ];
+    for (const envelope of malformed) {
+      assert.throws(() => serializeMessageEnvelope(envelope), /INVALID_(BOUND|FORUM)_ENVELOPE/);
+      assert.throws(() => serializeMessageAad(envelope), /INVALID_(BOUND|FORUM)_ENVELOPE/);
+      assert.equal(verifyMessageEnvelopeSignature(fixture().identityKey, envelope, 'A'.repeat(86) + '=='), false);
+    }
+    // v5 never shares a representation with the layouts before it.
+    const { refBinding: _binding, ...legacy } = base;
+    assert.notEqual(serializeMessageEnvelope(base), serializeMessageEnvelope(legacy));
+    assert.match(serializeMessageEnvelope(legacy), /^\[3,/);
+  });
+
+  it('names the events that count only in v5: edits, deletions, quotes and everything inside a forum post', () => {
+    const id = '00000000-0000-4000-8000-000000000005';
+    assert.equal(referencesOtherMessages({ refMessageId: null }), false);
+    assert.equal(referencesOtherMessages({ refMessageId: undefined }), false);
+    assert.equal(referencesOtherMessages({ refMessageId: id }), true);
+    // A forum post's first message names nothing; its replies, edits and deletions name the post.
+    assert.equal(referencesOtherMessages({ refMessageId: null, postId: null }), false);
+    assert.equal(referencesOtherMessages({ refMessageId: null, postId: id }), true);
   });
 
   it('rejects forum envelopes without an explicit mention flag or post for mutations', () => {
@@ -356,15 +481,15 @@ describe('attachment crypto protocol', () => {
       noncePrefix: 'BwcHBwcHBwc=',
       plaintextSize: 5_242_881,
       chunkCount: 2,
+      messageIdempotencyKey: 'message-key',
     };
     assert.equal(
       serializeAttachmentEnvelope(envelope),
-      '[2,"attachment","00000000-0000-4000-8000-000000000001","00000000-0000-4000-8000-000000000002","00000000-0000-4000-8000-000000000003","00000000-0000-4000-8000-000000000005","00000000-0000-4000-8000-000000000004",7,"ZmlsZW5hbWU=","application/octet-stream","d3JhcHBlZA==","BwcHBwcHBwc=",5242881,2]',
-    );
-    assert.equal(
-      serializeAttachmentEnvelope({ ...envelope, messageIdempotencyKey: 'message-key' }),
       '[3,"attachment","00000000-0000-4000-8000-000000000001","00000000-0000-4000-8000-000000000002","00000000-0000-4000-8000-000000000003","00000000-0000-4000-8000-000000000005","00000000-0000-4000-8000-000000000004",7,"ZmlsZW5hbWU=","application/octet-stream","d3JhcHBlZA==","BwcHBwcHBwc=",5242881,2,"message-key"]',
     );
+    // The unbound v2 layout, which named the message by server id only, is gone.
+    const { messageIdempotencyKey: _bound, ...unbound } = envelope;
+    assert.throws(() => serializeAttachmentEnvelope(unbound as SignedAttachmentEnvelope), /INVALID_ATTACHMENT_ENVELOPE/);
     assert.equal(
       serializeAttachmentFilenameAad(envelope.messageId),
       'alparts-attachment-filename-v1\0' + envelope.messageId,
@@ -411,6 +536,7 @@ describe('attachment crypto protocol', () => {
       noncePrefix: 'BwcHBwcHBwc=',
       plaintextSize: 1,
       chunkCount: 1,
+      messageIdempotencyKey: 'message-key',
     };
     const canonical = serializeAttachmentEnvelope(envelope);
     const mutations: SignedAttachmentEnvelope[] = [
@@ -426,6 +552,7 @@ describe('attachment crypto protocol', () => {
       { ...envelope, noncePrefix: 'CAgICAgICAg=' },
       { ...envelope, plaintextSize: 2 },
       { ...envelope, chunkCount: 2 },
+      { ...envelope, messageIdempotencyKey: 'another-message-key' },
     ];
     for (const mutation of mutations) assert.notEqual(serializeAttachmentEnvelope(mutation), canonical);
   });
@@ -446,6 +573,7 @@ describe('attachment crypto protocol', () => {
       noncePrefix: 'BwcHBwcHBwc=',
       plaintextSize: 1,
       chunkCount: 1,
+      messageIdempotencyKey: 'message-key',
     };
     const signature = sign('sha256', Buffer.from(serializeAttachmentEnvelope(envelope)), {
       key: keys.signingPrivateKey,

@@ -1,16 +1,24 @@
 export const MESSAGE_CRYPTO_VERSION = 3;
 /** Forum-channel events: v3 plus the authenticated post the event belongs to. */
 export const FORUM_MESSAGE_CRYPTO_VERSION = 4;
+/**
+ * Every channel type: the event refMessageId names, and in a forum the first
+ * message of the post, are named as their authors signed them (see
+ * SignedMessageEnvelope.refBinding). The only layout accepted for an event
+ * that names another message (referencesOtherMessages); an event without
+ * references may keep v3/v4.
+ */
+export const BOUND_MESSAGE_CRYPTO_VERSION = 5;
 const LEGACY_MESSAGE_CRYPTO_VERSION = 2;
 
+/** Attachments are bound to their message's signed idempotency key (the unbound v2 layout is refused). */
 export const ATTACHMENT_CRYPTO_VERSION = 3;
-/** Attachments signed before they were bound to their message's idempotency key. */
-const LEGACY_ATTACHMENT_CRYPTO_VERSION = 2;
 export const ATTACHMENT_PLAINTEXT_CHUNK_BYTES = 5 * 1024 * 1024;
 export const ATTACHMENT_GCM_TAG_BYTES = 16;
 export const ATTACHMENT_NONCE_PREFIX_BYTES = 8;
 export const VOICE_SIGNAL_PROTOCOL_VERSION = 1;
 export const MAX_VOICE_PARTICIPANTS = 8;
+export const VOICE_KEY_PROTOCOL_VERSION = 1;
 export const ATTACHMENT_CHUNK_AAD_FORMAT =
   'alparts-attachment-chunk-v1\\0{uploadId}\\0{messageId}\\0{index}\\0{chunkCount}\\0{plaintextSize}';
 
@@ -96,6 +104,16 @@ export function serializeChannelKeyFreshStart(envelope: SignedChannelKeyFreshSta
   ]);
 }
 
+/**
+ * An event as its author signed it. Within a channel the server keeps one
+ * event per author and idempotency key, and it cannot sign for an author, so
+ * it cannot make another event carry this pair.
+ */
+export interface SignedEventReference {
+  authorId: string;
+  idempotencyKey: string;
+}
+
 export interface SignedMessageEnvelope {
   channelId: string;
   authorId: string;
@@ -113,11 +131,77 @@ export interface SignedMessageEnvelope {
    * Undefined keeps the v2/v3 layout used by every other channel type.
    */
   postId?: string | null;
+  /**
+   * Present (an object or null) exactly in v5 envelopes: the event that
+   * refMessageId names, as its author signed it; null when there is none.
+   * Server ids are not signed by the events they name, so without this a
+   * server could serve another message of the same author under the id and
+   * move an edit, a deletion or a quote to it.
+   */
+  refBinding?: SignedEventReference | null;
+  /** v5 forum events: the first message of the post postId names; null for that message itself. */
+  postBinding?: SignedEventReference | null;
   type: 'message' | 'edit' | 'delete';
+}
+
+/** Whether an envelope uses the v5 layout (references bound to what their authors signed). */
+export function isBoundMessageEnvelope(envelope: Pick<SignedMessageEnvelope, 'refBinding'>): boolean {
+  return envelope.refBinding !== undefined;
+}
+
+/**
+ * Whether an event names another message: an edit or a deletion, a quote, or
+ * in a forum any event after the post's first message. Such an event counts
+ * only in v5, which also signs what it names; the older layouts name their
+ * targets by server id only, which a server can serve another message under.
+ */
+export function referencesOtherMessages(envelope: Pick<SignedMessageEnvelope, 'refMessageId' | 'postId'>): boolean {
+  return Boolean(envelope.refMessageId) || typeof envelope.postId === 'string';
+}
+
+function boundReference(id: string | null | undefined, binding: SignedEventReference | null | undefined) {
+  if (id === null || id === undefined) {
+    if (binding !== null && binding !== undefined) throw new Error('INVALID_BOUND_ENVELOPE');
+    return null;
+  }
+  if (
+    !binding
+    || typeof binding.authorId !== 'string' || binding.authorId.length === 0
+    || typeof binding.idempotencyKey !== 'string' || binding.idempotencyKey.length === 0
+  ) throw new Error('INVALID_BOUND_ENVELOPE');
+  return [id, binding.authorId, binding.idempotencyKey];
+}
+
+/** The signed context of a v5 envelope: everything but the ciphertext. */
+function boundEnvelopeContext(envelope: Pick<
+  SignedMessageEnvelope,
+  'type' | 'channelId' | 'authorId' | 'deviceId' | 'keyVersion' | 'idempotencyKey' | 'refMessageId' | 'broadcastMention'
+  | 'postId' | 'refBinding' | 'postBinding'
+>): unknown[] {
+  if (typeof envelope.broadcastMention !== 'boolean') throw new Error('INVALID_BOUND_ENVELOPE');
+  const forum = envelope.postId !== undefined;
+  if (forum) assertForumEnvelope(envelope);
+  else if (envelope.postBinding !== undefined && envelope.postBinding !== null) throw new Error('INVALID_BOUND_ENVELOPE');
+  return [
+    BOUND_MESSAGE_CRYPTO_VERSION,
+    forum ? 'forum' : 'text',
+    envelope.type,
+    envelope.channelId,
+    envelope.authorId,
+    envelope.deviceId,
+    envelope.keyVersion,
+    envelope.idempotencyKey,
+    boundReference(envelope.refMessageId, envelope.refBinding),
+    forum ? boundReference(envelope.postId, envelope.postBinding) : null,
+    envelope.broadcastMention,
+  ];
 }
 
 /** A deterministic, protocol-versioned byte representation for message signatures. */
 export function serializeMessageEnvelope(envelope: SignedMessageEnvelope): string {
+  if (isBoundMessageEnvelope(envelope)) {
+    return JSON.stringify([...boundEnvelopeContext(envelope), envelope.contentNonce, envelope.encryptedContent]);
+  }
   if (envelope.postId !== undefined) {
     assertForumEnvelope(envelope);
     return JSON.stringify([
@@ -167,7 +251,9 @@ export function serializeMessageEnvelope(envelope: SignedMessageEnvelope): strin
 export function serializeMessageAad(envelope: Pick<
   SignedMessageEnvelope,
   'type' | 'channelId' | 'authorId' | 'deviceId' | 'keyVersion' | 'idempotencyKey' | 'refMessageId' | 'broadcastMention' | 'postId'
+  | 'refBinding' | 'postBinding'
 >): string {
+  if (isBoundMessageEnvelope(envelope)) return JSON.stringify(boundEnvelopeContext(envelope));
   if (envelope.postId !== undefined) {
     assertForumEnvelope(envelope);
     return JSON.stringify([
@@ -241,10 +327,9 @@ export interface SignedAttachmentEnvelope {
   /**
    * The idempotency key signed into the message the file belongs to. The
    * server assigns message ids, but cannot give another message this key, so
-   * a file cannot be moved to a different message. Absent only in legacy v2
-   * signatures.
+   * a file cannot be moved to a different message.
    */
-  messageIdempotencyKey?: string;
+  messageIdempotencyKey: string;
 }
 
 /** A deterministic, protocol-versioned representation for attachment signatures. */
@@ -264,8 +349,8 @@ export function serializeAttachmentEnvelope(envelope: SignedAttachmentEnvelope):
     envelope.plaintextSize,
     envelope.chunkCount,
   ];
-  if (envelope.messageIdempotencyKey === undefined) {
-    return JSON.stringify([LEGACY_ATTACHMENT_CRYPTO_VERSION, ...fields]);
+  if (typeof envelope.messageIdempotencyKey !== 'string' || envelope.messageIdempotencyKey.length === 0) {
+    throw new Error('INVALID_ATTACHMENT_ENVELOPE');
   }
   return JSON.stringify([ATTACHMENT_CRYPTO_VERSION, ...fields, envelope.messageIdempotencyKey]);
 }
@@ -331,6 +416,43 @@ export function serializeVoiceSignalEnvelope(envelope: SignedVoiceSignalEnvelope
     envelope.sdpMid,
     envelope.sdpMLineIndex,
     envelope.usernameFragment,
+  ]);
+}
+
+/**
+ * One sender's frame key for an SFU call, sent to one other participant. The
+ * key is encrypted to the recipient device (RSA-OAEP-256 with the encryption
+ * key of its directory bundle) and the envelope is signed by the sender
+ * device, so the server relays it without reading or changing it. Frames
+ * under the key carry `keyId` as their SFrame key id.
+ */
+export interface SignedVoiceKeyEnvelope {
+  type: 'voice-key';
+  /** Strictly increasing for one sender and target participant. */
+  sequence: number;
+  channelId: string;
+  senderParticipantId: string;
+  senderDeviceId: string;
+  /** Chosen at random by the target when it joined, so a key sent to an earlier call is refused. */
+  targetParticipantId: string;
+  targetDeviceId: string;
+  keyId: number;
+  wrappedKey: string;
+}
+
+/** Stable representation used by the browser device P-256 signature. */
+export function serializeVoiceKeyEnvelope(envelope: SignedVoiceKeyEnvelope): string {
+  return JSON.stringify([
+    VOICE_KEY_PROTOCOL_VERSION,
+    envelope.type,
+    envelope.sequence,
+    envelope.channelId,
+    envelope.senderParticipantId,
+    envelope.senderDeviceId,
+    envelope.targetParticipantId,
+    envelope.targetDeviceId,
+    envelope.keyId,
+    envelope.wrappedKey,
   ]);
 }
 

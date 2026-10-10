@@ -1,7 +1,9 @@
 import type { types } from 'mediasoup';
+import { MAX_VOICE_PARTICIPANTS } from '@alparts/shared';
 import { VoiceTransportManager } from './transport-manager.js';
 
-const MAX_VOICE_PRODUCERS = 4;
+/** Every participant of a call may speak. */
+export const MAX_VOICE_PRODUCERS = MAX_VOICE_PARTICIPANTS;
 const CHANNEL_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const PARTICIPANT_ID = /^[A-Za-z0-9_-]{1,128}$/;
 
@@ -14,7 +16,12 @@ export class VoiceProducerManager {
 	private readonly channels = new Map<string, ChannelProducerState>();
 	private closed = false;
 
-	constructor(private readonly transports: VoiceTransportManager) {}
+	constructor(
+		private readonly transports: VoiceTransportManager,
+		private readonly maxProducers = MAX_VOICE_PRODUCERS,
+	) {
+		if (!Number.isSafeInteger(maxProducers) || maxProducers < 1) throw new Error('INVALID_VOICE_PRODUCER_LIMIT');
+	}
 
 	async createProducer(
 		channelId: string,
@@ -48,7 +55,7 @@ export class VoiceProducerManager {
 		if (state.producers.has(participantId) || state.pending.has(participantId)) {
 			throw new Error('VOICE_PRODUCER_ALREADY_EXISTS');
 		}
-		if (state.producers.size + state.pending.size >= MAX_VOICE_PRODUCERS) {
+		if (state.producers.size + state.pending.size >= this.maxProducers) {
 			throw new Error('VOICE_SPEAKER_LIMIT_REACHED');
 		}
 

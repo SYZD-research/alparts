@@ -370,6 +370,17 @@ async function precheckGroupState(commit: MlsGroupCommit, route: 'commit' | 'fre
   precheckCreateRoute(commit, route, active ?? null, group?.genesisVersion ?? null);
 }
 
+/** The checks made without locks: the version is free, the committer may commit, the packages are published. */
+async function precheckUnlocked(
+  commit: MlsGroupCommit,
+  route: 'commit' | 'fresh-start',
+  deviceId: string,
+): Promise<MemberPackageKeys[]> {
+  if (commit.version !== await latestVersion(db, commit.channelId) + 1) throw new Error('MLS_CONFLICT');
+  await precheckGroupState(commit, route, deviceId);
+  return publishedPackageKeys(commit);
+}
+
 /**
  * The keys of each added package, from its published row. The entry must be
  * that row byte for byte (rule 4, checked again under the locks); the row was
@@ -542,27 +553,31 @@ export async function admitGroupCommit(
     workspaceId,
     notifyUserIds: [],
   });
+  const answerReplay = (): Promise<AdmittedCommit> => auditedTransaction<AdmittedCommit>(async (tx) => {
+    const channel = await tx.query.channels.findFirst({
+      columns: { workspaceId: true },
+      where: eq(channels.id, commit.channelId),
+    }) as { workspaceId: string } | undefined;
+    if (!channel) throw new Error('CHANNEL_NOT_FOUND');
+    return replay(channel.workspaceId);
+  }, (accepted) => groupCommitAudit(userId, commit, transcript, accepted));
   // A lost response is retried with the same bytes (DATA-04). It is answered
   // before anything that depends on time or on the packages it consumed.
-  if (await storedTranscript(db, commit.channelId, commit.version) === transcript) {
-    return auditedTransaction(async (tx) => {
-      const channel = await tx.query.channels.findFirst({
-        columns: { workspaceId: true },
-        where: eq(channels.id, commit.channelId),
-      }) as { workspaceId: string } | undefined;
-      if (!channel) throw new Error('CHANNEL_NOT_FOUND');
-      return replay(channel.workspaceId);
-    }, (accepted) => groupCommitAudit(userId, commit, transcript, accepted));
-  }
+  if (await storedTranscript(db, commit.channelId, commit.version) === transcript) return answerReplay();
   if (freshStart && !verifyChannelKeyFreshStartSignature(committer.identityKey, {
     channelId: commit.channelId,
     keyVersion: commit.version,
     keyCommitment: commit.keyCommitment,
     deviceId,
   }, freshStart.signature)) throw new Error('INVALID_KEY_FRESH_START');
-  if (commit.version !== await latestVersion(db, commit.channelId) + 1) throw new Error('MLS_CONFLICT');
-  await precheckGroupState(commit, route, deviceId);
-  const addedKeys = await publishedPackageKeys(commit);
+  // The same bytes, sent earlier, can be accepted after the replay check
+  // above: the version is taken and their packages are used. They still get
+  // the replay answer, as the same bytes always do (formal model M3r K2).
+  const addedKeys = await precheckUnlocked(commit, route, deviceId).catch(async (error: unknown) => {
+    if (await storedTranscript(db, commit.channelId, commit.version) === transcript) return null;
+    throw error;
+  });
+  if (addedKeys === null) return answerReplay();
   const decoded = await decodeGroupCommit(commit.commit);
   const welcomeReferences = commit.welcome === '' ? null : decodeGroupWelcome(commit.welcome);
   assertCommitStructure(commit, decoded, welcomeReferences, addedKeys);

@@ -47,8 +47,10 @@ beforeEach(() => {
   vi.resetAllMocks();
   listeners.clear();
   createdPeers.length = 0;
-  self = participant('z-self');
-  remote = participant('a-peer');
+  // The client picks its own participant id (a random UUID); '0-peer' sorts
+  // below every such id, which decides the glare tie-break.
+  self = participant('pending-self');
+  remote = participant('0-peer');
   makeOffer = vi.fn(async (): Promise<RTCSessionDescriptionInit> => ({ type: 'offer', sdp: 'offer' }));
   const track = { enabled: true, stop: vi.fn() };
   vi.stubGlobal('window', { isSecureContext: true, setTimeout, clearTimeout });
@@ -61,7 +63,9 @@ beforeEach(() => {
   mocks.device.mockImplementation(() => self);
   mocks.socket.on.mockImplementation((event, handler) => { listeners.set(event, handler); });
   mocks.socket.off.mockImplementation((event) => { listeners.delete(event); });
-  mocks.socket.emit.mockImplementation((event, _body, ack) => {
+  mocks.socket.emit.mockImplementation((event, body, ack) => {
+    // The server takes the participant id the client chose.
+    if (event === 'voice:join') self.participantId = body.participantId;
     ack?.(event === 'voice:join' ? { ok: true, self, participants: [remote], iceServers: [] } : { ok: true });
   });
   mocks.directory.mockImplementation(async () => [{ ...remote, identityKey: 'test-public-key' }]);
@@ -96,7 +100,7 @@ it('serializes a colliding offer and refreshes a directory missing the new peer'
 });
 
 it('keeps the opposite side of glare on its offer until the peer answers', async () => {
-  self.participantId = 'a-self';
+  // 'z-peer' sorts above every UUID.
   remote.participantId = 'z-peer';
   await useVoiceStore.getState().join(channelId);
   const peer = createdPeers[0];
@@ -105,4 +109,45 @@ it('keeps the opposite side of glare on its offer until the peer answers', async
   await vi.waitFor(() => expect(peer.changes).toContain('remote:answer'));
   expect(peer.changes).toEqual(['local:offer', 'remote:answer']);
   expect(peer.signalingState).toBe('stable');
+});
+
+it('joins a server from before chosen participant ids for a direct call', async () => {
+  const joins: unknown[] = [];
+  mocks.socket.emit.mockImplementation((event, body, ack) => {
+    if (event !== 'voice:join') return ack?.({ ok: true });
+    joins.push(body);
+    // An older server refuses the unknown field, then assigns an id itself.
+    if (body.participantId) return ack?.({ ok: false, error: 'INVALID_REQUEST' });
+    self.participantId = 'server-assigned';
+    return ack?.({ ok: true, self, participants: [remote], iceServers: [] });
+  });
+  await useVoiceStore.getState().join(channelId);
+  expect(joins).toHaveLength(2);
+  expect(useVoiceStore.getState().status).toBe('connected');
+  expect(useVoiceStore.getState().self?.participantId).toBe('server-assigned');
+});
+
+it('refuses a call through the media server under an id it did not choose', async () => {
+  mocks.socket.emit.mockImplementation((event, body, ack) => {
+    if (event !== 'voice:join') return ack?.({ ok: true });
+    if (body.participantId) return ack?.({ ok: false, error: 'INVALID_REQUEST' });
+    self.participantId = 'server-assigned';
+    return ack?.({ ok: true, self, participants: [remote], iceServers: [], media: 'sfu' });
+  });
+  await useVoiceStore.getState().join(channelId);
+  expect(useVoiceStore.getState().status).toBe('error');
+  expect(mocks.socket.emit).toHaveBeenCalledWith('voice:leave', { channelId });
+});
+
+it('does not join a call through the media server from a browser that cannot encrypt its audio', async () => {
+  mocks.socket.emit.mockImplementation((event, body, ack) => {
+    if (event === 'voice:join') self.participantId = body.participantId;
+    ack?.(event === 'voice:join' ? { ok: true, self, participants: [remote], iceServers: [], media: 'sfu' } : { ok: true });
+  });
+  expect(typeof (globalThis as { RTCRtpScriptTransform?: unknown }).RTCRtpScriptTransform).toBe('undefined');
+  await useVoiceStore.getState().join(channelId);
+  expect(useVoiceStore.getState().status).toBe('error');
+  expect(useVoiceStore.getState().error).toBe('このブラウザーでは通話を安全に行えないため、参加できません。ブラウザーかアプリを最新にしてお試しください');
+  expect(mocks.socket.emit).toHaveBeenCalledWith('voice:leave', { channelId });
+  expect(createdPeers).toHaveLength(0);
 });

@@ -4,7 +4,7 @@ English | [日本語](OPERATIONS.ja.md)
 
 Last updated: 2026-09-04
 
-This document covers only the prototype: Windows, macOS and Linux desktop / Web / single node / basic per-channel keys / mainly text, plus peer-to-peer voice for up to eight people. It is not a production approval for handling embargoed vulnerabilities, credentials or other high-impact secrets.
+This document covers only the prototype: Windows, macOS and Linux desktop / Web / single node / basic per-channel keys / mainly text, plus voice for up to eight people (peer-to-peer, or through the self-hosted SFU with frames encrypted end to end). It is not a production approval for handling embargoed vulnerabilities, credentials or other high-impact secrets.
 
 ## Startup contract
 
@@ -27,6 +27,8 @@ New registrations send a 6-digit verification code to the email address entered 
 Registration emails are written in English or Japanese. The client sends the language chosen in the app as `Accept-Language`, and the server uses the first supported language in it, falling back to English. No setting is needed.
 
 Voice calls can use up to four operator-controlled STUN/TURN servers set as JSON in `VOICE_ICE_SERVERS_JSON`. The default empty array never connects to a third-party service, but in exchange it does not guarantee calls between NATs that direct candidates cannot reach. TURN credentials are handed to the clients in the call, so never reuse service administrator credentials; issue short-lived, least-privilege credentials. Prefer authenticated TLS (`turns:`) for TURN, and do not open it to the public Internet as an unrestricted relay. The peer-to-peer mesh is limited to eight people; it is not a media server that scales horizontally.
+
+Setting `VOICE_SFU_ENABLED=true` routes every call of the deployment through the server's own mediasoup SFU instead of the peer-to-peer mesh; the setting takes effect when the server starts. Clients encrypt each audio frame before it leaves the device and replace their keys whenever someone joins or leaves ([ADR 0014](./adr/0014-sfu-frame-encryption.md)), so the SFU forwards only ciphertext. Browsers that cannot encrypt frames cannot join calls, and the app tells the user so. Set `VOICE_SFU_ANNOUNCED_ADDRESS` to the address clients reach the server on, and allow UDP and TCP to `VOICE_SFU_BASE_PORT` and the following ports, one per worker (`VOICE_SFU_WORKERS`). Keep these ports out of the host's ephemeral port range (on Linux `net.ipv4.ip_local_port_range`, by default 32768–60999, which includes 40000), or reserve them with `net.ipv4.ip_local_reserved_ports`: otherwise another program's short-lived socket can hold a port when the first call starts on that worker, and that call fails (the next call tries the same port again). Peers no longer see each other's network addresses, but the server still sees who is in a call and when each participant speaks. Calls stay limited to eight people.
 
 An attachment's database row and its object in object storage are not a distributed transaction. The upload status takes a snapshot of authorization and chunk metadata in the database, releases the database connection and lock, and then checks the objects. Later chunk PUT and finalize steps acquire the lock and authorization again. Objects left behind after a database failure are collected by expiry cleanup, and a ciphertext stream that has already started cannot be recalled if access is lost after the download begins. Do not describe these as an atomic cross-store commit or remote erasure.
 

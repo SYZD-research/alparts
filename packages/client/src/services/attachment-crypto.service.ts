@@ -260,6 +260,8 @@ export function buildSignedAttachmentEnvelope(
     || !attachment.deviceId
     || !attachment.signature
     || normalizeAttachmentMimeType(attachment.mimeType) !== attachment.mimeType
+    // A file is signed for its message's idempotency key; a message stored without one has no files.
+    || !message.idempotencyKey
   ) {
     throw new Error(t('ファイル情報が欠落しているか、メッセージと一致しません'));
   }
@@ -283,15 +285,15 @@ export function buildSignedAttachmentEnvelope(
     noncePrefix: attachment.cryptoManifest.noncePrefix,
     plaintextSize: manifest.plaintextSize,
     chunkCount: manifest.chunkCount,
-    ...(message.idempotencyKey ? { messageIdempotencyKey: message.idempotencyKey } : {}),
+    messageIdempotencyKey: message.idempotencyKey,
   };
 }
 
 /**
  * Verify uploader identity before any attachment plaintext is decrypted or
  * saved. A file is accepted only for a verified message, and only if it was
- * signed for that message's idempotency key; files from before that binding
- * are still accepted for the server-assigned message id.
+ * signed for that message's idempotency key (the older layout, which names
+ * the message by server id only, is refused).
  */
 export async function verifyAttachmentMetadata(
   message: AttachmentMessage,
@@ -307,8 +309,6 @@ export async function verifyAttachmentMetadata(
   }
   if (!identity || !attachment.signature) throw new Error(t('ファイルの送信元を確認できません'));
   if (await verifyAttachmentSignature(envelope, attachment.signature, identity)) return envelope;
-  const { messageIdempotencyKey: bound, ...legacy } = envelope;
-  if (bound !== undefined && await verifyAttachmentSignature(legacy, attachment.signature, identity)) return legacy;
   throw new Error(t('ファイルの内容を検証できませんでした'));
 }
 

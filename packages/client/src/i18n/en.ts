@@ -703,6 +703,7 @@ export const en = {
   // Messages
   '安全のため、このチャンネルの履歴の読み込みを停止しました': 'Loading this channel’s history was stopped for your safety',
   'メッセージを確認できませんでした。再読み込みしてお試しください。': 'Could not verify the message. Reload and try again.',
+  'このメッセージは編集・削除・引用・返信できません': 'This message cannot be edited, deleted, quoted or replied to',
   'チャンネルの認可状態が変更されました': 'Your access to this channel changed',
   'これ以上の履歴を表示できません。再読み込みしてお試しください。': 'No more history can be shown. Reload and try again.',
   '過去のメッセージを読み込めませんでした': 'Could not load earlier messages',
@@ -751,6 +752,7 @@ export const en = {
   '利用できるマイクが見つかりません': 'No microphone found',
   'マイクをほかのアプリが使用しているため開始できません': 'Another app is using the microphone',
   '音声通話を開始できませんでした。もう一度お試しください': 'Could not start the voice call. Please try again',
+  'このブラウザーでは通話を安全に行えないため、参加できません。ブラウザーかアプリを最新にしてお試しください': 'This browser cannot keep the call private, so you cannot join. Update your browser or the app and try again',
 
   // Server responses
   'この端末を追加するには、もう一度ログインしてください。': 'Sign in again to add this device.',
@@ -912,6 +914,7 @@ export const en = {
   '添付ファイル': 'Attachment',
   '本文なし': 'No text',
   '元のメッセージを表示': 'Show original message',
+  '元のメッセージを表示できません': 'The original message cannot be shown',
   '🔖 保存済み': '🔖 Saved',
   'リアクション': 'React',
   '保存済みメッセージから削除': 'Remove from saved messages',

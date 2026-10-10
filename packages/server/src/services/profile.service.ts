@@ -12,7 +12,7 @@ import {
   lockWorkspaceForAuthorization,
   type WorkspaceAuthorizationSnapshot,
 } from './authorization.service.js';
-import { putStoredObject, readStoredObject, removeStoredObjectBestEffort } from './object-storage.js';
+import { isStoredObjectMissing, putStoredObject, readStoredObject, removeStoredObjectBestEffort } from './object-storage.js';
 
 function avatarPath(userId: string, version: string): string {
   return `/api/users/${userId}/avatar/${version}`;
@@ -65,8 +65,17 @@ async function isCurrentAvatar(userId: string, image: Buffer, store = db): Promi
   const user = await store.query.users.findFirst({ columns: { avatarObjectKey: true, avatarUrl: true }, where: eq(users.id, userId) });
   if (!user) throw new Error('USER_NOT_FOUND');
   if (!user.avatarObjectKey || !user.avatarUrl) return null;
+  let stored: Buffer;
   try {
-    const stored = await readStoredObject(user.avatarObjectKey, MAX_AVATAR_BYTES);
+    stored = await readStoredObject(user.avatarObjectKey, MAX_AVATAR_BYTES);
+  } catch (error) {
+    // A picture that is gone is changed by any upload. A read that failed
+    // cannot tell: counting it as a change would let a warned member ask to
+    // clear the warning without changing anything, so the upload fails.
+    if (isStoredObjectMissing(error)) return null;
+    throw error;
+  }
+  try {
     // Previously stored avatars may use different PNG row filters. Compare
     // canonical pixels for those too, without requiring a storage migration.
     return sanitizeAvatarPng(stored).equals(image) ? user.avatarUrl : null;

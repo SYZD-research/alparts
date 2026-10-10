@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import type { Socket } from 'socket.io-client';
 import type {
+  SignedVoiceKeyEnvelope,
   SignedVoiceSignalEnvelope,
   VoiceParticipant,
 } from '@alparts/shared';
@@ -8,8 +9,12 @@ import { MAX_VOICE_PARTICIPANTS } from '@alparts/shared';
 import { api } from '../services/api';
 import {
   getActiveDevice,
+  signVoiceKeyEnvelope,
   signVoiceSignalEnvelope,
+  unwrapVoiceKey,
+  verifyVoiceKeySignature,
   verifyVoiceSignalSignature,
+  wrapVoiceKey,
 } from '../services/crypto.service';
 import { connectSocket } from '../services/socket';
 import {
@@ -20,6 +25,9 @@ import {
   parseVoiceJoinResult,
   parseVoiceParticipant,
 } from '../services/voice-signal-model';
+import { VoiceFrameKeys, type VoiceKeyIdentity } from '../services/voice-frame-keys';
+import { VoiceSfuSession, supportsFrameEncryption } from '../services/voice-sfu';
+import { parseSfuProducerNotice, parseVoiceKeyMessage } from '../services/voice-sfu-model';
 import { t } from '../i18n';
 
 export type VoiceCallStatus = 'idle' | 'joining' | 'connected' | 'error';
@@ -71,6 +79,8 @@ interface DeviceDirectoryEntry {
 interface VoiceSocketListeners {
   socket: Socket;
   signal: (value: unknown) => void;
+  key: (value: unknown) => void;
+  producer: (value: unknown) => void;
   joined: (value: unknown) => void;
   updated: (value: unknown) => void;
   left: (value: unknown) => void;
@@ -109,6 +119,13 @@ const peerQueues = new Map<string, Promise<void>>();
 const peerQueueDepths = new Map<string, number>();
 const pendingIce = new Map<string, RTCIceCandidateInit[]>();
 const remoteStreams = new Map<string, MediaStream>();
+/** Calls through the media server: its media session and the frame keys of the call. */
+let sfu: VoiceSfuSession | null = null;
+let frameKeys: VoiceFrameKeys | null = null;
+let callMedia: 'p2p' | 'sfu' = 'p2p';
+/** Key messages that arrived before the call's keys were set up (others send theirs as soon as we join). */
+const MAX_PENDING_KEY_MESSAGES = 64;
+const pendingKeyMessages: Array<{ envelope: SignedVoiceKeyEnvelope; signature: string }> = [];
 
 const idleProjection = {
   status: 'idle' as const,
@@ -166,8 +183,16 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       // admitted us. Cleanup therefore sends a scoped leave even on timeout or
       // response-validation failure.
       serverJoinedChannelId = channelId;
-      const rawJoin = await emitAcknowledged(socket, 'voice:join', { channelId });
-      const joined = parseVoiceJoinResult(rawJoin);
+      // A fresh participant id of our own for this call: the frame keys others
+      // send are bound to it, so keys sent to an earlier call are refused.
+      const requestedParticipantId = crypto.randomUUID();
+      let joined = parseVoiceJoinResult(await emitAcknowledged(socket, 'voice:join', { channelId, participantId: requestedParticipantId }));
+      let chosenId = true;
+      // A server from before chosen ids refuses the field; it has direct calls only.
+      if (joined && !joined.ok && joined.error === 'INVALID_REQUEST' && generation === callGeneration) {
+        joined = parseVoiceJoinResult(await emitAcknowledged(socket, 'voice:join', { channelId }));
+        chosenId = false;
+      }
       if (!joined) throw new Error(t('通話サーバーから不正な応答を受信しました'));
       if (!joined.ok) throw new Error(joinErrorMessage(joined.error));
       if (!joined.self || !joined.participants || !joined.iceServers) {
@@ -177,7 +202,11 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
         generation !== callGeneration
         || joined.self.deviceId !== device.deviceId
         || joined.self.userId !== device.userId
+        || (chosenId && joined.self.participantId !== requestedParticipantId)
+        // A call through the media server needs our own id (see above).
+        || (joined.media === 'sfu' && !chosenId)
       ) throw new Error(t('通話参加者の端末情報を検証できませんでした'));
+      if (joined.media === 'sfu' && !supportsFrameEncryption()) throw new VoiceUnsupportedError();
 
       const participantIds = new Set([joined.self.participantId]);
       for (const participant of joined.participants) {
@@ -212,6 +241,11 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       if (generation !== callGeneration) return;
       startLocalLevelMonitoring(generation);
       startConnectionStats(generation);
+
+      if (joined.media === 'sfu') {
+        await startSfuCall(channelId, joined.self, generation);
+        return;
+      }
 
       // Serialize local offers with incoming signaling. Colliding offers use
       // the participant-id tie-break below, so exactly one side rolls back.
@@ -283,21 +317,34 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       const oldStream = localStream;
       const oldTrack = oldStream.getAudioTracks()[0] ?? null;
       replacementTrack.enabled = isTransmissionEnabled();
-      const senders = [...peers.values()].flatMap((peer) => (
-        peer.getSenders()
-          .filter((sender) => sender.track?.kind === 'audio')
-      ));
-      const results = await Promise.allSettled(senders.map((sender) => sender.replaceTrack(replacementTrack)));
-      if (generation !== callGeneration || switchGeneration !== inputSwitchGeneration) {
-        stopStream(replacement);
-        return;
-      }
-      if (results.some((result) => result.status === 'rejected')) {
-        await Promise.allSettled(senders.map((sender, index) => (
-          results[index].status === 'fulfilled' ? sender.replaceTrack(oldTrack) : Promise.resolve()
-        )));
-        stopStream(replacement);
-        throw new Error(t('通話中のマイク切替を完了できませんでした'));
+      if (callMedia === 'sfu') {
+        // The frame transform stays on the sender, so the new track is encrypted too.
+        const replaced = await sfu?.replaceTrack(replacementTrack).then(() => true, () => false);
+        if (generation !== callGeneration || switchGeneration !== inputSwitchGeneration) {
+          stopStream(replacement);
+          return;
+        }
+        if (!replaced) {
+          stopStream(replacement);
+          throw new Error(t('通話中のマイク切替を完了できませんでした'));
+        }
+      } else {
+        const senders = [...peers.values()].flatMap((peer) => (
+          peer.getSenders()
+            .filter((sender) => sender.track?.kind === 'audio')
+        ));
+        const results = await Promise.allSettled(senders.map((sender) => sender.replaceTrack(replacementTrack)));
+        if (generation !== callGeneration || switchGeneration !== inputSwitchGeneration) {
+          stopStream(replacement);
+          return;
+        }
+        if (results.some((result) => result.status === 'rejected')) {
+          await Promise.allSettled(senders.map((sender, index) => (
+            results[index].status === 'fulfilled' ? sender.replaceTrack(oldTrack) : Promise.resolve()
+          )));
+          stopStream(replacement);
+          throw new Error(t('通話中のマイク切替を完了できませんでした'));
+        }
       }
       localStream = replacement;
       applyTransmissionState();
@@ -366,6 +413,89 @@ export function getRemoteVoiceStream(participantId: string): MediaStream | null 
   return remoteStreams.get(participantId) ?? null;
 }
 
+/** This browser cannot encrypt call audio, so it does not join calls through the media server. */
+class VoiceUnsupportedError extends Error {}
+
+function currentPeers() {
+  return useVoiceStore.getState().participants.map((participant) => ({
+    participantId: participant.participantId,
+    userId: participant.userId,
+    deviceId: participant.deviceId,
+  }));
+}
+
+async function requestSfu(event: string, payload: unknown, generation: number): Promise<unknown> {
+  if (generation !== callGeneration || !listeners?.socket.connected) throw new Error('VOICE_CALL_ENDED');
+  return emitAcknowledged(listeners.socket, event, payload);
+}
+
+/**
+ * A call through the media server: our frame key goes to everyone in the
+ * call before any audio is sent, then media flows through the SFU, every
+ * frame encrypted end to end.
+ */
+async function startSfuCall(channelId: string, self: VoiceParticipant, generation: number): Promise<void> {
+  const track = localStream?.getAudioTracks()[0];
+  if (!track) throw new Error(t('ローカル音声が初期化されていません'));
+  callMedia = 'sfu';
+  const session = new VoiceSfuSession(
+    channelId,
+    self.participantId,
+    (event, payload) => requestSfu(event, payload, generation),
+    {
+      onRemoteStream: (participantId, stream) => {
+        if (generation !== callGeneration) return;
+        if (stream) remoteStreams.set(participantId, stream);
+        else if (!remoteStreams.delete(participantId)) return;
+        bumpRemoteStreamRevision();
+      },
+      isParticipant: (participantId) => generation === callGeneration
+        && useVoiceStore.getState().participants.some((entry) => entry.participantId === participantId),
+    },
+    runtimeIceServers,
+  );
+  sfu = session;
+  const keys = new VoiceFrameKeys(
+    { channelId, participantId: self.participantId, userId: self.userId, deviceId: self.deviceId },
+    {
+      randomKey: () => crypto.getRandomValues(new Uint8Array(32)),
+      randomKeyId: () => crypto.getRandomValues(new Uint32Array(1))[0]!,
+      identities: async (deviceIds) => {
+        let directory = await loadDeviceDirectory(channelId);
+        if (deviceIds.some((deviceId) => !directory.has(deviceId)) && generation === callGeneration) {
+          directoryPromise = null;
+          directory = await loadDeviceDirectory(channelId);
+        }
+        const identities = new Map<string, VoiceKeyIdentity>();
+        for (const deviceId of deviceIds) {
+          const entry = directory.get(deviceId);
+          if (entry) identities.set(deviceId, { userId: entry.userId, identityKey: entry.identityKey });
+        }
+        return identities;
+      },
+      wrapKey: wrapVoiceKey,
+      unwrapKey: unwrapVoiceKey,
+      sign: signVoiceKeyEnvelope,
+      verify: verifyVoiceKeySignature,
+      send: async (envelope, signature) => {
+        if (generation !== callGeneration || !listeners?.socket.connected) return false;
+        const answer = await emitAcknowledged(listeners.socket, 'voice:key', { ...envelope, signature }).catch(() => null);
+        return isSuccessfulAcknowledgement(answer);
+      },
+      useSendKey: (keyId, key) => session.installKey('send', keyId, key),
+      addReceiveKey: (participantId, keyId, key) => session.installKey('receive', keyId, key, participantId),
+      removeReceiveKey: (keyId) => session.removeKey(keyId),
+      removeParticipant: (participantId) => session.removeParticipantKeys(participantId),
+      delay: (ms) => new Promise((resolve) => window.setTimeout(resolve, ms)),
+    },
+  );
+  frameKeys = keys;
+  await keys.start(currentPeers());
+  for (const message of pendingKeyMessages.splice(0)) void keys.receive(message.envelope, message.signature);
+  if (generation !== callGeneration) return;
+  await session.start(track);
+}
+
 function assertVoiceBrowserSupport(): void {
   if (!window.isSecureContext) throw new Error(t('音声通話にはHTTPSの安全な接続が必要です'));
   if (!navigator.mediaDevices?.getUserMedia || typeof RTCPeerConnection === 'undefined') {
@@ -412,6 +542,8 @@ function isMissingMediaDevice(error: unknown): boolean {
 function attachVoiceListeners(socket: Socket, generation: number, channelId: string): void {
   detachVoiceListeners();
   const signal = (value: unknown) => {
+    // Calls through the media server set up no direct connections.
+    if (callMedia === 'sfu') return;
     const parsed = parseIncomingVoiceSignal(value);
     if (!parsed || parsed.envelope.channelId !== channelId) return;
     const state = useVoiceStore.getState();
@@ -426,6 +558,18 @@ function attachVoiceListeners(socket: Socket, generation: number, channelId: str
     enqueuePeerOperation(parsed.envelope.senderParticipantId, async () => {
       await processIncomingSignal(parsed.envelope, parsed.signature, generation);
     });
+  };
+  const key = (value: unknown) => {
+    if (generation !== callGeneration) return;
+    const parsed = parseVoiceKeyMessage(value);
+    if (!parsed || parsed.envelope.channelId !== channelId) return;
+    if (frameKeys) void frameKeys.receive(parsed.envelope, parsed.signature);
+    else if (pendingKeyMessages.length < MAX_PENDING_KEY_MESSAGES) pendingKeyMessages.push(parsed);
+  };
+  const producer = (value: unknown) => {
+    if (generation !== callGeneration || !sfu) return;
+    const notice = parseSfuProducerNotice(value, channelId);
+    if (notice) void sfu.announce(notice);
   };
   const joined = (value: unknown) => {
     if (generation !== callGeneration) return;
@@ -445,6 +589,8 @@ function attachVoiceListeners(socket: Socket, generation: number, channelId: str
       participantsByChannel: { ...state.participantsByChannel, [channelId]: participants },
       quality: 'connecting',
     });
+    // A newcomer gets a new key from us, never one used before it joined.
+    if (!existing) void frameKeys?.participantJoined(currentPeers()).catch(() => undefined);
   };
   const updated = (value: unknown) => {
     if (generation !== callGeneration) return;
@@ -462,6 +608,7 @@ function attachVoiceListeners(socket: Socket, generation: number, channelId: str
   const left = (value: unknown) => {
     if (!isParticipantLeft(value, channelId) || generation !== callGeneration) return;
     removePeer(value.participantId);
+    sfu?.removeParticipant(value.participantId);
     useVoiceStore.setState((state) => {
       const participants = state.participants.filter((entry) => entry.participantId !== value.participantId);
       return {
@@ -470,6 +617,8 @@ function attachVoiceListeners(socket: Socket, generation: number, channelId: str
         quality: state.participants.length <= 3 ? 'good' : state.quality,
       };
     });
+    // Whoever left gets none of the keys we use from now on.
+    void frameKeys?.participantLeft(value.participantId, currentPeers()).catch(() => undefined);
   };
   const disconnected = () => {
     if (generation !== callGeneration) return;
@@ -483,17 +632,21 @@ function attachVoiceListeners(socket: Socket, generation: number, channelId: str
     });
   };
   socket.on('voice:signal', signal);
+  socket.on('voice:key', key);
+  socket.on('voice:sfu:producer', producer);
   socket.on('voice:participant-joined', joined);
   socket.on('voice:participant-updated', updated);
   socket.on('voice:participant-left', left);
   socket.on('disconnect', disconnected);
-  listeners = { socket, signal, joined, updated, left, disconnected };
+  listeners = { socket, signal, key, producer, joined, updated, left, disconnected };
   navigator.mediaDevices.addEventListener?.('devicechange', refreshMediaDevices);
 }
 
 function detachVoiceListeners(): void {
   if (listeners) {
     listeners.socket.off('voice:signal', listeners.signal);
+    listeners.socket.off('voice:key', listeners.key);
+    listeners.socket.off('voice:sfu:producer', listeners.producer);
     listeners.socket.off('voice:participant-joined', listeners.joined);
     listeners.socket.off('voice:participant-updated', listeners.updated);
     listeners.socket.off('voice:participant-left', listeners.left);
@@ -876,19 +1029,23 @@ async function measureConnectionQuality(generation: number): Promise<void> {
   if (statsRunning || generation !== callGeneration) return;
   statsRunning = true;
   try {
-    if (peers.size === 0) {
-      useVoiceStore.setState({ quality: 'good' });
+    // Direct calls have a connection per peer; calls through the media server, one per direction.
+    const connections = callMedia === 'sfu'
+      ? (sfu ? [{ state: () => sfu!.connectionStates().find((state) => state !== 'connected') ?? 'connected', stats: async () => (await sfu!.stats()) }] : [])
+      : [...peers.values()].map((peer) => ({ state: () => peer.connectionState as string, stats: async () => [await peer.getStats()] }));
+    if (connections.length === 0) {
+      useVoiceStore.setState({ quality: callMedia === 'sfu' ? 'connecting' : 'good' });
       return;
     }
     let worst: VoiceConnectionQuality = 'good';
-    for (const peer of peers.values()) {
-      if (peer.connectionState === 'failed' || peer.connectionState === 'disconnected') {
+    for (const connection of connections) {
+      const state = connection.state();
+      if (state === 'failed' || state === 'disconnected') {
         worst = 'poor';
         break;
       }
-      if (peer.connectionState !== 'connected') worst = worseQuality(worst, 'connecting');
-      const report = await peer.getStats();
-      report.forEach((raw) => {
+      if (state !== 'connected') worst = worseQuality(worst, 'connecting');
+      for (const report of await connection.stats()) report.forEach((raw) => {
         const stat = raw as unknown as Record<string, unknown>;
         if (stat.type === 'inbound-rtp' && (stat.kind === 'audio' || stat.mediaType === 'audio')) {
           const received = numberStat(stat.packetsReceived);
@@ -957,6 +1114,12 @@ function teardownVoiceRuntime(notifyServer: boolean): void {
   if (notifyServer && channelId && socket?.connected) socket.emit('voice:leave', { channelId });
   serverJoinedChannelId = null;
   directoryPromise = null;
+  sfu?.close();
+  sfu = null;
+  frameKeys?.close();
+  frameKeys = null;
+  callMedia = 'p2p';
+  pendingKeyMessages.length = 0;
   ignoredOffers.clear();
   runtimeIceServers = [];
   incomingSequences.clear();
@@ -1056,6 +1219,9 @@ function joinErrorMessage(error: string | undefined): string {
 }
 
 function voiceErrorMessage(error: unknown): string {
+  if (error instanceof VoiceUnsupportedError) {
+    return t('このブラウザーでは通話を安全に行えないため、参加できません。ブラウザーかアプリを最新にしてお試しください');
+  }
   if (error instanceof DOMException) {
     if (error.name === 'NotAllowedError' || error.name === 'SecurityError') return t('マイクの使用が許可されていません');
     if (error.name === 'NotFoundError') return t('利用できるマイクが見つかりません');

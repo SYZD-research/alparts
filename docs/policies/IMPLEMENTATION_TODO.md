@@ -52,7 +52,7 @@
 - `SCP-09` / `SEARCH-01..12`: `SEARCH-LITE-01` はロード済み復号履歴だけ。暗号化永続index、端末間同期、全履歴・複数workspace検索は延期。
 - `AUTHZ-01..10`: workspace/category/channel RBAC、preview、実効理由はPrototype境界で完了。二者承認は延期。
 - `BKP-01..12`: 暗号化snapshot/隔離restore検証、single-host daily schedule、安全なlocal retentionが完了。PITR、WORM、automatic off-site、自動restore、完全DRは延期。
-- `MEDIA-01..13`: `VOICE-LITE-01` は既存channel上の最大8人P2P音声だけ。専用voice channel、映像、画面共有、SFU/SFrame、録音表示、正式なgroup rekey、全network/browserの性能保証は延期。
+- `MEDIA-01..13`: `VOICE-LITE-01` は既存channel上の最大8人音声。既定はP2Pで、operatorが有効にするとself-hostのSFUを経由し、各frameを送信端末でSFrame暗号化して参加・退出ごとにkeyを替える（ADR 0014）。専用voice channel、映像、画面共有、録音表示、全network/browserの性能保証は延期。
 
 ## 最終受け入れコマンド
 

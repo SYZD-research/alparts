@@ -759,6 +759,12 @@ async function loadFinalizationSnapshot(
     keyVersion: input.keyVersion,
     parentKeyVersion: context.message.keyVersion,
   });
+  // The file is bound to the message's signed idempotency key, which the
+  // server cannot give another message. The older layout, which names the
+  // message by server id only, is refused, and so is a file for a message
+  // stored without a signed key.
+  const messageIdempotencyKey = signedIdempotencyKey(context.message);
+  if (!messageIdempotencyKey) throw new Error('INVALID_SIGNATURE');
   const envelope: SignedAttachmentEnvelope = {
     type: 'attachment',
     uploadId,
@@ -773,15 +779,9 @@ async function loadFinalizationSnapshot(
     noncePrefix: input.cryptoManifest.noncePrefix,
     plaintextSize: input.cryptoManifest.plaintextSize,
     chunkCount: input.chunkCount,
+    messageIdempotencyKey,
   };
-  // Current clients bind the file to the message's signed idempotency key;
-  // older clients still sign the legacy layout, which readers also accept.
-  const messageIdempotencyKey = signedIdempotencyKey(context.message);
-  const bound = messageIdempotencyKey ? { ...envelope, messageIdempotencyKey } : null;
-  if (
-    !(bound && verifyAttachmentEnvelopeSignature(device.identityKey, bound, input.signature))
-    && !verifyAttachmentEnvelopeSignature(device.identityKey, envelope, input.signature)
-  ) {
+  if (!verifyAttachmentEnvelopeSignature(device.identityKey, envelope, input.signature)) {
     throw new Error('INVALID_SIGNATURE');
   }
   const chunkRows = await store.query.attachmentUploadChunks.findMany({

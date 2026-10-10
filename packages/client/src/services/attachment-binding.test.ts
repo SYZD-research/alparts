@@ -92,12 +92,15 @@ describe('attachment binding to its message', () => {
     expect(envelope.messageIdempotencyKey).toBe('message-signed-key');
   });
 
-  it('still accepts a file signed before the binding existed', async () => {
+  it('refuses a file in the older layout, which names its message by server id only', async () => {
     mocks.verifyAttachmentSignature.mockImplementation(async (envelope: SignedAttachmentEnvelope) => (
       envelope.messageIdempotencyKey === undefined
     ));
-    const envelope = await verifyAttachmentMetadata(verified, attachment());
-    expect(envelope.messageIdempotencyKey).toBeUndefined();
+    await expect(verifyAttachmentMetadata(verified, attachment())).rejects.toThrow(/検証できませんでした/);
+    // Only the bound layout is tried.
+    for (const [envelope] of mocks.verifyAttachmentSignature.mock.calls) {
+      expect((envelope as SignedAttachmentEnvelope).messageIdempotencyKey).toBe('message-signed-key');
+    }
   });
 
   it('refuses a file signed for another message', async () => {

@@ -1,5 +1,5 @@
 import type { Server as SocketServer } from 'socket.io';
-import { z } from 'zod';
+import { canonicalUuid } from '../security/canonical-id.js';
 import { Permissions } from '@alparts/shared';
 import { config } from '../config/index.js';
 import { db } from '../db/index.js';
@@ -31,7 +31,7 @@ import { rateLimitSource, reportUntrustedForwarding, requestClientAddress } from
 import { VoiceCoordinator } from '../voice/voice-coordinator.js';
 import { attachVoiceSfuEvents } from './voice.handler.js';
 
-const channelIdSchema = z.string().uuid();
+const channelIdSchema = canonicalUuid;
 const maxTimerDelayMs = 2_147_000_000;
 
 interface ExpiringSocket {
@@ -95,8 +95,12 @@ export function scheduleSessionExpiry(socket: ExpiringSocket, expiresAtMs: numbe
   expireOrReschedule();
 }
 
+/** The call registry of each Socket.IO server, for the media server started later. */
+const voiceHubs = new WeakMap<SocketServer, VoiceSignalingHub>();
+
 export function setupWebSocket(io: SocketServer) {
   const voiceSignaling = new VoiceSignalingHub(io);
+  voiceHubs.set(io, voiceSignaling);
   io.use(async (socket: AuthenticatedSocket, next) => {
     const cookieToken = readCookie(socket.handshake.headers.cookie, config.auth.cookieName);
     const origin = socket.handshake.headers.origin;
@@ -211,6 +215,19 @@ export function setupWebSocket(io: SocketServer) {
     try {
       await identityRoomsReady;
       if (!socket.connected) return;
+      // The handshake read the session before this socket was in its session
+      // and user rooms. A revocation that ended the session and closed those
+      // rooms in between missed this socket; any later one reaches it.
+      if (!await isSessionActive({
+        userId: socket.userId!,
+        sessionId: socket.sessionId!,
+        deviceId: socket.deviceId ?? null,
+        tokenHash: socket.sessionTokenHash!,
+      })) {
+        socket.disconnect(true);
+        return;
+      }
+      if (!socket.connected) return;
       // The socket is now counted in its user room; publish "online" if this
       // is the user's first live connection.
       void syncPresence(io, socket.userId!).catch((error) => logError('websocket.connect_presence', error));
@@ -301,9 +318,13 @@ export async function startVoiceSfu(
 		workerCount: sfu.workerCount,
 	});
 
+	const hub = voiceHubs.get(io);
+
 	try {
+		if (!hub) throw new Error('VOICE_SIGNALING_NOT_READY');
 		await coordinator.start();
-		attachVoiceSfuEvents(io, coordinator);
+		attachVoiceSfuEvents(io, coordinator, hub);
+		hub.enableSfu();
 	} catch (error) {
 		await coordinator.close();
 		throw error;

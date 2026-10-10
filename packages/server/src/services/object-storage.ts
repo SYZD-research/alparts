@@ -127,6 +127,11 @@ function isNotFound(error: unknown): boolean {
     || failure?.$metadata?.httpStatusCode === 404;
 }
 
+/** The store answered that the object does not exist (as opposed to a failed read). */
+export function isStoredObjectMissing(error: unknown): boolean {
+  return isNotFound(error);
+}
+
 const objectStorageGate = new BoundedAsyncGate(
   MAX_CONCURRENT_OBJECT_STORAGE_OPERATIONS,
   MAX_PENDING_OBJECT_STORAGE_OPERATIONS,

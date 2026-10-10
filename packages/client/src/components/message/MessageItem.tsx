@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useMessageStore } from '../../stores/message.store';
+import { quotedMessage } from '../../stores/message-projector';
 import { useAuthStore } from '../../stores/auth.store';
 import type { Message } from '@alparts/shared';
 import { useUserStateStore } from '../../stores/user-state.store';
@@ -39,9 +40,11 @@ export function MessageItem({ message, isFirst, onJumpToMessage, canPin = true }
   const pinMessage = useMessageStore((state) => state.pinMessage);
   const setReplyTarget = useMessageStore((state) => state.setReplyTarget);
   const setEditTarget = useMessageStore((state) => state.setEditTarget);
+  // Null when the message under the quoted id is not the one this message
+  // was signed quoting: neither it nor a link to it is shown.
   const referencedMessage = useMessageStore((state) => (
     message.refMessageId
-      ? state.messagesByChannel[message.channelId]?.find((candidate) => candidate.id === message.refMessageId)
+      ? quotedMessage(message, state.messagesByChannel[message.channelId] ?? [])
       : undefined
   ));
   const attachmentKeyMessage = useMessageStore((state) => (
@@ -213,7 +216,7 @@ export function MessageItem({ message, isFirst, onJumpToMessage, canPin = true }
             <button
               type="button"
               onClick={() => onJumpToMessage?.(message.refMessageId!)}
-              disabled={!onJumpToMessage}
+              disabled={!onJumpToMessage || referencedMessage === null}
               className="relative mb-1 flex max-w-full items-center gap-1.5 text-left text-xs text-discord-muted hover:text-discord-text disabled:cursor-default"
               aria-label={t('返信先のメッセージへ移動')}
             >
@@ -233,6 +236,8 @@ export function MessageItem({ message, isFirst, onJumpToMessage, canPin = true }
                       : userFacingMessageText(referencedMessage.content || '') || (referencedMessage.attachments?.length ? t('添付ファイル') : t('本文なし'))}
                   </span>
                 </>
+              ) : referencedMessage === null ? (
+                <span className="truncate">{t('元のメッセージを表示できません')}</span>
               ) : (
                 <span className="truncate hover:underline">{t('元のメッセージを表示')}</span>
               )}
