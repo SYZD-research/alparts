@@ -29,6 +29,7 @@ When the operator enables the SFU, every call of the deployment goes through it,
   - A key is never used if someone it was sent to left before it came into use (while it was signed, sent, or waited for). The rotation queued by that leave replaces it.
   - A key message that arrives before the news that its sender joined is held (at most 16) and checked once the sender is in the call.
   - Receivers keep the newest three keys of each sender, for frames still in flight.
+  - If a key did not reach every participant (the directory lookup, wrapping, signing or relay failed), the sender makes a new key and sends it to everyone again after 1, 3 and 10 seconds, stopping once one reaches all of them. Otherwise a participant that missed the key would drop this sender's frames until the next join or leave. Any join or leave cancels the pending retry, because it rotates the key anyway.
 - **Self-hosting (`MEDIA-13`).** mediasoup runs in the application's own worker processes; each worker listens on its own fixed port from `VOICE_SFU_BASE_PORT`, and tries the same port again if it was busy. TURN stays operator-provided.
 
 ## Consequences

@@ -10,7 +10,9 @@ import type { SignedVoiceKeyEnvelope } from '@alparts/shared';
  * later ones). After a join it starts sending under the new key a moment
  * after the server relayed it, so the others can install it first; after a
  * leave, at once. A key that reached someone who has left by then is never
- * used: the rotation that leave queued replaces it.
+ * used: the rotation that leave queued replaces it. If the key did not reach
+ * every participant (the directory lookup or the relay failed), a new key is
+ * sent to everyone again after a short wait, a few times.
  */
 export interface VoiceKeyPeer {
   participantId: string;
@@ -57,6 +59,8 @@ const MAX_KEY_ID = 0xffff_ffff;
 /** Keys of one sender a receiver keeps: the newest and the ones before it, for frames still in flight. */
 const RECEIVE_KEYS_PER_SENDER = 3;
 const SWITCH_DELAY_MS = 250;
+/** Waits before sending a new key again when the last one did not reach every participant. */
+const RETRY_DELAYS_MS = [1_000, 3_000, 10_000];
 /** Key messages from someone not yet known to be in the call, kept until it is (or dropped, oldest first). */
 const MAX_EARLY_MESSAGES = 16;
 const WRAPPED_KEY = /^[A-Za-z0-9+/]{100,1400}={0,2}$/;
@@ -75,6 +79,9 @@ export class VoiceFrameKeys {
   private readonly keyOwners = new Map<number, string>();
   private readonly ownKeyIds = new Set<number>();
   private queue: Promise<void> = Promise.resolve();
+  /** Rotations started so far; a retry is dropped once another rotation started. */
+  private rotations = 0;
+  private retries = 0;
   private readonly early: Array<{ envelope: SignedVoiceKeyEnvelope; signature: string }> = [];
   private closed = false;
   /** The key frames are sent under, once installed. */
@@ -198,14 +205,16 @@ export class VoiceFrameKeys {
   }
 
   /** Rotations run one at a time; each sends to the participants of its own moment. */
-  private rotate(reason: 'start' | 'join' | 'leave'): Promise<void> {
+  private rotate(reason: 'start' | 'join' | 'leave' | 'retry'): Promise<void> {
     const run = this.queue.catch(() => undefined).then(() => this.rotateNow(reason));
     this.queue = run;
     return run;
   }
 
-  private async rotateNow(reason: 'start' | 'join' | 'leave'): Promise<void> {
+  private async rotateNow(reason: 'start' | 'join' | 'leave' | 'retry'): Promise<void> {
     if (this.closed) return;
+    const rotation = ++this.rotations;
+    if (reason !== 'retry') this.retries = 0;
     let keyId = this.deps.randomKeyId();
     for (let attempt = 0; this.keyOwners.has(keyId) || this.ownKeyIds.has(keyId); attempt += 1) {
       if (attempt >= 16) throw new Error('VOICE_KEY_ID_EXHAUSTED');
@@ -220,7 +229,7 @@ export class VoiceFrameKeys {
     const identities = recipients.length
       ? await this.deps.identities(recipients.map((peer) => peer.deviceId)).catch(() => new Map<string, VoiceKeyIdentity>())
       : new Map<string, VoiceKeyIdentity>();
-    await Promise.allSettled(recipients.map(async (peer) => {
+    const sent = await Promise.allSettled(recipients.map(async (peer) => {
       const identity = identities.get(peer.deviceId);
       if (!identity || identity.userId !== peer.userId) return false;
       const sequence = (this.outboundSequences.get(peer.participantId) ?? 0) + 1;
@@ -246,7 +255,7 @@ export class VoiceFrameKeys {
       key.fill(0);
       return;
     }
-    if (reason === 'join' && this.currentKeyId !== null) await this.deps.delay(SWITCH_DELAY_MS);
+    if ((reason === 'join' || reason === 'retry') && this.currentKeyId !== null) await this.deps.delay(SWITCH_DELAY_MS);
     if (this.closed || recipientLeft()) {
       key.fill(0);
       return;
@@ -254,5 +263,18 @@ export class VoiceFrameKeys {
     await this.deps.useSendKey(keyId, key);
     key.fill(0);
     this.currentKeyId = keyId;
+    // Whoever did not get the key drops every frame under it, so it is sent again.
+    if (sent.some((result) => result.status !== 'fulfilled' || result.value !== true)) this.retryLater(rotation);
+    else this.retries = 0;
+  }
+
+  private retryLater(rotation: number): void {
+    const wait = RETRY_DELAYS_MS[this.retries];
+    if (wait === undefined) return;
+    this.retries += 1;
+    void this.deps.delay(wait).then(() => {
+      if (this.closed || this.rotations !== rotation) return;
+      return this.rotate('retry');
+    }).catch(() => undefined);
   }
 }

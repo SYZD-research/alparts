@@ -16,6 +16,8 @@ class Call {
   readonly clients = new Map<string, Client>();
   readonly relayed: Array<{ envelope: SignedVoiceKeyEnvelope; signature: string }> = [];
   deliver = true;
+  /** Key messages the relay drops before it delivers again. */
+  drop = 0;
   private nextKeyId = 1;
 
   keyId(): number {
@@ -50,6 +52,10 @@ class Call {
   async send(envelope: SignedVoiceKeyEnvelope, signature: string): Promise<boolean> {
     this.relayed.push({ envelope, signature });
     if (!this.deliver) return false;
+    if (this.drop > 0) {
+      this.drop -= 1;
+      return false;
+    }
     const target = [...this.clients.values()].find((client) => client.peer.participantId === envelope.targetParticipantId);
     if (!target) return false;
     target.inbox.push(target.keys.receive(envelope, signature));
@@ -258,5 +264,44 @@ describe('call frame keys when someone leaves during a rotation', () => {
     // Key 1 was meant for c as well, so it is never used.
     expect(used).toEqual([2]);
     expect(keys.currentKeyId).toBe(2);
+  });
+});
+
+describe('call frame keys when a key message is lost', () => {
+  /** Lets the retries, which wait on a timer, run and deliver. */
+  const retried = async (call: Call) => {
+    for (let round = 0; round < 10; round += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await call.settle();
+    }
+  };
+
+  it('sends a new key to everyone again, so the participant that missed it hears the sender', async () => {
+    const call = new Call();
+    const a = await call.join('a');
+    const b = await call.join('b');
+    call.drop = 1;
+    const c = await call.join('c');
+    await retried(call);
+    for (const sender of [a, b, c]) {
+      for (const receiver of [a, b, c]) {
+        if (sender !== receiver) expect(await sender.reaches(receiver)).toBe(true);
+      }
+    }
+  });
+
+  it('tries again only a few times while the relay keeps failing', async () => {
+    const call = new Call();
+    await call.join('a');
+    await call.join('b');
+    call.deliver = false;
+    await call.join('c');
+    await retried(call);
+    const sent = call.relayed.length;
+    await retried(call);
+    expect(call.relayed.length).toBe(sent);
+    // a: one key to b when b joined, then c's join and three retries, each to b and c.
+    const fromA = call.relayed.filter((message) => message.envelope.senderParticipantId === 'p-a');
+    expect(fromA).toHaveLength(1 + 2 * 4);
   });
 });
