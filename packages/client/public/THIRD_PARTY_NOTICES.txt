@@ -7737,13 +7737,13 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 --------------------------------------------------------------------------------
 
-helmet 7.2.0
+helmet 8.3.0
 License: MIT
-Package: pkg:npm/helmet@7.2.0
+Package: pkg:npm/helmet@8.3.0
 
 The MIT License
 
-Copyright (c) 2012-2024 Evan Hahn, Adam Baldwin
+Copyright (c) 2012-2026 Evan Hahn, Adam Baldwin
 
 Permission is hereby granted, free of charge, to any person obtaining
 a copy of this software and associated documentation files (the
@@ -10885,9 +10885,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 --------------------------------------------------------------------------------
 
-react-markdown 9.1.0
+react-markdown 10.1.0
 License: MIT
-Package: pkg:npm/react-markdown@9.1.0
+Package: pkg:npm/react-markdown@10.1.0
 
 The MIT License (MIT)
 
