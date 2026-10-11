@@ -1,4 +1,4 @@
-FROM node:24-alpine3.23@sha256:9ec4a2e289874ed0d722e1772ec2de45d2801541db8612f3638b26f128c69ac2 AS build
+FROM node:25-alpine3.23@sha256:bdf2cca6fe3dabd014ea60163eca3f0f7015fbd5c7ee1b0e9ccb4ced6eb02ef4 AS build
 
 WORKDIR /app
 # mediasoup publishes no musl worker binary, so it is built from source here.
@@ -17,7 +17,7 @@ RUN pnpm install --frozen-lockfile \
 COPY packages ./packages
 RUN pnpm build
 
-FROM node:24-alpine3.23@sha256:9ec4a2e289874ed0d722e1772ec2de45d2801541db8612f3638b26f128c69ac2 AS runtime
+FROM node:25-alpine3.23@sha256:bdf2cca6fe3dabd014ea60163eca3f0f7015fbd5c7ee1b0e9ccb4ced6eb02ef4 AS runtime
 
 ENV NODE_ENV=production \
     BIND_HOST=127.0.0.1 \
