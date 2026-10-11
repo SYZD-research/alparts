@@ -1,6 +1,5 @@
 packages:
   - 'packages/*'
-minimumReleaseAge: 10080
 allowBuilds:
   electron-winstaller: false
   esbuild: true
