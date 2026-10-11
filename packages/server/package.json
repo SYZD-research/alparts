@@ -35,7 +35,7 @@
     "@smithy/node-http-handler": "^4.12.1",
     "bcryptjs": "^3.0.3",
     "cors": "^2.8.5",
-    "drizzle-orm": "^0.45.3",
+    "drizzle-orm": "^0.45.4",
     "express": "^5.2.1",
     "helmet": "^8.3.0",
     "jsonwebtoken": "^9.0.2",
@@ -45,7 +45,7 @@
     "proxy-addr": "2.0.8",
     "socket.io": "^4.8.4",
     "ts-mls": "1.6.4",
-    "zod": "^3.23.8"
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@types/cors": "^2.8.17",
@@ -54,7 +54,7 @@
     "@types/node": "^26.2.0",
     "@types/pg": "^8.23.1",
     "drizzle-kit": "^0.31.11",
-    "socket.io-client": "^4.8.3",
+    "socket.io-client": "^4.8.4",
     "tsx": "^4.23.15",
     "typescript": "^5.6.0"
   }
