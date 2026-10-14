@@ -43,7 +43,7 @@ export function DirectoryCheckpoint() {
       </p>
       <button
         disabled={busy}
-        className="rounded border border-discord-muted px-3 py-2"
+        className="rounded-sm border border-discord-muted px-3 py-2"
         onClick={() => {
           void run(false);
         }}
@@ -51,7 +51,7 @@ export function DirectoryCheckpoint() {
         {t('確認コードを表示')}
       </button>
       {code && (
-        <code className="block select-all break-all rounded bg-discord-bg p-3 text-sm">{code}</code>
+        <code className="block select-all break-all rounded-sm bg-discord-bg p-3 text-sm">{code}</code>
       )}
       <form
         className="space-y-2"
@@ -67,12 +67,12 @@ export function DirectoryCheckpoint() {
             onChange={(event) => setOtherCode(event.target.value)}
             autoComplete="off"
             spellCheck={false}
-            className="mt-2 block w-full rounded bg-discord-bg p-3"
+            className="mt-2 block w-full rounded-sm bg-discord-bg p-3"
           />
         </label>
         <button
           disabled={busy || !otherCode.trim()}
-          className="rounded bg-discord-accent px-3 py-2 text-white disabled:opacity-50"
+          className="rounded-sm bg-discord-accent px-3 py-2 text-white disabled:opacity-50"
         >
           {t('照合する')}
         </button>

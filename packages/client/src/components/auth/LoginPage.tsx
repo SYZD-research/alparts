@@ -67,7 +67,7 @@ export function LoginPage() {
                 )
                 .catch(() => undefined);
             }}
-            className="mb-4 w-full rounded bg-discord-accent px-4 py-3 font-bold text-white disabled:opacity-50"
+            className="mb-4 w-full rounded-sm bg-discord-accent px-4 py-3 font-bold text-white disabled:opacity-50"
           >
             {t('パスキーでログイン')}
           </button>
@@ -83,7 +83,7 @@ export function LoginPage() {
                   type="text"
                   value={displayName}
                   onChange={(e) => setDisplayName(e.target.value)}
-                  className="w-full px-3 py-2.5 bg-discord-bg rounded text-discord-text outline-none focus:ring-2 focus:ring-discord-accent"
+                  className="w-full px-3 py-2.5 bg-discord-bg rounded-sm text-discord-text outline-hidden focus:ring-2 focus:ring-discord-accent"
                   required
                 />
               </div>
@@ -98,7 +98,7 @@ export function LoginPage() {
                     setInviteToken(e.target.value);
                     resetCode();
                   }}
-                  className="w-full px-3 py-2.5 bg-discord-bg rounded text-discord-text outline-none focus:ring-2 focus:ring-discord-accent"
+                  className="w-full px-3 py-2.5 bg-discord-bg rounded-sm text-discord-text outline-hidden focus:ring-2 focus:ring-discord-accent"
                   required
                   autoComplete="one-time-code"
                 />
@@ -117,7 +117,7 @@ export function LoginPage() {
                 setEmail(e.target.value);
                 resetCode();
               }}
-              className="w-full px-3 py-2.5 bg-discord-bg rounded text-discord-text outline-none focus:ring-2 focus:ring-discord-accent"
+              className="w-full px-3 py-2.5 bg-discord-bg rounded-sm text-discord-text outline-hidden focus:ring-2 focus:ring-discord-accent"
               required
             />
           </div>
@@ -130,7 +130,7 @@ export function LoginPage() {
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="w-full px-3 py-2.5 bg-discord-bg rounded text-discord-text outline-none focus:ring-2 focus:ring-discord-accent"
+              className="w-full px-3 py-2.5 bg-discord-bg rounded-sm text-discord-text outline-hidden focus:ring-2 focus:ring-discord-accent"
               required
               minLength={12}
               maxLength={72}
@@ -153,7 +153,7 @@ export function LoginPage() {
                 maxLength={6}
                 value={emailCode}
                 onChange={(e) => setEmailCode(e.target.value.replace(/[^0-9]/g, ''))}
-                className="w-full px-3 py-2.5 bg-discord-bg rounded text-discord-text outline-none focus:ring-2 focus:ring-discord-accent"
+                className="w-full px-3 py-2.5 bg-discord-bg rounded-sm text-discord-text outline-hidden focus:ring-2 focus:ring-discord-accent"
                 required
               />
               <button
@@ -175,7 +175,7 @@ export function LoginPage() {
           <button
             type="submit"
             disabled={isLoading}
-            className="w-full py-2.5 bg-discord-accent hover:bg-discord-accent-hover rounded font-medium text-white transition-colors disabled:opacity-50"
+            className="w-full py-2.5 bg-discord-accent hover:bg-discord-accent-hover rounded-sm font-medium text-white transition-colors disabled:opacity-50"
           >
             {isLoading ? t('処理中...') : isRegister ? t('アカウント作成') : t('ログイン')}
           </button>

@@ -88,7 +88,7 @@ export function Dialog({ open, title, description, onClose, children, size = 'md
             <h2 id={titleId} className="text-lg font-bold text-white">{title}</h2>
             {description && <p id={descriptionId} className="mt-1 text-sm text-discord-muted">{description}</p>}
           </div>
-          <button type="button" onClick={onClose} className="rounded px-2 py-1 text-discord-muted hover:bg-discord-hover hover:text-white" aria-label={t('閉じる')}>
+          <button type="button" onClick={onClose} className="rounded-sm px-2 py-1 text-discord-muted hover:bg-discord-hover hover:text-white" aria-label={t('閉じる')}>
             ×
           </button>
         </header>

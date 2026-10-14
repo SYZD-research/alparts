@@ -95,12 +95,12 @@ export function MemberProfileView({ profile, revealed, busy, error, target, act,
   if (profile.flagged && !revealed) {
     return (
       <div className="space-y-4">
-        <p role="alert" className="rounded border border-discord-red/60 bg-discord-red/10 p-3 text-sm text-discord-text">
+        <p role="alert" className="rounded-sm border border-discord-red/60 bg-discord-red/10 p-3 text-sm text-discord-text">
           {t('管理者がこのユーザーのプロフィールを')}<strong>{t('なりすまし・及び悪質なサービスへの誘導')}</strong>{t('とマークしています。それでも見ますか？')}
         </p>
         <div className="flex justify-end gap-2">
-          <button type="button" onClick={onClose} className="rounded px-3 py-2 text-sm text-discord-muted hover:bg-discord-hover">{t('閉じる')}</button>
-          <button type="button" onClick={onReveal} className="rounded bg-discord-red px-3 py-2 text-sm font-medium text-white">{t('見る')}</button>
+          <button type="button" onClick={onClose} className="rounded-sm px-3 py-2 text-sm text-discord-muted hover:bg-discord-hover">{t('閉じる')}</button>
+          <button type="button" onClick={onReveal} className="rounded-sm bg-discord-red px-3 py-2 text-sm font-medium text-white">{t('見る')}</button>
         </div>
         <ManagerActions profile={profile} busy={busy} act={act} target={target} />
         {error && <p role="alert" className="text-sm text-discord-red">{error}</p>}
@@ -111,15 +111,15 @@ export function MemberProfileView({ profile, revealed, busy, error, target, act,
     <div className="space-y-4">
       <div className="flex items-center gap-4">
         <UserAvatar displayName={profile.displayName} avatarUrl={profile.avatarUrl} size="lg" />
-        <p className="min-w-0 break-words text-lg font-semibold text-white">{profile.displayName}</p>
+        <p className="min-w-0 wrap-break-word text-lg font-semibold text-white">{profile.displayName}</p>
       </div>
       {profile.flagged && (
-        <p className="rounded bg-discord-red/10 px-3 py-2 text-xs text-discord-red">
+        <p className="rounded-sm bg-discord-red/10 px-3 py-2 text-xs text-discord-red">
           {t('管理者がこのプロフィールに警告を付けています。リンクや連絡先の誘導に注意してください。')}
         </p>
       )}
       {profile.bio ? (
-        <p className="whitespace-pre-wrap break-words text-sm text-discord-text">{profile.bio}</p>
+        <p className="whitespace-pre-wrap wrap-break-word text-sm text-discord-text">{profile.bio}</p>
       ) : (
         <p className="text-sm text-discord-muted">{t('自己紹介はありません。')}</p>
       )}
@@ -138,7 +138,7 @@ function ManagerActions({ profile, busy, act, target }: {
   const t = useT();
   const [confirmFlag, setConfirmFlag] = useState(false);
   if (!profile.canManageFlag) return null;
-  const button = 'rounded px-3 py-1.5 text-sm disabled:opacity-50';
+  const button = 'rounded-sm px-3 py-1.5 text-sm disabled:opacity-50';
   return (
     <section className="space-y-2 border-t border-discord-hover pt-3 text-sm">
       <p className="text-xs text-discord-muted">{t('管理者の操作（このワークスペースのみ）')}</p>

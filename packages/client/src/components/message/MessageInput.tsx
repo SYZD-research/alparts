@@ -490,29 +490,29 @@ export function MessageInput({ channelId, sendDisabled = false, postId, placehol
             <p className="text-sm text-discord-muted">
               {t('{characters}文字分・{lines}行', { characters: pendingPaste.preview.byteCount.toLocaleString(intlLocale()), lines: pendingPaste.preview.lineCount.toLocaleString(intlLocale()) })}
             </p>
-            <section aria-label={t('貼り付け内容のプレビュー')} className="rounded bg-discord-input p-3">
+            <section aria-label={t('貼り付け内容のプレビュー')} className="rounded-sm bg-discord-input p-3">
               <p className="mb-1 text-xs font-medium text-discord-muted">{pendingPaste.preview.omitted ? t('先頭') : t('内容')}</p>
-              <pre className="max-h-44 overflow-auto whitespace-pre-wrap break-words text-sm text-discord-text">{pendingPaste.preview.head}</pre>
+              <pre className="max-h-44 overflow-auto whitespace-pre-wrap wrap-break-word text-sm text-discord-text">{pendingPaste.preview.head}</pre>
               {pendingPaste.preview.omitted && (
                 <>
                   <p className="my-2 text-center text-xs text-discord-muted">{t('…中間を省略…')}</p>
                   <p className="mb-1 text-xs font-medium text-discord-muted">{t('末尾')}</p>
-                  <pre className="max-h-44 overflow-auto whitespace-pre-wrap break-words text-sm text-discord-text">{pendingPaste.preview.tail}</pre>
+                  <pre className="max-h-44 overflow-auto whitespace-pre-wrap wrap-break-word text-sm text-discord-text">{pendingPaste.preview.tail}</pre>
                 </>
               )}
             </section>
             {pastedResult.length > MAX_MESSAGE_LENGTH && (
-              <p role="alert" className="rounded bg-discord-red/15 px-3 py-2 text-sm text-discord-red">
+              <p role="alert" className="rounded-sm bg-discord-red/15 px-3 py-2 text-sm text-discord-red">
                 {t('反映後は{length}文字になり、上限{max}文字を超えます。短くしてから貼り付けてください。', { length: pastedResult.length.toLocaleString(intlLocale()), max: MAX_MESSAGE_LENGTH.toLocaleString(intlLocale()) })}
               </p>
             )}
             <div className="flex justify-end gap-2">
-              <button type="button" onClick={closePastePreview} className="rounded px-3 py-2 text-sm text-discord-muted hover:bg-discord-hover">{t('キャンセル')}</button>
+              <button type="button" onClick={closePastePreview} className="rounded-sm px-3 py-2 text-sm text-discord-muted hover:bg-discord-hover">{t('キャンセル')}</button>
               <button
                 type="button"
                 onClick={applyPendingPaste}
                 disabled={pastedResult.length > MAX_MESSAGE_LENGTH}
-                className="rounded bg-discord-accent px-4 py-2 text-sm text-white disabled:opacity-40"
+                className="rounded-sm bg-discord-accent px-4 py-2 text-sm text-white disabled:opacity-40"
               >
                 {t('入力欄へ反映')}
               </button>
@@ -544,7 +544,7 @@ export function MessageInput({ channelId, sendDisabled = false, postId, placehol
         </div>
       )}
       {(draftError || outboxError || attachmentError || pasteError) && (
-        <div role="alert" className="mb-2 flex items-center justify-between gap-3 rounded bg-discord-red/15 px-3 py-2 text-xs text-discord-red">
+        <div role="alert" className="mb-2 flex items-center justify-between gap-3 rounded-sm bg-discord-red/15 px-3 py-2 text-xs text-discord-red">
           <span>
             {attachmentError
               || pasteError
@@ -566,7 +566,7 @@ export function MessageInput({ channelId, sendDisabled = false, postId, placehol
         </div>
       )}
       {channelAttachmentTasks.length > 0 && (
-        <div aria-live="polite" className="mb-2 space-y-2 rounded bg-discord-sidebar px-3 py-2 text-xs text-discord-muted">
+        <div aria-live="polite" className="mb-2 space-y-2 rounded-sm bg-discord-sidebar px-3 py-2 text-xs text-discord-muted">
           {channelAttachmentTasks.map((task) => (
             <div key={task.id} className="space-y-1">
               <div className="flex items-center justify-between gap-3">
@@ -591,7 +591,7 @@ export function MessageInput({ channelId, sendDisabled = false, postId, placehol
                 value={task.progress}
                 max={100}
                 aria-label={t('{name} アップロード進捗 {percent}%', { name: task.fileName, percent: task.progress })}
-                className={`h-1 w-full overflow-hidden rounded ${task.status === 'failed' ? 'accent-discord-red' : 'accent-discord-accent'}`}
+                className={`h-1 w-full overflow-hidden rounded-sm ${task.status === 'failed' ? 'accent-discord-red' : 'accent-discord-accent'}`}
               />
               {task.error && (
                 <p role="alert" className="text-discord-red">
@@ -605,7 +605,7 @@ export function MessageInput({ channelId, sendDisabled = false, postId, placehol
         </div>
       )}
       {channelOutboxItems.length > 0 && (
-        <div aria-live="polite" className="mb-2 space-y-1 rounded bg-discord-sidebar px-3 py-2 text-xs text-discord-muted">
+        <div aria-live="polite" className="mb-2 space-y-1 rounded-sm bg-discord-sidebar px-3 py-2 text-xs text-discord-muted">
           {channelOutboxItems.map((item) => (
             <div key={item.id} className="flex items-center justify-between gap-3">
               <span>
@@ -636,7 +636,7 @@ export function MessageInput({ channelId, sendDisabled = false, postId, placehol
           </div>
         )}
         {selectedFiles.length > 0 && (
-          <ul aria-label={t('送信する添付ファイル')} className="mb-2 flex flex-wrap gap-2 rounded bg-discord-sidebar p-2 text-xs text-discord-muted">
+          <ul aria-label={t('送信する添付ファイル')} className="mb-2 flex flex-wrap gap-2 rounded-sm bg-discord-sidebar p-2 text-xs text-discord-muted">
             {selectedFiles.map((file, index) => (
               <PendingFilePreview
                 key={`${fileIdentity(file)}:${index}`}
@@ -723,7 +723,7 @@ export function MessageInput({ channelId, sendDisabled = false, postId, placehol
             aria-activedescendant={showMentionPopup && mentionCandidates.length > 0
               ? `mention-option-${mentionCandidates[Math.min(activeMentionIndex, mentionCandidates.length - 1)].userId}`
               : undefined}
-            className="block min-h-[44px] max-h-[200px] w-full resize-none rounded-lg bg-discord-input px-4 py-3 text-discord-text outline-none placeholder-discord-muted focus:ring-1 focus:ring-discord-accent"
+            className="block min-h-[44px] max-h-[200px] w-full resize-none rounded-lg bg-discord-input px-4 py-3 text-discord-text outline-hidden placeholder-discord-muted focus:ring-1 focus:ring-discord-accent"
             rows={1}
             maxLength={MAX_MESSAGE_LENGTH}
           />
@@ -736,7 +736,7 @@ export function MessageInput({ channelId, sendDisabled = false, postId, placehol
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
                   disabled={!isOnline || isSending || sendDisabled}
-                  className="rounded px-2 py-1 hover:bg-discord-hover disabled:cursor-not-allowed disabled:opacity-50"
+                  className="rounded-sm px-2 py-1 hover:bg-discord-hover disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {t('＋ 画像・ファイル（最大{count}件・各100MB）', { count: ATTACHMENT_MAX_COUNT_PER_MESSAGE })}
                 </button>
@@ -757,7 +757,7 @@ export function MessageInput({ channelId, sendDisabled = false, postId, placehol
           <button
             type="submit"
             disabled={isSending || sendDisabled || (!content.trim() && selectedFiles.length === 0)}
-            className="shrink-0 rounded bg-discord-accent px-4 py-2 font-medium text-white hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40"
+            className="shrink-0 rounded-sm bg-discord-accent px-4 py-2 font-medium text-white hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40"
           >
             {isSending ? t('送信中…') : sendDisabled ? t('準備中…') : editTarget ? t('変更を保存') : heldAttachments ? t('画像・ファイルを再送信') : selectedFiles.length > 0 ? t('画像・ファイルを送信') : t('送信')}
           </button>
@@ -800,7 +800,7 @@ function PendingFilePreview({ file, onRemove }: { file: File; onRemove: () => vo
   }, [previewUrl]);
 
   return (
-    <li className="relative w-36 overflow-hidden rounded border border-discord-hover bg-discord-bg/60">
+    <li className="relative w-36 overflow-hidden rounded-sm border border-discord-hover bg-discord-bg/60">
       {previewUrl ? (
         <img
           src={previewUrl}

@@ -158,7 +158,7 @@ export function MessageList({ channelId, visible: chatVisible = true }: Props) {
       )}
 
       {jumpError && (
-        <div role="alert" className="sticky top-1 z-10 mx-4 flex items-center justify-between gap-3 rounded bg-discord-red/15 px-3 py-2 text-sm text-discord-red">
+        <div role="alert" className="sticky top-1 z-10 mx-4 flex items-center justify-between gap-3 rounded-sm bg-discord-red/15 px-3 py-2 text-sm text-discord-red">
           <span>{jumpError}</span>
           <button type="button" onClick={() => setJumpError(null)} className="underline">{t('閉じる')}</button>
         </div>
@@ -187,9 +187,9 @@ export function MessageList({ channelId, visible: chatVisible = true }: Props) {
         <div
           key={item.id}
           data-outbox-status={item.status}
-          className="mt-4 flex gap-4 rounded px-4 py-2 opacity-75 hover:bg-discord-hover/30"
+          className="mt-4 flex gap-4 rounded-sm px-4 py-2 opacity-75 hover:bg-discord-hover/30"
         >
-          <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full bg-discord-accent font-bold text-white">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-discord-accent font-bold text-white">
             {(user?.displayName || '?').slice(0, 1).toUpperCase()}
           </div>
           <div className="min-w-0 flex-1">
@@ -201,7 +201,7 @@ export function MessageList({ channelId, visible: chatVisible = true }: Props) {
                 {item.status === 'failed' && t('送信失敗')}
               </span>
             </div>
-            <div className="break-words text-discord-text">
+            <div className="wrap-break-word text-discord-text">
               <MessageContent
                 content={item.content}
                 members={workspaceMembers}

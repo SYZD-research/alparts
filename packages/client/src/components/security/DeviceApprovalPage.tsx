@@ -42,12 +42,12 @@ export function DeviceApprovalPage({ onApproved }: { onApproved: () => void }) {
   }, [onApproved]);
   return (
     <main className="min-h-screen bg-discord-bg p-6 text-discord-text">
-      <div className="mx-auto max-w-xl space-y-6 rounded bg-discord-sidebar p-6">
+      <div className="mx-auto max-w-xl space-y-6 rounded-sm bg-discord-sidebar p-6">
         <h1 className="text-xl font-bold text-white">{t('この端末の承認を待っています')}</h1>
         <p>
           {t('以前から使っている端末で「ログイン中の端末」を開き、この端末を承認してください。表示される確認コードが一致していることを確認してください。')}
         </p>
-        <p className="select-all rounded bg-discord-bg p-3 font-mono text-lg">{fingerprint}</p>
+        <p className="select-all rounded-sm bg-discord-bg p-3 font-mono text-lg">{fingerprint}</p>
         {error && (
           <p role="alert">{t('端末の情報を確認できませんでした。接続を確認してお試しください。')}</p>
         )}

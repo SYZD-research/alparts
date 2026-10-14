@@ -227,7 +227,7 @@ export function AppLayout() {
       {permalinkStatus && (
         <div
           role={permalinkStatus.kind === 'error' ? 'alert' : 'status'}
-          className={`fixed left-1/2 top-14 z-40 flex max-w-xl -translate-x-1/2 items-center gap-3 rounded border px-4 py-2 text-sm shadow-xl ${permalinkStatus.kind === 'error' ? 'border-discord-red bg-discord-sidebar text-discord-red' : 'border-discord-hover bg-discord-sidebar text-discord-text'}`}
+          className={`fixed left-1/2 top-14 z-40 flex max-w-xl -translate-x-1/2 items-center gap-3 rounded-sm border px-4 py-2 text-sm shadow-xl ${permalinkStatus.kind === 'error' ? 'border-discord-red bg-discord-sidebar text-discord-red' : 'border-discord-hover bg-discord-sidebar text-discord-text'}`}
         >
           <span>{permalinkStatus.message}</span>
           {permalinkStatus.kind === 'error' ? (
@@ -301,7 +301,7 @@ export function AppLayout() {
               <div className="flex h-full min-h-0 flex-col bg-discord-sidebar">
                 <div className="flex h-11 shrink-0 items-center justify-between border-b border-discord-hover px-4">
                   <h2 className="text-sm font-bold text-white">{t('メンバー')}</h2>
-                  <button type="button" className="h-10 w-10 rounded text-xl text-discord-muted hover:bg-discord-hover hover:text-white" aria-label={t('メンバー一覧を閉じる')} onClick={() => setMembersOpen(false)}>×</button>
+                  <button type="button" className="h-10 w-10 rounded-sm text-xl text-discord-muted hover:bg-discord-hover hover:text-white" aria-label={t('メンバー一覧を閉じる')} onClick={() => setMembersOpen(false)}>×</button>
                 </div>
                 <div className="min-h-0 flex-1"><UserList /></div>
               </div>
