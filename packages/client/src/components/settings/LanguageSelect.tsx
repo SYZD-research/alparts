@@ -14,7 +14,7 @@ export function LanguageSelect({ className = '' }: { className?: string }) {
         id={id}
         value={preference}
         onChange={(event) => setPreference(event.target.value as LocalePreference)}
-        className="mt-1 block w-full rounded bg-discord-input px-3 py-2 text-sm text-discord-text"
+        className="mt-1 block w-full rounded-sm bg-discord-input px-3 py-2 text-sm text-discord-text"
       >
         <option value="system">{t('システムの設定に合わせる')}</option>
         <option value="ja" lang="ja">{LANGUAGE_NAMES.ja}</option>

@@ -37,7 +37,7 @@ export function ProfileFlagsPanel({ workspaceId }: { workspaceId: string }) {
   return (
     <ul className="space-y-2">
       {flags.map((flag) => (
-        <li key={flag.userId} className="flex items-center justify-between gap-3 rounded bg-discord-bg/50 p-3 text-sm">
+        <li key={flag.userId} className="flex items-center justify-between gap-3 rounded-sm bg-discord-bg/50 p-3 text-sm">
           <div className="min-w-0">
             <p className="truncate font-medium text-white">{flag.displayName}</p>
             <p className={flag.appealStatus === 'pending' ? 'text-discord-yellow' : 'text-discord-muted'}>
@@ -47,7 +47,7 @@ export function ProfileFlagsPanel({ workspaceId }: { workspaceId: string }) {
           <button
             type="button"
             onClick={() => { closeWorkspaceManager(); openMemberProfile(workspaceId, flag.userId); }}
-            className="shrink-0 rounded bg-discord-hover px-3 py-1.5 text-white"
+            className="shrink-0 rounded-sm bg-discord-hover px-3 py-1.5 text-white"
           >
             {t('確認する')}
           </button>

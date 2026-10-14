@@ -161,7 +161,7 @@ export function AttachmentItem({ attachment, message }: Props) {
   if (imagePreviewPending) {
     return (
       <div className="mt-2 max-w-xl" aria-live="polite">
-        <progress value={previewPercentage} max={100} aria-label={t('画像を準備中 {percent}%', { percent: previewPercentage })} className="h-1.5 w-full overflow-hidden rounded accent-discord-accent" />
+        <progress value={previewPercentage} max={100} aria-label={t('画像を準備中 {percent}%', { percent: previewPercentage })} className="h-1.5 w-full overflow-hidden rounded-sm accent-discord-accent" />
       </div>
     );
   }
@@ -175,12 +175,12 @@ export function AttachmentItem({ attachment, message }: Props) {
           aria-haspopup="dialog"
           aria-expanded={expanded}
           onClick={() => setExpanded(true)}
-          className="mt-2 block max-w-full cursor-zoom-in rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-discord-accent"
+          className="mt-2 block max-w-full cursor-zoom-in rounded-sm focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-discord-accent"
         >
           <img
             src={previewUrl}
             alt={filename || t('添付画像')}
-            className="max-h-80 max-w-full rounded object-contain"
+            className="max-h-80 max-w-full rounded-sm object-contain"
             onError={markPreviewUnrenderable}
           />
         </button>
@@ -220,7 +220,7 @@ export function AttachmentItem({ attachment, message }: Props) {
   return (
       <section
         aria-label={t('添付ファイル')}
-        className="mt-2 max-w-xl rounded border border-discord-hover bg-discord-sidebar/70 p-3 text-sm"
+        className="mt-2 max-w-xl rounded-sm border border-discord-hover bg-discord-sidebar/70 p-3 text-sm"
       >
         <div>
           <div className="min-w-0">
@@ -236,7 +236,7 @@ export function AttachmentItem({ attachment, message }: Props) {
         </div>
 
       {dangerous && (
-        <div role="alert" className="mt-2 rounded border border-discord-yellow/50 bg-discord-yellow/10 p-2 text-xs text-discord-yellow">
+        <div role="alert" className="mt-2 rounded-sm border border-discord-yellow/50 bg-discord-yellow/10 p-2 text-xs text-discord-yellow">
           <p className="font-semibold">{t('安全でない可能性があるファイルです')}</p>
           <p className="mt-1">
             {t('信頼できる相手から届いた場合のみ保存してください。')}
@@ -275,7 +275,7 @@ export function AttachmentItem({ attachment, message }: Props) {
             value={percentage}
             max={100}
             aria-label={t('添付ファイル保存進捗 {percent}%', { percent: percentage })}
-            className="h-1.5 w-full overflow-hidden rounded accent-discord-accent"
+            className="h-1.5 w-full overflow-hidden rounded-sm accent-discord-accent"
           />
           <p className="mt-1 text-xs text-discord-muted">
             {t('保存中 {percent}%', { percent: percentage })}
@@ -291,7 +291,7 @@ export function AttachmentItem({ attachment, message }: Props) {
           type="button"
           onClick={() => void startDownload()}
           disabled={!filename || Boolean(filenameError) || downloadState === 'downloading' || (dangerous && !acknowledged)}
-          className="rounded bg-discord-accent px-3 py-1.5 text-xs font-medium text-white hover:bg-discord-accent/80 disabled:cursor-not-allowed disabled:opacity-50"
+          className="rounded-sm bg-discord-accent px-3 py-1.5 text-xs font-medium text-white hover:bg-discord-accent/80 disabled:cursor-not-allowed disabled:opacity-50"
         >
           {downloadState === 'saved' ? t('もう一度保存') : t('ファイルを保存')}
         </button>
@@ -299,7 +299,7 @@ export function AttachmentItem({ attachment, message }: Props) {
           <button
             type="button"
             onClick={() => controllerRef.current?.abort()}
-            className="rounded bg-discord-hover px-3 py-1.5 text-xs text-discord-text hover:bg-discord-red"
+            className="rounded-sm bg-discord-hover px-3 py-1.5 text-xs text-discord-text hover:bg-discord-red"
           >
             {t('キャンセル')}
           </button>
@@ -359,7 +359,7 @@ function ExpandedImage({
       role="dialog"
       aria-modal="true"
       aria-label={t('画像を拡大表示')}
-      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/85 p-4"
+      className="fixed inset-0 z-60 flex items-center justify-center bg-black/85 p-4"
       onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}
     >
       <img
@@ -373,7 +373,7 @@ function ExpandedImage({
         type="button"
         onClick={onClose}
         aria-label={t('閉じる')}
-        className="absolute right-4 top-4 flex h-10 w-10 items-center justify-center rounded-full bg-black/70 text-2xl text-white hover:bg-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
+        className="absolute right-4 top-4 flex h-10 w-10 items-center justify-center rounded-full bg-black/70 text-2xl text-white hover:bg-black focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-white"
       >
         ×
       </button>

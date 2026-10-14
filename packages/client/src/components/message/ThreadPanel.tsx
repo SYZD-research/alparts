@@ -41,13 +41,13 @@ export function ThreadPanel({ channelId, root, replies, onClose }: ThreadPanelPr
                 type="button"
                 onClick={reply}
                 disabled={root.type === 'delete'}
-                className="rounded bg-discord-accent px-3 py-2 text-sm text-white disabled:opacity-40"
+                className="rounded-sm bg-discord-accent px-3 py-2 text-sm text-white disabled:opacity-40"
               >
                 {t('このスレッドに返信')}
               </button>
             </div>
             {replies.length === 0 ? (
-              <p className="rounded bg-discord-input px-3 py-4 text-sm text-discord-muted">{t('このメッセージへの返信はまだありません。')}</p>
+              <p className="rounded-sm bg-discord-input px-3 py-4 text-sm text-discord-muted">{t('このメッセージへの返信はまだありません。')}</p>
             ) : (
               <ol className="space-y-2">
                 {replies.map((message) => (
@@ -65,13 +65,13 @@ export function ThreadPanel({ channelId, root, replies, onClose }: ThreadPanelPr
 function ThreadMessage({ message, label }: { message: Message; label?: string }) {
   const t = useT();
   return (
-    <article className="rounded border border-discord-hover bg-discord-bg/40 px-3 py-2">
+    <article className="rounded-sm border border-discord-hover bg-discord-bg/40 px-3 py-2">
       {label && <p className="mb-1 text-xs font-medium text-discord-accent">{label}</p>}
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <span className="font-medium text-white">{message.author?.displayName || t('不明なユーザー')}</span>
         <time dateTime={message.createdAt} className="text-xs text-discord-muted">{formatMessageTime(message.createdAt)}</time>
       </div>
-      <p className="mt-1 whitespace-pre-wrap break-words text-sm text-discord-text">
+      <p className="mt-1 whitespace-pre-wrap wrap-break-word text-sm text-discord-text">
         {message.type === 'delete' ? t('削除されたメッセージ') : userFacingMessageText(message.content || '') || t('（本文なし）')}
       </p>
     </article>

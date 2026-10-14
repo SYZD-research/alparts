@@ -78,7 +78,7 @@ function MemberItem({ member, status, canDm, onDm, onOpenProfile }: {
   }[status] || 'bg-discord-muted';
 
   return (
-    <div className="group flex items-center gap-3 px-2 py-1.5 rounded hover:bg-discord-hover">
+    <div className="group flex items-center gap-3 px-2 py-1.5 rounded-sm hover:bg-discord-hover">
       <button type="button" onClick={onOpenProfile} className="flex min-w-0 flex-1 items-center gap-3 text-left" aria-label={t('{name}のプロフィールを表示', { name: member.user?.displayName || t('不明なユーザー') })}>
         <div className="relative">
           <UserAvatar displayName={member.user?.displayName || '?'} avatarUrl={member.user?.avatarUrl} hidden={member.profileFlagged} size="sm" />
@@ -96,7 +96,7 @@ function MemberItem({ member, status, canDm, onDm, onOpenProfile }: {
         </div>
       </button>
       {canDm && (
-        <button type="button" onClick={onDm} className="ml-auto shrink-0 rounded px-2 py-1 text-xs text-discord-muted md:opacity-0 hover:bg-discord-bg hover:text-white group-hover:opacity-100 focus:opacity-100" aria-label={t('{name}とDM', { name: member.user.displayName })}>
+        <button type="button" onClick={onDm} className="ml-auto shrink-0 rounded-sm px-2 py-1 text-xs text-discord-muted md:opacity-0 hover:bg-discord-bg hover:text-white group-hover:opacity-100 focus:opacity-100" aria-label={t('{name}とDM', { name: member.user.displayName })}>
           DM
         </button>
       )}

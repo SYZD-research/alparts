@@ -131,19 +131,19 @@ function ConnectionSetup({ info, onCancel }: { info: AlpartsDesktopInfo; onCance
               value={serverUrl}
               onChange={(event) => { setServerUrl(event.target.value); setConfirmed(false); }}
               disabled={saving || info.serverManaged}
-              className="mt-2 w-full rounded bg-discord-input px-3 py-2.5 text-discord-text outline-none focus:ring-2 focus:ring-discord-accent disabled:opacity-60"
+              className="mt-2 w-full rounded-sm bg-discord-input px-3 py-2.5 text-discord-text outline-hidden focus:ring-2 focus:ring-discord-accent disabled:opacity-60"
             />
           </label>
           {changed && (
-            <label className="flex gap-3 rounded border border-discord-red/60 bg-discord-red/10 p-3 text-sm text-discord-text">
+            <label className="flex gap-3 rounded-sm border border-discord-red/60 bg-discord-red/10 p-3 text-sm text-discord-text">
               <input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} className="mt-0.5" />
               <span>{t('接続先を変更すると、現在の接続先についてこの端末に保存した下書きなどが削除されます。')}</span>
             </label>
           )}
           {error && <p role="alert" className="text-sm text-discord-red">{error}</p>}
           <div className="flex justify-end gap-2">
-            {onCancel && <button type="button" onClick={onCancel} disabled={saving} className="rounded px-4 py-2 text-sm text-discord-muted hover:bg-discord-hover">{t('キャンセル')}</button>}
-            <button type="submit" disabled={saving || !serverUrl.trim() || (changed && !confirmed) || info.serverManaged} className="rounded bg-discord-accent px-4 py-2 text-sm font-medium text-white disabled:opacity-40">
+            {onCancel && <button type="button" onClick={onCancel} disabled={saving} className="rounded-sm px-4 py-2 text-sm text-discord-muted hover:bg-discord-hover">{t('キャンセル')}</button>}
+            <button type="submit" disabled={saving || !serverUrl.trim() || (changed && !confirmed) || info.serverManaged} className="rounded-sm bg-discord-accent px-4 py-2 text-sm font-medium text-white disabled:opacity-40">
               {saving ? t('接続しています…') : t('接続する')}
             </button>
           </div>
@@ -212,14 +212,14 @@ function AppUnlock({ user, onUnlocked }: { user: User | null; onUnlocked: () => 
               autoComplete="current-password"
               value={password}
               onChange={(event) => setPassword(event.target.value)}
-              className="mt-2 w-full rounded bg-discord-input px-3 py-2.5 text-discord-text outline-none focus:ring-2 focus:ring-discord-accent"
+              className="mt-2 w-full rounded-sm bg-discord-input px-3 py-2.5 text-discord-text outline-hidden focus:ring-2 focus:ring-discord-accent"
             />
           </label>
           {error && <p role="alert" className="text-sm text-discord-red">{error}</p>}
-          <button type="submit" disabled={submitting} className="w-full rounded bg-discord-accent px-4 py-2.5 font-medium text-white disabled:opacity-40">
+          <button type="submit" disabled={submitting} className="w-full rounded-sm bg-discord-accent px-4 py-2.5 font-medium text-white disabled:opacity-40">
             {submitting ? t('確認しています…') : t('ロックを解除')}
           </button>
-          <button type="button" disabled={submitting} onClick={() => { void returnToLogin(); }} className="w-full rounded px-4 py-2 text-sm text-discord-muted hover:bg-discord-hover disabled:opacity-40">
+          <button type="button" disabled={submitting} onClick={() => { void returnToLogin(); }} className="w-full rounded-sm px-4 py-2 text-sm text-discord-muted hover:bg-discord-hover disabled:opacity-40">
             {t('ログイン画面に戻る')}
           </button>
         </form>
@@ -238,7 +238,7 @@ function FullPageStatus({ message, actionLabel, onAction, alert = false }: {
     <main className="flex h-screen items-center justify-center bg-discord-bg p-6">
       <div role={alert ? 'alert' : 'status'} className="max-w-lg rounded-lg bg-discord-sidebar p-8 text-center text-discord-text shadow-2xl">
         <p>{message}</p>
-        {actionLabel && onAction && <button type="button" onClick={onAction} className="mt-5 rounded bg-discord-accent px-4 py-2 text-sm font-medium text-white">{actionLabel}</button>}
+        {actionLabel && onAction && <button type="button" onClick={onAction} className="mt-5 rounded-sm bg-discord-accent px-4 py-2 text-sm font-medium text-white">{actionLabel}</button>}
       </div>
     </main>
   );

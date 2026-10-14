@@ -40,7 +40,7 @@ export function VoiceCallPanel() {
   useEffect(() => {
     const releasePushToTalk = () => useVoiceStore.getState().setPushToTalkActive(false);
     window.addEventListener('blur', releasePushToTalk);
-    return () => window.removeEventListener('blur', releasePushToTalk);
+    return () => window.removeEventListener('blur-sm', releasePushToTalk);
   }, []);
 
   if (status === 'idle' || !channelId) return null;
@@ -54,11 +54,11 @@ export function VoiceCallPanel() {
         {error && <p role="alert" className="mt-1 text-xs text-discord-red">{error}</p>}
         <div className="mt-2 flex gap-1">
           {status === 'error' && (
-            <button type="button" onClick={() => void join(channelId)} className="flex-1 rounded bg-discord-green px-2 py-1.5 text-xs font-medium text-white">
+            <button type="button" onClick={() => void join(channelId)} className="flex-1 rounded-sm bg-discord-green px-2 py-1.5 text-xs font-medium text-white">
               {t('再試行')}
             </button>
           )}
-          <button type="button" onClick={leave} className="flex-1 rounded bg-discord-hover px-2 py-1.5 text-xs text-discord-text">
+          <button type="button" onClick={leave} className="flex-1 rounded-sm bg-discord-hover px-2 py-1.5 text-xs text-discord-text">
             {status === 'joining' ? t('キャンセル') : t('閉じる')}
           </button>
         </div>
@@ -79,11 +79,11 @@ export function VoiceCallPanel() {
           aria-label={muted ? t('ミュートを解除') : t('ミュート')}
           title={muted ? t('ミュートを解除') : t('ミュート')}
           onClick={() => setMuted(!muted)}
-          className={`rounded px-2 py-1.5 text-sm ${muted ? 'bg-discord-red text-white' : 'bg-discord-hover text-discord-text'}`}
+          className={`rounded-sm px-2 py-1.5 text-sm ${muted ? 'bg-discord-red text-white' : 'bg-discord-hover text-discord-text'}`}
         >
           {muted ? '🔇' : '🎙'}
         </button>
-        <button type="button" onClick={leave} className="rounded bg-discord-red px-2 py-1.5 text-xs font-medium text-white">
+        <button type="button" onClick={leave} className="rounded-sm bg-discord-red px-2 py-1.5 text-xs font-medium text-white">
           {t('切断')}
         </button>
       </div>
@@ -120,25 +120,25 @@ export function VoiceCallPanel() {
           onKeyUp={(event) => {
             if (event.key === ' ' || event.key === 'Enter') setPushToTalkActive(false);
           }}
-          className={`mt-2 w-full rounded px-2 py-2 text-xs font-semibold disabled:opacity-40 ${pushToTalkActive ? 'bg-discord-green text-white' : 'bg-discord-input text-discord-text'}`}
+          className={`mt-2 w-full rounded-sm px-2 py-2 text-xs font-semibold disabled:opacity-40 ${pushToTalkActive ? 'bg-discord-green text-white' : 'bg-discord-input text-discord-text'}`}
         >
           {muted ? t('ミュートを解除してください') : pushToTalkActive ? t('送信中 — 離すと停止') : t('押している間だけ話す')}
         </button>
       )}
 
       <details className="mt-2 text-xs text-discord-muted">
-        <summary className="cursor-pointer rounded px-1 py-1 hover:bg-discord-hover hover:text-white">{t('音声設定')}</summary>
+        <summary className="cursor-pointer rounded-sm px-1 py-1 hover:bg-discord-hover hover:text-white">{t('音声設定')}</summary>
         <div className="mt-2 space-y-2">
           <label className="block">
             {t('話し方')}
-            <select value={mode} onChange={(event) => setMode(event.target.value === 'push-to-talk' ? 'push-to-talk' : 'voice-activity')} className="mt-1 w-full rounded bg-discord-input px-2 py-1.5 text-discord-text">
+            <select value={mode} onChange={(event) => setMode(event.target.value === 'push-to-talk' ? 'push-to-talk' : 'voice-activity')} className="mt-1 w-full rounded-sm bg-discord-input px-2 py-1.5 text-discord-text">
               <option value="voice-activity">{t('音声検出')}</option>
               <option value="push-to-talk">{t('プッシュトゥトーク')}</option>
             </select>
           </label>
           <label className="block">
             {t('マイク')}
-            <select value={selectedInputId} onChange={(event) => void setInputDevice(event.target.value)} className="mt-1 w-full rounded bg-discord-input px-2 py-1.5 text-discord-text">
+            <select value={selectedInputId} onChange={(event) => void setInputDevice(event.target.value)} className="mt-1 w-full rounded-sm bg-discord-input px-2 py-1.5 text-discord-text">
               <option value="">{t('システム既定')}</option>
               {inputDevices.filter((device) => device.deviceId !== 'default').map((device) => (
                 <option key={device.deviceId} value={device.deviceId}>{device.label}</option>
@@ -148,7 +148,7 @@ export function VoiceCallPanel() {
           {supportsAudioOutputSelection() && (
             <label className="block">
               {t('スピーカー')}
-              <select value={selectedOutputId} onChange={(event) => setOutputDevice(event.target.value)} className="mt-1 w-full rounded bg-discord-input px-2 py-1.5 text-discord-text">
+              <select value={selectedOutputId} onChange={(event) => setOutputDevice(event.target.value)} className="mt-1 w-full rounded-sm bg-discord-input px-2 py-1.5 text-discord-text">
                 <option value="">{t('システム既定')}</option>
                 {outputDevices.filter((device) => device.deviceId !== 'default').map((device) => (
                   <option key={device.deviceId} value={device.deviceId}>{device.label}</option>

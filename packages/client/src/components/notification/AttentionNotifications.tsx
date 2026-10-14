@@ -52,7 +52,7 @@ export function AttentionNotifications() {
                     ? t('{count}件の返信があります', { count: groupedItems.length })
                     : t('{count}件のメンションがあります', { count: groupedItems.length })}
             </button>
-            <button type="button" onClick={() => dismissKind(kind)} aria-label={t('通知を閉じる')} className="rounded px-1 text-discord-muted hover:bg-discord-hover hover:text-white">×</button>
+            <button type="button" onClick={() => dismissKind(kind)} aria-label={t('通知を閉じる')} className="rounded-sm px-1 text-discord-muted hover:bg-discord-hover hover:text-white">×</button>
           </div>
         </div>
       ))}
