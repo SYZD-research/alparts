@@ -6639,9 +6639,9 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 --------------------------------------------------------------------------------
 
-drizzle-orm 0.45.3
+drizzle-orm 0.45.4
 License: Apache-2.0
-Package: pkg:npm/drizzle-orm@0.45.3
+Package: pkg:npm/drizzle-orm@0.45.4
 
 The published package does not include a license file.
 --------------------------------------------------------------------------------
@@ -6936,9 +6936,9 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 --------------------------------------------------------------------------------
 
-engine.io-client 6.6.6
+engine.io-client 6.6.7
 License: MIT
-Package: pkg:npm/engine.io-client@6.6.6
+Package: pkg:npm/engine.io-client@6.6.7
 
 (The MIT License)
 
@@ -7999,9 +7999,9 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 --------------------------------------------------------------------------------
 
-idb 8.0.3
+idb 8.0.4
 License: ISC
-Package: pkg:npm/idb@8.0.3
+Package: pkg:npm/idb@8.0.4
 
 ISC License (ISC)
 Copyright (c) 2016, Jake Archibald <jaffathecake@gmail.com>
@@ -12773,9 +12773,9 @@ will be liable to anyone for any damages related to this
 software or this license, under any kind of legal claim.***
 --------------------------------------------------------------------------------
 
-zod 3.25.76
+zod 4.6.7
 License: MIT
-Package: pkg:npm/zod@3.25.76
+Package: pkg:npm/zod@4.6.7
 
 MIT License
 
