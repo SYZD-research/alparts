@@ -129,14 +129,14 @@ export function InvitationManager({
             onChange={(event) => setToken(event.target.value)}
             autoComplete="off"
             spellCheck={false}
-            className="mt-1 w-full rounded bg-discord-bg px-3 py-2 font-mono text-sm text-white"
+            className="mt-1 w-full rounded-sm bg-discord-bg px-3 py-2 font-mono text-sm text-white"
             aria-describedby="invitation-token-help"
           />
         </label>
         <p id="invitation-token-help" className="text-xs text-discord-muted">{t('メールアドレスが指定された招待は、そのアカウントだけが利用できます。')}</p>
         {acceptError && <p role="alert" className="text-sm text-discord-red">{acceptError}</p>}
         {acceptResult && <p role="status" className="text-sm text-green-400">{acceptResult}</p>}
-        <button type="submit" disabled={accepting} className="rounded bg-discord-accent px-4 py-2 text-sm font-medium text-white disabled:opacity-50">
+        <button type="submit" disabled={accepting} className="rounded-sm bg-discord-accent px-4 py-2 text-sm font-medium text-white disabled:opacity-50">
           {accepting ? t('受諾中…') : t('招待を受諾')}
         </button>
       </form>
@@ -194,7 +194,7 @@ export function InvitationManager({
 
   return (
     <div className="space-y-6">
-      <form onSubmit={submitCreate} className="space-y-4 rounded bg-discord-bg/40 p-4">
+      <form onSubmit={submitCreate} className="space-y-4 rounded-sm bg-discord-bg/40 p-4">
         <div>
           <h3 className="font-semibold text-white">{t('招待を作成')}</h3>
           <p className="mt-1 text-xs text-discord-muted">{t('メールアドレスを空欄にすると、コードを受け取った人が利用できます。')}</p>
@@ -202,40 +202,40 @@ export function InvitationManager({
         <div className="grid gap-3 md:grid-cols-3">
           <label className="text-sm text-discord-text">
             {t('メールアドレス（任意）')}
-            <input type="email" value={email} onChange={(event) => setEmail(event.target.value)} className="mt-1 w-full rounded bg-discord-bg px-3 py-2 text-white" maxLength={254} />
+            <input type="email" value={email} onChange={(event) => setEmail(event.target.value)} className="mt-1 w-full rounded-sm bg-discord-bg px-3 py-2 text-white" maxLength={254} />
           </label>
           {canChooseRole ? (
             <label className="text-sm text-discord-text">
               {t('付与ロール')}
-              <select value={roleId} onChange={(event) => setRoleId(event.target.value)} className="mt-1 w-full rounded bg-discord-bg px-3 py-2 text-white" required>
+              <select value={roleId} onChange={(event) => setRoleId(event.target.value)} className="mt-1 w-full rounded-sm bg-discord-bg px-3 py-2 text-white" required>
                 {availableRoles.map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}
               </select>
             </label>
           ) : (
             <div className="text-sm text-discord-text">
               {t('付与ロール')}
-              <div className="mt-1 rounded bg-discord-bg px-3 py-2 text-discord-muted">{t('Member（既定）')}</div>
+              <div className="mt-1 rounded-sm bg-discord-bg px-3 py-2 text-discord-muted">{t('Member（既定）')}</div>
             </div>
           )}
           <label className="text-sm text-discord-text">
             {t('有効期限')}
-            <select value={expiresInSeconds} onChange={(event) => setExpiresInSeconds(Number(event.target.value))} className="mt-1 w-full rounded bg-discord-bg px-3 py-2 text-white">
+            <select value={expiresInSeconds} onChange={(event) => setExpiresInSeconds(Number(event.target.value))} className="mt-1 w-full rounded-sm bg-discord-bg px-3 py-2 text-white">
               {expirationOptions.map((option) => <option key={option.value} value={option.value}>{t(option.label)}</option>)}
             </select>
           </label>
         </div>
-        <button type="submit" disabled={saving || canChooseRole && !roleId} className="rounded bg-discord-accent px-4 py-2 text-sm font-medium text-white disabled:opacity-50">
+        <button type="submit" disabled={saving || canChooseRole && !roleId} className="rounded-sm bg-discord-accent px-4 py-2 text-sm font-medium text-white disabled:opacity-50">
           {saving ? t('作成中…') : t('招待を作成')}
         </button>
       </form>
 
       {createdToken && (
-        <section role="status" className="rounded border border-yellow-500/60 bg-yellow-500/10 p-4">
+        <section role="status" className="rounded-sm border border-yellow-500/60 bg-yellow-500/10 p-4">
           <h3 className="font-semibold text-yellow-200">{t('今すぐコードを保存してください')}</h3>
           <p className="mt-1 text-sm text-yellow-100">{t('このコードは作成直後のこの画面でだけ表示されます。閉じた後や一覧からの再表示はできません。')}</p>
           <div className="mt-3 flex gap-2">
-            <input ref={tokenInputRef} readOnly value={createdToken} onFocus={(event) => event.currentTarget.select()} aria-label={t('作成された招待コード')} className="min-w-0 flex-1 rounded bg-discord-bg px-3 py-2 font-mono text-sm text-white" />
-            <button type="button" onClick={() => void copyCreatedToken()} className="rounded bg-discord-accent px-3 py-2 text-sm text-white">{copied ? t('コピー済み') : t('コピー')}</button>
+            <input ref={tokenInputRef} readOnly value={createdToken} onFocus={(event) => event.currentTarget.select()} aria-label={t('作成された招待コード')} className="min-w-0 flex-1 rounded-sm bg-discord-bg px-3 py-2 font-mono text-sm text-white" />
+            <button type="button" onClick={() => void copyCreatedToken()} className="rounded-sm bg-discord-accent px-3 py-2 text-sm text-white">{copied ? t('コピー済み') : t('コピー')}</button>
           </div>
           <button type="button" onClick={() => { setCreatedToken(null); setCopied(false); }} className="mt-3 text-sm text-discord-muted underline hover:text-white">{t('保存済みとして非表示')}</button>
         </section>
@@ -246,7 +246,7 @@ export function InvitationManager({
       <section aria-labelledby="invitation-list-title">
         <div className="flex items-center justify-between gap-3">
           <h3 id="invitation-list-title" className="font-semibold text-white">{t('招待一覧')}</h3>
-          <button type="button" onClick={() => void loadInvitations()} disabled={loading} className="rounded px-3 py-1 text-sm text-discord-muted hover:bg-discord-hover hover:text-white disabled:opacity-50">{t('再読み込み')}</button>
+          <button type="button" onClick={() => void loadInvitations()} disabled={loading} className="rounded-sm px-3 py-1 text-sm text-discord-muted hover:bg-discord-hover hover:text-white disabled:opacity-50">{t('再読み込み')}</button>
         </div>
         {loading && <p role="status" className="mt-3 text-sm text-discord-muted">{t('読み込み中…')}</p>}
         {loadError && <p role="alert" className="mt-3 text-sm text-discord-red">{loadError}</p>}
@@ -255,21 +255,21 @@ export function InvitationManager({
           {invitations.map((invitation) => {
             const status = invitationStatusAt(invitation, Date.now());
             return (
-              <li key={invitation.id} className="rounded bg-discord-bg/50 p-3 text-sm">
+              <li key={invitation.id} className="rounded-sm bg-discord-bg/50 p-3 text-sm">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
                     <p className="font-medium text-white">{invitation.email || t('メールアドレス指定なし')} · {invitation.role?.name || t('削除済みロール')}</p>
                     <p className="mt-1 text-xs text-discord-muted">{t('状態: {status} / 期限: {expires}', { status: t(statusLabels[status]), expires: formatDateTime(invitation.expiresAt) })}</p>
                   </div>
                   {status === 'active' && pendingRevokeId !== invitation.id && (
-                    <button type="button" onClick={() => setPendingRevokeId(invitation.id)} className="rounded px-3 py-1 text-discord-red hover:bg-discord-red/10">{t('無効にする')}</button>
+                    <button type="button" onClick={() => setPendingRevokeId(invitation.id)} className="rounded-sm px-3 py-1 text-discord-red hover:bg-discord-red/10">{t('無効にする')}</button>
                   )}
                 </div>
                 {pendingRevokeId === invitation.id && (
-                  <div role="group" aria-label={t('招待を無効にする確認')} className="mt-3 flex flex-wrap items-center gap-2 rounded border border-discord-red/40 p-2">
+                  <div role="group" aria-label={t('招待を無効にする確認')} className="mt-3 flex flex-wrap items-center gap-2 rounded-sm border border-discord-red/40 p-2">
                     <span className="text-discord-text">{t('このコードを即時無効にしますか？')}</span>
-                    <button autoFocus type="button" onClick={() => void revoke(invitation.id)} disabled={saving} className="rounded bg-discord-red px-3 py-1 text-white disabled:opacity-50">{t('無効にする')}</button>
-                    <button type="button" onClick={() => setPendingRevokeId(null)} className="rounded px-3 py-1 text-discord-muted hover:bg-discord-hover hover:text-white">{t('キャンセル')}</button>
+                    <button autoFocus type="button" onClick={() => void revoke(invitation.id)} disabled={saving} className="rounded-sm bg-discord-red px-3 py-1 text-white disabled:opacity-50">{t('無効にする')}</button>
+                    <button type="button" onClick={() => setPendingRevokeId(null)} className="rounded-sm px-3 py-1 text-discord-muted hover:bg-discord-hover hover:text-white">{t('キャンセル')}</button>
                   </div>
                 )}
               </li>

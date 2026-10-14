@@ -85,7 +85,7 @@ export function ResizablePane({
   };
 
   return (
-    <div className="relative flex min-w-0 flex-shrink-0" style={{ width }}>
+    <div className="relative flex min-w-0 shrink-0" style={{ width }}>
       <div className="min-w-0 flex-1">{children}</div>
       <div
         role="separator"
@@ -99,7 +99,7 @@ export function ResizablePane({
         onKeyDown={resizeWithKeyboard}
         onDoubleClick={() => setWidth(clampPaneWidth(defaultWidth, minWidth, maxWidth))}
         title={t('ドラッグして幅を変更（ダブルクリックで元に戻す）')}
-        className={`group absolute inset-y-0 z-30 w-2 cursor-col-resize touch-none outline-none ${resizeEdge === 'right' ? '-right-1' : '-left-1'}`}
+        className={`group absolute inset-y-0 z-30 w-2 cursor-col-resize touch-none outline-hidden ${resizeEdge === 'right' ? '-right-1' : '-left-1'}`}
       >
         <span className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-transparent transition-colors group-hover:bg-discord-accent group-focus-visible:bg-discord-accent" />
       </div>

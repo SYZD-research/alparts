@@ -312,27 +312,27 @@ export function PermissionOverrideManager({ workspaceId, channels, categories, m
           <p className="mt-1 text-sm text-discord-muted">{t('許可・拒否はワークスペースロールの上にカテゴリー、チャンネルの順で適用され、同じ階層では拒否が優先されます。')}</p>
         </div>
 
-        {error && <p role="alert" className="rounded bg-discord-red/15 p-3 text-sm text-discord-red">{error}</p>}
-        {notice && <p role="status" className="rounded bg-discord-green/15 p-3 text-sm text-discord-green">{notice}</p>}
+        {error && <p role="alert" className="rounded-sm bg-discord-red/15 p-3 text-sm text-discord-red">{error}</p>}
+        {notice && <p role="status" className="rounded-sm bg-discord-green/15 p-3 text-sm text-discord-green">{notice}</p>}
 
         <div className="grid gap-3 md:grid-cols-3">
           <label className="text-sm text-discord-text">{t('対象の種類')}
             <select
               value={target}
               onChange={(event) => { setTarget(event.target.value as PermissionOverrideTarget); setTargetId(''); }}
-              className="mt-1 w-full rounded bg-discord-input px-3 py-2"
+              className="mt-1 w-full rounded-sm bg-discord-input px-3 py-2"
             >
               <option value="channel">{t('チャンネル|single')}</option>
               <option value="category">{t('カテゴリー')}</option>
             </select>
           </label>
           <label className="text-sm text-discord-text">{t('対象')}
-            <select value={targetId} onChange={(event) => setTargetId(event.target.value)} className="mt-1 w-full rounded bg-discord-input px-3 py-2">
+            <select value={targetId} onChange={(event) => setTargetId(event.target.value)} className="mt-1 w-full rounded-sm bg-discord-input px-3 py-2">
               {targetOptions.map((option) => <option key={option.id} value={option.id}>{option.name}</option>)}
             </select>
           </label>
           <label className="text-sm text-discord-text">{t('ロール|single')}
-            <select value={selectedRoleId} onChange={(event) => setSelectedRoleId(event.target.value)} className="mt-1 w-full rounded bg-discord-input px-3 py-2">
+            <select value={selectedRoleId} onChange={(event) => setSelectedRoleId(event.target.value)} className="mt-1 w-full rounded-sm bg-discord-input px-3 py-2">
               {selectableRoles.map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}
             </select>
           </label>
@@ -343,24 +343,24 @@ export function PermissionOverrideManager({ workspaceId, channels, categories, m
         )}
 
         {!targetId || !selectedRole ? (
-          <p role="status" className="rounded bg-discord-bg p-3 text-sm text-discord-muted">{t('管理できる対象またはロールがありません。')}</p>
+          <p role="status" className="rounded-sm bg-discord-bg p-3 text-sm text-discord-muted">{t('管理できる対象またはロールがありません。')}</p>
         ) : loading ? (
           <p role="status" className="text-sm text-discord-muted">{t('設定を読み込み中…')}</p>
         ) : (
           <>
-            <fieldset className="rounded border border-discord-hover p-4">
+            <fieldset className="rounded-sm border border-discord-hover p-4">
               <legend className="px-1 text-sm text-discord-text">{t('各権限の設定')}</legend>
               <div className="grid gap-3 md:grid-cols-2">
                 {channelScopedPermissions.map((permission) => {
                   const state = overridePermissionState(allowMask, denyMask, permission.value);
                   return (
-                    <label key={permission.name} className="flex items-center justify-between gap-3 rounded bg-discord-bg/60 px-3 py-2 text-sm text-discord-text">
+                    <label key={permission.name} className="flex items-center justify-between gap-3 rounded-sm bg-discord-bg/60 px-3 py-2 text-sm text-discord-text">
                       <span>{permissionLabel(permission.name)}</span>
                       <select
                         aria-label={t('{name}の設定', { name: permissionLabel(permission.name) })}
                         value={state}
                         onChange={(event) => updatePermission(permission.value, event.target.value as OverridePermissionState)}
-                        className="rounded bg-discord-input px-2 py-1 text-xs"
+                        className="rounded-sm bg-discord-input px-2 py-1 text-xs"
                       >
                         <option value="inherit">{t('継承')}</option>
                         <option value="allow">{t('許可')}</option>
@@ -383,14 +383,14 @@ export function PermissionOverrideManager({ workspaceId, channels, categories, m
                     type="button"
                     onClick={() => void previewAction({ operation: 'delete', roleId: selectedRole.id })}
                     disabled={busy}
-                    className="rounded px-3 py-2 text-sm text-discord-red hover:bg-discord-red/10 disabled:opacity-50"
+                    className="rounded-sm px-3 py-2 text-sm text-discord-red hover:bg-discord-red/10 disabled:opacity-50"
                   >{t('削除の影響を確認')}</button>
                 )}
                 <button
                   type="button"
                   onClick={() => void previewAction({ operation: 'upsert', roleId: selectedRole.id, allowMask, denyMask })}
                   disabled={busy || hasConflict || unchanged}
-                  className="rounded bg-discord-accent px-4 py-2 text-sm text-white disabled:opacity-50"
+                  className="rounded-sm bg-discord-accent px-4 py-2 text-sm text-white disabled:opacity-50"
                 >{busy ? t('確認中…') : t('変更の影響を確認')}</button>
               </div>
             </div>
@@ -408,7 +408,7 @@ export function PermissionOverrideManager({ workspaceId, channels, categories, m
                     <button
                       type="button"
                       onClick={() => setSelectedRoleId(override.roleId)}
-                      className="flex w-full items-center justify-between rounded bg-discord-bg/60 px-3 py-2 text-left text-xs text-discord-text hover:bg-discord-hover"
+                      className="flex w-full items-center justify-between rounded-sm bg-discord-bg/60 px-3 py-2 text-left text-xs text-discord-text hover:bg-discord-hover"
                     >
                       <span>{role?.name || t('不明なロール')}</span>
                       <span className="text-discord-muted">{t('許可 {allowed} / 拒否 {denied}', { allowed: bitCount(override.allowMask), denied: bitCount(override.denyMask) })}</span>
@@ -460,7 +460,7 @@ function OverrideConfirmation({ pending, members, channels, busy, notice, onConf
     .map((permission) => permissionLabel(permission.name)).join(t('、')) || t('なし');
 
   return (
-    <section role="alertdialog" aria-modal="true" aria-labelledby="override-preview-title" onKeyDown={onKeyDown} className="space-y-4 rounded border border-yellow-500/50 bg-discord-bg/50 p-5">
+    <section role="alertdialog" aria-modal="true" aria-labelledby="override-preview-title" onKeyDown={onKeyDown} className="space-y-4 rounded-sm border border-yellow-500/50 bg-discord-bg/50 p-5">
       <div>
         <p className="text-xs font-bold uppercase tracking-wide text-yellow-300">{t('権限設定の確認')}</p>
         <h3 id="override-preview-title" className="mt-1 text-lg font-semibold text-white">
@@ -470,7 +470,7 @@ function OverrideConfirmation({ pending, members, channels, busy, notice, onConf
         </h3>
         <p className="mt-1 text-sm text-discord-muted">{t('保存時に他の管理者の変更と競合した場合は、最新の状態を確認してからやり直します。')}</p>
       </div>
-      {notice && <p role="alert" className="rounded bg-yellow-500/10 p-3 text-sm text-yellow-200">{notice}</p>}
+      {notice && <p role="alert" className="rounded-sm bg-yellow-500/10 p-3 text-sm text-yellow-200">{notice}</p>}
       <dl className="grid gap-2 text-sm sm:grid-cols-4">
         <PreviewMetric label={t('影響を受けるチャンネル')} value={summary.affectedChannels} />
         <PreviewMetric label={t('閲覧できなくなる人')} value={summary.losingUsers} danger={summary.losingUsers > 0} />
@@ -478,12 +478,12 @@ function OverrideConfirmation({ pending, members, channels, busy, notice, onConf
         <PreviewMetric label={t('一時的に送信できない可能性があるチャンネル')} value={summary.rotationChannels} danger={summary.rotationChannels > 0} />
       </dl>
       <div className="grid gap-3 text-xs md:grid-cols-2">
-        <div className="rounded bg-discord-sidebar p-3 text-discord-muted">
+        <div className="rounded-sm bg-discord-sidebar p-3 text-discord-muted">
           <p className="font-medium text-white">{t('変更前')}</p>
           <p className="mt-2">{t('許可: {permissions}', { permissions: namesForMask(before?.allowMask || 0) })}</p>
           <p className="mt-1">{t('拒否: {permissions}', { permissions: namesForMask(before?.denyMask || 0) })}</p>
         </div>
-        <div className="rounded bg-discord-sidebar p-3 text-discord-muted">
+        <div className="rounded-sm bg-discord-sidebar p-3 text-discord-muted">
           <p className="font-medium text-white">{t('変更後')}</p>
           <p className="mt-2">{t('許可: {permissions}', { permissions: namesForMask(after?.allowMask || 0) })}</p>
           <p className="mt-1">{t('拒否: {permissions}', { permissions: namesForMask(after?.denyMask || 0) })}</p>
@@ -493,7 +493,7 @@ function OverrideConfirmation({ pending, members, channels, busy, notice, onConf
       {pending.preview.roomEffects.length > 0 && (
         <ul className="max-h-52 space-y-2 overflow-y-auto" aria-label={t('チャンネルごとの閲覧者への影響')}>
           {pending.preview.roomEffects.map((effect) => (
-            <li key={effect.channelId} className="rounded bg-discord-sidebar p-3 text-xs text-discord-muted">
+            <li key={effect.channelId} className="rounded-sm bg-discord-sidebar p-3 text-xs text-discord-muted">
               <p className="font-medium text-white">{channels.find((channel) => channel.id === effect.channelId)?.name || t('表示できないチャンネル')}</p>
               <p className="mt-1 text-discord-red">{t('閲覧できなくなる人: {members}', { members: memberNames(effect.lostUserIds, members) })}</p>
               <p className="mt-1 text-green-300">{t('閲覧できるようになる人: {members}', { members: memberNames(effect.gainedUserIds, members) })}</p>
@@ -503,8 +503,8 @@ function OverrideConfirmation({ pending, members, channels, busy, notice, onConf
         </ul>
       )}
       <div className="flex justify-end gap-2">
-        <button autoFocus type="button" onClick={onCancel} disabled={busy} className="rounded px-4 py-2 text-sm text-discord-muted hover:bg-discord-hover disabled:opacity-50">{t('キャンセル')}</button>
-        <button type="button" onClick={onConfirm} disabled={busy} className={`rounded px-4 py-2 text-sm text-white disabled:opacity-50 ${pending.input.operation === 'delete' || summary.losingUsers > 0 ? 'bg-discord-red' : 'bg-discord-accent'}`}>
+        <button autoFocus type="button" onClick={onCancel} disabled={busy} className="rounded-sm px-4 py-2 text-sm text-discord-muted hover:bg-discord-hover disabled:opacity-50">{t('キャンセル')}</button>
+        <button type="button" onClick={onConfirm} disabled={busy} className={`rounded-sm px-4 py-2 text-sm text-white disabled:opacity-50 ${pending.input.operation === 'delete' || summary.losingUsers > 0 ? 'bg-discord-red' : 'bg-discord-accent'}`}>
           {busy ? t('実行中…') : t('この内容で保存')}
         </button>
       </div>
@@ -536,12 +536,12 @@ function EffectiveChannelPermissions({ channels, members, channelId, userId, eva
       </div>
       <div className="grid gap-3 md:grid-cols-2">
         <label className="text-sm text-discord-text">{t('チャンネル|single')}
-          <select value={channelId} onChange={(event) => onChannelChange(event.target.value)} className="mt-1 w-full rounded bg-discord-input px-3 py-2">
+          <select value={channelId} onChange={(event) => onChannelChange(event.target.value)} className="mt-1 w-full rounded-sm bg-discord-input px-3 py-2">
             {channels.map((channel) => <option key={channel.id} value={channel.id}>{channel.name}</option>)}
           </select>
         </label>
         <label className="text-sm text-discord-text">{t('メンバー|single')}
-          <select value={userId} onChange={(event) => onUserChange(event.target.value)} className="mt-1 w-full rounded bg-discord-input px-3 py-2">
+          <select value={userId} onChange={(event) => onUserChange(event.target.value)} className="mt-1 w-full rounded-sm bg-discord-input px-3 py-2">
             {members.map((member) => <option key={member.userId} value={member.userId}>{member.user.displayName}</option>)}
           </select>
         </label>
@@ -550,14 +550,14 @@ function EffectiveChannelPermissions({ channels, members, channelId, userId, eva
       {error && <p role="alert" className="text-sm text-discord-red">{error}</p>}
       {evaluation && !loading && (
         <div className="space-y-3">
-          <p className={`rounded p-3 text-sm ${evaluation.visible ? 'bg-green-500/10 text-green-300' : 'bg-discord-red/10 text-discord-red'}`}>
+          <p className={`rounded-sm p-3 text-sm ${evaluation.visible ? 'bg-green-500/10 text-green-300' : 'bg-discord-red/10 text-discord-red'}`}>
             {evaluation.visible ? t('閲覧可能') : t('閲覧不可')}
             {evaluation.privateMembershipRequired && !evaluation.privateMember ? t('（非公開メンバーではありません）') : ''}
             {evaluation.ownerProtected ? t('（所有者）') : ''}
           </p>
           <ul className="grid gap-2 md:grid-cols-2">
             {evaluation.permissionDetails.map((detail) => (
-              <li key={detail.permission} className={`rounded border p-3 text-xs ${detail.allowed ? 'border-green-500/30 bg-green-500/5' : 'border-discord-hover bg-discord-bg/30'}`}>
+              <li key={detail.permission} className={`rounded-sm border p-3 text-xs ${detail.allowed ? 'border-green-500/30 bg-green-500/5' : 'border-discord-hover bg-discord-bg/30'}`}>
                 <p className={detail.allowed ? 'font-medium text-green-300' : 'text-discord-muted'}>{detail.allowed ? '✓' : '—'} {permissionLabel(detail.permission)}</p>
                 <ul className="mt-1 space-y-0.5 text-discord-muted">
                   {detail.reasons.length > 0
@@ -575,7 +575,7 @@ function EffectiveChannelPermissions({ channels, members, channelId, userId, eva
 
 function PreviewMetric({ label, value, danger = false }: { label: string; value: number; danger?: boolean }) {
   return (
-    <div className="rounded bg-discord-sidebar p-3">
+    <div className="rounded-sm bg-discord-sidebar p-3">
       <dt className="text-xs text-discord-muted">{label}</dt>
       <dd className={`mt-1 font-semibold ${danger ? 'text-discord-red' : 'text-white'}`}>{value}</dd>
     </div>
