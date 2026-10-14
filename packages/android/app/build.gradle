@@ -1,25 +1,24 @@
 plugins { id 'com.android.application' }
 
 android {
-    namespace 'app.alparts.android'
-    compileSdk 35
+    namespace = 'app.alparts.android'
+    compileSdk = 35
     defaultConfig {
-        applicationId 'app.alparts.android'
-        minSdk 28
-        targetSdk 35
-        versionCode 1
-        versionName '0.2.0'
-        testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
+        applicationId = 'app.alparts.android'
+        minSdk = 28
+        targetSdk = 35
+        versionCode = 1
+        versionName = '0.2.0'
+        testInstrumentationRunner = 'androidx.test.runner.AndroidJUnitRunner'
     }
-    buildFeatures { buildConfig true }
-    sourceSets.main.res.srcDir layout.buildDirectory.dir('generated/transportPins/res')
+    buildFeatures { buildConfig = true }
     buildTypes {
-        debug { applicationIdSuffix '.debug' }
-        release { minifyEnabled false }
+        debug { applicationIdSuffix = '.debug' }
+        release { minifyEnabled = false }
     }
     compileOptions {
-        sourceCompatibility JavaVersion.VERSION_17
-        targetCompatibility JavaVersion.VERSION_17
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
     }
     testOptions.unitTests.all {
         // Android's HTTP stack sends Origin. Match it in the host JDK, which
@@ -45,27 +44,33 @@ tasks.register('bundleWeb', Sync) {
 def pinRegistry = rootProject.file(providers.gradleProperty('alpartsTransportPinsFile')
     .orElse(providers.environmentVariable('ALPARTS_TRANSPORT_PINS_FILE'))
     .getOrElse('../desktop/transport-pins.json'))
-def readTransportPins = {
-    def config = new groovy.json.JsonSlurper().parse(pinRegistry)
-    if (config.version != 1 || !(config.hosts instanceof Map) || config.hosts.size() > 32) {
-        throw new GradleException('Invalid transport pin registry')
-    }
-    config.hosts.each { host, pins ->
-        if (!(host ==~ /(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*/)
-                || !(pins instanceof List) || pins.size() < 2 || pins.size() > 8 || pins.toSet().size() != pins.size()
-                || pins.any { !(it instanceof String) || !(it ==~ /[A-Za-z0-9+\/]{43}=/)
-                    || it.decodeBase64().encodeBase64().toString() != it }) {
-            throw new GradleException('Each host requires distinct current and backup SHA-256 SPKI pins')
+abstract class GenerateTransportPins extends DefaultTask {
+    @InputFile
+    abstract RegularFileProperty getRegistry()
+
+    @OutputDirectory
+    abstract DirectoryProperty getOutputDirectory()
+
+    static Map readPins(File registry) {
+        def config = new groovy.json.JsonSlurper().parse(registry)
+        if (config.version != 1 || !(config.hosts instanceof Map) || config.hosts.size() > 32) {
+            throw new GradleException('Invalid transport pin registry')
         }
+        config.hosts.each { host, pins ->
+            if (!(host ==~ /(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*/)
+                    || !(pins instanceof List) || pins.size() < 2 || pins.size() > 8 || pins.toSet().size() != pins.size()
+                    || pins.any { !(it instanceof String) || !(it ==~ /[A-Za-z0-9+\/]{43}=/)
+                        || it.decodeBase64().encodeBase64().toString() != it }) {
+                throw new GradleException('Each host requires distinct current and backup SHA-256 SPKI pins')
+            }
+        }
+        config.hosts
     }
-    config.hosts
-}
-tasks.register('generateTransportPins') {
-    inputs.file pinRegistry
-    outputs.dir layout.buildDirectory.dir('generated/transportPins/res')
-    doLast {
-        def hosts = readTransportPins()
-        def output = layout.buildDirectory.dir('generated/transportPins/res').get().asFile
+
+    @TaskAction
+    void generate() {
+        def hosts = readPins(registry.get().asFile)
+        def output = outputDirectory.get().asFile
         new File(output, 'xml').mkdirs()
         new File(output, 'values').mkdirs()
         def domains = hosts.collect { host, pins ->
@@ -80,10 +85,24 @@ tasks.register('generateTransportPins') {
             hosts.keySet().collect { '<item>' + it + '</item>' }.join('') + '</string-array></resources>\n'
     }
 }
-tasks.register('verifyReleaseTransportPins') {
-    doLast { if (readTransportPins().isEmpty()) throw new GradleException('Configure transport-pins.json before a release build') }
+// AGP 9 no longer accepts a build-directory provider as a source directory;
+// generated resources are registered per variant through the Sources API.
+androidComponents {
+    onVariants(selector().all()) { variant ->
+        def generate = tasks.register("generate${variant.name.capitalize()}TransportPins", GenerateTransportPins) {
+            registry = pinRegistry
+        }
+        variant.sources.res.addGeneratedSourceDirectory(generate) { it.outputDirectory }
+    }
 }
-tasks.named('preBuild').configure { dependsOn 'bundleWeb', 'generateTransportPins' }
+tasks.register('verifyReleaseTransportPins') {
+    doLast {
+        if (GenerateTransportPins.readPins(pinRegistry).isEmpty()) {
+            throw new GradleException('Configure transport-pins.json before a release build')
+        }
+    }
+}
+tasks.named('preBuild').configure { dependsOn 'bundleWeb' }
 tasks.configureEach { if (name == 'preReleaseBuild') dependsOn 'verifyReleaseTransportPins' }
 
 tasks.register('runtimeInventory') {

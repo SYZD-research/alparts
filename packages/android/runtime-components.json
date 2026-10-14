@@ -73,19 +73,11 @@
     },
     {
         "type": "library",
-        "bom-ref": "pkg:maven/org.jetbrains.kotlin/kotlin-stdlib-common@1.7.10",
-        "group": "org.jetbrains.kotlin",
-        "name": "kotlin-stdlib-common",
-        "version": "1.7.10",
-        "purl": "pkg:maven/org.jetbrains.kotlin/kotlin-stdlib-common@1.7.10"
-    },
-    {
-        "type": "library",
-        "bom-ref": "pkg:maven/org.jetbrains.kotlin/kotlin-stdlib@1.7.10",
+        "bom-ref": "pkg:maven/org.jetbrains.kotlin/kotlin-stdlib@2.2.10",
         "group": "org.jetbrains.kotlin",
         "name": "kotlin-stdlib",
-        "version": "1.7.10",
-        "purl": "pkg:maven/org.jetbrains.kotlin/kotlin-stdlib@1.7.10"
+        "version": "2.2.10",
+        "purl": "pkg:maven/org.jetbrains.kotlin/kotlin-stdlib@2.2.10"
     },
     {
         "type": "library",
