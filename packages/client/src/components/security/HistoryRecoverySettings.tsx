@@ -80,7 +80,7 @@ export function HistoryRecoverySettings({
         </p>
       )}
       {passkeyAvailable && (
-        <button disabled={busy} className="rounded bg-discord-accent px-3 py-2 text-white"
+        <button disabled={busy} className="rounded-sm bg-discord-accent px-3 py-2 text-white"
           onClick={() => { void run(async () => {
             const count = await restoreHistory();
             refreshRestoredHistory();
@@ -94,7 +94,7 @@ export function HistoryRecoverySettings({
           {!configured && (
             <button
               disabled={busy}
-              className="rounded bg-discord-accent px-3 py-2 text-white"
+              className="rounded-sm bg-discord-accent px-3 py-2 text-white"
               onClick={() => {
                 void run(async () => {
                   setMessage(t('パスキーで本人確認してください。'));
@@ -109,7 +109,7 @@ export function HistoryRecoverySettings({
           {configured && (
             <button
               disabled={busy}
-              className="rounded border border-discord-muted px-3 py-2"
+              className="rounded-sm border border-discord-muted px-3 py-2"
               onClick={() => {
                 void run(
                   async () => t('履歴の保存を確認しました（{count}件）。', { count: await backupAvailableHistory() }),
@@ -122,7 +122,7 @@ export function HistoryRecoverySettings({
           {configured && (
             <button
               disabled={busy}
-              className="rounded border border-discord-red px-3 py-2 text-discord-red"
+              className="rounded-sm border border-discord-red px-3 py-2 text-discord-red"
               onClick={() => setConfirmDisable(true)}
             >
               {t('復旧コードを無効にする')}
@@ -131,13 +131,13 @@ export function HistoryRecoverySettings({
         </div>
       )}
       {confirmDisable && (
-        <div className="space-y-3 rounded border border-discord-red p-3">
+        <div className="space-y-3 rounded-sm border border-discord-red p-3">
           <p className="text-sm">
             {t('保管したコードと、このコードで復元するために保存した履歴が使えなくなります。端末内の履歴は残ります。')}
           </p>
           <button
             disabled={busy}
-            className="rounded bg-discord-red px-3 py-2 text-white"
+            className="rounded-sm bg-discord-red px-3 py-2 text-white"
             onClick={() => {
               void run(async () => {
                 await disableHistoryRecovery();
@@ -157,11 +157,11 @@ export function HistoryRecoverySettings({
         </div>
       )}
       {plan && (
-        <div className="space-y-3 rounded border border-discord-muted p-3">
+        <div className="space-y-3 rounded-sm border border-discord-muted p-3">
           <p className="text-sm text-discord-text">
             {t('このコードを知っている人は履歴を復元できます。他の人に渡さず、この端末とは別の安全な場所に保管してください。')}
           </p>
-          <code className="block break-all select-all rounded bg-discord-bg p-3 text-white">
+          <code className="block break-all select-all rounded-sm bg-discord-bg p-3 text-white">
             {plan.code}
           </code>
           <label className="block text-sm">
@@ -170,7 +170,7 @@ export function HistoryRecoverySettings({
           </label>
           <button
             disabled={!saved || busy}
-            className="rounded bg-discord-accent px-3 py-2 text-white disabled:opacity-50"
+            className="rounded-sm bg-discord-accent px-3 py-2 text-white disabled:opacity-50"
             onClick={() => {
               void run(async () => {
                 await enableHistoryRecovery(plan);
@@ -217,12 +217,12 @@ export function HistoryRecoverySettings({
             spellCheck={false}
             value={code}
             onChange={(e) => setCode(e.target.value)}
-            className="mt-2 block w-full rounded bg-discord-bg p-3 text-discord-text"
+            className="mt-2 block w-full rounded-sm bg-discord-bg p-3 text-discord-text"
           />
         </label>
         <button
           disabled={busy || !code.trim()}
-          className="rounded bg-discord-accent px-3 py-2 text-white disabled:opacity-50"
+          className="rounded-sm bg-discord-accent px-3 py-2 text-white disabled:opacity-50"
         >
           {busy ? t('処理中…') : t('履歴を復元')}
         </button>

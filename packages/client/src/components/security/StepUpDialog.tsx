@@ -110,7 +110,7 @@ export function StepUpDialog() {
               autoComplete="current-password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="mt-2 block w-full rounded bg-discord-bg p-3"
+              className="mt-2 block w-full rounded-sm bg-discord-bg p-3"
               required
             />
           </label>
@@ -127,7 +127,7 @@ export function StepUpDialog() {
           <button
             type="submit"
             disabled={!options || busy || (!options.passwordAllowed && !canUsePasskeys())}
-            className="rounded bg-discord-accent px-4 py-2 text-white disabled:opacity-50"
+            className="rounded-sm bg-discord-accent px-4 py-2 text-white disabled:opacity-50"
           >
             {busy ? t('確認中…') : options?.passwordAllowed ? t('確認する') : t('パスキーで確認')}
           </button>

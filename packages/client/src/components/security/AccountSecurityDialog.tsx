@@ -168,7 +168,7 @@ export function AccountSecurityDialog() {
         {error && (
           <div
             role="alert"
-            className="rounded bg-discord-red/15 px-3 py-2 text-sm text-discord-red"
+            className="rounded-sm bg-discord-red/15 px-3 py-2 text-sm text-discord-red"
           >
             {error}
           </div>
@@ -177,7 +177,7 @@ export function AccountSecurityDialog() {
           <section
             role="alertdialog"
             aria-label={t('操作の確認')}
-            className="rounded border border-discord-red/60 bg-discord-red/10 p-4"
+            className="rounded-sm border border-discord-red/60 bg-discord-red/10 p-4"
           >
             <h3 className="font-bold text-white">{t('この操作を確認してください')}</h3>
             <p className="mt-2 text-sm text-discord-text">{pending.label}</p>
@@ -196,7 +196,7 @@ export function AccountSecurityDialog() {
                 type="button"
                 onClick={() => setPending(null)}
                 disabled={isMutating}
-                className="rounded px-3 py-2 text-sm text-discord-muted hover:bg-discord-hover"
+                className="rounded-sm px-3 py-2 text-sm text-discord-muted hover:bg-discord-hover"
               >
                 {t('キャンセル')}
               </button>
@@ -206,7 +206,7 @@ export function AccountSecurityDialog() {
                   void executePending();
                 }}
                 disabled={isMutating}
-                className="rounded bg-discord-red px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
+                className="rounded-sm bg-discord-red px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
               >
                 {isMutating
                   ? t('処理中…')
@@ -239,7 +239,7 @@ export function AccountSecurityDialog() {
                     })
                   }
                   disabled={sessions.length === 0 || isMutating}
-                  className="rounded border border-discord-red px-3 py-1.5 text-xs text-discord-red hover:bg-discord-red hover:text-white disabled:opacity-40"
+                  className="rounded-sm border border-discord-red px-3 py-1.5 text-xs text-discord-red hover:bg-discord-red hover:text-white disabled:opacity-40"
                 >
                   {t('すべてログアウト')}
                 </button>
@@ -248,18 +248,18 @@ export function AccountSecurityDialog() {
                 {sessions.map((session) => (
                   <article
                     key={session.id}
-                    className="flex items-start justify-between gap-4 rounded bg-discord-bg p-3"
+                    className="flex items-start justify-between gap-4 rounded-sm bg-discord-bg p-3"
                   >
                     <div className="min-w-0 text-sm">
                       <div className="font-medium text-discord-text">
                         {session.current ? t('この端末') : t('ログイン中')}
                         {session.current && (
-                          <span className="ml-2 rounded bg-discord-green/20 px-2 py-0.5 text-xs text-discord-green">
+                          <span className="ml-2 rounded-sm bg-discord-green/20 px-2 py-0.5 text-xs text-discord-green">
                             {t('現在')}
                           </span>
                         )}
                       </div>
-                      <p className="mt-1 break-words text-xs text-discord-muted">
+                      <p className="mt-1 wrap-break-word text-xs text-discord-muted">
                         {devices.find((device) => device.id === session.deviceId)?.name ||
                           sessionDescription(session)}
                       </p>
@@ -280,7 +280,7 @@ export function AccountSecurityDialog() {
                         })
                       }
                       disabled={isMutating}
-                      className="shrink-0 rounded px-3 py-1.5 text-xs text-discord-red hover:bg-discord-red hover:text-white"
+                      className="shrink-0 rounded-sm px-3 py-1.5 text-xs text-discord-red hover:bg-discord-red hover:text-white"
                     >
                       {t('ログアウト')}
                     </button>
@@ -299,13 +299,13 @@ export function AccountSecurityDialog() {
                   return (
                     <article
                       key={device.id}
-                      className="flex items-start justify-between gap-4 rounded bg-discord-bg p-3"
+                      className="flex items-start justify-between gap-4 rounded-sm bg-discord-bg p-3"
                     >
                       <div className="min-w-0 text-sm">
                         <div className="font-medium text-discord-text">
                           {device.name}
                           {current && (
-                            <span className="ml-2 rounded bg-discord-green/20 px-2 py-0.5 text-xs text-discord-green">
+                            <span className="ml-2 rounded-sm bg-discord-green/20 px-2 py-0.5 text-xs text-discord-green">
                               {t('現在')}
                             </span>
                           )}
@@ -328,7 +328,7 @@ export function AccountSecurityDialog() {
                       {device.approvedAt === null && (
                         <button
                           disabled={isMutating}
-                          className="rounded bg-discord-accent px-3 py-2 text-sm text-white"
+                          className="rounded-sm bg-discord-accent px-3 py-2 text-sm text-white"
                           onClick={() =>
                             setPending({
                               kind: 'approve',
@@ -354,7 +354,7 @@ export function AccountSecurityDialog() {
                           })
                         }
                         disabled={isMutating}
-                        className="shrink-0 rounded px-3 py-1.5 text-xs text-discord-red hover:bg-discord-red hover:text-white"
+                        className="shrink-0 rounded-sm px-3 py-1.5 text-xs text-discord-red hover:bg-discord-red hover:text-white"
                       >
                         {t('登録を解除')}
                       </button>
@@ -399,7 +399,7 @@ export function AccountSecurityDialog() {
                 .catch(() => setError(t('パスキーを登録できませんでした。もう一度お試しください。')))
                 .finally(() => setIsMutating(false));
             }}
-            className="rounded bg-discord-accent px-3 py-2 text-white"
+            className="rounded-sm bg-discord-accent px-3 py-2 text-white"
           >
             {t('パスキーを追加')}
           </button>

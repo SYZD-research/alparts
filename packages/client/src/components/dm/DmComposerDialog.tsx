@@ -58,13 +58,13 @@ export function DmComposerDialog() {
       description={t('同じ相手との1対1 DMがある場合は既存チャンネルを開きます。')}
     >
       <form onSubmit={submit} className="space-y-4">
-        {error && <div role="alert" className="rounded bg-discord-red/15 px-3 py-2 text-sm text-discord-red">{error}</div>}
+        {error && <div role="alert" className="rounded-sm bg-discord-red/15 px-3 py-2 text-sm text-discord-red">{error}</div>}
         <fieldset>
           <legend className="mb-2 text-sm font-medium text-discord-text">{t('メンバー（最大19人）')}</legend>
-          <div className="max-h-80 space-y-1 overflow-y-auto rounded bg-discord-bg p-2">
+          <div className="max-h-80 space-y-1 overflow-y-auto rounded-sm bg-discord-bg p-2">
             {eligibleMembers.length === 0 && <p className="p-3 text-sm text-discord-muted">{t('選択できるメンバーがいません')}</p>}
             {eligibleMembers.map((member) => (
-              <label key={member.userId} className="flex cursor-pointer items-center gap-3 rounded px-3 py-2 hover:bg-discord-hover">
+              <label key={member.userId} className="flex cursor-pointer items-center gap-3 rounded-sm px-3 py-2 hover:bg-discord-hover">
                 <input
                   type="checkbox"
                   checked={selectedIds.includes(member.userId)}
@@ -81,11 +81,11 @@ export function DmComposerDialog() {
           </div>
         </fieldset>
         <div className="flex justify-end gap-2">
-          <button type="button" onClick={close} className="rounded px-4 py-2 text-sm text-discord-muted hover:bg-discord-hover">{t('キャンセル')}</button>
+          <button type="button" onClick={close} className="rounded-sm px-4 py-2 text-sm text-discord-muted hover:bg-discord-hover">{t('キャンセル')}</button>
           <button
             type="submit"
             disabled={selectedIds.length === 0 || isSubmitting}
-            className="rounded bg-discord-accent px-4 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-50"
+            className="rounded-sm bg-discord-accent px-4 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-50"
           >
             {isSubmitting ? t('準備中…') : selectedIds.length === 1 ? t('DMを開く') : t('グループDMを作成')}
           </button>

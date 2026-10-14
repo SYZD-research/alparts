@@ -135,7 +135,7 @@ export function MessageItem({ message, isFirst, onJumpToMessage, canPin = true }
               readOnly
               value={fallbackLink}
               onFocus={(event) => event.currentTarget.select()}
-              className="mt-1 block w-full rounded bg-discord-input px-2 py-1 text-discord-text"
+              className="mt-1 block w-full rounded-sm bg-discord-input px-2 py-1 text-discord-text"
             />
           </label>
         )}
@@ -206,7 +206,7 @@ export function MessageItem({ message, isFirst, onJumpToMessage, canPin = true }
             className={message.refMessageId ? 'mt-6' : 'mt-0.5'}
           />
         ) : (
-          <div className={`flex-shrink-0 w-10 text-xs text-discord-muted text-center opacity-0 group-hover:opacity-100 ${message.refMessageId ? 'pt-7' : 'pt-1'}`}>
+          <div className={`shrink-0 w-10 text-xs text-discord-muted text-center opacity-0 group-hover:opacity-100 ${message.refMessageId ? 'pt-7' : 'pt-1'}`}>
             {timestamp}
           </div>
         )}
@@ -258,7 +258,7 @@ export function MessageItem({ message, isFirst, onJumpToMessage, canPin = true }
             </div>
           )}
 
-          <div className="text-discord-text leading-relaxed break-words prose prose-invert prose-sm max-w-none">
+          <div className="text-discord-text leading-relaxed wrap-break-word prose prose-invert prose-sm max-w-none">
             <MessageContent
               content={message.content || ''}
               members={workspaceMembers}
@@ -285,7 +285,7 @@ export function MessageItem({ message, isFirst, onJumpToMessage, canPin = true }
                 readOnly
                 value={fallbackLink}
                 onFocus={(event) => event.currentTarget.select()}
-                className="mt-1 block w-full rounded bg-discord-input px-2 py-1 text-discord-text"
+                className="mt-1 block w-full rounded-sm bg-discord-input px-2 py-1 text-discord-text"
               />
             </label>
           )}
@@ -313,7 +313,7 @@ export function MessageItem({ message, isFirst, onJumpToMessage, canPin = true }
 
         {/* Action buttons */}
         {showActions && !swipe.isDragging && (
-          <div className="absolute -top-4 right-4 flex bg-discord-sidebar rounded border border-discord-hover shadow">
+          <div className="absolute -top-4 right-4 flex bg-discord-sidebar rounded-sm border border-discord-hover shadow-sm">
             <button
               onClick={() => handleReaction('👍')}
               className="px-2 py-1 hover:bg-discord-hover text-discord-muted hover:text-discord-text text-sm"

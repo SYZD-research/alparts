@@ -108,13 +108,13 @@ export function AuditLogPanel({ workspaceId, canView }: AuditLogPanelProps) {
       <h3 id="workspace-audit-heading" className="font-semibold text-white">{t('操作履歴')}</h3>
 
       {error && (
-        <div role="alert" className="flex items-center justify-between gap-3 rounded bg-discord-red/15 px-3 py-2 text-sm text-discord-red">
+        <div role="alert" className="flex items-center justify-between gap-3 rounded-sm bg-discord-red/15 px-3 py-2 text-sm text-discord-red">
           <span>{error}</span>
           <button type="button" onClick={() => { void loadInitial(); }} className="shrink-0 underline">{t('再試行')}</button>
         </div>
       )}
 
-      <div aria-live="polite" className="rounded bg-discord-input px-3 py-2 text-sm">
+      <div aria-live="polite" className="rounded-sm bg-discord-input px-3 py-2 text-sm">
         <span className="font-medium text-white">{t('記録の状態:')} </span>
         {loading && !integrity ? (
           <span className="text-discord-muted">{t('確認中…')}</span>
@@ -138,7 +138,7 @@ export function AuditLogPanel({ workspaceId, canView }: AuditLogPanelProps) {
             const result = auditResult(entry);
             const target = auditTargetLabel(entry.targetType);
             return (
-              <li key={entry.id} className="rounded border border-discord-hover bg-discord-bg/40 px-3 py-3 text-sm">
+              <li key={entry.id} className="rounded-sm border border-discord-hover bg-discord-bg/40 px-3 py-3 text-sm">
                 <div className="flex flex-wrap items-start justify-between gap-2">
                   <div>
                     <p className="font-medium text-white">{auditActionLabel(entry.action)}</p>
@@ -173,7 +173,7 @@ export function AuditLogPanel({ workspaceId, canView }: AuditLogPanelProps) {
             type="button"
             onClick={() => { void loadMore(); }}
             disabled={loadingMore || !cursor}
-            className="rounded bg-discord-hover px-4 py-2 text-sm text-white disabled:opacity-40"
+            className="rounded-sm bg-discord-hover px-4 py-2 text-sm text-white disabled:opacity-40"
           >
             {loadingMore ? t('読み込み中…') : t('さらに古いログを読み込む')}
           </button>

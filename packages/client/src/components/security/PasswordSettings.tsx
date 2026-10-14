@@ -80,7 +80,7 @@ export function PasswordSettings({ hasPasskey, onChanged }: { hasPasskey: boolea
             autoComplete="new-password"
             value={newPassword}
             onChange={(event) => setNewPassword(event.target.value)}
-            className="mt-2 block w-full rounded bg-discord-bg p-3 text-discord-text"
+            className="mt-2 block w-full rounded-sm bg-discord-bg p-3 text-discord-text"
           />
         </label>
         <label className="block text-sm">
@@ -90,19 +90,19 @@ export function PasswordSettings({ hasPasskey, onChanged }: { hasPasskey: boolea
             autoComplete="new-password"
             value={confirmation}
             onChange={(event) => setConfirmation(event.target.value)}
-            className="mt-2 block w-full rounded bg-discord-bg p-3 text-discord-text"
+            className="mt-2 block w-full rounded-sm bg-discord-bg p-3 text-discord-text"
           />
         </label>
         <p className="text-xs text-discord-muted">{t('変更すると、ほかの端末ではログアウトします。')}</p>
         <button
           disabled={busy || !newPassword || !confirmation}
-          className="rounded bg-discord-accent px-3 py-2 text-white disabled:opacity-50"
+          className="rounded-sm bg-discord-accent px-3 py-2 text-white disabled:opacity-50"
         >
           {busy ? t('処理中…') : t('パスワードを変更')}
         </button>
       </form>
       {hasPasskey && passwordLogin !== null && (
-        <div className="space-y-2 rounded bg-discord-bg p-3">
+        <div className="space-y-2 rounded-sm bg-discord-bg p-3">
           <p className="text-sm text-discord-text">
             {passwordLogin ? t('パスワードでのログイン: オン') : t('パスワードでのログイン: オフ')}
           </p>
@@ -128,7 +128,7 @@ export function PasswordSettings({ hasPasskey, onChanged }: { hasPasskey: boolea
                       : t('パスワードでのログインをオフにしました。');
                   }, t('設定を変更できませんでした。もう一度お試しください。'));
                 }}
-                className="rounded bg-discord-red px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
+                className="rounded-sm bg-discord-red px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
               >
                 {busy ? t('処理中…') : passwordLogin ? t('オフにする') : t('オンにする')}
               </button>
@@ -136,7 +136,7 @@ export function PasswordSettings({ hasPasskey, onChanged }: { hasPasskey: boolea
                 type="button"
                 disabled={busy}
                 onClick={() => setConfirmingLoginChange(false)}
-                className="rounded px-3 py-2 text-sm text-discord-muted hover:bg-discord-hover"
+                className="rounded-sm px-3 py-2 text-sm text-discord-muted hover:bg-discord-hover"
               >
                 {t('キャンセル')}
               </button>
@@ -146,7 +146,7 @@ export function PasswordSettings({ hasPasskey, onChanged }: { hasPasskey: boolea
               type="button"
               disabled={busy}
               onClick={() => setConfirmingLoginChange(true)}
-              className="rounded border border-discord-muted px-3 py-2 text-sm disabled:opacity-50"
+              className="rounded-sm border border-discord-muted px-3 py-2 text-sm disabled:opacity-50"
             >
               {passwordLogin ? t('パスワードでのログインをオフにする') : t('パスワードでのログインをオンにする')}
             </button>

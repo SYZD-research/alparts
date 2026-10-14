@@ -58,14 +58,14 @@ export function WorkspaceSidebar() {
       </Dialog>
       <Dialog open={isCreateOpen} onClose={() => { if (!isCreating) setIsCreateOpen(false); }} title={t('ワークスペースを作成')} size="sm">
         <form onSubmit={handleCreateWorkspace} className="space-y-4">
-          {createError && <div role="alert" className="rounded bg-discord-red/15 px-3 py-2 text-sm text-discord-red">{createError}</div>}
+          {createError && <div role="alert" className="rounded-sm bg-discord-red/15 px-3 py-2 text-sm text-discord-red">{createError}</div>}
           <label className="block text-sm text-discord-text">
             {t('名前')}
-            <input autoFocus required maxLength={100} value={workspaceName} onChange={(event) => setWorkspaceName(event.target.value)} className="mt-1 w-full rounded bg-discord-input px-3 py-2" />
+            <input autoFocus required maxLength={100} value={workspaceName} onChange={(event) => setWorkspaceName(event.target.value)} className="mt-1 w-full rounded-sm bg-discord-input px-3 py-2" />
           </label>
           <div className="flex justify-end gap-2">
-            <button type="button" onClick={() => setIsCreateOpen(false)} className="rounded px-3 py-2 text-sm text-discord-muted hover:bg-discord-hover">{t('キャンセル')}</button>
-            <button type="submit" disabled={isCreating || !workspaceName.trim()} className="rounded bg-discord-accent px-4 py-2 text-sm text-white disabled:opacity-40">{isCreating ? t('作成中…') : t('作成')}</button>
+            <button type="button" onClick={() => setIsCreateOpen(false)} className="rounded-sm px-3 py-2 text-sm text-discord-muted hover:bg-discord-hover">{t('キャンセル')}</button>
+            <button type="submit" disabled={isCreating || !workspaceName.trim()} className="rounded-sm bg-discord-accent px-4 py-2 text-sm text-white disabled:opacity-40">{isCreating ? t('作成中…') : t('作成')}</button>
           </div>
         </form>
       </Dialog>

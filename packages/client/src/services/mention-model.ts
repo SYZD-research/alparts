@@ -232,8 +232,8 @@ function mentionNode(segment: MentionSegment): MarkdownNode {
       hName: 'span',
       hProperties: {
         className: own
-          ? ['inline', 'rounded', 'bg-orange-500/20', 'px-0.5', 'font-semibold', 'text-orange-300', 'ring-1', 'ring-inset', 'ring-orange-400/30']
-          : ['inline', 'rounded', 'bg-sky-400/10', 'px-0.5', 'font-semibold', 'text-sky-400'],
+          ? ['inline', 'rounded-sm', 'bg-orange-500/20', 'px-0.5', 'font-semibold', 'text-orange-300', 'ring-1', 'ring-inset', 'ring-orange-400/30']
+          : ['inline', 'rounded-sm', 'bg-sky-400/10', 'px-0.5', 'font-semibold', 'text-sky-400'],
         title,
         ...(segment.userId ? { 'data-mention-user-id': segment.userId } : {}),
         ...(segment.broadcast ? { 'data-mention-broadcast': segment.broadcast } : {}),

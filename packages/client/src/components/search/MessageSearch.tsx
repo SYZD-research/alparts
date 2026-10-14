@@ -66,7 +66,7 @@ export function MessageSearch({ membersOpen, membersAvailable, onToggleMembers, 
         title={t('メンバー一覧')}
         aria-expanded={membersOpen}
         aria-controls={membersOpen ? 'member-list' : undefined}
-        className={`flex h-11 w-11 items-center justify-center rounded hover:bg-discord-hover disabled:opacity-40 ${membersOpen ? 'text-white bg-discord-hover' : 'text-discord-muted hover:text-white'}`}
+        className={`flex h-11 w-11 items-center justify-center rounded-sm hover:bg-discord-hover disabled:opacity-40 ${membersOpen ? 'text-white bg-discord-hover' : 'text-discord-muted hover:text-white'}`}
       >
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
           <circle cx="9" cy="8" r="3" /><path d="M3 20v-2a6 6 0 0 1 12 0v2M16 5a3 3 0 0 1 0 6m2 3a5 5 0 0 1 3 4v2" />
@@ -75,7 +75,7 @@ export function MessageSearch({ membersOpen, membersAvailable, onToggleMembers, 
       <button
         type="button"
         onClick={() => setIsOpen(true)}
-        className="flex h-11 min-w-11 items-center justify-center gap-2 rounded px-2 text-xs text-discord-muted hover:bg-discord-hover hover:text-white"
+        className="flex h-11 min-w-11 items-center justify-center gap-2 rounded-sm px-2 text-xs text-discord-muted hover:bg-discord-hover hover:text-white"
         aria-label={t('メッセージを検索')}
         title={t('メッセージを検索')}
       >
@@ -99,7 +99,7 @@ export function MessageSearch({ membersOpen, membersAvailable, onToggleMembers, 
                 ref={inputRef}
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
-                className="w-full rounded bg-discord-input px-4 py-3 text-discord-text outline-none focus:ring-1 focus:ring-discord-accent"
+                className="w-full rounded-sm bg-discord-input px-4 py-3 text-discord-text outline-hidden focus:ring-1 focus:ring-discord-accent"
                 placeholder={t('メッセージを検索')}
                 aria-label={t('検索語')}
               />
@@ -116,14 +116,14 @@ export function MessageSearch({ membersOpen, membersAvailable, onToggleMembers, 
                   key={`${result.channelId}:${result.messageId}`}
                   type="button"
                   onClick={() => selectResult(result.channelId, result.messageId)}
-                  className="w-full rounded px-3 py-2 text-left hover:bg-discord-hover"
+                  className="w-full rounded-sm px-3 py-2 text-left hover:bg-discord-hover"
                 >
                   <div className="flex items-center gap-2 text-xs text-discord-muted">
                     <span>#{result.channelName}</span>
                     <span>{result.authorName}</span>
                     <time>{formatDateTime(result.createdAt)}</time>
                   </div>
-                  <p className="mt-1 line-clamp-2 break-words text-sm text-discord-text">{result.content}</p>
+                  <p className="mt-1 line-clamp-2 wrap-break-word text-sm text-discord-text">{result.content}</p>
                 </button>
               ))}
             </div>

@@ -62,7 +62,7 @@ export function EffectivePermissionsPanel({
           value={selectedUserId}
           onChange={(event) => setSelectedUserId(event.target.value)}
           disabled={!canInspectOthers}
-          className="mt-1 w-full rounded bg-discord-bg px-3 py-2 text-white disabled:opacity-70"
+          className="mt-1 w-full rounded-sm bg-discord-bg px-3 py-2 text-white disabled:opacity-70"
         >
           {visibleMembers.map((member) => (
             <option key={member.userId} value={member.userId}>{member.user.displayName}{member.userId === currentUserId ? t('（自分）') : ''}</option>
@@ -74,13 +74,13 @@ export function EffectivePermissionsPanel({
       {error && <p role="alert" className="text-sm text-discord-red">{error}</p>}
       {evaluation && !loading && (
         <div className="space-y-4">
-          <div className="rounded bg-discord-bg/50 p-3">
+          <div className="rounded-sm bg-discord-bg/50 p-3">
             <p className="text-xs font-bold uppercase tracking-wide text-discord-muted">{t('割当ロール')}</p>
             <p className="mt-1 text-sm text-white">{evaluation.roles.map((role) => role.name).join(t('、')) || t('なし')}</p>
           </div>
           <ul className="grid gap-2 md:grid-cols-2">
             {evaluation.permissionDetails.map((detail) => (
-              <li key={detail.permission} className={`rounded border p-3 text-sm ${detail.allowed ? 'border-green-500/30 bg-green-500/5' : 'border-discord-hover bg-discord-bg/30'}`}>
+              <li key={detail.permission} className={`rounded-sm border p-3 text-sm ${detail.allowed ? 'border-green-500/30 bg-green-500/5' : 'border-discord-hover bg-discord-bg/30'}`}>
                 <p className={detail.allowed ? 'font-medium text-green-300' : 'text-discord-muted'}>
                   <span aria-hidden="true">{detail.allowed ? '✓' : '—'} </span>{permissionLabel(detail.permission)}
                 </p>
