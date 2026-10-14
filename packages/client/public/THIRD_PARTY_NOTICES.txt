@@ -5502,9 +5502,9 @@ Package: pkg:npm/%40types/ms@2.1.0
     SOFTWARE
 --------------------------------------------------------------------------------
 
-@types/node 26.2.0
+@types/node 26.6.4
 License: MIT
-Package: pkg:npm/%40types/node@26.2.0
+Package: pkg:npm/%40types/node@26.6.4
 
     MIT License
 
@@ -12270,9 +12270,9 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 --------------------------------------------------------------------------------
 
-undici-types 8.3.0
+undici-types 8.9.0
 License: MIT
-Package: pkg:npm/undici-types@8.3.0
+Package: pkg:npm/undici-types@8.9.0
 
 MIT License
 
