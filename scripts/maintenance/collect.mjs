@@ -1,12 +1,12 @@
-// Gathers the work for a maintenance run from GitHub and writes the task the
-// agent receives. Prints key=value lines for $GITHUB_OUTPUT.
+// Gathers the work for a maintenance run from GitHub. Prints one JSON object:
+// "outputs" for $GITHUB_OUTPUT and, when there is work, "task", the text the
+// agent receives. The workflow writes the files.
 //
-//   node collect.mjs deps --task <file>
-//   node collect.mjs issue [--number <n>] --task <file>
+//   node collect.mjs deps
+//   node collect.mjs issue [--number <n>]
 //
 // Uses GITHUB_REPOSITORY, GITHUB_API_URL and, when set, GH_TOKEN.
 
-import { writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 
@@ -85,43 +85,44 @@ async function failedChecks(sha) {
   return failed;
 }
 
-async function collectDeps(task) {
+async function collectDeps() {
   const pulls = await api('/pulls?state=open&per_page=100');
-  if (hasOpenBranch(pulls, DEPS_BRANCH_PREFIX)) return { busy: 'true', work: 'false' };
+  if (hasOpenBranch(pulls, DEPS_BRANCH_PREFIX)) return { outputs: { busy: 'true', work: 'false' } };
   const updates = [];
   for (const pull of dependabotPulls(pulls)) {
     updates.push({ number: pull.number, title: pull.title, failed: await failedChecks(pull.head.sha) });
   }
   const issues = await api(`/issues?state=open&labels=${EOL_LABEL}&per_page=100`);
   const eol = issues.find((issue) => !issue.pull_request && issue.user.login === 'github-actions[bot]');
-  if (!updates.length && !eol) return { busy: 'false', work: 'false' };
-  await writeFile(task, renderDepsTask(updates, eol && { number: eol.number, body: eol.body ?? '' }));
-  return { busy: 'false', work: 'true', prs: updates.map((update) => update.number).join(' '), eol: eol?.number ?? '' };
+  if (!updates.length && !eol) return { outputs: { busy: 'false', work: 'false' } };
+  return {
+    outputs: { busy: 'false', work: 'true', prs: updates.map((update) => update.number).join(' '), eol: eol?.number ?? '' },
+    task: renderDepsTask(updates, eol && { number: eol.number, body: eol.body ?? '' }),
+  };
 }
 
-async function collectIssue(task, number) {
+async function collectIssue(number) {
   const pulls = await api('/pulls?state=open&per_page=100');
   const candidates = number
     ? [await api(`/issues/${number}`)]
     : await api(`/issues?state=open&labels=${FIX_LABEL}&per_page=100`);
   const issue = pickIssue(candidates, pulls);
-  if (!issue) return { work: 'false' };
+  if (!issue) return { outputs: { work: 'false' } };
   const comments = await api(`/issues/${issue.number}/comments?per_page=100`);
-  await writeFile(task, renderIssueTask(issue, comments));
-  return { work: 'true', number: issue.number };
+  return { outputs: { work: 'true', number: issue.number }, task: renderIssueTask(issue, comments) };
 }
 
 async function main() {
   const { values, positionals } = parseArgs({
     allowPositionals: true,
-    options: { task: { type: 'string' }, number: { type: 'string' } },
+    options: { number: { type: 'string' } },
   });
-  if (!values.task || !process.env.GITHUB_REPOSITORY) throw new Error('--task and GITHUB_REPOSITORY are required');
-  let outputs;
-  if (positionals[0] === 'deps') outputs = await collectDeps(values.task);
-  else if (positionals[0] === 'issue') outputs = await collectIssue(values.task, values.number || null);
-  else throw new Error('usage: collect.mjs deps|issue --task <file>');
-  for (const [key, value] of Object.entries(outputs)) console.log(`${key}=${value}`);
+  if (!process.env.GITHUB_REPOSITORY) throw new Error('GITHUB_REPOSITORY is required');
+  let result;
+  if (positionals[0] === 'deps') result = await collectDeps();
+  else if (positionals[0] === 'issue') result = await collectIssue(values.number || null);
+  else throw new Error('usage: collect.mjs deps | issue [--number <n>]');
+  console.log(JSON.stringify(result));
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

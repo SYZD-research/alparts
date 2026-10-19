@@ -73,8 +73,11 @@ jobs:
           fi
           gh label create "$FIX_LABEL" --color 1D76DB --description "AI に修正を任せる Issue" --force >/dev/null
           mkdir -p "$RUNNER_TEMP/task"
-          node scripts/maintenance/collect.mjs issue --number "${NUMBER:-}" --task "$RUNNER_TEMP/task/task.md" \
-            | tee -a "$GITHUB_OUTPUT"
+          node scripts/maintenance/collect.mjs issue --number "${NUMBER:-}" >"$RUNNER_TEMP/collect.json"
+          # The task carries issue text from GitHub, which the agent treats
+          # as data.
+          jq -r '.task // empty' "$RUNNER_TEMP/collect.json" >"$RUNNER_TEMP/task/task.md"
+          jq -r '.outputs | to_entries[] | "\(.key)=\(.value)"' "$RUNNER_TEMP/collect.json" | tee -a "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: steps.collect.outputs.work == 'true'
         with:

@@ -67,7 +67,11 @@ jobs:
             exit 0
           fi
           mkdir -p "$RUNNER_TEMP/task"
-          node scripts/maintenance/collect.mjs deps --task "$RUNNER_TEMP/task/task.md" | tee -a "$GITHUB_OUTPUT"
+          node scripts/maintenance/collect.mjs deps >"$RUNNER_TEMP/collect.json"
+          # The task carries pull request and issue text from GitHub, which
+          # the agent treats as data.
+          jq -r '.task // empty' "$RUNNER_TEMP/collect.json" >"$RUNNER_TEMP/task/task.md"
+          jq -r '.outputs | to_entries[] | "\(.key)=\(.value)"' "$RUNNER_TEMP/collect.json" | tee -a "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: steps.collect.outputs.work == 'true'
         with:
@@ -240,9 +244,6 @@ jobs:
           set -euo pipefail
           # Use the checks from the base commit: the patch may replace them.
           cp -R scripts/maintenance "$RUNNER_TEMP/path-check"
-          # Start from the base install like the agent job did, so pnpm
-          # resolves the new manifests the same way.
-          pnpm install --frozen-lockfile --ignore-scripts
           git apply --index --exclude=pnpm-lock.yaml --exclude="$NOTICES" "$RUNNER_TEMP/maintenance/change.patch"
           git diff --cached --name-only --no-renames -z | node "$RUNNER_TEMP/path-check/check-paths.mjs" --allow-manifests
           pnpm install --no-frozen-lockfile --ignore-scripts
