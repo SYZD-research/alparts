@@ -4,6 +4,9 @@ on:
   pull_request:
   push:
     branches: [master]
+  # Lets the AI maintenance workflows start CI for the pull requests they
+  # open, which the workflow token cannot do through pull_request.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -35,6 +38,7 @@ jobs:
       - run: pnpm test:backup-security
       - run: pnpm test:release
       - run: pnpm test:deps
+      - run: pnpm test:maintenance
       - run: pnpm notices:check
       - run: pnpm build
       - run: pnpm security:secrets
