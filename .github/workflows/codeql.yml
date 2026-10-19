@@ -10,6 +10,7 @@ on:
 permissions:
   actions: read
   contents: read
+  security-events: write
 
 jobs:
   analyze:
@@ -26,10 +27,9 @@ jobs:
           config-file: ./.github/codeql/codeql-config.yml
       - uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d # v4
         with:
-          # Advanced Security is not enabled for this repository, so results
-          # cannot be uploaded to code scanning. Keep the SARIF as an artifact
-          # and fail the job on findings instead of leaving them in the log.
-          upload: never
+          # Upload results to code scanning and keep the SARIF on disk so the
+          # job can still fail on findings instead of leaving them in the log.
+          upload: always
           output: codeql-results
       - name: Fail on CodeQL findings
         run: |
