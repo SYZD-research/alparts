@@ -38,6 +38,10 @@ services:
       - |
         set -eu
         umask 077
+        # A restart reuses this file: the previous run chowned it to seaweed,
+        # and /tmp is a sticky directory. With fs.protected_regular=1 root may
+        # then not overwrite a file it does not own, so remove the stale one.
+        rm -f /tmp/s3.json
         cat > /tmp/s3.json <<EOF
         {
           "identities": [
