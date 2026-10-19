@@ -36,7 +36,7 @@ tailnet over HTTPS with a certificate the device trusts:
 2. In the Tailscale admin console, under DNS, turn on MagicDNS and HTTPS
    Certificates.
 3. Start the development server with `./dev.sh --tailscale`. It serves
-   `http://127.0.0.1:5173` to the tailnet with `tailscale serve`, allows that
+   `http://localhost:5173` to the tailnet with `tailscale serve`, allows that
    origin for this run only (`.env` is not changed), and prints the address,
    such as `https://your-pc.your-tailnet.ts.net`.
 4. Enter that address on the app's connection screen.

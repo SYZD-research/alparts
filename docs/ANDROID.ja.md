@@ -34,7 +34,7 @@ tailnet内に公開できます。
 1. PCとAndroid端末の両方にTailscaleをインストールし、同じtailnetにログインします。
 2. Tailscaleの管理画面のDNS設定で、MagicDNSとHTTPS Certificatesを有効にします。
 3. `./dev.sh --tailscale` で開発用サーバーを起動します。`tailscale serve` で
-   `http://127.0.0.1:5173` をtailnet内に公開し、その接続元をこの起動の間だけ許可し
+   `http://localhost:5173` をtailnet内に公開し、その接続元をこの起動の間だけ許可し
    （`.env` は変更しません）、`https://your-pc.your-tailnet.ts.net` のようなアドレスを表示します。
 4. アプリの接続画面に、そのアドレスを入力します。
 
