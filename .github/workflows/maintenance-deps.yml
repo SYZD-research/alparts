@@ -1,0 +1,341 @@
+name: AI dependency maintenance
+
+# Weekly run that folds the open npm Dependabot pull requests into one draft
+# PR, fixes what the updates break, and updates dependencies that bring in the
+# packages listed in the end-of-support issue. A model on OpenRouter does the
+# fixing. Dependabot PRs whose every update made it in are closed with a link
+# to the new PR. Nothing runs while an earlier PR from this workflow is open.
+#
+# Trust: plan and agent have read-only repository access, and only the agent
+# step holds the OpenRouter key. Checks in the agent job run code the model
+# wrote, so they only catch honest mistakes. derive rebuilds the lockfile and
+# license notices from the proposed manifests without code from the change,
+# and publish, which can write, enforces protected paths and manifest rules
+# with the checker from the base commit and never runs code from the change.
+#
+# Setup: add the OPENROUTER_API_KEY secret (use a key with a credit limit),
+# optionally set the MAINTENANCE_MODEL variable, and allow GitHub Actions to
+# create pull requests in the repository settings.
+
+on:
+  schedule:
+    - cron: "17 1 * * 3"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ai-maintenance-deps
+  cancel-in-progress: false
+
+env:
+  LABEL: ai-maintenance
+  NOTICES: packages/client/public/THIRD_PARTY_NOTICES.txt
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+      checks: read
+      actions: read
+    outputs:
+      work: ${{ steps.collect.outputs.work }}
+      prs: ${{ steps.collect.outputs.prs }}
+      eol: ${{ steps.collect.outputs.eol }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24.8.0"
+      - name: Collect the work
+        id: collect
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEY_SET: ${{ secrets.OPENROUTER_API_KEY != '' }}
+        run: |
+          set -euo pipefail
+          if [ "$KEY_SET" != true ]; then
+            echo "::notice::OPENROUTER_API_KEY is not set, so there is nothing to do."
+            echo work=false >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          mkdir -p "$RUNNER_TEMP/task"
+          node scripts/maintenance/collect.mjs deps --task "$RUNNER_TEMP/task/task.md" | tee -a "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: steps.collect.outputs.work == 'true'
+        with:
+          name: maintenance-task
+          path: ${{ runner.temp }}/task/task.md
+          if-no-files-found: error
+          retention-days: 7
+
+  agent:
+    needs: plan
+    if: needs.plan.outputs.work == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    outputs:
+      changed: ${{ steps.result.outputs.changed }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24.8.0"
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: maintenance-task
+          path: ${{ runner.temp }}/task
+      # Runs before the model, so the token used for fetching is never on disk
+      # while model-written code can run.
+      - name: Apply the Dependabot updates
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRS: ${{ needs.plan.outputs.prs }}
+        run: |
+          set -euo pipefail
+          task="$RUNNER_TEMP/task/task.md"
+          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          base=$(git rev-parse HEAD)
+          applied=()
+          skipped=()
+          for n in $PRS; do
+            git -c "http.extraHeader=$auth" fetch -q --no-tags origin "+refs/pull/$n/head:refs/maintenance/pr/$n"
+            if ! reason=$(node scripts/maintenance/dependabot.mjs validate "$n" 2>&1); then
+              skipped+=("#$n: $reason")
+              continue
+            fi
+            if git merge -q --no-ff --no-edit "refs/maintenance/pr/$n" >/dev/null 2>&1; then
+              applied+=("#$n")
+            elif [ "$(git diff --name-only --diff-filter=U)" = pnpm-lock.yaml ]; then
+              # Lockfile conflicts do not matter: it is rebuilt below.
+              git checkout -q --ours pnpm-lock.yaml
+              git add pnpm-lock.yaml
+              git commit -q --no-edit
+              applied+=("#$n")
+            else
+              git merge --abort
+              skipped+=("#$n: conflicts with the other updates")
+            fi
+          done
+          git reset -q --soft "$base"
+          git checkout -q "$base" -- pnpm-lock.yaml
+          pnpm install --no-frozen-lockfile
+          pnpm notices
+          git add --all
+          echo "MAINTENANCE_SNAPSHOT=$(git write-tree)" >>"$GITHUB_ENV"
+          {
+            echo "## Applied before you started"
+            echo
+            if [ ${#applied[@]} -gt 0 ]; then printf -- '- %s\n' "${applied[@]}"; else echo "- None"; fi
+            echo
+            if [ ${#skipped[@]} -gt 0 ]; then
+              echo "## Left for a person"
+              echo
+              printf -- '- %s\n' "${skipped[@]}"
+            fi
+          } >>"$task"
+          cat "$task"
+      - name: Run the maintenance agent
+        id: agent
+        # The Dependabot updates are still proposed if the model fails.
+        continue-on-error: true
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          MAINTENANCE_MODEL: ${{ vars.MAINTENANCE_MODEL || 'deepseek/deepseek-v4.1-flash-1017' }}
+        run: node scripts/maintenance/agent.mjs --mode deps --task "$RUNNER_TEMP/task/task.md" --output "$RUNNER_TEMP/maintenance"
+      - name: Collect the change
+        id: result
+        env:
+          AGENT_OUTCOME: ${{ steps.agent.outcome }}
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/maintenance"
+          mkdir -p "$out"
+          if [ "$AGENT_OUTCOME" != success ]; then
+            # Keep only the Dependabot updates; drop whatever the model left half done.
+            git read-tree -u --reset "$MAINTENANCE_SNAPSHOT"
+            git clean -fdq
+            rm -f "$out/title.txt" "$out/body.md"
+            echo "自動修正は途中で止まったため、Dependabot の更新とライセンス表記の作り直しだけを含めています。" >"$out/reason.md"
+          fi
+          git add --all
+          if git diff --cached --quiet; then
+            echo changed=false >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          [ -s "$out/title.txt" ] || echo "依存関係の更新をまとめて取り込み" >"$out/title.txt"
+          if [ ! -s "$out/body.md" ]; then
+            {
+              echo "Dependabot の更新をまとめて取り込み、ライセンス表記を作り直しました。"
+              if [ -s "$out/reason.md" ]; then echo; cat "$out/reason.md"; fi
+            } >"$out/body.md"
+          fi
+          git diff --cached --binary >"$out/change.patch"
+          git diff --cached --stat
+          echo changed=true >>"$GITHUB_OUTPUT"
+      # Re-run the checks on the final tree; the agent's own runs are not
+      # trusted to have covered its last edit.
+      - name: Verify the change
+        if: steps.result.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          git diff --cached --name-only --no-renames -z \
+            | node scripts/maintenance/check-paths.mjs --allow-manifests --allow pnpm-lock.yaml --allow "$NOTICES"
+          pnpm lint
+          pnpm typecheck
+          pnpm test
+          pnpm notices:check
+          pnpm security:secrets
+          git diff --cached --check -- . ':(exclude)pnpm-lock.yaml' ":(exclude)$NOTICES"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: steps.result.outputs.changed == 'true'
+        with:
+          name: maintenance-change
+          path: |
+            ${{ runner.temp }}/maintenance/change.patch
+            ${{ runner.temp }}/maintenance/title.txt
+            ${{ runner.temp }}/maintenance/body.md
+          if-no-files-found: error
+          retention-days: 7
+
+  derive:
+    needs: [plan, agent]
+    if: needs.agent.outputs.changed == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24.8.0"
+          cache: pnpm
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: maintenance-change
+          path: ${{ runner.temp }}/maintenance
+      - name: Rebuild the lockfile and license notices
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRS: ${{ needs.plan.outputs.prs }}
+        run: |
+          set -euo pipefail
+          # Use the checks from the base commit: the patch may replace them.
+          cp -R scripts/maintenance "$RUNNER_TEMP/path-check"
+          # Start from the base install like the agent job did, so pnpm
+          # resolves the new manifests the same way.
+          pnpm install --frozen-lockfile --ignore-scripts
+          git apply --index --exclude=pnpm-lock.yaml --exclude="$NOTICES" "$RUNNER_TEMP/maintenance/change.patch"
+          git diff --cached --name-only --no-renames -z | node "$RUNNER_TEMP/path-check/check-paths.mjs" --allow-manifests
+          pnpm install --no-frozen-lockfile --ignore-scripts
+          pnpm notices
+          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          for n in $PRS; do
+            git -c "http.extraHeader=$auth" fetch -q --no-tags origin "+refs/pull/$n/head:refs/maintenance/pr/$n"
+          done
+          mkdir -p "$RUNNER_TEMP/derived"
+          # shellcheck disable=SC2086
+          node "$RUNNER_TEMP/path-check/dependabot.mjs" incorporated $PRS >"$RUNNER_TEMP/derived/incorporated.txt"
+          cp pnpm-lock.yaml "$NOTICES" "$RUNNER_TEMP/derived/"
+          echo "Included Dependabot pull requests: $(cat "$RUNNER_TEMP/derived/incorporated.txt")"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: maintenance-derived
+          path: |
+            ${{ runner.temp }}/derived/pnpm-lock.yaml
+            ${{ runner.temp }}/derived/THIRD_PARTY_NOTICES.txt
+            ${{ runner.temp }}/derived/incorporated.txt
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: [plan, agent, derive]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24.8.0"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: maintenance-change
+          path: ${{ runner.temp }}/maintenance
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: maintenance-derived
+          path: ${{ runner.temp }}/derived
+      - name: Open a draft pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          MODEL: ${{ vars.MAINTENANCE_MODEL || 'deepseek/deepseek-v4.1-flash-1017' }}
+          EOL: ${{ needs.plan.outputs.eol }}
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/maintenance"
+          derived="$RUNNER_TEMP/derived"
+          # Use the checks from the base commit: the patch may replace them.
+          # Without renames, a moved file lists both its old and new path.
+          cp -R scripts/maintenance "$RUNNER_TEMP/path-check"
+          git apply --index --exclude=pnpm-lock.yaml --exclude="$NOTICES" "$dir/change.patch"
+          git diff --cached --name-only --no-renames -z | node "$RUNNER_TEMP/path-check/check-paths.mjs" --allow-manifests
+          cp "$derived/pnpm-lock.yaml" pnpm-lock.yaml
+          cp "$derived/THIRD_PARTY_NOTICES.txt" "$NOTICES"
+          git add pnpm-lock.yaml "$NOTICES"
+          included=()
+          read -r -a included <"$derived/incorporated.txt" || true
+
+          branch="ai-maintenance/deps-${GITHUB_RUN_ID}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git commit -q -F - <<EOF
+          chore(deps): $(cat "$dir/title.txt")
+
+          Generated by the AI dependency maintenance workflow ($MODEL).
+          EOF
+          git push origin "$branch"
+
+          {
+            cat "$dir/body.md"
+            printf '\n---\n'
+            if [ ${#included[@]} -gt 0 ]; then
+              printf '取り込んだ Dependabot の PR: %s（閉じました。この PR を閉じる場合は開き直してください）\n\n' "$(printf '#%s ' "${included[@]}")"
+            fi
+            if [ -n "$EOL" ]; then printf 'サポート終了の一覧: #%s\n\n' "$EOL"; fi
+            printf 'CI は自動で実行されます。デスクトップと Android のビルドは、この PR を一度閉じて開き直すと実行されます。\n\n'
+            printf 'この PR は AI による定期保守で作成されました（%s）。内容を確認してからマージしてください。\n%s\n' "$MODEL" "$RUN_URL"
+          } >"$dir/pr-body.md"
+          gh label create "$LABEL" --color 5319E7 --description "AI による定期保守" --force >/dev/null
+          url=$(gh pr create --draft --base "$GITHUB_REF_NAME" --head "$branch" --label "$LABEL" \
+            --title "$(cat "$dir/title.txt")" --body-file "$dir/pr-body.md")
+          for n in "${included[@]}"; do
+            gh pr close "$n" --comment "この PR の更新は $url にまとめました。"
+          done
+          # Pull requests opened with the workflow token start no workflows.
+          # Desktop packaging is left out: manual runs keep the large packages.
+          gh workflow run ci.yml --ref "$branch"
