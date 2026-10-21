@@ -19,9 +19,10 @@ export function parsePasskeyWrap(value: unknown): PasskeyWrap {
   return v;
 }
 
-async function evaluate(credentialIds: string[], salt: Uint8Array<ArrayBuffer>, rpId: string) {
+async function evaluate(credentialIds: string[], salt: Uint8Array<ArrayBuffer>, rpId: string, onPrompt?: () => void) {
   if (!window.isSecureContext || !navigator.credentials || !['https:', 'http:'].includes(window.location.protocol)
     || !(window.location.hostname === rpId || window.location.hostname.endsWith(`.${rpId}`))) throw new Error('PASSKEY_VAULT_UNAVAILABLE');
+  onPrompt?.();
   const response = await navigator.credentials.get({
     publicKey: {
       challenge: crypto.getRandomValues(new Uint8Array(32)),
@@ -55,10 +56,11 @@ async function wrappingKey(secret: Uint8Array, binding: Uint8Array<ArrayBuffer>)
   { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
 }
 
-export async function wrapMasterSeed(raw: Uint8Array, userId: string, generation: string, credentialIds: string[], rpId: string): Promise<PasskeyWrap> {
+/** onPrompt runs just before the browser asks for the passkey, and not at all if it cannot. */
+export async function wrapMasterSeed(raw: Uint8Array, userId: string, generation: string, credentialIds: string[], rpId: string, onPrompt?: () => void): Promise<PasskeyWrap> {
   if (raw.length !== 32 || !credentialIds.length || credentialIds.length > 32) throw new Error('PASSKEY_VAULT_UNAVAILABLE');
   const salt = crypto.getRandomValues(new Uint8Array(32));
-  const result = await evaluate(credentialIds, salt, rpId);
+  const result = await evaluate(credentialIds, salt, rpId, onPrompt);
   try {
     const binding = { credentialId: result.credentialId, rpId, salt: toBase64(salt) };
     const associated = context(userId, generation, binding);

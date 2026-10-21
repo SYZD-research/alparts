@@ -9,7 +9,9 @@ import {
   getHistoryRecoveryConfiguration,
   disableHistoryRecovery,
 } from '../../services/recovery.service';
-import { useT } from '../../i18n';
+import { msg, useT } from '../../i18n';
+type RecoveryPlan = Awaited<ReturnType<typeof createRecoveryPlan>>;
+const CODE_ONLY_WARNING = msg('保存済みの履歴は、復旧コードでのみ復元できます。コードを失うと、管理者に依頼しても復元できません。');
 export function HistoryRecoverySettings({
   pending = false,
   onRestored,
@@ -31,9 +33,8 @@ export function HistoryRecoverySettings({
       })
       .catch(() => setMessage(t('復元の設定を読み込めませんでした。画面を開き直してください。')));
   }, []);
-  const [plan, setPlan] = useState<Awaited<ReturnType<typeof createRecoveryPlan>> | null>(null);
+  const [plan, setPlan] = useState<RecoveryPlan | null>(null);
   const [code, setCode] = useState('');
-  const [saved, setSaved] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   const refreshRestoredHistory = () => {
@@ -89,6 +90,9 @@ export function HistoryRecoverySettings({
           {t('パスキーで履歴を復元')}
         </button>
       )}
+      {configured && !passkeyAvailable && (
+        <p className="text-sm text-discord-text">{t(CODE_ONLY_WARNING)}</p>
+      )}
       {!pending && !plan && configured !== null && (
         <div className="flex flex-wrap gap-3">
           {!configured && (
@@ -97,8 +101,7 @@ export function HistoryRecoverySettings({
               className="rounded-sm bg-discord-accent px-3 py-2 text-white"
               onClick={() => {
                 void run(async () => {
-                  setMessage(t('パスキーで本人確認してください。'));
-                  setPlan(await createRecoveryPlan());
+                  setPlan(await createRecoveryPlan(() => setMessage(t('パスキーで本人確認してください。'))));
                   return t('復旧コードを安全な場所に保管してください。');
                 });
               }}
@@ -157,45 +160,21 @@ export function HistoryRecoverySettings({
         </div>
       )}
       {plan && (
-        <div className="space-y-3 rounded-sm border border-discord-muted p-3">
-          <p className="text-sm text-discord-text">
-            {t('このコードを知っている人は履歴を復元できます。他の人に渡さず、この端末とは別の安全な場所に保管してください。')}
-          </p>
-          <code className="block break-all select-all rounded-sm bg-discord-bg p-3 text-white">
-            {plan.code}
-          </code>
-          <label className="block text-sm">
-            <input type="checkbox" checked={saved} onChange={(e) => setSaved(e.target.checked)} />{' '}
-            {t('復旧コードを保管しました')}
-          </label>
-          <button
-            disabled={!saved || busy}
-            className="rounded-sm bg-discord-accent px-3 py-2 text-white disabled:opacity-50"
-            onClick={() => {
-              void run(async () => {
-                await enableHistoryRecovery(plan);
-                setPlan(null);
-                setSaved(false);
-                setConfigured(true);
-                setPasskeyAvailable(true);
-                setNeedsUpdate(false);
-                return t('復元を有効にしました。「履歴を保存」で以前の履歴も保存してください。今後受け取る履歴はこの端末から保存します。');
-              });
-            }}
-          >
-            {t('復元を有効にする')}
-          </button>
-          <button
-            disabled={busy}
-            className="ml-3"
-            onClick={() => {
+        <NewRecoveryCode
+          plan={plan}
+          busy={busy}
+          onEnable={() => {
+            void run(async () => {
+              await enableHistoryRecovery(plan);
               setPlan(null);
-              setSaved(false);
-            }}
-          >
-            {t('キャンセル')}
-          </button>
-        </div>
+              setConfigured(true);
+              setPasskeyAvailable(plan.passkeyProtected);
+              setNeedsUpdate(false);
+              return t('復元を有効にしました。「履歴を保存」で以前の履歴も保存してください。今後受け取る履歴はこの端末から保存します。');
+            });
+          }}
+          onCancel={() => setPlan(null)}
+        />
       )}
       <form
         className="space-y-2"
@@ -228,5 +207,42 @@ export function HistoryRecoverySettings({
         </button>
       </form>
     </section>
+  );
+}
+/** Shows a new recovery code until the user has saved it and turns restore on. */
+export function NewRecoveryCode({ plan, busy, onEnable, onCancel }: {
+  plan: Pick<RecoveryPlan, 'code' | 'passkeyProtected'>;
+  busy: boolean;
+  onEnable: () => void;
+  onCancel: () => void;
+}) {
+  const t = useT();
+  const [saved, setSaved] = useState(false);
+  return (
+    <div className="space-y-3 rounded-sm border border-discord-muted p-3">
+      <p className="text-sm text-discord-text">
+        {t('このコードを知っている人は履歴を復元できます。他の人に渡さず、この端末とは別の安全な場所に保管してください。')}
+      </p>
+      {!plan.passkeyProtected && (
+        <p className="text-sm text-discord-text">{t(CODE_ONLY_WARNING)}</p>
+      )}
+      <code className="block break-all select-all rounded-sm bg-discord-bg p-3 text-white">
+        {plan.code}
+      </code>
+      <label className="block text-sm">
+        <input type="checkbox" checked={saved} onChange={(e) => setSaved(e.target.checked)} />{' '}
+        {t('復旧コードを保管しました')}
+      </label>
+      <button
+        disabled={!saved || busy}
+        className="rounded-sm bg-discord-accent px-3 py-2 text-white disabled:opacity-50"
+        onClick={onEnable}
+      >
+        {t('復元を有効にする')}
+      </button>
+      <button disabled={busy} className="ml-3" onClick={onCancel}>
+        {t('キャンセル')}
+      </button>
+    </div>
   );
 }

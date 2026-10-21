@@ -62,7 +62,8 @@ async function recoveryPage<T>(path: string, body?: unknown): Promise<T> {
     }
   }
 }
-export async function createRecoveryPlan() {
+/** onPasskeyPrompt runs just before the browser asks for a passkey, if it does. */
+export async function createRecoveryPlan(onPasskeyPrompt?: () => void) {
   const owner = getActiveDevice();
   const raw = crypto.getRandomValues(new Uint8Array(32));
   const generation = crypto.randomUUID();
@@ -91,9 +92,14 @@ export async function createRecoveryPlan() {
     let passkeyWrap: PasskeyWrap | undefined;
     if (passkeys.length > 0) {
       try {
-        passkeyWrap = await wrapMasterSeed(raw, owner.userId, generation, passkeys.map((key) => key.id), options.rpId);
+        passkeyWrap = await wrapMasterSeed(raw, owner.userId, generation, passkeys.map((key) => key.id), options.rpId, onPasskeyPrompt);
       } catch (error) {
-        if (!(error instanceof Error && error.message === 'PASSKEY_VAULT_UNAVAILABLE')) throw error;
+        // A passkey that cannot be used, or one the user declines, must not
+        // block a plan that the code alone restores.
+        if (
+          !(error instanceof Error && error.message === 'PASSKEY_VAULT_UNAVAILABLE')
+          && !(error instanceof DOMException && error.name === 'NotAllowedError')
+        ) throw error;
       }
     }
     assertRecoveryOwner(owner);
@@ -107,6 +113,7 @@ export async function createRecoveryPlan() {
       signingKey,
       encryptedSecret: JSON.stringify({ version: 2, codeSecret: encryptedSecret, ...(passkeyWrap ? { passkeyWrap } : {}) }),
       accessTokenHash: (await recoveryAccess(raw, owner.userId, generation)).accessTokenHash,
+      passkeyProtected: passkeyWrap !== undefined,
     };
   } finally {
     raw.fill(0);
