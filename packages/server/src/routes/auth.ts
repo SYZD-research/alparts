@@ -57,6 +57,7 @@ const loginAccountLimit = rateLimit({
     res.status(428).json({ error: 'LOGIN_CHALLENGE_REQUIRED', challenge: issueLoginChallenge(binding), statusCode: 428 });
   },
 });
+const loginAccountHardLimit = rateLimit({ windowMs: 15 * 60 * 1000, max: 60, key: credentialAccountRateLimitKey });
 const registrationIpLimit = rateLimit({ windowMs: 60 * 60 * 1000, max: 30 });
 // Each request mails someone, so both the source and the address are limited.
 const registrationCodeIpLimit = rateLimit({ windowMs: 60 * 60 * 1000, max: 30 });
@@ -132,7 +133,7 @@ router.post('/register', registrationIpLimit, registrationLimit, async (req, res
   }
 });
 
-router.post('/login', loginIpLimit, loginLimit, loginAccountLimit, async (req, res) => {
+router.post('/login', loginIpLimit, loginAccountHardLimit, loginAccountLimit, loginLimit, async (req, res) => {
   try {
     const body = loginSchema.parse(req.body);
     const result = await authService.login(body.email, body.password, body.deviceInfo);
