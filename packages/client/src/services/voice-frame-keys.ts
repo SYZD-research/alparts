@@ -79,6 +79,8 @@ export class VoiceFrameKeys {
   private readonly keyOwners = new Map<number, string>();
   private readonly ownKeyIds = new Set<number>();
   private queue: Promise<void> = Promise.resolve();
+  /** Per sender, the last of its key messages still being handled; the next one waits for it. */
+  private readonly receiving = new Map<string, Promise<void>>();
   /** Rotations started so far; a retry is dropped once another rotation started. */
   private rotations = 0;
   private retries = 0;
@@ -123,14 +125,21 @@ export class VoiceFrameKeys {
    * directory names it, is newer than the last one from that sender, and
    * names a key id no other key used.
    *
-   * Serialized on the same queue as rotations: without it, two deliveries can
-   * interleave across the WebCrypto awaits and the worker observes add/remove
-   * out of order, and a state update made before an awaited step can look
-   * committed although the step later failed.
+   * The messages of one sender are handled one at a time, in the order they
+   * came: otherwise two of them can interleave across the WebCrypto awaits and
+   * the worker sees that sender's adds and removes out of order. They wait
+   * neither for other senders nor for this participant's own rotation, which
+   * can wait seconds for the server: the sender switches to its new key
+   * shortly after the server relayed it.
    */
   async receive(envelope: SignedVoiceKeyEnvelope, signature: string): Promise<boolean> {
-    const run = this.queue.catch(() => undefined).then(() => this.receiveNow(envelope, signature));
-    this.queue = run.then(() => undefined, () => undefined);
+    const senderId = envelope.senderParticipantId;
+    const run = (this.receiving.get(senderId) ?? Promise.resolve()).then(() => this.receiveNow(envelope, signature));
+    const done = run.then(() => undefined, () => undefined);
+    this.receiving.set(senderId, done);
+    void done.then(() => {
+      if (this.receiving.get(senderId) === done) this.receiving.delete(senderId);
+    });
     return run;
   }
 
@@ -173,12 +182,22 @@ export class VoiceFrameKeys {
       return false;
     }
     if (key.length !== KEY_BYTES || this.closed || this.participants.get(sender.participantId) !== sender) return false;
+    // Another sender's message, or a rotation of this participant, may have
+    // taken the key id while the key was unwrapped.
+    if (this.keyOwners.has(envelope.keyId)) return false;
     this.keyOwners.set(envelope.keyId, sender.participantId);
     state.keyIds.push(envelope.keyId);
     try {
       await this.deps.addReceiveKey(sender.participantId, envelope.keyId, key);
     } finally {
       key.fill(0);
+    }
+    // The sender may have left while this key was installed, and its keys
+    // been removed before this one arrived: this one goes too, and nothing
+    // of the sender is kept.
+    if (this.closed || this.participants.get(sender.participantId) !== sender) {
+      this.deps.removeReceiveKey(envelope.keyId);
+      return false;
     }
     // The key is installed before its sequence counts, so a failed install
     // cannot make a retry look already seen.

@@ -194,6 +194,27 @@ describe('call frame keys (formal model M8k)', () => {
     expect(await a.reaches(b)).toBe(true);
   });
 
+  it('refuses a dropped key when it comes again, so frames recorded under it stay replays', async () => {
+    const call = new Call();
+    const a = await call.join('a');
+    const b = await call.join('b');
+    const first = a.sendKey!;
+    const recorded = (await a.frames.encrypt(new Uint8Array([1, 2, 3]).buffer))!;
+    expect(await b.frames.decrypt(a.peer.participantId, recorded)).not.toBeNull();
+    // Three newer keys of a: b drops the first.
+    await call.join('c');
+    await call.leave('c');
+    await call.join('d');
+    expect(b.installed.has(first.keyId)).toBe(false);
+    // a sends its first key to b again, under a newer sequence number.
+    const toB = call.relayed.map((message) => message.envelope).filter((envelope) => (
+      envelope.senderParticipantId === a.peer.participantId && envelope.targetParticipantId === b.peer.participantId
+    ));
+    const again = { ...toB.find((envelope) => envelope.keyId === first.keyId)!, sequence: toB[toB.length - 1]!.sequence + 1 };
+    expect(await b.keys.receive(again, `d-a:${serializeVoiceKeyEnvelope(again)}`)).toBe(false);
+    expect(await b.frames.decrypt(a.peer.participantId, recorded)).toBeNull();
+  });
+
   it('refuses keys from someone who is not in the call', async () => {
     const call = new Call();
     const a = await call.join('a');
@@ -264,6 +285,151 @@ describe('call frame keys when someone leaves during a rotation', () => {
     // Key 1 was meant for c as well, so it is never used.
     expect(used).toEqual([2]);
     expect(keys.currentKeyId).toBe(2);
+  });
+});
+
+describe('call frame keys when key messages and other changes overlap', () => {
+  const peer = (name: string): VoiceKeyPeer => ({ participantId: `p-${name}`, userId: `u-${name}`, deviceId: `d-${name}` });
+  /** A key message to a; its wrapped key names it, so a test can hold its unwrapping. */
+  const keyMessage = (sender: string, sequence: number, keyId: number): SignedVoiceKeyEnvelope => ({
+    type: 'voice-key', sequence, channelId: CHANNEL,
+    senderParticipantId: `p-${sender}`, senderDeviceId: `d-${sender}`,
+    targetParticipantId: 'p-a', targetDeviceId: 'd-a',
+    keyId, wrappedKey: btoa(`${sender} ${keyId}`.padEnd(120)),
+  });
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  /**
+   * Participant a, in the call with `others` and sending under its key 1000.
+   * A held step waits until the test finishes it; the log shows what reached
+   * the frame transform.
+   */
+  async function inCall(...others: string[]) {
+    const held = new Set<string>();
+    const waiting = new Map<string, () => void>();
+    const log: string[] = [];
+    const step = (name: string) => (held.delete(name)
+      ? new Promise<void>((resolve) => { waiting.set(name, resolve); })
+      : Promise.resolve());
+    let nextKeyId = 1000;
+    const keys = new VoiceFrameKeys({ channelId: CHANNEL, ...peer('a') }, {
+      randomKey: () => crypto.getRandomValues(new Uint8Array(32)),
+      randomKeyId: () => nextKeyId++,
+      identities: async (deviceIds) => new Map(deviceIds.map((deviceId) => [deviceId, { userId: `u-${deviceId.slice(2)}`, identityKey: deviceId }])),
+      wrapKey: async () => 'A'.repeat(344),
+      unwrapKey: async (wrapped) => {
+        await step(`unwrap ${atob(wrapped).trim()}`);
+        return new Uint8Array(32);
+      },
+      sign: async () => 'signature',
+      verify: async () => true,
+      send: async (envelope) => {
+        await step(`ack ${envelope.targetParticipantId}`);
+        return true;
+      },
+      useSendKey: async (keyId) => { log.push(`use ${keyId}`); },
+      addReceiveKey: async (participantId, keyId) => {
+        await step(`install ${keyId}`);
+        log.push(`add ${participantId} ${keyId}`);
+      },
+      removeReceiveKey: (keyId) => { log.push(`remove ${keyId}`); },
+      removeParticipant: (participantId) => { log.push(`forget ${participantId}`); },
+      delay: () => step('delay'),
+    });
+    await keys.start(others.map(peer));
+    log.length = 0;
+    return {
+      keys,
+      log,
+      /** Holds the next step of each name. */
+      hold: (...names: string[]) => names.forEach((name) => held.add(name)),
+      waiting: () => [...waiting.keys()],
+      finish: async (name: string) => {
+        const resume = waiting.get(name);
+        if (!resume) throw new Error(`${name} is not waiting`);
+        waiting.delete(name);
+        resume();
+        await settle();
+      },
+    };
+  }
+
+  it('installs the keys of others while its own new key still waits for the server and the switch', async () => {
+    const a = await inCall('b');
+    a.hold('ack p-b', 'ack p-c', 'delay');
+    // c joins and everyone makes a new key. a's own waits until the server
+    // relayed it, and then a moment longer before a sends under it.
+    const joined = a.keys.participantJoined([peer('b'), peer('c')]);
+    await settle();
+    expect(a.waiting()).toEqual(['ack p-b', 'ack p-c']);
+    const fromB = a.keys.receive(keyMessage('b', 1, 1), 'signature');
+    await settle();
+    expect(a.log).toEqual(['add p-b 1']);
+    await a.finish('ack p-b');
+    await a.finish('ack p-c');
+    expect(a.waiting()).toEqual(['delay']);
+    const fromC = a.keys.receive(keyMessage('c', 1, 2), 'signature');
+    await settle();
+    expect(a.log).toEqual(['add p-b 1', 'add p-c 2']);
+    await a.finish('delay');
+    await joined;
+    expect([await fromB, await fromC]).toEqual([true, true]);
+    expect(a.log).toEqual(['add p-b 1', 'add p-c 2', 'use 1001']);
+  });
+
+  it('installs the keys of one sender in the order they came, without holding up another sender', async () => {
+    const a = await inCall('b', 'c');
+    // b's first key is slow to install.
+    a.hold('install 1');
+    const fromB = Promise.all([1, 2, 3, 4].map((n) => a.keys.receive(keyMessage('b', n, n), 'signature')));
+    const fromC = a.keys.receive(keyMessage('c', 1, 9), 'signature');
+    await settle();
+    expect(a.log).toEqual(['add p-c 9']);
+    await a.finish('install 1');
+    expect(await fromB).toEqual([true, true, true, true]);
+    expect(await fromC).toBe(true);
+    // b's oldest key goes once three newer ones are in, and does not come back.
+    expect(a.log).toEqual(['add p-c 9', 'add p-b 1', 'add p-b 2', 'add p-b 3', 'add p-b 4', 'remove 1']);
+  });
+
+  it('refuses a key id that another key took while this one was unwrapped', async () => {
+    const a = await inCall('b', 'c');
+    // b and c send the same key id at once: only the first one unwrapped counts.
+    a.hold('unwrap b 7', 'unwrap c 7');
+    const fromB = a.keys.receive(keyMessage('b', 1, 7), 'signature');
+    const fromC = a.keys.receive(keyMessage('c', 1, 7), 'signature');
+    await settle();
+    expect(a.waiting()).toEqual(['unwrap b 7', 'unwrap c 7']);
+    await a.finish('unwrap b 7');
+    await a.finish('unwrap c 7');
+    expect([await fromB, await fromC]).toEqual([true, false]);
+    // c sends the key id that a's own next key takes while c's is unwrapped.
+    a.hold('unwrap c 1001');
+    const taken = a.keys.receive(keyMessage('c', 2, 1001), 'signature');
+    await settle();
+    const joined = a.keys.participantJoined([peer('b'), peer('c'), peer('d')]);
+    await settle();
+    await a.finish('unwrap c 1001');
+    await joined;
+    expect(await taken).toBe(false);
+    expect(a.log).toEqual(['add p-b 7', 'use 1001']);
+  });
+
+  it('keeps nothing of a key whose sender left while it was being installed', async () => {
+    const a = await inCall('b', 'c');
+    a.hold('install 1');
+    const fromB = a.keys.receive(keyMessage('b', 1, 1), 'signature');
+    await settle();
+    const left = a.keys.participantLeft('p-b', [peer('c')]);
+    await settle();
+    await a.finish('install 1');
+    await left;
+    expect(await fromB).toBe(false);
+    // b's key arrived after b's keys were removed, and is removed as well.
+    expect(a.log).toEqual(['forget p-b', 'use 1001', 'add p-b 1', 'remove 1']);
+    // Should b come back under the same id, its keys count from the start again.
+    await a.keys.participantJoined([peer('b'), peer('c')]);
+    expect(await a.keys.receive(keyMessage('b', 1, 2), 'signature')).toBe(true);
   });
 });
 
