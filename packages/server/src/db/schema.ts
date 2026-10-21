@@ -710,6 +710,22 @@ export const attachmentUploadChunks = pgTable('attachment_upload_chunks', {
   pk: primaryKey({ columns: [t.uploadId, t.chunkIndex] }),
 }));
 
+// Stored objects of attachments whose message was deleted. The attachment
+// rows go with the delete; a row here keeps the bytes counted against the
+// author's, channel's and workspace's quotas until the object store confirms
+// the objects are gone.
+export const attachmentRemovals = pgTable('attachment_removals', {
+  storageKey: text('storage_key').primaryKey(),
+  channelId: uuid('channel_id').notNull().references(() => channels.id),
+  userId: uuid('user_id').notNull().references(() => users.id),
+  sizeBytes: bigint('size_bytes', { mode: 'number' }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => [
+  index('attachment_removals_channel_id_idx').on(t.channelId),
+  index('attachment_removals_user_id_idx').on(t.userId),
+  index('attachment_removals_created_at_idx').on(t.createdAt),
+]);
+
 // === Audit Log ===
 
 export const auditLogs = pgTable('audit_logs', {

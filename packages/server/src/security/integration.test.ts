@@ -108,7 +108,7 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     const auditModule = await import('../middleware/audit.js');
     const dbModule = await import('../db/index.js');
     closeDb = dbModule.closeDb;
-    assert.equal(await dbModule.checkDatabaseSchema(), 24);
+    assert.equal(await dbModule.checkDatabaseSchema(), 25);
     verifyAuditChain = auditModule.verifyAuditChain;
     await auditModule.provisionAuditCheckpoint();
     const startupAudit = await verifyAuditChain();
@@ -2179,6 +2179,18 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     const editEvent = await json<Record<string, unknown>>(editResponse);
     assert.deepEqual((await editedRealtime).message, editEvent);
 
+    const deletedAttachmentRow = await integrationDb.query.attachments.findFirst({
+      columns: { storageKey: true },
+      where: drizzle.eq(schema.attachments.id, attachment.id),
+    });
+    assert.ok(deletedAttachmentRow);
+    const deletedAttachmentChunks = await integrationDb.query.attachmentUploadChunks.findMany({
+      columns: { storageKey: true },
+      where: drizzle.eq(schema.attachmentUploadChunks.uploadId, upload.uploadId),
+    });
+    assert.equal(deletedAttachmentChunks.length, attachmentChunkCount);
+    const usageBeforeDelete = await fileService.getCiphertextUsage(integrationDb, workspace.id, channelId, alice.user.id);
+
     const deleteEnvelope: SignedMessageEnvelope = {
       type: 'delete',
       channelId,
@@ -2266,6 +2278,40 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     })).status, 404);
     assert.equal((await request(`/api/files/${attachment.id}`, { cookie: alice.cookie })).status, 404);
     assert.equal((await request(`/api/files/${attachment.id}/chunks/0`, { cookie: alice.cookie })).status, 404);
+    // The delete took the attachment with its upload and chunk registrations.
+    // Its objects are removed after the commit, and only then do its bytes
+    // leave the quotas. Its pin and bookmark went with the message as well.
+    assert.equal(await integrationDb.query.attachments.findFirst({
+      where: drizzle.eq(schema.attachments.id, attachment.id),
+    }), undefined);
+    assert.equal(await integrationDb.query.attachmentUploads.findFirst({
+      where: drizzle.eq(schema.attachmentUploads.id, upload.uploadId),
+    }), undefined);
+    assert.equal(await integrationDb.query.attachmentUploadChunks.findFirst({
+      where: drizzle.eq(schema.attachmentUploadChunks.uploadId, upload.uploadId),
+    }), undefined);
+    for (let attempt = 0; await integrationDb.query.attachmentRemovals.findFirst({
+      where: drizzle.eq(schema.attachmentRemovals.storageKey, deletedAttachmentRow.storageKey),
+    }); attempt += 1) {
+      assert.ok(attempt < 200, 'the objects of a deleted attachment are removed after the delete');
+      await delay(25);
+    }
+    for (const chunk of deletedAttachmentChunks) {
+      await assert.rejects(
+        storageClient.send(new S3.HeadObjectCommand({ Bucket: process.env.S3_BUCKET || 'alparts', Key: chunk.storageKey })),
+        (error: any) => error?.name === 'NotFound' || error?.$metadata?.httpStatusCode === 404,
+      );
+    }
+    assert.deepEqual(await fileService.getCiphertextUsage(integrationDb, workspace.id, channelId, alice.user.id), {
+      userBytes: usageBeforeDelete.userBytes - attachment.ciphertextSizeBytes,
+      channelBytes: usageBeforeDelete.channelBytes - attachment.ciphertextSizeBytes,
+      workspaceBytes: usageBeforeDelete.workspaceBytes - attachment.ciphertextSizeBytes,
+    });
+    assert.equal(await integrationDb.query.messagePins.findFirst({
+      where: drizzle.eq(schema.messagePins.messageId, message.id),
+    }), undefined);
+    assert.equal((await json<Array<{ messageId: string }>>(await request('/api/bookmarks', { cookie: alice.cookie })))
+      .some((bookmark) => bookmark.messageId === message.id), false);
 
     const unreadDeletedRequest = encryptedMessage(
       channelId,
@@ -4516,7 +4562,7 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
       await client.end();
     }
     const { checkDatabaseSchema } = await import('../db/index.js');
-    assert.equal(await checkDatabaseSchema(), 24);
+    assert.equal(await checkDatabaseSchema(), 25);
   });
 
   it('never re-signs a shortened audit chain after the external checkpoint anchor is deleted', async () => {

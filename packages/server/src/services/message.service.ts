@@ -22,8 +22,13 @@ import {
   users,
 } from '../db/schema.js';
 import { auditedTransaction, auditGuardedTransaction } from '../middleware/audit.js';
+import { logError } from '../security/logger.js';
 import { verifyMessageEnvelopeSignature } from '../security/message.js';
-import { getAttachmentsForMessages } from './file.service.js';
+import {
+  getAttachmentsForMessages,
+  releaseMessageAttachments,
+  removeDeletedAttachmentObjects,
+} from './file.service.js';
 import { scopedIdempotencyKey, signedIdempotencyKey } from './message-idempotency.js';
 import {
   getChannelAuthorizationFromStore,
@@ -349,7 +354,7 @@ export async function editMessage(messageId: string, authorId: string, input: Cr
 export async function deleteMessage(messageId: string, userId: string, input: CryptoEventInput) {
   const deleteInput = { ...input, encryptedContent: '', contentNonce: '' };
   const location = await getOriginalMessage(messageId);
-  return auditedTransaction(async (transaction) => {
+  const { releasedStorageKeys, ...deleted } = await auditedTransaction(async (transaction) => {
     const authorization = await lockAndAuthorizeCryptoWrite(
       transaction,
       location.channelId,
@@ -379,9 +384,11 @@ export async function deleteMessage(messageId: string, userId: string, input: Cr
       if (priorDelete.idempotencyKey !== expectedKey) throw new Error('MESSAGE_NOT_FOUND');
     }
     const storedEvent = await insertCryptoEvent(transaction, original.channelId, userId, deleteInput, 'delete', messageId);
+    let releasedStorageKeys: string[] = [];
     if (storedEvent.isNewEvent) {
       await transaction.delete(messagePins).where(eq(messagePins.messageId, messageId));
       await transaction.delete(messageBookmarks).where(eq(messageBookmarks.messageId, messageId));
+      releasedStorageKeys = await releaseMessageAttachments(transaction, original);
     }
     let forumPost: ForumPostBroadcastState | null = null;
     let forumPostRemoved = false;
@@ -411,6 +418,7 @@ export async function deleteMessage(messageId: string, userId: string, input: Cr
       forumPostId,
       forumPost,
       forumPostRemoved,
+      releasedStorageKeys,
     };
   }, (result) => ({
     actorId: userId,
@@ -423,6 +431,13 @@ export async function deleteMessage(messageId: string, userId: string, input: Cr
       eventId: result.event.id,
     },
   }));
+  // The object store must not hold up the deletion or its broadcast. A
+  // removal that fails here stays queued for the periodic cleanup.
+  if (releasedStorageKeys.length > 0) {
+    void removeDeletedAttachmentObjects(releasedStorageKeys)
+      .catch((error) => logError('attachments.removal', error));
+  }
+  return deleted;
 }
 
 export async function toggleReaction(messageId: string, userId: string, emoji: string) {

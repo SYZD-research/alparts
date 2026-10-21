@@ -3,7 +3,7 @@ import { createApp } from './app.js';
 import { config } from './config/index.js';
 import { logError, logInfo, logWarning } from './security/logger.js';
 import { emailDelivery } from './services/email.service.js';
-import { cleanupExpiredUploads } from './services/file.service.js';
+import { cleanupDeletedAttachments, cleanupExpiredUploads } from './services/file.service.js';
 import { flushAuditCheckpoint, verifyAuditChain } from './middleware/audit.js';
 import { checkDatabaseSchema, closeDb } from './db/index.js';
 import { closePasswordWorkers } from './security/password-work.js';
@@ -47,10 +47,14 @@ const uploadCleanup = setInterval(() => {
     return;
   }
   uploadCleanupRunning = true;
-  void cleanupExpiredUploads()
-    .then((removed) => logInfo('attachments.cleanup_complete', { removed, outcome: 'success' }))
-    .catch((error) => logError('attachments.cleanup', error))
-    .finally(() => { uploadCleanupRunning = false; });
+  void Promise.all([
+    cleanupExpiredUploads()
+      .then((removed) => logInfo('attachments.cleanup_complete', { removed, outcome: 'success' }))
+      .catch((error) => logError('attachments.cleanup', error)),
+    cleanupDeletedAttachments()
+      .then((removed) => logInfo('attachments.removal_complete', { removed, outcome: 'success' }))
+      .catch((error) => logError('attachments.removal', error)),
+  ]).finally(() => { uploadCleanupRunning = false; });
 }, 15 * 60 * 1000);
 uploadCleanup.unref();
 
