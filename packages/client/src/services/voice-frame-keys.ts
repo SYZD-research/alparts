@@ -122,8 +122,19 @@ export class VoiceFrameKeys {
    * participant and device, comes from a current participant's device as the
    * directory names it, is newer than the last one from that sender, and
    * names a key id no other key used.
+   *
+   * Serialized on the same queue as rotations: without it, two deliveries can
+   * interleave across the WebCrypto awaits and the worker observes add/remove
+   * out of order, and a state update made before an awaited step can look
+   * committed although the step later failed.
    */
   async receive(envelope: SignedVoiceKeyEnvelope, signature: string): Promise<boolean> {
+    const run = this.queue.catch(() => undefined).then(() => this.receiveNow(envelope, signature));
+    this.queue = run.then(() => undefined, () => undefined);
+    return run;
+  }
+
+  private async receiveNow(envelope: SignedVoiceKeyEnvelope, signature: string): Promise<boolean> {
     if (this.closed) return false;
     if (
       envelope.type !== 'voice-key'
@@ -151,10 +162,10 @@ export class VoiceFrameKeys {
     if (this.closed || this.participants.get(sender.participantId) !== sender) return false;
     const state = this.inbound.get(sender.participantId) ?? { deviceId: sender.deviceId, lastSequence: 0, keyIds: [] };
     if (state.deviceId !== sender.deviceId || envelope.sequence <= state.lastSequence) return false;
-    const owner = this.keyOwners.get(envelope.keyId);
-    if (owner !== undefined && (owner !== sender.participantId || state.keyIds.includes(envelope.keyId))) return false;
-    state.lastSequence = envelope.sequence;
-    this.inbound.set(sender.participantId, state);
+    // A key id names one key for the life of the call, including ids already
+    // evicted from state.keyIds and the worker. Re-admitting one would also
+    // reset that key's SFrame replay window.
+    if (this.keyOwners.has(envelope.keyId)) return false;
     let key: Uint8Array;
     try {
       key = await this.deps.unwrapKey(envelope.wrappedKey);
@@ -162,11 +173,17 @@ export class VoiceFrameKeys {
       return false;
     }
     if (key.length !== KEY_BYTES || this.closed || this.participants.get(sender.participantId) !== sender) return false;
-    if (this.keyOwners.has(envelope.keyId) && this.keyOwners.get(envelope.keyId) !== sender.participantId) return false;
     this.keyOwners.set(envelope.keyId, sender.participantId);
     state.keyIds.push(envelope.keyId);
-    await this.deps.addReceiveKey(sender.participantId, envelope.keyId, key);
-    key.fill(0);
+    try {
+      await this.deps.addReceiveKey(sender.participantId, envelope.keyId, key);
+    } finally {
+      key.fill(0);
+    }
+    // The key is installed before its sequence counts, so a failed install
+    // cannot make a retry look already seen.
+    state.lastSequence = envelope.sequence;
+    this.inbound.set(sender.participantId, state);
     while (state.keyIds.length > RECEIVE_KEYS_PER_SENDER) {
       this.deps.removeReceiveKey(state.keyIds.shift()!);
     }
