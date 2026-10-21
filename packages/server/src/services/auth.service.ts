@@ -400,13 +400,18 @@ export async function reauthenticate(userId: string, password: string) {
  * Performs the expensive password KDF before callers acquire an audit, key,
  * or database lock. The returned hash is an opaque revision token; callers
  * must lock and compare it again immediately before the protected mutation.
+ *
+ * With password login turned off the password no longer counts for adding a
+ * device, unlocking the app or a confirmation either, and the answer is the
+ * one for a wrong password, as for login. The KDF still runs, so the timing
+ * does not tell the two apart.
  */
 export async function verifyCurrentPasswordSnapshot(userId: string, password: string): Promise<string> {
   const user = await db.query.users.findFirst({
-    columns: { passwordHash: true },
+    columns: { passwordHash: true, disabledAt: true, passwordLoginDisabled: true },
     where: eq(users.id, userId),
   });
-  if (!user || !await verifyPassword(password, user.passwordHash)) {
+  if (!user || !await verifyPassword(password, user.passwordHash) || user.disabledAt || user.passwordLoginDisabled) {
     throw new Error('INVALID_CREDENTIALS');
   }
   return user.passwordHash;
@@ -415,18 +420,25 @@ export async function verifyCurrentPasswordSnapshot(userId: string, password: st
 /**
  * A short, non-KDF compare under a shared user-row lock closes the password
  * change race without holding a transaction while worker capacity is queued.
+ * Turning password login off takes this row for update, so it cannot slip in
+ * between either.
  */
 export async function assertCurrentPasswordSnapshot(
   store: any,
   userId: string,
   expectedPasswordHash: string,
 ): Promise<void> {
-  const rows = await store.select({ passwordHash: users.passwordHash })
+  const rows = await store.select({
+    passwordHash: users.passwordHash,
+    disabledAt: users.disabledAt,
+    passwordLoginDisabled: users.passwordLoginDisabled,
+  })
     .from(users)
     .where(eq(users.id, userId))
     .limit(1)
-    .for('share') as Array<{ passwordHash: string }>;
-  if (!rows[0] || !matchesSecret(rows[0].passwordHash, expectedPasswordHash)) {
+    .for('share') as Array<{ passwordHash: string; disabledAt: Date | null; passwordLoginDisabled: boolean }>;
+  const user = rows[0];
+  if (!user || user.disabledAt || user.passwordLoginDisabled || !matchesSecret(user.passwordHash, expectedPasswordHash)) {
     throw new Error('INVALID_CREDENTIALS');
   }
 }

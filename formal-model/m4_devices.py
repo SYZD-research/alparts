@@ -6,7 +6,8 @@ account disabling:
 
   register  needs a valid session and either the current password
             (password sessions always, passkey sessions optionally) or a
-            passkey session younger than 10 minutes (F-P2F-012).
+            passkey session younger than 10 minutes (F-P2F-012). Once the
+            user turns password login off, the password no longer counts.
             The first device the account ever has is approved at once (TOFU).
   approve   signed by an approved, non-revoked device of the same account,
             through a session bound to that device; never self-approval.
