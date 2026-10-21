@@ -83,6 +83,7 @@ export async function deriveMlsDelivery(
       const pinned = await readSecurityState<{
         version: number;
         transcript: string;
+        minVersion?: number;
       }>(owner, `mls-head:${channelId}`);
       const cached = await readSecurityState<{
         raw: string;
@@ -165,8 +166,11 @@ export async function deriveMlsDelivery(
 
       if (cached) {
         if (cached.transcript !== transcript) throw new Error('INVALID_MLS_TRANSCRIPT');
-        if (response.status === 'active' && (!pinned || version > pinned.version))
-          await save(`mls-head:${channelId}`, { version, transcript });
+        if (response.status === 'active' || response.status === 'retired') {
+          const minVersion = Math.min(pinned?.minVersion ?? pinned?.version ?? version, version);
+          const nextHead = !pinned || version > pinned.version ? { version, transcript, minVersion } : { ...pinned, minVersion };
+          await save(`mls-head:${channelId}`, nextHead);
+        }
         channelKeyScopes.assertCurrent(scope);
         return fromBase64(cached.raw);
       }
@@ -204,8 +208,11 @@ export async function deriveMlsDelivery(
         raw: toBase64(raw),
         transcript,
       });
-      if (response.status === 'active' && (!pinned || version > pinned.version))
-        await save(`mls-head:${channelId}`, { version, transcript });
+      if (response.status === 'active' || response.status === 'retired') {
+        const minVersion = Math.min(pinned?.minVersion ?? pinned?.version ?? version, version);
+        const nextHead = !pinned || version > pinned.version ? { version, transcript, minVersion } : { ...pinned, minVersion };
+        await save(`mls-head:${channelId}`, nextHead);
+      }
       await deleteSecurityState(owner, `mls-package:${channelId}:${version}`);
       await deleteSecurityState(owner, `mls-proposal:${channelId}:${version}`);
       channelKeyScopes.assertCurrent(scope);
@@ -224,8 +231,8 @@ export function nonMlsDeliveryAllowed(pinnedVersion: number | null, version: num
 
 /** The MLS head version this device pinned for the channel, if any. */
 export async function pinnedMlsVersion(channelId: string): Promise<number | null> {
-  const pinned = await readSecurityState<{ version: number }>(getActiveDevice(), `mls-head:${channelId}`);
-  return typeof pinned?.version === 'number' ? pinned.version : null;
+  const pinned = await readSecurityState<{ version: number; minVersion?: number }>(getActiveDevice(), `mls-head:${channelId}`);
+  return typeof pinned?.minVersion === 'number' ? pinned.minVersion : typeof pinned?.version === 'number' ? pinned.version : null;
 }
 
 export function mlsLocator(encryptedKey: string): { version: number; transcript: string } | null {
