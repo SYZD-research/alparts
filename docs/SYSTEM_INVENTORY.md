@@ -202,7 +202,7 @@ Last verified: 2026-09-04. This inventory covers first-party source, build, test
 | Key protocol | `channel_keys`, `channel_key_epochs`, `channel_key_epoch_recipients`, `mls_key_packages`, `mls_epochs` (signed envelopes, including the group commit log), `channel_directory_heads`, `mls_groups`, `mls_group_members`, `mls_member_packages`, `mls_published_package_ids`, `mls_group_node_keys`, `mls_rejoin_requests` |
 | Messaging/user state | `messages`, `message_pins`, `message_reactions`, `read_positions`, `channel_preferences`, `message_bookmarks` |
 | Direct messages | `dm_conversations`, `dm_members`; DMs also have a channel row |
-| Attachments | `attachments`, `attachment_uploads`, `attachment_upload_chunks`; ciphertext bytes are in object storage |
+| Attachments | `attachments`, `attachment_uploads`, `attachment_upload_chunks`, `attachment_removals` (objects of deleted messages' attachments not yet removed); ciphertext bytes are in object storage |
 | Audit | `audit_logs`; the current tail witness is outside PostgreSQL |
 
 All durable schema changes are in the ordered migration journal. There is no separate broker, cache server, scheduler database, or background worker process.

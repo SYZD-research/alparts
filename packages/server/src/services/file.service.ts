@@ -10,6 +10,7 @@ import {
 import { config } from '../config/index.js';
 import { db } from '../db/index.js';
 import {
+  attachmentRemovals,
   attachments,
   attachmentUploadChunks,
   attachmentUploads,
@@ -709,6 +710,75 @@ export async function cleanupExpiredUploads(limit = 100): Promise<number> {
   return removed;
 }
 
+/**
+ * Takes the attachments of a message out of service inside the transaction
+ * that deletes it, together with their completed uploads and chunk
+ * registrations. The stored objects outlive the commit, so each is queued for
+ * removal and keeps counting against the quotas until the store confirms it
+ * is gone. Unfinished uploads keep counting until they are cancelled or expire.
+ */
+export async function releaseMessageAttachments(
+  store: any,
+  message: { id: string; channelId: string; authorId: string },
+): Promise<string[]> {
+  const released = await store.select({ storageKey: attachments.storageKey, sizeBytes: attachments.sizeBytes })
+    .from(attachments)
+    .where(eq(attachments.messageId, message.id))
+    .limit(MAX_ATTACHMENTS_PER_MESSAGE + 1) as Array<{ storageKey: string; sizeBytes: number }>;
+  if (released.length > MAX_ATTACHMENTS_PER_MESSAGE) throw new Error('ATTACHMENT_INVARIANT_EXCEEDED');
+  await store.delete(attachments).where(eq(attachments.messageId, message.id));
+  await store.delete(attachmentUploads).where(and(
+    eq(attachmentUploads.messageId, message.id),
+    isNotNull(attachmentUploads.completedAt),
+  ));
+  if (released.length === 0) return [];
+  await store.insert(attachmentRemovals).values(released.map((attachment) => ({
+    storageKey: attachment.storageKey,
+    channelId: message.channelId,
+    userId: message.authorId,
+    sizeBytes: attachment.sizeBytes,
+  })));
+  return released.map((attachment) => attachment.storageKey);
+}
+
+/**
+ * Removes queued objects of deleted attachments. A queued row, and with it
+ * the bytes counted against the quotas, goes only after the store confirmed
+ * the removal; a failed removal stays queued for the next pass.
+ */
+export async function removeDeletedAttachmentObjects(storageKeys: readonly string[]): Promise<number> {
+  let removed = 0;
+  const failures: unknown[] = [];
+  for (const storageKey of storageKeys) {
+    try {
+      await assertAuditWriteAvailable();
+      await deleteStoredUpload(storageKey);
+      const dequeued = await auditGuardedTransaction(async (transaction) => {
+        const [row] = await transaction.delete(attachmentRemovals)
+          .where(eq(attachmentRemovals.storageKey, storageKey))
+          .returning({ storageKey: attachmentRemovals.storageKey });
+        return Boolean(row);
+      });
+      if (dequeued) removed += 1;
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  if (failures.length > 0) {
+    throw new AggregateError(failures, `Failed to remove the objects of ${failures.length} deleted attachment(s)`);
+  }
+  return removed;
+}
+
+export async function cleanupDeletedAttachments(limit = 100): Promise<number> {
+  const queued = await db.query.attachmentRemovals.findMany({
+    columns: { storageKey: true },
+    orderBy: [asc(attachmentRemovals.createdAt), asc(attachmentRemovals.storageKey)],
+    limit,
+  });
+  return removeDeletedAttachmentObjects(queued.map((row) => row.storageKey));
+}
+
 async function getAuthorizedAttachment(attachmentId: string, userId: string) {
   const location = await db.select({ workspaceId: channels.workspaceId })
     .from(attachments)
@@ -943,32 +1013,26 @@ async function canViewChannelFromStore(
 }
 
 export async function getCiphertextUsage(store: any, workspaceId: string, channelId: string, userId: string) {
-  const messageNotDeleted = sql<boolean>`not exists (
-    select 1
-    from "messages" as "usage_message_deletions"
-    where "usage_message_deletions"."ref_message_id" = ${messages.id}
-      and "usage_message_deletions"."type" = 'delete'
-  )`;
   const finalizedUserRows = await store.select({
     bytes: sql<string>`coalesce(sum(${attachments.sizeBytes}), 0)::bigint`,
   }).from(attachments)
     .innerJoin(messages, eq(attachments.messageId, messages.id))
     .innerJoin(channels, eq(messages.channelId, channels.id))
-    .where(and(eq(messages.authorId, userId), eq(channels.workspaceId, workspaceId), messageNotDeleted));
+    .where(and(eq(messages.authorId, userId), eq(channels.workspaceId, workspaceId)));
   const activeUserRows = await store.select({
     bytes: sql<string>`coalesce(sum(${attachmentUploadChunks.sizeBytes}), 0)::bigint`,
   }).from(attachmentUploadChunks)
     .innerJoin(attachmentUploads, eq(attachmentUploadChunks.uploadId, attachmentUploads.id))
     .innerJoin(messages, eq(attachmentUploads.messageId, messages.id))
     .innerJoin(channels, eq(messages.channelId, channels.id))
-    .where(and(eq(attachmentUploads.uploaderId, userId), eq(channels.workspaceId, workspaceId), isNull(attachmentUploads.completedAt), messageNotDeleted));
+    .where(and(eq(attachmentUploads.uploaderId, userId), eq(channels.workspaceId, workspaceId), isNull(attachmentUploads.completedAt)));
   const finalizedRows = await store.select({
     channelBytes: sql<string>`coalesce(sum(${attachments.sizeBytes}) filter (where ${messages.channelId} = ${channelId}), 0)::bigint`,
     workspaceBytes: sql<string>`coalesce(sum(${attachments.sizeBytes}), 0)::bigint`,
   }).from(attachments)
     .innerJoin(messages, eq(attachments.messageId, messages.id))
     .innerJoin(channels, eq(messages.channelId, channels.id))
-    .where(and(eq(channels.workspaceId, workspaceId), messageNotDeleted));
+    .where(eq(channels.workspaceId, workspaceId));
   const activeRows = await store.select({
     channelBytes: sql<string>`coalesce(sum(${attachmentUploadChunks.sizeBytes}) filter (where ${messages.channelId} = ${channelId}), 0)::bigint`,
     workspaceBytes: sql<string>`coalesce(sum(${attachmentUploadChunks.sizeBytes}), 0)::bigint`,
@@ -976,11 +1040,21 @@ export async function getCiphertextUsage(store: any, workspaceId: string, channe
     .innerJoin(attachmentUploads, eq(attachmentUploadChunks.uploadId, attachmentUploads.id))
     .innerJoin(messages, eq(attachmentUploads.messageId, messages.id))
     .innerJoin(channels, eq(messages.channelId, channels.id))
-    .where(and(eq(channels.workspaceId, workspaceId), isNull(attachmentUploads.completedAt), messageNotDeleted));
+    .where(and(eq(channels.workspaceId, workspaceId), isNull(attachmentUploads.completedAt)));
+  // Deleted attachments still count until their objects are removed. Read
+  // after the attachments: a delete that commits in between is counted twice,
+  // never missed.
+  const removalRows = await store.select({
+    userBytes: sql<string>`coalesce(sum(${attachmentRemovals.sizeBytes}) filter (where ${attachmentRemovals.userId} = ${userId}), 0)::bigint`,
+    channelBytes: sql<string>`coalesce(sum(${attachmentRemovals.sizeBytes}) filter (where ${attachmentRemovals.channelId} = ${channelId}), 0)::bigint`,
+    workspaceBytes: sql<string>`coalesce(sum(${attachmentRemovals.sizeBytes}), 0)::bigint`,
+  }).from(attachmentRemovals)
+    .innerJoin(channels, eq(attachmentRemovals.channelId, channels.id))
+    .where(eq(channels.workspaceId, workspaceId));
   const result = {
-    userBytes: Number(finalizedUserRows[0]?.bytes ?? 0) + Number(activeUserRows[0]?.bytes ?? 0),
-    channelBytes: Number(finalizedRows[0]?.channelBytes ?? 0) + Number(activeRows[0]?.channelBytes ?? 0),
-    workspaceBytes: Number(finalizedRows[0]?.workspaceBytes ?? 0) + Number(activeRows[0]?.workspaceBytes ?? 0),
+    userBytes: Number(finalizedUserRows[0]?.bytes ?? 0) + Number(activeUserRows[0]?.bytes ?? 0) + Number(removalRows[0]?.userBytes ?? 0),
+    channelBytes: Number(finalizedRows[0]?.channelBytes ?? 0) + Number(activeRows[0]?.channelBytes ?? 0) + Number(removalRows[0]?.channelBytes ?? 0),
+    workspaceBytes: Number(finalizedRows[0]?.workspaceBytes ?? 0) + Number(activeRows[0]?.workspaceBytes ?? 0) + Number(removalRows[0]?.workspaceBytes ?? 0),
   };
   if (!Object.values(result).every(Number.isSafeInteger)) throw new Error('STORAGE_QUOTA_EXCEEDED');
   return result;

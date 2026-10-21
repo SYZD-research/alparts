@@ -217,6 +217,12 @@ describe('account security end to end', { skip: !enabled }, () => {
   // Group protocol 3 channels as 0023 (continuous groups) finds them.
   const migratedChannel = randomUUID();
   const pendingOnlyChannel = randomUUID();
+  // Messages as 0024 (attachment removals) finds them: one deleted, one kept,
+  // each with a finished attachment, a pin and a bookmark.
+  const deletedLegacyMessage = randomUUID();
+  const keptLegacyMessage = randomUUID();
+  const deletedLegacyStorageKey = `attachments/v1/${randomUUID()}`;
+  const keptLegacyStorageKey = `attachments/v1/${randomUUID()}`;
   let legacyBeforeGroups: { epochs: unknown[]; keyRotationRequired: boolean };
 
   // === The channel's continuous group as each device's client holds it ===
@@ -760,6 +766,41 @@ describe('account security end to end', { skip: !enabled }, () => {
             [delivery.id, delivery.channel_id, delivery.version, legacyDevice],
           );
         }
+        // A deleted message used to keep its attachment, pin and bookmark.
+        await migrationClient.query(
+          "INSERT INTO messages (id,channel_id,author_id,device_id,content,content_nonce,idempotency_key) VALUES ($1,$3,$4,$5,'test-fixture','test-fixture',$6), ($2,$3,$4,$5,'test-fixture','test-fixture',$7)",
+          [deletedLegacyMessage, keptLegacyMessage, legacyChannel, legacyUser, legacyDevice, `${legacyUser}:${randomUUID()}`, `${legacyUser}:${randomUUID()}`],
+        );
+        await migrationClient.query(
+          "INSERT INTO messages (channel_id,author_id,device_id,content,content_nonce,type,ref_message_id,idempotency_key) VALUES ($1,$2,$3,'','','delete',$4,$5)",
+          [legacyChannel, legacyUser, legacyDevice, deletedLegacyMessage, `${legacyUser}:${randomUUID()}`],
+        );
+        for (const [messageId, storageKey] of [
+          [deletedLegacyMessage, deletedLegacyStorageKey],
+          [keptLegacyMessage, keptLegacyStorageKey],
+        ]) {
+          const uploadId = randomUUID();
+          await migrationClient.query(
+            "INSERT INTO attachments (message_id,channel_id,signer_device_id,key_version,signature,filename_enc,mime_type,size_bytes,storage_key,wrapped_key,content_nonce) VALUES ($1,$2,$3,1,'test-fixture','test-fixture','application/octet-stream',4096,$4,'test-fixture','test-fixture')",
+            [messageId, legacyChannel, legacyDevice, storageKey],
+          );
+          await migrationClient.query(
+            "INSERT INTO attachment_uploads (id,message_id,uploader_id,storage_key,filename_enc,mime_type,expires_at,completed_at) VALUES ($1,$2,$3,$4,'test-fixture','application/octet-stream',now(),now())",
+            [uploadId, messageId, legacyUser, storageKey],
+          );
+          await migrationClient.query(
+            "INSERT INTO attachment_upload_chunks (upload_id,chunk_index,size_bytes,storage_key,etag) VALUES ($1,0,4096,$2,'test-fixture')",
+            [uploadId, `${storageKey}/000000`],
+          );
+        }
+        await migrationClient.query(
+          'INSERT INTO message_pins (channel_id,message_id,pinned_by) VALUES ($1,$2,$4), ($1,$3,$4)',
+          [legacyChannel, deletedLegacyMessage, keptLegacyMessage, legacyUser],
+        );
+        await migrationClient.query(
+          'INSERT INTO message_bookmarks (user_id,message_id) VALUES ($1,$2), ($1,$3)',
+          [legacyUser, deletedLegacyMessage, keptLegacyMessage],
+        );
       } finally {
         await rm(oldBundle, { recursive: true, force: true });
       }
@@ -779,7 +820,7 @@ process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
     process.env.AUDIT_HEAD_OBJECT_KEY = `test-${randomUUID()}`;
     const database = await import('../db/index.js');
     closeDb = database.closeDb;
-    assert.equal(await database.checkDatabaseSchema(), 24);
+    assert.equal(await database.checkDatabaseSchema(), 25);
     const audit = await import('../middleware/audit.js');
     await audit.provisionAuditCheckpoint();
     const app = await import('../app.js');
@@ -857,6 +898,31 @@ process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
       db.execute(sql`TRUNCATE device_directory_events CASCADE`),
       (error: any) => /append-only/.test(error.cause?.message),
     );
+  });
+  it('drops what earlier deletes left behind and keeps its stored bytes counted until removed', async () => {
+    const { db } = await import('../db/index.js');
+    const { sql } = await import('drizzle-orm');
+    const { getCiphertextUsage } = await import('../services/file.service.js');
+    const left = async (messageId: string) => (await db.execute(sql`SELECT
+      (SELECT count(*) FROM attachments WHERE message_id = ${messageId})::int AS attachments,
+      (SELECT count(*) FROM attachment_uploads WHERE message_id = ${messageId})::int AS uploads,
+      (SELECT count(*) FROM attachment_upload_chunks AS chunk JOIN attachment_uploads AS upload ON upload.id = chunk.upload_id
+        WHERE upload.message_id = ${messageId})::int AS chunks,
+      (SELECT count(*) FROM message_pins WHERE message_id = ${messageId})::int AS pins,
+      (SELECT count(*) FROM message_bookmarks WHERE message_id = ${messageId})::int AS bookmarks`)).rows[0];
+    assert.deepEqual(await left(deletedLegacyMessage), { attachments: 0, uploads: 0, chunks: 0, pins: 0, bookmarks: 0 });
+    assert.deepEqual(await left(keptLegacyMessage), { attachments: 1, uploads: 1, chunks: 1, pins: 1, bookmarks: 1 });
+    const queued = await db.execute(sql`SELECT storage_key, channel_id, user_id, size_bytes::int AS size_bytes FROM attachment_removals
+      WHERE channel_id = ${legacyChannel}`);
+    assert.deepEqual(queued.rows, [
+      { storage_key: deletedLegacyStorageKey, channel_id: legacyChannel, user_id: legacyUser, size_bytes: 4096 },
+    ]);
+    // The queued objects are still stored, so they still count.
+    assert.deepEqual(await getCiphertextUsage(db, legacyWorkspace, legacyChannel, legacyUser), {
+      userBytes: 8192, channelBytes: 8192, workspaceBytes: 8192,
+    });
+    const kept = await db.execute(sql`SELECT storage_key FROM attachments WHERE message_id = ${keptLegacyMessage}`);
+    assert.deepEqual(kept.rows, [{ storage_key: keptLegacyStorageKey }]);
   });
   it('aborts pending epochs and requires a continuous group where an earlier key is active', async () => {
     const { db } = await import('../db/index.js');
@@ -1954,6 +2020,44 @@ process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
         values (${uploadId}, 0, 456, ${randomUUID()}, 'test')`);
       assert.deepEqual(await getCiphertextUsage(tx, ownWorkspace, channelId, userId), before);
       assert.equal((await getCiphertextUsage(tx, legacyWorkspace, legacyChannel, userId)).userBytes, otherBefore.userBytes + 1690);
+      throw new Error('ROLLBACK_FIXTURE');
+    }), /ROLLBACK_FIXTURE/);
+  });
+  it('takes a deleted message’s attachments out of service but counts their bytes until the objects are gone', async () => {
+    const { db } = await import('../db/index.js');
+    const { sql } = await import('drizzle-orm');
+    const { getCiphertextUsage, releaseMessageAttachments } = await import('../services/file.service.js');
+    const ownWorkspace = String((await db.execute(sql`select workspace_id from channels where id = ${channelId}`)).rows[0].workspace_id);
+    await assert.rejects(db.transaction(async (tx) => {
+      const before = await getCiphertextUsage(tx, ownWorkspace, channelId, userId);
+      const messageId = randomUUID();
+      const uploadId = randomUUID();
+      const storageKey = `attachments/v1/${randomUUID()}`;
+      await tx.execute(sql`insert into messages (id, channel_id, author_id, device_id, type, content, content_nonce, key_version, idempotency_key, signature, broadcast_mention)
+        select ${messageId}, channel_id, author_id, device_id, type, content, content_nonce, key_version, ${randomUUID()}, signature, false
+        from messages where channel_id = ${channelId} and author_id = ${userId} and type = 'message' limit 1`);
+      await tx.execute(sql`insert into attachments (message_id, channel_id, signer_device_id, key_version, signature, filename_enc, mime_type, size_bytes, storage_key, wrapped_key, content_nonce)
+        values (${messageId}, ${channelId}, ${first.id}, 1, 'test', 'test', 'application/octet-stream', 1234, ${storageKey}, 'test', 'test')`);
+      await tx.execute(sql`insert into attachment_uploads (id, message_id, uploader_id, storage_key, filename_enc, mime_type, expires_at, completed_at)
+        values (${uploadId}, ${messageId}, ${userId}, ${storageKey}, 'test', 'application/octet-stream', now(), now())`);
+      await tx.execute(sql`insert into attachment_upload_chunks (upload_id, chunk_index, size_bytes, storage_key, etag)
+        values (${uploadId}, 0, 1234, ${`${storageKey}/000000`}, 'test')`);
+      const stored = {
+        userBytes: before.userBytes + 1234,
+        channelBytes: before.channelBytes + 1234,
+        workspaceBytes: before.workspaceBytes + 1234,
+      };
+      assert.deepEqual(await getCiphertextUsage(tx, ownWorkspace, channelId, userId), stored);
+      assert.deepEqual(await releaseMessageAttachments(tx, { id: messageId, channelId, authorId: userId }), [storageKey]);
+      const left = await tx.execute(sql`select
+        (select count(*) from attachments where message_id = ${messageId})::int as attachments,
+        (select count(*) from attachment_uploads where id = ${uploadId})::int as uploads,
+        (select count(*) from attachment_upload_chunks where upload_id = ${uploadId})::int as chunks`);
+      assert.deepEqual(left.rows[0], { attachments: 0, uploads: 0, chunks: 0 });
+      // Nothing refers to the objects any more, but they may still be stored.
+      assert.deepEqual(await getCiphertextUsage(tx, ownWorkspace, channelId, userId), stored);
+      await tx.execute(sql`delete from attachment_removals where storage_key = ${storageKey}`);
+      assert.deepEqual(await getCiphertextUsage(tx, ownWorkspace, channelId, userId), before);
       throw new Error('ROLLBACK_FIXTURE');
     }), /ROLLBACK_FIXTURE/);
   });

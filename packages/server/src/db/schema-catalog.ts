@@ -4,10 +4,10 @@ import type pg from 'pg';
 const MAX_SCHEMA_CATALOG_ENTRIES = 4_096;
 const SCHEMA_CATALOG_FORMAT = 1;
 
-/** Generated from a fresh PostgreSQL 16 database after migrations 0000-0023. */
+/** Generated from a fresh PostgreSQL 16 database after migrations 0000-0024. */
 export const expectedSchemaCatalog = Object.freeze({
-  entryCount: 730,
-  sha256: '1140ddaa18c62adef868e92b3f622c1667f90f62d2e2972f1ad66b2a877835ce',
+  entryCount: 743,
+  sha256: 'b5c0c79ec6c8d35dfed97c5ebcff19f526e6eb79bfb7d5a986ef5461827e6939',
 });
 
 export interface SchemaCatalogSnapshot {

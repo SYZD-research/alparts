@@ -169,6 +169,13 @@
       "when": 1791414000000,
       "tag": "0023_continuous_mls_groups",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1791500400000,
+      "tag": "0024_attachment_removals",
+      "breakpoints": true
     }
   ]
 }

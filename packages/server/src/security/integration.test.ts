@@ -108,7 +108,7 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     const auditModule = await import('../middleware/audit.js');
     const dbModule = await import('../db/index.js');
     closeDb = dbModule.closeDb;
-    assert.equal(await dbModule.checkDatabaseSchema(), 24);
+    assert.equal(await dbModule.checkDatabaseSchema(), 25);
     verifyAuditChain = auditModule.verifyAuditChain;
     await auditModule.provisionAuditCheckpoint();
     const startupAudit = await verifyAuditChain();
@@ -2193,6 +2193,18 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     const editEvent = await json<Record<string, unknown>>(editResponse);
     assert.deepEqual((await editedRealtime).message, editEvent);
 
+    const deletedAttachmentRow = await integrationDb.query.attachments.findFirst({
+      columns: { storageKey: true },
+      where: drizzle.eq(schema.attachments.id, attachment.id),
+    });
+    assert.ok(deletedAttachmentRow);
+    const deletedAttachmentChunks = await integrationDb.query.attachmentUploadChunks.findMany({
+      columns: { storageKey: true },
+      where: drizzle.eq(schema.attachmentUploadChunks.uploadId, upload.uploadId),
+    });
+    assert.equal(deletedAttachmentChunks.length, attachmentChunkCount);
+    const usageBeforeDelete = await fileService.getCiphertextUsage(integrationDb, workspace.id, channelId, alice.user.id);
+
     const deleteEnvelope: SignedMessageEnvelope = {
       type: 'delete',
       channelId,
@@ -2280,6 +2292,40 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     })).status, 404);
     assert.equal((await request(`/api/files/${attachment.id}`, { cookie: alice.cookie })).status, 404);
     assert.equal((await request(`/api/files/${attachment.id}/chunks/0`, { cookie: alice.cookie })).status, 404);
+    // The delete took the attachment with its upload and chunk registrations.
+    // Its objects are removed after the commit, and only then do its bytes
+    // leave the quotas. Its pin and bookmark went with the message as well.
+    assert.equal(await integrationDb.query.attachments.findFirst({
+      where: drizzle.eq(schema.attachments.id, attachment.id),
+    }), undefined);
+    assert.equal(await integrationDb.query.attachmentUploads.findFirst({
+      where: drizzle.eq(schema.attachmentUploads.id, upload.uploadId),
+    }), undefined);
+    assert.equal(await integrationDb.query.attachmentUploadChunks.findFirst({
+      where: drizzle.eq(schema.attachmentUploadChunks.uploadId, upload.uploadId),
+    }), undefined);
+    for (let attempt = 0; await integrationDb.query.attachmentRemovals.findFirst({
+      where: drizzle.eq(schema.attachmentRemovals.storageKey, deletedAttachmentRow.storageKey),
+    }); attempt += 1) {
+      assert.ok(attempt < 200, 'the objects of a deleted attachment are removed after the delete');
+      await delay(25);
+    }
+    for (const chunk of deletedAttachmentChunks) {
+      await assert.rejects(
+        storageClient.send(new S3.HeadObjectCommand({ Bucket: process.env.S3_BUCKET || 'alparts', Key: chunk.storageKey })),
+        (error: any) => error?.name === 'NotFound' || error?.$metadata?.httpStatusCode === 404,
+      );
+    }
+    assert.deepEqual(await fileService.getCiphertextUsage(integrationDb, workspace.id, channelId, alice.user.id), {
+      userBytes: usageBeforeDelete.userBytes - attachment.ciphertextSizeBytes,
+      channelBytes: usageBeforeDelete.channelBytes - attachment.ciphertextSizeBytes,
+      workspaceBytes: usageBeforeDelete.workspaceBytes - attachment.ciphertextSizeBytes,
+    });
+    assert.equal(await integrationDb.query.messagePins.findFirst({
+      where: drizzle.eq(schema.messagePins.messageId, message.id),
+    }), undefined);
+    assert.equal((await json<Array<{ messageId: string }>>(await request('/api/bookmarks', { cookie: alice.cookie })))
+      .some((bookmark) => bookmark.messageId === message.id), false);
 
     const unreadDeletedRequest = encryptedMessage(
       channelId,
@@ -2885,6 +2931,12 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     assert.equal(roleOverrideDelete.status, 200);
     const roleOverrideDeleteBody = await json<{ authorizationRevision: string }>(roleOverrideDelete);
 
+    const bobBookmark = await request(`/api/messages/${newerMessage.id}/bookmark`, {
+      method: 'POST', cookie: bob.cookie, body: {},
+    });
+    assert.equal(bobBookmark.status, 200);
+    assert.equal((await json<{ bookmarked: boolean }>(bobBookmark)).bookmarked, true);
+
     const channelOverrideDelete = await request(
       `/api/workspaces/${workspace.id}/channels/${channelId}/permission-overrides/${memberRole.id}`,
       {
@@ -2901,6 +2953,21 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     assert.equal((await request(`/api/files/${bobAttachment.id}`, { cookie: bob.cookie })).status, 404);
     assert.equal((await request(`/api/files/${bobAttachment.id}`, { cookie: alice.cookie })).status, 200);
     assert.equal(await joinChannel(bobSocket, channelId), false);
+    // The bookmark is hidden from Bob now, but it is still his to remove.
+    // Once it is gone, the message is not found for him like the rest of the channel.
+    assert.equal((await json<Array<{ messageId: string }>>(await request('/api/bookmarks', { cookie: bob.cookie })))
+      .some((bookmark) => bookmark.messageId === newerMessage.id), false);
+    const lostChannelBookmark = await request(`/api/messages/${newerMessage.id}/bookmark`, {
+      method: 'POST', cookie: bob.cookie, body: {},
+    });
+    assert.equal(lostChannelBookmark.status, 200);
+    assert.deepEqual(
+      pick(await json<Record<string, unknown>>(lostChannelBookmark), ['messageId', 'bookmarked']),
+      { messageId: newerMessage.id, bookmarked: false },
+    );
+    assert.equal((await request(`/api/messages/${newerMessage.id}/bookmark`, {
+      method: 'POST', cookie: bob.cookie, body: {},
+    })).status, 404);
 
     const inUseChannelDelete = await request(`/api/channels/${channelId}`, {
       method: 'DELETE', cookie: alice.cookie,
@@ -3795,6 +3862,126 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
       type: 'message', refMessageId: null, refBinding: null, post: { postId: otherPostId, postBinding: otherPostSigned }, plaintext: 'answer',
     });
     assert.equal((await sendInForum(owner.cookie, otherReply.body)).status, 201);
+  });
+
+  it('keeps deleted messages and channels a member lost out of the pin and bookmark quotas', async () => {
+    const { db } = await import('../db/index.js');
+    const { MAX_BOOKMARKS_PER_USER, MAX_PINS_PER_CHANNEL } = await import('./limits.js');
+    const ownerLogin = await request('/api/auth/login', {
+      method: 'POST', body: { email: 'unbound@example.test', password: 'Correct-Horse-Battery-9!' },
+    });
+    assert.equal(ownerLogin.status, 200);
+    const owner = {
+      cookie: ownerLogin.headers.get('set-cookie')!.split(';', 1)[0],
+      user: (await json<{ user: { id: string } }>(ownerLogin)).user,
+      password: 'Correct-Horse-Battery-9!',
+    };
+    const ownerKeys = deviceFixture();
+    const ownerDevice = await registerDevice(owner, ownerKeys, 'Quota owner device');
+    const workspace = await json<{ id: string }>(await request('/api/workspaces', {
+      method: 'POST', cookie: owner.cookie, body: { name: 'Quotas' },
+    }));
+    const invitation = await createWorkspaceInvitation(workspace.id, owner.cookie, 'quota-member@example.test');
+    const member = await createAccount('quota-member@example.test', 'Correct-Horse-Battery-34!', 'Quota Member', invitation.token);
+    const general = (await json<Array<{ id: string; type: string }>>(
+      await request(`/api/workspaces/${workspace.id}/channels`, { cookie: owner.cookie }),
+    )).find((channel) => channel.type === 'text');
+    assert.ok(general);
+    const group = new ChannelGroup(general.id);
+    assert.equal((await group.create(asGroupMember(owner.cookie, owner.user.id, ownerKeys, ownerDevice))).response!.status, 201);
+    const send = async (plaintext: string) => {
+      const sent = encryptedBoundEvent({
+        type: 'message', channelId: general.id, refMessageId: null, refBinding: null,
+        authorId: owner.user.id, deviceId: ownerDevice.id, privateKey: ownerKeys.signingPrivateKey, key: group.key(1), plaintext,
+      });
+      const response = await request(`/api/channels/${general.id}/messages`, { method: 'POST', cookie: owner.cookie, body: sent.body });
+      assert.equal(response.status, 201, await response.clone().text());
+      return { id: (await json<{ id: string }>(response)).id, idempotencyKey: sent.envelope.idempotencyKey };
+    };
+    const pin = (messageId: string) => request(`/api/messages/${messageId}/pin`, {
+      method: 'POST', cookie: owner.cookie, body: { pinned: true },
+    });
+    const bookmark = (messageId: string) => request(`/api/messages/${messageId}/bookmark`, {
+      method: 'POST', cookie: member.cookie, body: {},
+    });
+
+    // The channel is one pin short of its quota; deleting a pinned message frees its slot.
+    const pinned = await send('pinned, then deleted');
+    await db.execute(sql`with fillers as (
+        insert into messages (channel_id, author_id, device_id, content, content_nonce, key_version, signature, broadcast_mention, type, idempotency_key)
+        select channel_id, author_id, device_id, content, content_nonce, key_version, signature, broadcast_mention, type,
+          author_id::text || ':' || gen_random_uuid()::text
+        from messages cross join generate_series(1, ${MAX_PINS_PER_CHANNEL - 1}::int)
+        where id = ${pinned.id}
+        returning id, channel_id, author_id
+      )
+      insert into message_pins (channel_id, message_id, pinned_by) select channel_id, id, author_id from fillers`);
+    assert.equal((await pin(pinned.id)).status, 200);
+    const waiting = await send('waits for a pin');
+    const pinsFull = await pin(waiting.id);
+    assert.equal(pinsFull.status, 409);
+    assert.equal((await json<{ error: string }>(pinsFull)).error, 'PIN_LIMIT_REACHED');
+    const removal = encryptedBoundEvent({
+      type: 'delete', channelId: general.id, refMessageId: pinned.id,
+      refBinding: { authorId: owner.user.id, idempotencyKey: pinned.idempotencyKey },
+      authorId: owner.user.id, deviceId: ownerDevice.id, privateKey: ownerKeys.signingPrivateKey, key: group.key(1), plaintext: '',
+    });
+    assert.equal((await request(`/api/messages/${pinned.id}`, {
+      method: 'DELETE', cookie: owner.cookie,
+      body: { deviceId: ownerDevice.id, keyVersion: 1, idempotencyKey: removal.body.idempotencyKey, signature: removal.body.signature },
+    })).status, 200);
+    assert.equal((await pin(waiting.id)).status, 200);
+
+    // The member's bookmarks fill the quota, all of them in a private channel.
+    const privateResponse = await request(`/api/workspaces/${workspace.id}/channels`, {
+      method: 'POST', cookie: owner.cookie, body: { name: 'kept-private', isPrivate: true },
+    });
+    assert.equal(privateResponse.status, 201);
+    const privateChannel = await json<{ id: string }>(privateResponse);
+    assert.equal((await request(`/api/channels/${privateChannel.id}/members`, {
+      method: 'POST', cookie: owner.cookie, body: { userId: member.user.id },
+    })).status, 201);
+    const filled = await db.execute(sql`with fillers as (
+        insert into messages (channel_id, author_id, device_id, content, content_nonce, key_version, signature, broadcast_mention, type, idempotency_key)
+        select ${privateChannel.id}::uuid, author_id, device_id, content, content_nonce, key_version, signature, broadcast_mention, type,
+          author_id::text || ':' || gen_random_uuid()::text
+        from messages cross join generate_series(1, ${MAX_BOOKMARKS_PER_USER}::int)
+        where id = ${waiting.id}
+        returning id
+      )
+      insert into message_bookmarks (user_id, message_id) select ${member.user.id}::uuid, id from fillers returning message_id`);
+    const hiddenSoon = filled.rows.map((row) => String(row.message_id));
+    assert.equal(hiddenSoon.length, MAX_BOOKMARKS_PER_USER);
+    const visible = await send('saved by the member');
+    const bookmarksFull = await bookmark(visible.id);
+    assert.equal(bookmarksFull.status, 409);
+    assert.equal((await json<{ error: string }>(bookmarksFull)).error, 'BOOKMARK_LIMIT_REACHED');
+
+    // Out of the channel, the member can still remove such a bookmark, and the
+    // ones left stop holding the quota.
+    assert.equal((await request(`/api/channels/${privateChannel.id}/members/${member.user.id}`, {
+      method: 'DELETE', cookie: owner.cookie,
+    })).status, 200);
+    const removedHidden = await bookmark(hiddenSoon[0]);
+    assert.equal(removedHidden.status, 200);
+    assert.equal((await json<{ bookmarked: boolean }>(removedHidden)).bookmarked, false);
+    assert.equal((await bookmark(hiddenSoon[0])).status, 404);
+    assert.equal((await bookmark(visible.id)).status, 200);
+    const another = await send('also saved by the member');
+    const saved = await bookmark(another.id);
+    assert.equal(saved.status, 200);
+    assert.equal((await json<{ bookmarked: boolean }>(saved)).bookmarked, true);
+    const listed = await json<Array<{ messageId: string }>>(await request('/api/bookmarks', { cookie: member.cookie }));
+    assert.deepEqual(listed.map((entry) => entry.messageId).sort(), [visible.id, another.id].sort());
+    const kept = await db.execute(sql`select count(*)::int as count from message_bookmarks where user_id = ${member.user.id}`);
+    assert.equal(kept.rows[0].count, 2);
+    const { auditLogs } = await import('../db/schema.js');
+    const pruned = await db.select({ details: auditLogs.details }).from(auditLogs)
+      .where(sql`${auditLogs.action} = 'message.bookmark.remove' and ${auditLogs.targetType} = 'user' and ${auditLogs.targetId} = ${member.user.id}`);
+    assert.deepEqual(
+      pruned.map((row) => pick(row.details as Record<string, unknown>, ['workspaceId', 'resultCount'])),
+      [{ workspaceId: workspace.id, resultCount: MAX_BOOKMARKS_PER_USER - 1 }],
+    );
   });
 
   describe('continuous channel groups', () => {
@@ -4737,7 +4924,7 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
       await client.end();
     }
     const { checkDatabaseSchema } = await import('../db/index.js');
-    assert.equal(await checkDatabaseSchema(), 24);
+    assert.equal(await checkDatabaseSchema(), 25);
   });
 
   it('never re-signs a shortened audit chain after the external checkpoint anchor is deleted', async () => {

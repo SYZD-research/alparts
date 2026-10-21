@@ -13,6 +13,7 @@ import { auditedTransaction } from '../middleware/audit.js';
 import { MAX_BOOKMARKS_PER_USER } from '../security/limits.js';
 import { getWorkspaceChannels } from './channel.service.js';
 import {
+  getChannelAuthorization,
   getChannelAuthorizationFromStore,
   getChannelAuthorizationFromSnapshot,
   isVisibleChannelAuthorization,
@@ -168,7 +169,13 @@ export async function toggleMessageBookmark(messageId: string, userId: string) {
   if (!message || message.type !== 'message') throw new Error('MESSAGE_NOT_FOUND');
   const location = await db.query.channels.findFirst({ columns: { workspaceId: true }, where: eq(channels.id, message.channelId) });
   if (!location) throw new Error('MESSAGE_NOT_FOUND');
-  return auditedTransaction(async (transaction) => {
+  // A member who can no longer see the channel may still remove a bookmark
+  // they made there; anything else about it stays not found.
+  if (!await getChannelAuthorization(userId, message.channelId) && !await db.query.messageBookmarks.findFirst({
+    columns: { messageId: true },
+    where: and(eq(messageBookmarks.userId, userId), eq(messageBookmarks.messageId, messageId)),
+  })) throw new Error('MESSAGE_NOT_FOUND');
+  const toggle = () => auditedTransaction(async (transaction) => {
     await lockWorkspaceForAuthorization(transaction, location.workspaceId, 'share');
     await transaction.execute(sql`select pg_advisory_xact_lock(hashtext(${`bookmark:${userId}:${messageId}`})::bigint)`);
     const [lockedMessage] = await transaction.select().from(messages)
@@ -220,10 +227,74 @@ export async function toggleMessageBookmark(messageId: string, userId: string) {
       channelId: result.channelId,
     },
   }));
+  try {
+    return await toggle();
+  } catch (error) {
+    // Bookmarks in channels the user can no longer see are left out of the
+    // list, so they must not hold the quota either: drop them and retry once.
+    if (!(error instanceof Error) || error.message !== 'BOOKMARK_LIMIT_REACHED') throw error;
+    if (await removeHiddenBookmarks(userId) === 0) throw error;
+    return toggle();
+  }
 }
 
 export async function listMessageBookmarks(userId: string, limit = 100) {
   const requested = Math.min(Math.max(limit, 1), 500);
+  const rows = await loadBookmarkLocations(userId);
+  const allowedChannels = new Set<string>();
+  for (const [workspaceId, channelIds] of groupChannelsByWorkspace(rows)) {
+    await db.transaction(async (transaction) => {
+      await lockWorkspaceForAuthorization(transaction, workspaceId, 'share');
+      for (const channelId of await visibleChannelIds(transaction, workspaceId, userId, channelIds)) {
+        allowedChannels.add(channelId);
+      }
+    });
+  }
+  return rows
+    .filter((row) => allowedChannels.has(row.channelId))
+    .slice(0, requested)
+    .map((row) => ({
+      messageId: row.messageId,
+      channelId: row.channelId,
+      createdAt: row.createdAt.toISOString(),
+    }));
+}
+
+/**
+ * Drops the user's bookmarks that the list hides. Each workspace is decided
+ * under its lock, as the list decides it, and decided again where they go.
+ */
+async function removeHiddenBookmarks(userId: string): Promise<number> {
+  const rows = await loadBookmarkLocations(userId);
+  let removed = 0;
+  for (const [workspaceId, channelIds] of groupChannelsByWorkspace(rows)) {
+    const hiddenIn = async (store: any): Promise<string[]> => {
+      await lockWorkspaceForAuthorization(store, workspaceId, 'share');
+      const visible = await visibleChannelIds(store, workspaceId, userId, channelIds);
+      return rows
+        .filter((row) => row.workspaceId === workspaceId && !visible.has(row.channelId))
+        .map((row) => row.messageId);
+    };
+    if ((await db.transaction(hiddenIn)).length === 0) continue;
+    removed += await auditedTransaction(async (transaction) => {
+      const hidden = await hiddenIn(transaction);
+      if (hidden.length === 0) return 0;
+      const deleted = await transaction.delete(messageBookmarks)
+        .where(and(eq(messageBookmarks.userId, userId), inArray(messageBookmarks.messageId, hidden)))
+        .returning({ messageId: messageBookmarks.messageId });
+      return deleted.length;
+    }, (resultCount) => ({
+      actorId: userId,
+      action: 'message.bookmark.remove',
+      targetType: 'user',
+      targetId: userId,
+      details: { workspaceId, resultCount },
+    }));
+  }
+  return removed;
+}
+
+async function loadBookmarkLocations(userId: string) {
   const rows = await db.select({
     messageId: messageBookmarks.messageId,
     channelId: messages.channelId,
@@ -236,34 +307,31 @@ export async function listMessageBookmarks(userId: string, limit = 100) {
     .orderBy(desc(messageBookmarks.createdAt), desc(messageBookmarks.messageId))
     .limit(MAX_BOOKMARKS_PER_USER + 1);
   if (rows.length > MAX_BOOKMARKS_PER_USER) throw new Error('BOOKMARK_INVARIANT_EXCEEDED');
+  return rows;
+}
 
-  const allowedChannels = new Set<string>();
+function groupChannelsByWorkspace(rows: Array<{ channelId: string; workspaceId: string }>): Map<string, string[]> {
   const channelIdsByWorkspace = new Map<string, string[]>();
   for (const row of rows) {
     const ids = channelIdsByWorkspace.get(row.workspaceId) ?? [];
     if (!ids.includes(row.channelId)) ids.push(row.channelId);
     channelIdsByWorkspace.set(row.workspaceId, ids);
   }
-  for (const [workspaceId, channelIds] of channelIdsByWorkspace) {
-    await db.transaction(async (transaction) => {
-      await lockWorkspaceForAuthorization(transaction, workspaceId, 'share');
-      const snapshot = await loadWorkspaceAuthorizationSnapshot(transaction, workspaceId, channelIds);
-      if (!snapshot) return;
-      for (const channelId of channelIds) {
-        if (isVisibleChannelAuthorization(
-          getChannelAuthorizationFromSnapshot(snapshot, userId, channelId, {}, false),
-        )) allowedChannels.add(channelId);
-      }
-    });
-  }
-  return rows
-    .filter((row) => allowedChannels.has(row.channelId))
-    .slice(0, requested)
-    .map((row) => ({
-      messageId: row.messageId,
-      channelId: row.channelId,
-      createdAt: row.createdAt.toISOString(),
-    }));
+  return channelIdsByWorkspace;
+}
+
+/** The caller holds the workspace's authorization lock. */
+async function visibleChannelIds(
+  store: any,
+  workspaceId: string,
+  userId: string,
+  channelIds: string[],
+): Promise<Set<string>> {
+  const snapshot = await loadWorkspaceAuthorizationSnapshot(store, workspaceId, channelIds);
+  if (!snapshot) return new Set();
+  return new Set(channelIds.filter((channelId) => isVisibleChannelAuthorization(
+    getChannelAuthorizationFromSnapshot(snapshot, userId, channelId, {}, false),
+  )));
 }
 
 function formatPreference(preference: typeof channelPreferences.$inferSelect) {

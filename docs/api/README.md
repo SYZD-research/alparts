@@ -75,11 +75,11 @@ DMs are represented by a channel plus conversation/member rows but cannot be man
 | Paths | Responsibility |
 | --- | --- |
 | `GET/POST /api/channels/:id/messages` | paged ciphertext history and signed idempotent create |
-| `PUT/DELETE /api/messages/:id` | signed edit/delete |
+| `PUT/DELETE /api/messages/:id` | signed edit/delete; a delete also drops the message's pins, bookmarks and attachments, whose stored objects are removed after it |
 | `POST /api/messages/:id/reactions`, `POST /api/messages/:id/pin` | compact bounded state: 20 emoji/user, 20 distinct emoji and 1,000 reactions/message; 1,000 pins/channel |
 | `GET /api/channels/:id/pins`, `POST /api/channels/:id/read` | pin list and read position |
 | `GET /api/workspaces/:wid/channel-state`, `PATCH /api/channels/:id/preferences` | bounded channel preferences/read/unread state |
-| `POST /api/messages/:id/bookmark`, `GET /api/bookmarks` | idempotent bookmark toggle and bounded bulk-authorized list |
+| `POST /api/messages/:id/bookmark`, `GET /api/bookmarks` | idempotent bookmark toggle and bounded bulk-authorized list; a bookmark in a channel the user can no longer see stays removable, and such bookmarks are dropped when they would fill the 1,000-bookmark quota |
 
 ## Forums
 
