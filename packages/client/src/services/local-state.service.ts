@@ -78,8 +78,8 @@ function contextId(context: DeviceContext): string {
   return `${context.userId}:${context.deviceId}`;
 }
 
-function recordId(ownerId: string, scopeId: string): string {
-  return `${ownerId}:${scopeId}`;
+function recordId(context: DeviceContext, scopeId: string): string {
+  return `${context.userId}:${context.deviceId}:${scopeId}`;
 }
 
 function openLocalDb(): Promise<IDBDatabase> {
@@ -210,7 +210,7 @@ async function putBoundedOutboxRecord(
   return new Promise((resolve, reject) => {
     const tx = db.transaction(OUTBOX_STORE, 'readwrite');
     const store = tx.objectStore(OUTBOX_STORE);
-    const id = recordId(context.userId, command.idempotencyKey);
+    const id = recordId(context, command.idempotencyKey);
     const existingRequest = store.get(id);
     const range = IDBKeyRange.bound(
       [context.userId, context.deviceId, ''],
@@ -386,10 +386,10 @@ async function decryptPayload(
 export async function saveLocalDraft(scopeId: string, content: string): Promise<void> {
   const context = currentContext();
   const encrypted = await encryptPayload('draft', context, scopeId, { version: FORMAT_VERSION, content });
-  const existing = await getRecord<EncryptedRecord>(DRAFT_STORE, recordId(context.userId, scopeId));
+  const existing = await getRecord<EncryptedRecord>(DRAFT_STORE, recordId(context, scopeId));
   const now = new Date().toISOString();
   const record: EncryptedRecord = {
-    id: recordId(context.userId, scopeId),
+    id: recordId(context, scopeId),
     version: FORMAT_VERSION,
     purpose: 'draft',
     ownerId: context.userId,
@@ -404,7 +404,7 @@ export async function saveLocalDraft(scopeId: string, content: string): Promise<
 
 export async function loadLocalDraft(scopeId: string): Promise<string | null> {
   const context = currentContext();
-  const id = recordId(context.userId, scopeId);
+  const id = recordId(context, scopeId);
   const value = await getRecord<unknown>(DRAFT_STORE, id);
   if (!value) return null;
   try {
@@ -422,18 +422,18 @@ export async function loadLocalDraft(scopeId: string): Promise<string | null> {
 
 export async function deleteLocalDraft(scopeId: string): Promise<void> {
   const context = currentContext();
-  await deleteRecord(DRAFT_STORE, recordId(context.userId, scopeId));
+  await deleteRecord(DRAFT_STORE, recordId(context, scopeId));
 }
 
 /** Remove the channel's draft and every post draft inside it. */
 export async function deleteLocalDraftsForChannel(channelId: string): Promise<void> {
   const context = currentContext();
-  const prefix = `${recordId(context.userId, channelId)}:`;
+  const prefix = `${recordId(context, channelId)}:`;
   const db = await openLocalDb();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(DRAFT_STORE, 'readwrite');
     const store = tx.objectStore(DRAFT_STORE);
-    store.delete(recordId(context.userId, channelId));
+    store.delete(recordId(context, channelId));
     store.delete(IDBKeyRange.bound(prefix, `${prefix}\uffff`));
     tx.oncomplete = () => { db.close(); resolve(); };
     tx.onerror = () => { db.close(); reject(tx.error); };
@@ -455,10 +455,10 @@ export async function saveOutboxCommand(
 async function decryptOutboxRecord(record: EncryptedRecord, context: DeviceContext): Promise<OutboxCommand | null> {
   try {
     if (record.purpose !== 'outbox') throw new Error('Invalid outbox metadata');
-    const command = parseOutboxCommand(await decryptPayload(record, context, record.id.slice(record.ownerId.length + 1)));
+    const command = parseOutboxCommand(await decryptPayload(record, context, record.id.slice(record.ownerId.length + record.deviceId.length + 2)));
     if (
       !command
-      || command.idempotencyKey !== record.id.slice(record.ownerId.length + 1)
+      || command.idempotencyKey !== record.id.slice(record.ownerId.length + record.deviceId.length + 2)
       || command.channelId !== record.channelId
     ) throw new Error('Invalid outbox payload');
     return command;
@@ -494,7 +494,7 @@ export async function loadOutboxCommand(
   context: OutboxStorageContext,
   idempotencyKey: string,
 ): Promise<OutboxCommand | null> {
-  const id = recordId(context.userId, idempotencyKey);
+  const id = recordId(context, idempotencyKey);
   const value = await getRecord<unknown>(OUTBOX_STORE, id);
   if (!value) return null;
   if (!isEncryptedRecord(value)) {
@@ -508,7 +508,7 @@ export async function deleteOutboxCommand(
   context: OutboxStorageContext,
   idempotencyKey: string,
 ): Promise<void> {
-  await deleteRecord(OUTBOX_STORE, recordId(context.userId, idempotencyKey));
+  await deleteRecord(OUTBOX_STORE, recordId(context, idempotencyKey));
 }
 
 export async function deleteOutboxCommandsForChannel(
