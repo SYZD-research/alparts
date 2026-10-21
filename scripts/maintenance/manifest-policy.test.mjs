@@ -43,3 +43,38 @@ test('moving a dependency to another section counts as adding it', () => {
 test('an unchanged manifest has no changes', () => {
   assert.deepEqual(manifestChanges(base, structuredClone(base)), { changes: [], violations: [] });
 });
+
+test('a dependency can move only to a registry version', () => {
+  for (const spec of [
+    'https://attacker.example/express.tgz',
+    'npm:attacker-package@5.3.0',
+    'github:attacker/express#main',
+    'git+https://github.com/attacker/express.git',
+    'file:../express',
+    'link:../express',
+    'workspace:*',
+    'latest',
+    '*',
+    '>=5.2.0',
+    '5.x',
+    5,
+    { version: '5.3.0' },
+  ]) {
+    const { changes, violations } = manifestChanges(base, { ...base, dependencies: { ...base.dependencies, express: spec } });
+    assert.deepEqual(changes, [], JSON.stringify(spec));
+    assert.deepEqual(violations, [`dependencies.express set to ${JSON.stringify(spec)}, which is not a version`]);
+  }
+});
+
+test('a dependency that is not a registry version cannot change or be removed', () => {
+  const workspace = { ...base, dependencies: { ...base.dependencies, '@alparts/shared': 'workspace:*' } };
+  const violation = ['dependencies.@alparts/shared is "workspace:*", which only a person may change'];
+  assert.deepEqual(manifestChanges(workspace, { ...workspace, dependencies: { ...workspace.dependencies, '@alparts/shared': '1.0.0' } }).violations, violation);
+  assert.deepEqual(manifestChanges(workspace, base).violations, violation);
+});
+
+test('a dependency section must stay an object, and inherited names are not dependencies', () => {
+  assert.deepEqual(manifestChanges(base, { ...base, dependencies: [] }).violations, ['"dependencies" is not an object']);
+  const inherited = JSON.parse('{"express":"5.2.0","zod":"^4.1.0","constructor":"1.0.0"}');
+  assert.deepEqual(manifestChanges(base, { ...base, dependencies: inherited }).violations, ['dependencies.constructor added']);
+});
