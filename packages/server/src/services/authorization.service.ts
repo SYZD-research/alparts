@@ -613,6 +613,7 @@ export async function applyViewerEffectsAndRotation(
   after: Map<string, string[]>,
 ): Promise<ChannelViewerEffect[]> {
   const effects: ChannelViewerEffect[] = [];
+  const lostViewers: Array<{ channelId: string; userId: string }> = [];
   const allChannelIds = [...new Set([...before.keys(), ...after.keys()])].sort();
   for (const channelId of allChannelIds) {
     const previous = new Set(before.get(channelId) ?? []);
@@ -624,28 +625,44 @@ export async function applyViewerEffectsAndRotation(
       const result = await requireChannelKeyRotation(store, [channelId]);
       rotationRequired = result.keyedChannelIds.includes(channelId);
       await refreshGroupRemoveRequirement(store, channelId, [...next]);
-      if (lostUserIds.length > 0) {
-        const lostDeviceIds = (await store
-          .select({ id: devices.id })
-          .from(devices)
-          .where(inArray(devices.userId, lostUserIds))).map((row: { id: string }) => row.id);
-        if (lostDeviceIds.length > 0) {
-          await store.delete(mlsMemberPackages).where(and(
-            eq(mlsMemberPackages.channelId, channelId),
-            inArray(mlsMemberPackages.deviceId, lostDeviceIds),
-          ));
-          await store.delete(mlsRejoinRequests).where(and(
-            eq(mlsRejoinRequests.channelId, channelId),
-            inArray(mlsRejoinRequests.deviceId, lostDeviceIds),
-          ));
-        }
-      }
+      for (const userId of lostUserIds) lostViewers.push({ channelId, userId });
     }
     if (lostUserIds.length > 0 || gainedUserIds.length > 0 || rotationRequired) {
       effects.push({ channelId, lostUserIds, gainedUserIds, rotationRequired });
     }
   }
+  await purgeLostViewerPackages(store, lostViewers);
   return effects;
+}
+
+/**
+ * A user who no longer sees a channel keeps no member package or rejoin
+ * request in it: kept until access returns, a package would count as waiting
+ * from before then (fresh start rule c). One statement per table for every
+ * channel that changed.
+ */
+async function purgeLostViewerPackages(
+  store: any,
+  lostViewers: ReadonlyArray<{ channelId: string; userId: string }>,
+): Promise<void> {
+  if (lostViewers.length === 0) return;
+  const lostValues = () => sql.join(lostViewers.map((viewer) => (
+    sql`(${viewer.channelId}::uuid, ${viewer.userId}::uuid)`
+  )), sql`, `);
+  await store.execute(sql`
+    delete from ${mlsMemberPackages} as pkg
+    using ${devices} as device, (values ${lostValues()}) as lost(channel_id, user_id)
+    where pkg.channel_id = lost.channel_id
+      and pkg.device_id = device.id
+      and device.user_id = lost.user_id
+  `);
+  await store.execute(sql`
+    delete from ${mlsRejoinRequests} as request
+    using ${devices} as device, (values ${lostValues()}) as lost(channel_id, user_id)
+    where request.channel_id = lost.channel_id
+      and request.device_id = device.id
+      and device.user_id = lost.user_id
+  `);
 }
 
 export async function lockWorkspaceForAuthorization(store: any, workspaceId: string, mode: 'share' | 'update') {

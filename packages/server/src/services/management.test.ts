@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import type { SQL } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 process.env.DATABASE_URL ||= 'postgres://test:test@127.0.0.1:5432/alparts_test';
 process.env.S3_ACCESS_KEY ||= 'test-access-key';
@@ -186,5 +188,30 @@ describe('management security invariants', () => {
       },
     });
     assert.equal(isVisibleChannelAuthorization(simulatedAssignedRoleDeny), false);
+  });
+
+  it('purges the packages of users who lost access with one statement per table, however many channels changed', async () => {
+    const { applyViewerEffectsAndRotation } = await import('./authorization.service.js');
+    const uuid = (kind: number, index: number) => `00000000-0000-4000-${kind}000-${index.toString(16).padStart(12, '0')}`;
+    const channelIds = Array.from({ length: 300 }, (_, index) => uuid(8, index));
+    const [stays, leaves, joins] = [uuid(9, 1), uuid(9, 2), uuid(9, 3)];
+    const dialect = new PgDialect();
+    const statements: Array<{ sql: string; params: unknown[] }> = [];
+    const store = {
+      // No channel has key epochs, so only the group bookkeeping runs.
+      selectDistinct: () => ({ from: () => ({ where: async () => [] }) }),
+      execute: async (query: SQL) => {
+        statements.push(dialect.sqlToQuery(query));
+        return { rows: [] };
+      },
+    };
+    const before = new Map(channelIds.map((channelId) => [channelId, [stays, leaves]]));
+    // The first channel only gains a viewer; every other one loses one.
+    const after = new Map(channelIds.map((channelId, index) => [channelId, index === 0 ? [stays, leaves, joins] : [stays]]));
+    assert.equal((await applyViewerEffectsAndRotation(store, before, after)).length, channelIds.length);
+    const purges = statements.filter((statement) => /delete from "mls_(member_packages|rejoin_requests)"/.test(statement.sql));
+    assert.equal(purges.length, 2, 'purge round trips must not grow with channel count');
+    const lost = channelIds.slice(1).flatMap((channelId) => [channelId, leaves]);
+    for (const purge of purges) assert.deepEqual(purge.params, lost);
   });
 });

@@ -4138,6 +4138,52 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
       assert.equal((await groupMessage(carolSecond, stallChannel, stallGroup.key(), stallGroup.version)).status, 201);
     });
 
+    it('drops the packages and rejoin requests of a user who loses access, so a return waits again', async () => {
+      const { db } = await import('../db/index.js');
+      const ownerMember = asGroupMember(owner.cookie, owner.user.id, o1.keys, o1);
+      const bobMember = asGroupMember(bob.cookie, bob.user.id, b1.keys, b1);
+      const carolMember = asGroupMember(carol.cookie, carol.user.id, c1.keys, c1);
+      const lostChannel = await groupChannel('lost-access', true);
+      const keptChannel = await groupChannel('kept-access', true);
+      const lostGroup = new ChannelGroup(lostChannel);
+      const keptGroup = new ChannelGroup(keptChannel);
+      for (const group of [lostGroup, keptGroup]) {
+        for (const account of [bob, carol]) {
+          assert.equal((await request(`/api/channels/${group.channelId}/members`, {
+            method: 'POST', cookie: owner.cookie, body: { userId: account.user.id },
+          })).status, 201);
+        }
+        assert.equal((await group.create(carolMember)).response!.status, 201);
+        assert.equal((await group.publish(bobMember, { material: await earlierMemberPackage(b1.id, 3_600n) })).status, 201);
+      }
+      // In both groups, which started 20 minutes ago, bob's device has waited as long to be
+      // added, and it keeps a rejoin request from an earlier membership.
+      await db.execute(sql`insert into mls_rejoin_requests (channel_id, device_id, version)
+        values (${lostChannel}, ${b1.id}, 1), (${keptChannel}, ${b1.id}, 1)`);
+      await db.execute(sql`update mls_member_packages set created_at = created_at - interval '20 minutes'
+        where channel_id in (${lostChannel}, ${keptChannel})`);
+      await db.execute(sql`update channel_key_epochs set created_at = created_at - interval '20 minutes'
+        where channel_id in (${lostChannel}, ${keptChannel})`);
+      assert.equal((await lostGroup.state(ownerMember)).historyRecoveryRequired, true);
+
+      assert.equal((await request(`/api/channels/${lostChannel}/members/${bob.user.id}`, { method: 'DELETE', cookie: owner.cookie })).status, 200);
+      const left = async (table: 'mls_member_packages' | 'mls_rejoin_requests') => (await db.execute(sql`
+        select channel_id as "channelId" from ${sql.identifier(table)}
+        where device_id = ${b1.id} and channel_id in (${lostChannel}, ${keptChannel})`)).rows.map((row: any) => row.channelId);
+      assert.deepEqual(await left('mls_member_packages'), [keptChannel]);
+      assert.deepEqual(await left('mls_rejoin_requests'), [keptChannel]);
+
+      // Back in the channel, the old package no longer counts as waiting: a new one starts the wait again.
+      assert.equal((await request(`/api/channels/${lostChannel}/members`, {
+        method: 'POST', cookie: owner.cookie, body: { userId: bob.user.id },
+      })).status, 201);
+      assert.equal((await lostGroup.state(ownerMember)).historyRecoveryRequired, false);
+      assert.equal((await lostGroup.publish(bobMember, { material: await earlierMemberPackage(b1.id, 3_600n) })).status, 201);
+      const state = await lostGroup.state(ownerMember);
+      assert.deepEqual(state.pendingAddDeviceIds, [b1.id]);
+      assert.equal(state.historyRecoveryRequired, false);
+    });
+
     it('backs up history keys only for versions at which a device of the user was in the group', async () => {
       const { db } = await import('../db/index.js');
       const { directoryHead } = await import('../services/directory.service.js');
