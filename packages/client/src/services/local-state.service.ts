@@ -8,11 +8,13 @@ import { draftScopeChannelId } from '../stores/draft-scope';
 import { getDesktopBridge, getDesktopSecret, setDesktopSecret } from './desktop.service';
 
 const DB_NAME = 'alparts-local-state';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const KEY_STORE = 'crypto';
 const DRAFT_STORE = 'drafts';
 const OUTBOX_STORE = 'outbox';
+const DRAFT_OWNER_CHANNEL_INDEX = 'owner-channel';
 const OUTBOX_OWNER_DEVICE_CREATED_INDEX = 'owner-device-created';
+const OUTBOX_OWNER_CHANNEL_INDEX = 'owner-channel';
 const OUTBOX_OWNER_DEVICE_CHANNEL_INDEX = 'owner-device-channel';
 const FORMAT_VERSION = 1;
 
@@ -78,17 +80,65 @@ function contextId(context: DeviceContext): string {
   return `${context.userId}:${context.deviceId}`;
 }
 
+function recordIdPrefix(context: DeviceContext): string {
+  return `${context.userId}:${context.deviceId}:`;
+}
+
 function recordId(context: DeviceContext, scopeId: string): string {
-  return `${context.userId}:${context.deviceId}:${scopeId}`;
+  return `${recordIdPrefix(context)}${scopeId}`;
+}
+
+/** The scope an id names for this device, or null for an id in any other layout. */
+function recordScopeId(context: DeviceContext, id: string): string | null {
+  const prefix = recordIdPrefix(context);
+  return id.startsWith(prefix) ? id.slice(prefix.length) : null;
+}
+
+/**
+ * Before version 3 records were keyed `${ownerId}:${scopeId}`. Their
+ * ciphertext is already bound to the device that saved them, so only the id
+ * moves. A client that used the new layout at version 2 may have saved the
+ * same scope again; the later write is kept.
+ */
+function moveLegacyRecordIds(store: IDBObjectStore): void {
+  const request = store.openCursor();
+  request.onsuccess = () => {
+    const cursor = request.result;
+    if (!cursor) return;
+    const record = cursor.value as unknown;
+    if (isEncryptedRecord(record)) {
+      const owner = { userId: record.ownerId, deviceId: record.deviceId };
+      const legacyPrefix = `${record.ownerId}:`;
+      if (record.id.startsWith(legacyPrefix) && recordScopeId(owner, record.id) === null) {
+        const moved: EncryptedRecord = { ...record, id: recordId(owner, record.id.slice(legacyPrefix.length)) };
+        const existing = store.get(moved.id);
+        existing.onsuccess = () => {
+          const current = existing.result as unknown;
+          if (!isEncryptedRecord(current) || current.updatedAt < moved.updatedAt) store.put(moved);
+        };
+        cursor.delete();
+      }
+    }
+    cursor.continue();
+  };
 }
 
 function openLocalDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
-    request.onupgradeneeded = () => {
+    request.onupgradeneeded = (event) => {
       const db = request.result;
       if (!db.objectStoreNames.contains(KEY_STORE)) db.createObjectStore(KEY_STORE);
-      if (!db.objectStoreNames.contains(DRAFT_STORE)) db.createObjectStore(DRAFT_STORE, { keyPath: 'id' });
+      const drafts = db.objectStoreNames.contains(DRAFT_STORE)
+        ? request.transaction!.objectStore(DRAFT_STORE)
+        : db.createObjectStore(DRAFT_STORE, { keyPath: 'id' });
+      if (!drafts.indexNames.contains(DRAFT_OWNER_CHANNEL_INDEX)) {
+        drafts.createIndex(
+          DRAFT_OWNER_CHANNEL_INDEX,
+          ['ownerId', 'channelId'],
+          { unique: false },
+        );
+      }
       const outbox = db.objectStoreNames.contains(OUTBOX_STORE)
         ? request.transaction!.objectStore(OUTBOX_STORE)
         : db.createObjectStore(OUTBOX_STORE, { keyPath: 'id' });
@@ -99,12 +149,21 @@ function openLocalDb(): Promise<IDBDatabase> {
           { unique: false },
         );
       }
-      if (!outbox.indexNames.contains(OUTBOX_OWNER_DEVICE_CHANNEL_INDEX)) {
+      if (!outbox.indexNames.contains(OUTBOX_OWNER_CHANNEL_INDEX)) {
         outbox.createIndex(
-          OUTBOX_OWNER_DEVICE_CHANNEL_INDEX,
-          ['ownerId', 'deviceId', 'channelId'],
+          OUTBOX_OWNER_CHANNEL_INDEX,
+          ['ownerId', 'channelId'],
           { unique: false },
         );
+      }
+      // Channel cleanup covers every device of the user, so the per-device
+      // channel index of version 2 has no query left.
+      if (outbox.indexNames.contains(OUTBOX_OWNER_DEVICE_CHANNEL_INDEX)) {
+        outbox.deleteIndex(OUTBOX_OWNER_DEVICE_CHANNEL_INDEX);
+      }
+      if (event.oldVersion < 3) {
+        moveLegacyRecordIds(drafts);
+        moveLegacyRecordIds(outbox);
       }
     };
     request.onsuccess = () => resolve(request.result);
@@ -179,15 +238,16 @@ async function deleteRecord(storeName: string, key: IDBValidKey): Promise<void> 
   });
 }
 
-async function deleteOutboxRecordsForChannel(
-  context: DeviceContext,
-  channelId: string,
+async function deleteRecordsByIndex(
+  storeName: string,
+  indexName: string,
+  query: IDBKeyRange,
 ): Promise<void> {
   const db = await openLocalDb();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(OUTBOX_STORE, 'readwrite');
-    const index = tx.objectStore(OUTBOX_STORE).index(OUTBOX_OWNER_DEVICE_CHANNEL_INDEX);
-    const request = index.openCursor(IDBKeyRange.only([context.userId, context.deviceId, channelId]));
+    const tx = db.transaction(storeName, 'readwrite');
+    const index = tx.objectStore(storeName).index(indexName);
+    const request = index.openCursor(query);
     request.onsuccess = () => {
       const cursor = request.result;
       if (!cursor) return;
@@ -425,20 +485,18 @@ export async function deleteLocalDraft(scopeId: string): Promise<void> {
   await deleteRecord(DRAFT_STORE, recordId(context, scopeId));
 }
 
-/** Remove the channel's draft and every post draft inside it. */
+/**
+ * Remove the channel's draft and every post draft inside it. Access is lost
+ * by the user, so drafts that earlier devices of the user left in this
+ * profile go too.
+ */
 export async function deleteLocalDraftsForChannel(channelId: string): Promise<void> {
   const context = currentContext();
-  const prefix = `${recordId(context, channelId)}:`;
-  const db = await openLocalDb();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(DRAFT_STORE, 'readwrite');
-    const store = tx.objectStore(DRAFT_STORE);
-    store.delete(recordId(context, channelId));
-    store.delete(IDBKeyRange.bound(prefix, `${prefix}\uffff`));
-    tx.oncomplete = () => { db.close(); resolve(); };
-    tx.onerror = () => { db.close(); reject(tx.error); };
-    tx.onabort = () => { db.close(); reject(tx.error); };
-  });
+  await deleteRecordsByIndex(
+    DRAFT_STORE,
+    DRAFT_OWNER_CHANNEL_INDEX,
+    IDBKeyRange.only([context.userId, channelId]),
+  );
 }
 
 export async function saveOutboxCommand(
@@ -453,12 +511,16 @@ export async function saveOutboxCommand(
 }
 
 async function decryptOutboxRecord(record: EncryptedRecord, context: DeviceContext): Promise<OutboxCommand | null> {
+  // The idempotency key is part of the AAD; guessing it from an id in another
+  // layout would fail decryption and delete a record that may still be valid.
+  const idempotencyKey = recordScopeId(context, record.id);
+  if (idempotencyKey === null) return null;
   try {
     if (record.purpose !== 'outbox') throw new Error('Invalid outbox metadata');
-    const command = parseOutboxCommand(await decryptPayload(record, context, record.id.slice(record.ownerId.length + record.deviceId.length + 2)));
+    const command = parseOutboxCommand(await decryptPayload(record, context, idempotencyKey));
     if (
       !command
-      || command.idempotencyKey !== record.id.slice(record.ownerId.length + record.deviceId.length + 2)
+      || command.idempotencyKey !== idempotencyKey
       || command.channelId !== record.channelId
     ) throw new Error('Invalid outbox payload');
     return command;
@@ -511,11 +573,19 @@ export async function deleteOutboxCommand(
   await deleteRecord(OUTBOX_STORE, recordId(context, idempotencyKey));
 }
 
+/**
+ * Remove the channel's queued messages. Access is lost by the user, so those
+ * that earlier devices of the user left in this profile go too.
+ */
 export async function deleteOutboxCommandsForChannel(
   context: OutboxStorageContext,
   channelId: string,
 ): Promise<void> {
-  await deleteOutboxRecordsForChannel(context, channelId);
+  await deleteRecordsByIndex(
+    OUTBOX_STORE,
+    OUTBOX_OWNER_CHANNEL_INDEX,
+    IDBKeyRange.only([context.userId, channelId]),
+  );
 }
 
 /** Drop all in-memory key references; encrypted records remain available to the same valid device. */
