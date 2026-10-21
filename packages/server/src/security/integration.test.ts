@@ -3425,6 +3425,102 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     assert.equal((await verifyAuditChain()).valid, true);
   });
 
+  it('keeps a direct message bound to its participants when one leaves and rejoins (GHSA-8pfj-6w79-54g4)', async () => {
+    const { db } = await import('../db/index.js');
+    const { auditLogs, channelMembers, channels, dmConversations, dmMembers } = await import('../db/schema.js');
+    const ownerLogin = await request('/api/auth/login', {
+      method: 'POST', body: { email: 'unbound@example.test', password: 'Correct-Horse-Battery-9!' },
+    });
+    assert.equal(ownerLogin.status, 200);
+    const owner = {
+      cookie: ownerLogin.headers.get('set-cookie')!.split(';', 1)[0],
+      user: (await json<{ user: { id: string } }>(ownerLogin)).user,
+      password: 'Correct-Horse-Battery-9!',
+    };
+    await registerDevice(owner, deviceFixture(), 'DM participants owner device');
+    const workspace = await json<{ id: string }>(await request('/api/workspaces', {
+      method: 'POST', cookie: owner.cookie, body: { name: 'Direct message participants' },
+    }));
+    const leaverInvitation = await createWorkspaceInvitation(workspace.id, owner.cookie, 'dm-leaver@example.test');
+    const leaver = await createAccount('dm-leaver@example.test', 'Correct-Horse-Battery-61!', 'DM Leaver', leaverInvitation.token);
+    await registerDevice(leaver, deviceFixture(), 'DM leaver device');
+    const stayerInvitation = await createWorkspaceInvitation(workspace.id, owner.cookie, 'dm-stayer@example.test');
+    const stayer = await createAccount('dm-stayer@example.test', 'Correct-Horse-Battery-62!', 'DM Stayer', stayerInvitation.token);
+
+    const openDm = async (memberIds: string[]) => {
+      const response = await request(`/api/workspaces/${workspace.id}/dms`, {
+        method: 'POST', cookie: owner.cookie, body: { memberIds },
+      });
+      assert.equal(response.status, 201, await response.clone().text());
+      return json<{ channelId: string; members: Array<{ id: string }> }>(response);
+    };
+    const participants = async (channelId: string) => (await db.select({ userId: dmMembers.userId })
+      .from(dmMembers)
+      .innerJoin(dmConversations, eq(dmConversations.id, dmMembers.conversationId))
+      .where(eq(dmConversations.channelId, channelId))).map((row) => row.userId).sort();
+    const liveMembers = async (channelId: string) => (await db.select({ userId: channelMembers.userId })
+      .from(channelMembers)
+      .where(eq(channelMembers.channelId, channelId))).map((row) => row.userId).sort();
+    const workspaceDmCount = async () => (await db.select({ id: dmConversations.id })
+      .from(dmConversations)
+      .innerJoin(channels, eq(channels.id, dmConversations.channelId))
+      .where(eq(channels.workspaceId, workspace.id))).length;
+
+    const pair = await openDm([leaver.user.id]);
+    const trio = await openDm([leaver.user.id, stayer.user.id]);
+    const ownerAndStayer = await openDm([stayer.user.id]);
+    assert.equal(await workspaceDmCount(), 3);
+
+    const removal = await request(`/api/workspaces/${workspace.id}/members/${leaver.user.id}`, {
+      method: 'DELETE', cookie: owner.cookie,
+    });
+    assert.equal(removal.status, 200, await removal.text());
+    // The removal ends live access but leaves who the conversations are for.
+    assert.deepEqual(await participants(pair.channelId), [owner.user.id, leaver.user.id].sort());
+    assert.deepEqual(await liveMembers(pair.channelId), [owner.user.id]);
+    assert.deepEqual(await participants(trio.channelId), [owner.user.id, leaver.user.id, stayer.user.id].sort());
+    assert.deepEqual(await liveMembers(trio.channelId), [owner.user.id, stayer.user.id].sort());
+    // The three-person conversation does not take the place of the two-person one.
+    assert.equal((await openDm([stayer.user.id])).channelId, ownerAndStayer.channelId);
+
+    const rejoinInvitation = await createWorkspaceInvitation(workspace.id, owner.cookie, 'dm-leaver@example.test');
+    assert.equal((await request('/api/invitations/accept', {
+      method: 'POST', cookie: leaver.cookie, body: { token: rejoinInvitation.token },
+    })).status, 200);
+    // The member who came back cannot reopen a conversation that went on
+    // without them; a participant who kept it has to.
+    for (const memberIds of [[owner.user.id], [owner.user.id, stayer.user.id]]) {
+      const selfRestore = await request(`/api/workspaces/${workspace.id}/dms`, {
+        method: 'POST', cookie: leaver.cookie, body: { memberIds },
+      });
+      assert.equal(selfRestore.status, 409);
+      assert.equal((await json<{ error: string }>(selfRestore)).error, 'DM_REJOIN_REQUIRES_PARTICIPANT');
+    }
+    assert.deepEqual(await liveMembers(pair.channelId), [owner.user.id]);
+    assert.deepEqual(await liveMembers(trio.channelId), [owner.user.id, stayer.user.id].sort());
+    assert.equal(await workspaceDmCount(), 3);
+    // When a participant who kept it asks for the same people again, the
+    // original conversation comes back instead of a second one.
+    const restored = await openDm([leaver.user.id]);
+    assert.equal(restored.channelId, pair.channelId);
+    assert.deepEqual(restored.members.map((member) => member.id).sort(), [owner.user.id, leaver.user.id].sort());
+    assert.deepEqual(await liveMembers(pair.channelId), [owner.user.id, leaver.user.id].sort());
+    assert.equal(await workspaceDmCount(), 3);
+    const leaverDms = await json<Array<{ channelId: string }>>(await request(`/api/workspaces/${workspace.id}/dms`, {
+      cookie: leaver.cookie,
+    }));
+    assert.equal(leaverDms.some((dm) => dm.channelId === pair.channelId), true);
+    // Only the conversation that was asked for is restored.
+    assert.equal(leaverDms.some((dm) => dm.channelId === trio.channelId), false);
+    assert.deepEqual(await liveMembers(trio.channelId), [owner.user.id, stayer.user.id].sort());
+
+    const reuseAudit = await db.select({ action: auditLogs.action, details: auditLogs.details })
+      .from(auditLogs)
+      .where(sql`${auditLogs.targetId} = ${pair.channelId} and ${auditLogs.action} = 'dm.reuse'`);
+    assert.deepEqual(reuseAudit.map((row) => (row.details as { restoredMemberCount?: number }).restoredMemberCount), [1]);
+    assert.equal((await verifyAuditChain()).valid, true);
+  });
+
   it('binds edits, deletions, quotes and replies to the messages their authors signed (formal model M9)', async () => {
     const messageService = await import('../services/message.service.js');
     const ownerLogin = await request('/api/auth/login', {

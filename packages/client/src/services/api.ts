@@ -75,6 +75,7 @@ const API_ERROR_MESSAGES_BY_CODE: Record<string, MessageKey> = {
   STALE_OVERRIDE: msg('他の変更と重なりました。表示を更新してもう一度お試しください。'),
   DIRECTORY_CONFLICT: msg('端末の一覧が更新されました。表示を更新してもう一度お試しください。'),
   IDEMPOTENCY_CONFLICT: msg('同じ操作がすでに行われています。表示を更新してください。'),
+  DM_REJOIN_REQUIRES_PARTICIPANT: msg('この会話に戻るには、ほかの参加者に会話を開いてもらってください。'),
   PASSKEY_REQUIRED: msg('パスワードでのログインをオフにするには、先にパスキーを追加してください。'),
 };
 
