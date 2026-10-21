@@ -637,7 +637,7 @@ export async function admitGroupCommit(
             now,
           }),
           members: snapshot.members,
-          activeCreatedAt: snapshot.active!.createdAt,
+          genesisCreatedAt: snapshot.group!.genesisCreatedAt!,
           removeRequiredAt: snapshot.group!.removeRequiredAt ?? null,
         })
         : false,

@@ -32,8 +32,8 @@ import {
 import {
   applyViewerEffectsAndRotation,
   assertNoSuperiorAccessLoss,
-  captureChannelViewersFromSnapshot,
-  captureChannelViewersFromStore,
+  captureChannelAccessFromSnapshot,
+  captureChannelAccessFromStore,
   getChannelAuthorizationFromSnapshot,
   getChannelAuthorizationFromStore,
   getChannelViewerIdsFromStore,
@@ -158,7 +158,7 @@ export async function updateChannel(channelId: string, updates: { name?: string;
     if (updates.categoryId) await assertCategoryWorkspace(transaction, updates.categoryId, existing.workspaceId);
     const snapshotBefore = await loadWorkspaceAuthorizationSnapshot(transaction, existing.workspaceId, [channelId]);
     if (!snapshotBefore) throw new Error('CHANNEL_NOT_FOUND');
-    const before = captureChannelViewersFromSnapshot(snapshotBefore);
+    const before = captureChannelAccessFromSnapshot(snapshotBefore);
     const privacyChanged = updates.isPrivate !== undefined && updates.isPrivate !== existing.isPrivate;
     if (privacyChanged) {
       await transaction.delete(channelMembers).where(eq(channelMembers.channelId, channelId));
@@ -174,7 +174,7 @@ export async function updateChannel(channelId: string, updates: { name?: string;
     const snapshotAfter = await loadWorkspaceAuthorizationSnapshot(transaction, existing.workspaceId, [channelId]);
     if (!snapshotAfter) throw new Error('CHANNEL_NOT_FOUND');
     assertNoSuperiorAccessLoss(snapshotBefore, snapshotAfter, actorId);
-    const after = captureChannelViewersFromSnapshot(snapshotAfter);
+    const after = captureChannelAccessFromSnapshot(snapshotAfter);
     const roomEffects = await applyViewerEffectsAndRotation(transaction, before, after);
     const effect = roomEffects[0];
     return {
@@ -182,6 +182,7 @@ export async function updateChannel(channelId: string, updates: { name?: string;
       updated: effect?.rotationRequired ? { ...updated, keyRotationRequired: true } : updated,
       removedUserIds: effect?.lostUserIds ?? [],
       gainedUserIds: effect?.gainedUserIds ?? [],
+      lostCallUserIds: effect?.lostCallUserIds ?? [],
       rotationRequired: effect?.rotationRequired ?? false,
       roomEffects,
     };
@@ -206,6 +207,7 @@ export async function updateChannel(channelId: string, updates: { name?: string;
     workspaceId: result.updated.workspaceId,
     removedUserIds: result.removedUserIds,
     gainedUserIds: result.gainedUserIds,
+    lostCallUserIds: result.lostCallUserIds,
     rotationRequired: result.rotationRequired,
     roomEffects: result.roomEffects,
   };
@@ -377,7 +379,7 @@ export async function deleteCategory(workspaceId: string, categoryId: string, ac
     const affectedChannelIds = affectedChannels.map((channel: { id: string }) => channel.id);
     const snapshotBefore = await loadWorkspaceAuthorizationSnapshot(transaction, workspaceId, affectedChannelIds);
     if (!snapshotBefore) throw new Error('CATEGORY_NOT_FOUND');
-    const before = captureChannelViewersFromSnapshot(snapshotBefore);
+    const before = captureChannelAccessFromSnapshot(snapshotBefore);
     await transaction.update(channels)
       .set({ categoryId: null })
       .where(and(eq(channels.workspaceId, workspaceId), eq(channels.categoryId, categoryId)));
@@ -386,7 +388,7 @@ export async function deleteCategory(workspaceId: string, categoryId: string, ac
     const snapshotAfter = await loadWorkspaceAuthorizationSnapshot(transaction, workspaceId, affectedChannelIds);
     if (!snapshotAfter) throw new Error('CATEGORY_NOT_FOUND');
     assertNoSuperiorAccessLoss(snapshotBefore, snapshotAfter, actorId);
-    const after = captureChannelViewersFromSnapshot(snapshotAfter);
+    const after = captureChannelAccessFromSnapshot(snapshotAfter);
     const roomEffects = await applyViewerEffectsAndRotation(transaction, before, after);
     return { existing, movedChannelIds: affectedChannelIds, roomEffects };
   }, (committed) => ({
@@ -446,7 +448,7 @@ export async function addChannelMember(channelId: string, userId: string, actorI
     const channel = await lockChannelForMutation(transaction, channelId, location.workspaceId);
     if (!channel || !channel.isPrivate || channel.type === 'dm') throw new Error('PRIVATE_CHANNEL_NOT_FOUND');
     await assertChannelManager(transaction, channel, actorId);
-    const before = await captureChannelViewersFromStore(transaction, channel.workspaceId, [channelId]);
+    const before = await captureChannelAccessFromStore(transaction, channel.workspaceId, [channelId]);
     const workspaceMember = await transaction.query.workspaceMembers.findFirst({
       where: and(eq(workspaceMembers.workspaceId, channel.workspaceId), eq(workspaceMembers.userId, userId)),
     });
@@ -455,7 +457,7 @@ export async function addChannelMember(channelId: string, userId: string, actorI
       .values({ channelId, userId })
       .onConflictDoNothing()
       .returning({ userId: channelMembers.userId });
-    const after = await captureChannelViewersFromStore(transaction, channel.workspaceId, [channelId]);
+    const after = await captureChannelAccessFromStore(transaction, channel.workspaceId, [channelId]);
     const roomEffects = await applyViewerEffectsAndRotation(transaction, before, after);
     return { workspaceId: channel.workspaceId, changed: inserted.length === 1, roomEffects };
   }, (committed) => ({
@@ -492,7 +494,7 @@ export async function removeChannelMember(channelId: string, userId: string, act
     if (explicitMembers.length <= 1) throw new Error('LAST_PRIVATE_MEMBER');
     const snapshotBefore = await loadWorkspaceAuthorizationSnapshot(transaction, channel.workspaceId, [channelId]);
     if (!snapshotBefore) throw new Error('PRIVATE_CHANNEL_NOT_FOUND');
-    const before = captureChannelViewersFromSnapshot(snapshotBefore);
+    const before = captureChannelAccessFromSnapshot(snapshotBefore);
     await transaction.delete(channelMembers).where(and(
       eq(channelMembers.channelId, channelId),
       eq(channelMembers.userId, userId),
@@ -502,7 +504,7 @@ export async function removeChannelMember(channelId: string, userId: string, act
     // Same boundary as role and override changes: only a higher-ranked member
     // (or the owner, or the member themself) may remove someone.
     assertNoSuperiorAccessLoss(snapshotBefore, snapshotAfter, actorId);
-    const after = captureChannelViewersFromSnapshot(snapshotAfter);
+    const after = captureChannelAccessFromSnapshot(snapshotAfter);
     const roomEffects = await applyViewerEffectsAndRotation(transaction, before, after);
     return {
       workspaceId: channel.workspaceId,

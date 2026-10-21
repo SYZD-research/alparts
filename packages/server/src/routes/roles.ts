@@ -78,7 +78,7 @@ router.put('/workspaces/:wid/roles/:roleId', authMiddleware, requireWorkspacePer
       stepUpRevalidation(req),
     );
     await applyRealtimeEffects(req, result);
-    res.json(result);
+    res.json(roleChangeResponse(result));
   } catch (error: any) {
     if (!sendRoleError(res, error)) throw error;
   }
@@ -144,10 +144,16 @@ async function changeAssignment(req: AuthRequest, res: Response, action: 'assign
       stepUpRevalidation(req),
     );
     await applyRealtimeEffects(req, result);
-    res.json(result);
+    res.json(roleChangeResponse(result));
   } catch (error: any) {
     if (!sendRoleError(res, error)) throw error;
   }
+}
+
+/** `allChannelIds` lists every channel of the workspace for room cleanup, including ones the actor cannot see. */
+function roleChangeResponse<T extends { allChannelIds: string[] }>(result: T): Omit<T, 'allChannelIds'> {
+  const { allChannelIds: _allChannelIds, ...response } = result;
+  return response;
 }
 
 async function applyRealtimeEffects(req: AuthRequest, result: {
@@ -159,13 +165,16 @@ async function applyRealtimeEffects(req: AuthRequest, result: {
     channelId: string;
     lostUserIds: string[];
     gainedUserIds: string[];
+    lostCallUserIds: string[];
     rotationRequired: boolean;
   }>;
 }) {
   const io = getIo(req);
   if (!io) return;
   for (const effect of result.roomEffects ?? []) {
-    for (const userId of effect.lostUserIds) {
+    // Losing a voice channel's call leaves its rooms too, which ends the call;
+    // the client then reloads the channels it still sees.
+    for (const userId of [...effect.lostUserIds, ...effect.lostCallUserIds]) {
       io.to(`user:${userId}`).emit('channel:access-revoked', {
         workspaceId: req.params.wid,
         channelId: effect.channelId,
@@ -184,7 +193,7 @@ async function applyRealtimeEffects(req: AuthRequest, result: {
     await joinAuthorizedUserToWorkspaceRoom(io, userId, req.params.wid);
   }
   for (const effect of result.roomEffects ?? []) {
-    for (const userId of effect.lostUserIds) {
+    for (const userId of [...effect.lostUserIds, ...effect.lostCallUserIds]) {
       leaveUserChannelRooms(io, userId, effect.channelId);
     }
     for (const userId of effect.gainedUserIds) {

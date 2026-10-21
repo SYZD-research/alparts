@@ -259,7 +259,8 @@ export interface FreshStartInput {
   hasRotationPermission: boolean;
   view: GroupMembershipView;
   members: readonly GroupMemberState[];
-  activeCreatedAt: Date;
+  /** When the current group's genesis was accepted. */
+  genesisCreatedAt: Date;
   /** Since when a member's user has no longer seen the channel (mls_groups). */
   removeRequiredAt?: Date | null;
 }
@@ -269,7 +270,9 @@ export interface FreshStartInput {
  * could have been committed. Each counts from when a member could act on it:
  * a package from when it became valid, a rejoin from when its package did, a
  * revoked device from its revocation and a lost viewer from when access
- * ended. Nothing without a known start counts.
+ * ended. Nothing without a known start counts. Members of the current group
+ * can act only from its genesis, so a new group gets the whole wait again,
+ * while a later commit, which need not add anyone, does not restart it.
  */
 export function pendingSince(input: FreshStartInput): Date | null {
   const times: Date[] = [];
@@ -285,7 +288,8 @@ export function pendingSince(input: FreshStartInput): Date | null {
     if (since) times.push(since);
   }
   if (times.length === 0) return null;
-  return times.reduce((left, right) => (left < right ? left : right));
+  const earliest = times.reduce((left, right) => (left < right ? left : right));
+  return earliest > input.genesisCreatedAt ? earliest : input.genesisCreatedAt;
 }
 
 /** §5.3.4: who may replace an existing group with a new one (step-up still required). */
@@ -403,12 +407,13 @@ export interface AdmissionState {
   active: {
     version: number;
     protocolVersion: number;
-    createdAt: Date;
     /** Transcript of the active version's signed envelope, if it has one. */
     transcript: string | null;
   } | null;
   group: {
     genesisVersion: number | null;
+    /** When the genesis version was accepted; null while there is no group. */
+    genesisCreatedAt: Date | null;
     pathRefreshedAt: Date | null;
     genesisRequestedAt: Date | null;
     removeRequiredAt?: Date | null;
@@ -728,7 +733,7 @@ export function describeGroupState(
       hasRotationPermission: caller.hasRotationPermission,
       view,
       members: snapshot.members,
-      activeCreatedAt: snapshot.active!.createdAt,
+      genesisCreatedAt: snapshot.group!.genesisCreatedAt!,
       removeRequiredAt: snapshot.group?.removeRequiredAt ?? null,
     }),
   );

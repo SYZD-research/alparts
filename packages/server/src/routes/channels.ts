@@ -103,7 +103,9 @@ router.put('/channels/:id', authMiddleware, requireChannelPermission(Permissions
       return;
     }
     const io = req.app.get('io') as SocketServer | undefined;
-    for (const userId of result.removedUserIds) {
+    // Losing a voice channel's call leaves its rooms too, which ends the call;
+    // the client then reloads the channels it still sees.
+    for (const userId of [...result.removedUserIds, ...result.lostCallUserIds]) {
       io?.to(`user:${userId}`).emit('channel:access-revoked', {
         workspaceId: result.workspaceId,
         channelId: req.params.id,
@@ -302,7 +304,7 @@ router.delete('/workspaces/:wid/categories/:categoryId', authMiddleware, require
     const result = await channelService.deleteCategory(req.params.wid, req.params.categoryId, req.userId!, stepUpRevalidation(req));
     const io = req.app.get('io') as SocketServer | undefined;
     for (const effect of result.roomEffects) {
-      for (const userId of effect.lostUserIds) {
+      for (const userId of [...effect.lostUserIds, ...effect.lostCallUserIds]) {
         io?.to(`user:${userId}`).emit('channel:access-revoked', {
           workspaceId: result.workspaceId,
           channelId: effect.channelId,

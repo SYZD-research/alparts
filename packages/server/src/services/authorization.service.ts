@@ -87,6 +87,20 @@ export interface ChannelViewerEffect {
   rotationRequired: boolean;
 }
 
+export interface ChannelRoomEffect extends ChannelViewerEffect {
+  /** Users who still see the voice channel but may no longer join its call. */
+  lostCallUserIds: string[];
+}
+
+/**
+ * Who sees each channel, and who may receive its keys: on a voice channel
+ * only the viewers who may also join its call.
+ */
+export interface ChannelAccess {
+  viewers: Map<string, string[]>;
+  keyRecipients: Map<string, string[]>;
+}
+
 interface SnapshotChannel {
   id: string;
   workspaceId: string;
@@ -342,6 +356,7 @@ function memberRank(snapshot: WorkspaceAuthorizationSnapshot, userId: string): n
   return Math.max(-1, ...assignedRolesFromSnapshot(snapshot, userId, {}).map((role: any) => role.position));
 }
 
+/** A voice channel's keys are its call's, so only the viewers who may join the call receive them. */
 function isChannelKeyRecipient(authorization: ChannelAuthorization | null, channel: SnapshotChannel): boolean {
   return isVisibleChannelAuthorization(authorization)
     && (channel.type !== 'voice' || (authorization.permissions & Permissions.CONNECT_VOICE) !== 0);
@@ -580,72 +595,123 @@ export async function getChannelViewerIdsFromStore(
   return captureChannelViewersFromSnapshot(snapshot, options).get(channel.id) ?? [];
 }
 
-export async function captureChannelViewersFromStore(
+export async function getChannelKeyRecipientIdsFromStore(
+  store: any,
+  channel: { id: string; workspaceId: string; categoryId: string | null; isPrivate: boolean },
+  options: AuthorizationEvaluationOptions = {},
+): Promise<string[]> {
+  const snapshot = await loadWorkspaceAuthorizationSnapshot(store, channel.workspaceId, [channel.id]);
+  if (!snapshot) return [];
+  return captureChannelUsersFromSnapshot(snapshot, options, isChannelKeyRecipient).get(channel.id) ?? [];
+}
+
+export async function captureChannelAccessFromStore(
   store: any,
   workspaceId: string,
   channelIds?: string[],
   options: AuthorizationEvaluationOptions = {},
-): Promise<Map<string, string[]>> {
-  if (channelIds && channelIds.length === 0) return new Map();
+): Promise<ChannelAccess> {
+  if (channelIds && channelIds.length === 0) return { viewers: new Map(), keyRecipients: new Map() };
   const snapshot = await loadWorkspaceAuthorizationSnapshot(store, workspaceId, channelIds);
-  if (!snapshot) return new Map();
-  return captureChannelViewersFromSnapshot(snapshot, options);
+  if (!snapshot) return { viewers: new Map(), keyRecipients: new Map() };
+  return captureChannelAccessFromSnapshot(snapshot, options);
 }
 
 export function captureChannelViewersFromSnapshot(
   snapshot: WorkspaceAuthorizationSnapshot,
   options: AuthorizationEvaluationOptions = {},
 ): Map<string, string[]> {
+  return captureChannelUsersFromSnapshot(snapshot, options, isVisibleChannelAuthorization);
+}
+
+export function captureChannelAccessFromSnapshot(
+  snapshot: WorkspaceAuthorizationSnapshot,
+  options: AuthorizationEvaluationOptions = {},
+): ChannelAccess {
+  return {
+    viewers: captureChannelViewersFromSnapshot(snapshot, options),
+    keyRecipients: captureChannelUsersFromSnapshot(snapshot, options, isChannelKeyRecipient),
+  };
+}
+
+function captureChannelUsersFromSnapshot(
+  snapshot: WorkspaceAuthorizationSnapshot,
+  options: AuthorizationEvaluationOptions,
+  includes: (authorization: ChannelAuthorization | null, channel: SnapshotChannel) => boolean,
+): Map<string, string[]> {
   const result = new Map<string, string[]>();
   const userIds = [...snapshot.membersByUserId.keys()].sort();
   for (const channel of snapshot.channels) {
-    const viewers = userIds.filter((userId) => (
-      isVisibleChannelAuthorization(getChannelAuthorizationFromSnapshot(snapshot, userId, channel, options, false))
+    const users = userIds.filter((userId) => (
+      includes(getChannelAuthorizationFromSnapshot(snapshot, userId, channel, options, false), channel)
     ));
-    result.set(channel.id, viewers);
+    result.set(channel.id, users);
   }
   return result;
 }
 
 export async function applyViewerEffectsAndRotation(
   store: any,
-  before: Map<string, string[]>,
-  after: Map<string, string[]>,
-): Promise<ChannelViewerEffect[]> {
-  const effects: ChannelViewerEffect[] = [];
-  const allChannelIds = [...new Set([...before.keys(), ...after.keys()])].sort();
+  before: ChannelAccess,
+  after: ChannelAccess,
+): Promise<ChannelRoomEffect[]> {
+  const effects: ChannelRoomEffect[] = [];
+  const lostViewers: Array<{ channelId: string; userId: string }> = [];
+  const allChannelIds = [...new Set([...before.viewers.keys(), ...after.viewers.keys()])].sort();
   for (const channelId of allChannelIds) {
-    const previous = new Set(before.get(channelId) ?? []);
-    const next = new Set(after.get(channelId) ?? []);
+    const previous = new Set(before.viewers.get(channelId) ?? []);
+    const next = new Set(after.viewers.get(channelId) ?? []);
     const lostUserIds = [...previous].filter((userId) => !next.has(userId)).sort();
     const gainedUserIds = [...next].filter((userId) => !previous.has(userId)).sort();
+    // Only a voice channel has viewers who are not key recipients. A viewer
+    // who stops being one keeps the channel but must leave its call.
+    const recipients = new Set(after.keyRecipients.get(channelId) ?? []);
+    const lostCallUserIds = (before.keyRecipients.get(channelId) ?? [])
+      .filter((userId) => next.has(userId) && !recipients.has(userId))
+      .sort();
     let rotationRequired = false;
     if (lostUserIds.length > 0 || gainedUserIds.length > 0) {
       const result = await requireChannelKeyRotation(store, [channelId]);
       rotationRequired = result.keyedChannelIds.includes(channelId);
       await refreshGroupRemoveRequirement(store, channelId, [...next]);
-      if (lostUserIds.length > 0) {
-        const lostDeviceIds = (await store
-          .select({ id: devices.id })
-          .from(devices)
-          .where(inArray(devices.userId, lostUserIds))).map((row: { id: string }) => row.id);
-        if (lostDeviceIds.length > 0) {
-          await store.delete(mlsMemberPackages).where(and(
-            eq(mlsMemberPackages.channelId, channelId),
-            inArray(mlsMemberPackages.deviceId, lostDeviceIds),
-          ));
-          await store.delete(mlsRejoinRequests).where(and(
-            eq(mlsRejoinRequests.channelId, channelId),
-            inArray(mlsRejoinRequests.deviceId, lostDeviceIds),
-          ));
-        }
-      }
+      for (const userId of lostUserIds) lostViewers.push({ channelId, userId });
     }
-    if (lostUserIds.length > 0 || gainedUserIds.length > 0 || rotationRequired) {
-      effects.push({ channelId, lostUserIds, gainedUserIds, rotationRequired });
+    if (lostUserIds.length > 0 || gainedUserIds.length > 0 || lostCallUserIds.length > 0 || rotationRequired) {
+      effects.push({ channelId, lostUserIds, gainedUserIds, lostCallUserIds, rotationRequired });
     }
   }
+  await purgeLostViewerPackages(store, lostViewers);
   return effects;
+}
+
+/**
+ * A user who no longer sees a channel keeps no member package or rejoin
+ * request in it: kept until access returns, a package would count as waiting
+ * from before then (fresh start rule c). One statement per table for every
+ * channel that changed.
+ */
+async function purgeLostViewerPackages(
+  store: any,
+  lostViewers: ReadonlyArray<{ channelId: string; userId: string }>,
+): Promise<void> {
+  if (lostViewers.length === 0) return;
+  const lostValues = () => sql.join(lostViewers.map((viewer) => (
+    sql`(${viewer.channelId}::uuid, ${viewer.userId}::uuid)`
+  )), sql`, `);
+  await store.execute(sql`
+    delete from ${mlsMemberPackages} as pkg
+    using ${devices} as device, (values ${lostValues()}) as lost(channel_id, user_id)
+    where pkg.channel_id = lost.channel_id
+      and pkg.device_id = device.id
+      and device.user_id = lost.user_id
+  `);
+  await store.execute(sql`
+    delete from ${mlsRejoinRequests} as request
+    using ${devices} as device, (values ${lostValues()}) as lost(channel_id, user_id)
+    where request.channel_id = lost.channel_id
+      and request.device_id = device.id
+      and device.user_id = lost.user_id
+  `);
 }
 
 export async function lockWorkspaceForAuthorization(store: any, workspaceId: string, mode: 'share' | 'update') {

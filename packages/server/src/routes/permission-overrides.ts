@@ -6,7 +6,7 @@ import { authMiddleware, type AuthRequest } from '../middleware/auth.js';
 import { stepUpRevalidation } from '../middleware/step-up.js';
 import { requireChannelPermission, requireWorkspacePermission } from '../middleware/rbac.js';
 import * as overrideService from '../services/permission-override.service.js';
-import type { ChannelViewerEffect } from '../services/authorization.service.js';
+import type { ChannelRoomEffect } from '../services/authorization.service.js';
 import { joinAuthorizedUserToChannelRoom, leaveUserChannelRooms } from '../websocket/room-membership.js';
 import { emitChannelKeyState, keyStateChannelIds } from '../websocket/key-state.js';
 
@@ -185,11 +185,13 @@ function deleteHandler(target: overrideService.OverrideTarget) {
   };
 }
 
-async function applyRealtimeEffects(req: AuthRequest, effects: ChannelViewerEffect[]) {
+async function applyRealtimeEffects(req: AuthRequest, effects: ChannelRoomEffect[]) {
   const io = req.app.get('io') as SocketServer | undefined;
   if (!io) return;
   for (const effect of effects) {
-    for (const userId of effect.lostUserIds) {
+    // Losing a voice channel's call leaves its rooms too, which ends the call;
+    // the client then reloads the channels it still sees.
+    for (const userId of [...effect.lostUserIds, ...effect.lostCallUserIds]) {
       io.to(`user:${userId}`).emit('channel:access-revoked', {
         workspaceId: req.params.wid,
         channelId: effect.channelId,

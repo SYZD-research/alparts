@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import type { SQL } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 process.env.DATABASE_URL ||= 'postgres://test:test@127.0.0.1:5432/alparts_test';
 process.env.S3_ACCESS_KEY ||= 'test-access-key';
@@ -187,4 +189,168 @@ describe('management security invariants', () => {
     });
     assert.equal(isVisibleChannelAuthorization(simulatedAssignedRoleDeny), false);
   });
+
+  it('purges the packages of users who lost access with one statement per table, however many channels changed', async () => {
+    const { applyViewerEffectsAndRotation } = await import('./authorization.service.js');
+    const uuid = (kind: number, index: number) => `00000000-0000-4000-${kind}000-${index.toString(16).padStart(12, '0')}`;
+    const channelIds = Array.from({ length: 300 }, (_, index) => uuid(8, index));
+    const [stays, leaves, joins] = [uuid(9, 1), uuid(9, 2), uuid(9, 3)];
+    const dialect = new PgDialect();
+    const statements: Array<{ sql: string; params: unknown[] }> = [];
+    const store = {
+      // No channel has key epochs, so only the group bookkeeping runs.
+      selectDistinct: () => ({ from: () => ({ where: async () => [] }) }),
+      execute: async (query: SQL) => {
+        statements.push(dialect.sqlToQuery(query));
+        return { rows: [] };
+      },
+    };
+    const access = (viewers: Map<string, string[]>) => ({ viewers, keyRecipients: viewers });
+    const before = access(new Map(channelIds.map((channelId) => [channelId, [stays, leaves]])));
+    // The first channel only gains a viewer; every other one loses one.
+    const after = access(new Map(channelIds.map((channelId, index) => [channelId, index === 0 ? [stays, leaves, joins] : [stays]])));
+    assert.equal((await applyViewerEffectsAndRotation(store, before, after)).length, channelIds.length);
+    const purges = statements.filter((statement) => /delete from "mls_(member_packages|rejoin_requests)"/.test(statement.sql));
+    assert.equal(purges.length, 2, 'purge round trips must not grow with channel count');
+    const lost = channelIds.slice(1).flatMap((channelId) => [channelId, leaves]);
+    for (const purge of purges) assert.deepEqual(purge.params, lost);
+  });
+
+  it('keeps viewers of a voice channel who may not join its call out of its key recipients', async () => {
+    const { Permissions } = await import('@alparts/shared');
+    const { captureChannelAccessFromSnapshot } = await import('./authorization.service.js');
+    const access = captureChannelAccessFromSnapshot(callSnapshot(Permissions));
+    assert.deepEqual(access.viewers.get('voice'), ['caller', 'listener', 'owner']);
+    assert.deepEqual(access.keyRecipients.get('voice'), ['caller', 'owner']);
+    assert.deepEqual(access.viewers.get('text'), ['caller', 'listener', 'owner']);
+    assert.deepEqual(access.keyRecipients.get('text'), ['caller', 'listener', 'owner']);
+  });
+
+  it('removes a viewer from a voice channel\'s call when CONNECT_VOICE is revoked, without touching key state', async () => {
+    const { Permissions } = await import('@alparts/shared');
+    const { applyViewerEffectsAndRotation, captureChannelAccessFromSnapshot } = await import('./authorization.service.js');
+    const deny = [{ roleId: 'speaker', allowMask: 0, denyMask: Permissions.CONNECT_VOICE }];
+    const revocations = {
+      'role edit': callSnapshot(Permissions, { speakerPermissions: 0 }),
+      'role unassignment': callSnapshot(Permissions, { callerRoles: ['guest'] }),
+      'channel override': callSnapshot(Permissions, { channelOverrides: { voice: deny } }),
+      'category override': callSnapshot(Permissions, { categoryOverrides: deny }),
+    };
+    const before = captureChannelAccessFromSnapshot(callSnapshot(Permissions));
+    for (const [path, revoked] of Object.entries(revocations)) {
+      const after = captureChannelAccessFromSnapshot(revoked);
+      assert.deepEqual(after.viewers, before.viewers, `${path} keeps every viewer`);
+      assert.deepEqual(await applyViewerEffectsAndRotation(untouchedStore, before, after), [{
+        channelId: 'voice', lostUserIds: [], gainedUserIds: [], lostCallUserIds: ['caller'], rotationRequired: false,
+      }], path);
+      assert.deepEqual(await applyViewerEffectsAndRotation(untouchedStore, after, before), [], `${path} restored`);
+    }
+
+    // Losing the channel itself is a viewer loss, not a second call loss.
+    const hidden = captureChannelAccessFromSnapshot(callSnapshot(Permissions, {
+      channelOverrides: { voice: [{ roleId: 'guest', allowMask: 0, denyMask: Permissions.VIEW_CHANNELS }] },
+    }));
+    assert.deepEqual(await applyViewerEffectsAndRotation(keylessStore, before, hidden), [{
+      channelId: 'voice', lostUserIds: ['caller', 'listener'], gainedUserIds: [], lostCallUserIds: [], rotationRequired: false,
+    }]);
+  });
+
+  it('protects and revokes a voice channel viewer who may not join its call like any viewer (GHSA-3xrh-c9vq-jh4j)', async () => {
+    const { Permissions } = await import('@alparts/shared');
+    const {
+      applyViewerEffectsAndRotation,
+      assertNoSuperiorAccessLoss,
+      captureChannelAccessFromSnapshot,
+    } = await import('./authorization.service.js');
+    const roles = {
+      'security-manager': { permissions: Permissions.VIEW_CHANNELS | Permissions.VIEW_AUDIT_LOG | Permissions.MANAGE_MEMBERS, position: 80 },
+      'channel-manager': {
+        permissions: Permissions.VIEW_CHANNELS | Permissions.MANAGE_CHANNELS | Permissions.CONNECT_VOICE,
+        position: 60,
+      },
+    };
+    const members = { auditor: ['security-manager'], manager: ['channel-manager'] };
+    const shared = authorizationSnapshot({
+      roles, members, channels: [{ id: 'voice', type: 'voice', isPrivate: true }],
+      privateMembers: { voice: ['auditor', 'manager'] },
+    });
+    const managerOnly = authorizationSnapshot({
+      roles, members, channels: [{ id: 'voice', type: 'voice', isPrivate: true }],
+      privateMembers: { voice: ['manager'] },
+    });
+    const publicVoice = authorizationSnapshot({ roles, members, channels: [{ id: 'voice', type: 'voice' }] });
+    assert.throws(() => assertNoSuperiorAccessLoss(shared, managerOnly, 'manager'), /MEMBER_HIERARCHY/);
+    assert.throws(() => assertNoSuperiorAccessLoss(publicVoice, managerOnly, 'manager'), /MEMBER_HIERARCHY/);
+    assert.doesNotThrow(() => assertNoSuperiorAccessLoss(shared, managerOnly, 'owner'));
+    // When the owner removes the auditor, the auditor's sockets leave the channel's rooms.
+    assert.deepEqual(await applyViewerEffectsAndRotation(
+      keylessStore,
+      captureChannelAccessFromSnapshot(shared),
+      captureChannelAccessFromSnapshot(managerOnly),
+    ), [{ channelId: 'voice', lostUserIds: ['auditor'], gainedUserIds: [], lostCallUserIds: [], rotationRequired: false }]);
+  });
 });
+
+type OverrideValue = { roleId: string; allowMask: number; denyMask: number };
+
+/** An in-memory workspace snapshot whose channels all sit in one category; the owner holds no role. */
+function authorizationSnapshot(input: {
+  roles: Record<string, { permissions: number; position: number }>;
+  members: Record<string, string[]>;
+  channels: Array<{ id: string; type: string; isPrivate?: boolean }>;
+  categoryOverrides?: OverrideValue[];
+  channelOverrides?: Record<string, OverrideValue[]>;
+  privateMembers?: Record<string, string[]>;
+}) {
+  const channels = input.channels.map((channel) => ({
+    id: channel.id, workspaceId: 'workspace-a', categoryId: 'category-a', isPrivate: channel.isPrivate ?? false, type: channel.type,
+  }));
+  return {
+    workspaceId: 'workspace-a',
+    ownerId: 'owner',
+    channels,
+    channelsById: new Map(channels.map((channel) => [channel.id, channel])),
+    membersByUserId: new Map(['owner', ...Object.keys(input.members)].map((userId) => [userId, { id: `membership-${userId}`, userId }])),
+    rolesById: new Map(Object.entries(input.roles).map(([id, role]) => [id, { id, name: id, ...role }])),
+    roleIdsByUserId: new Map<string, string[]>([['owner', []], ...Object.entries(input.members)]),
+    categoryOverridesById: new Map<string, OverrideValue[]>(input.categoryOverrides ? [['category-a', input.categoryOverrides]] : []),
+    channelOverridesById: new Map<string, OverrideValue[]>(Object.entries(input.channelOverrides ?? {})),
+    privateMemberIdsByChannelId: new Map<string, Set<string>>(
+      Object.entries(input.privateMembers ?? {}).map(([channelId, userIds]) => [channelId, new Set(userIds)]),
+    ),
+  };
+}
+
+/** A listener sees the channels; a caller also holds CONNECT_VOICE through the speaker role. */
+function callSnapshot(
+  permissions: typeof import('@alparts/shared').Permissions,
+  change: {
+    speakerPermissions?: number;
+    callerRoles?: string[];
+    categoryOverrides?: OverrideValue[];
+    channelOverrides?: Record<string, OverrideValue[]>;
+  } = {},
+) {
+  return authorizationSnapshot({
+    roles: {
+      guest: { permissions: permissions.VIEW_CHANNELS, position: 5 },
+      speaker: { permissions: change.speakerPermissions ?? permissions.CONNECT_VOICE, position: 6 },
+    },
+    members: { caller: change.callerRoles ?? ['guest', 'speaker'], listener: ['guest'] },
+    channels: [{ id: 'voice', type: 'voice' }, { id: 'text', type: 'text' }],
+    categoryOverrides: change.categoryOverrides,
+    channelOverrides: change.channelOverrides,
+  });
+}
+
+/** Fails on any read or write: a change that only ends calls leaves key state alone. */
+const untouchedStore = new Proxy({}, {
+  get: (_target, key) => { throw new Error(`key state touched: ${String(key)}`); },
+});
+
+/** Channels without keys or groups: every key-state read finds nothing. */
+const keylessStore = {
+  selectDistinct: () => ({ from: () => ({ where: async () => [] }) }),
+  select: () => ({ from: () => ({ where: async () => [] }) }),
+  execute: async () => ({ rows: [] }),
+};

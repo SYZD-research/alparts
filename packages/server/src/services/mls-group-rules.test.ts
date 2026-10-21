@@ -321,7 +321,12 @@ class ServerModel {
       this.packages = this.packages.filter((pkg) => pkg.deviceId !== entry.deviceId);
     });
     if (plan.kind === 'create') {
-      this.group = { genesisVersion: commit.version, pathRefreshedAt: new Date(this.now), genesisRequestedAt: this.group?.genesisRequestedAt ?? null };
+      this.group = {
+        genesisVersion: commit.version,
+        genesisCreatedAt: new Date(this.now),
+        pathRefreshedAt: new Date(this.now),
+        genesisRequestedAt: this.group?.genesisRequestedAt ?? null,
+      };
       this.nodeKeys = new Set();
     } else if (plan.pathRefresh) {
       this.group = { ...this.group!, pathRefreshedAt: new Date(this.now) };
@@ -330,7 +335,6 @@ class ServerModel {
     this.active = {
       version: commit.version,
       protocolVersion: 4,
-      createdAt: new Date(this.now),
       transcript: groupCommitTranscript(commit),
     };
     this.latestVersion = commit.version;
@@ -871,9 +875,9 @@ describe('continuous group admission rules', () => {
     model.enroll(b);
     model.publish(a);
     model.latestVersion = 3;
-    model.active = { version: 3, protocolVersion: 3, createdAt: new Date(model.now - 60 * MINUTE), transcript: 'c'.repeat(64) };
+    model.active = { version: 3, protocolVersion: 3, transcript: 'c'.repeat(64) };
     model.previousRecipientIds = [a.deviceId, b.deviceId];
-    model.group = { genesisVersion: null, pathRefreshedAt: null, genesisRequestedAt: new Date(model.now) };
+    model.group = { genesisVersion: null, genesisCreatedAt: null, pathRefreshedAt: null, genesisRequestedAt: new Date(model.now) };
     const solo = await model.genesis(a, []);
     assert.equal(solo.commit.previousTranscript, 'c'.repeat(64));
     await rejects(model.admit(solo.commit), 'GENESIS_WAITING');
@@ -933,8 +937,13 @@ describe('continuous group state', () => {
     const eligible = ['a', 'b', 'd', 'e'].map((id) => ({ id, userId: `u-${id}`, identityKey: id }));
     const snapshot = {
       latestVersion: 5,
-      active: { version: 5, protocolVersion: 4, createdAt: new Date(now - 30 * MINUTE), transcript: 'd'.repeat(64) },
-      group: { genesisVersion: 2, pathRefreshedAt: new Date(now - PATH_REFRESH_INTERVAL_MS), genesisRequestedAt: null },
+      active: { version: 5, protocolVersion: 4, transcript: 'd'.repeat(64) },
+      group: {
+        genesisVersion: 2,
+        genesisCreatedAt: new Date(now - 60 * MINUTE),
+        pathRefreshedAt: new Date(now - PATH_REFRESH_INTERVAL_MS),
+        genesisRequestedAt: null,
+      },
       members: [member('a', 'u-a', 0, now), member('b', 'u-b', 1, now), member('c', 'u-c', 2, now)],
       packages: [
         pkg('d', now),
@@ -974,8 +983,8 @@ describe('continuous group state', () => {
     const eligible = ['a', 'b', 'c'].map((id) => ({ id, userId: `u-${id}`, identityKey: id }));
     const snapshot = {
       latestVersion: 3,
-      active: { version: 3, protocolVersion: 3, createdAt: new Date(now), transcript: null },
-      group: { genesisVersion: null, pathRefreshedAt: null, genesisRequestedAt: new Date(now - 60 * MINUTE) },
+      active: { version: 3, protocolVersion: 3, transcript: null },
+      group: { genesisVersion: null, genesisCreatedAt: null, pathRefreshedAt: null, genesisRequestedAt: new Date(now - 60 * MINUTE) },
       members: [],
       packages: [pkg('a', now)],
       rejoinRequests: [],
@@ -1011,7 +1020,7 @@ describe('continuous group state', () => {
       hasRotationPermission: overrides.manager ?? false,
       view: deriveMembership({ eligible, members: current, packages: overrides.packages ?? [], rejoinRequests: overrides.rejoin ?? [], now }),
       members: current,
-      activeCreatedAt: new Date(now - 60 * MINUTE),
+      genesisCreatedAt: new Date(now - 60 * MINUTE),
       removeRequiredAt: overrides.removeRequiredAt ?? null,
     };
   };
@@ -1040,6 +1049,33 @@ describe('continuous group state', () => {
     assert.equal(freshStartPermitted(input({ packages: [young], manager: true })), false);
   });
 
+  it('counts a stalled change from the start of the current group, not from the last commit', () => {
+    const now = Date.now();
+    const eligible = ['a', 'b', 'x', 'm'].map((id) => ({ id, userId: `u-${id}`, identityKey: id }));
+    // x has waited 20 minutes to be added; m is a manager's device outside the group.
+    const manager = { userId: 'u-m', deviceId: 'm', hasRotationPermission: true, now };
+    const state = (genesisVersion: number, genesisAge: number) => describeGroupState(randomUUID(), {
+      latestVersion: 5,
+      active: { version: 5, protocolVersion: 4, transcript: 'd'.repeat(64) },
+      group: {
+        genesisVersion,
+        genesisCreatedAt: new Date(now - genesisAge),
+        pathRefreshedAt: new Date(now - 2 * MINUTE),
+        genesisRequestedAt: null,
+      },
+      members: [member('a', 'u-a', 0, now), member('b', 'u-b', 1, now)],
+      packages: [addable('x', now, 20 * MINUTE)],
+      rejoinRequests: [],
+      previousRecipientIds: [],
+    }, eligible, manager);
+    // The group started an hour ago; commits since then, the last two minutes ago, left x out.
+    assert.equal(state(2, 60 * MINUTE).historyRecoveryRequired, true);
+    // A fresh start seconds ago left x out: the new group gets the whole wait.
+    assert.equal(state(5, 5_000).historyRecoveryRequired, false);
+    assert.equal(state(5, 14 * MINUTE).historyRecoveryRequired, false);
+    assert.equal(state(5, 15 * MINUTE).historyRecoveryRequired, true);
+  });
+
   it('counts a rejoin request only while its package can be added', () => {
     const now = Date.now();
     const input = (overrides: Parameters<typeof freshStartInput>[1]) => freshStartInput(now, overrides);
@@ -1062,7 +1098,7 @@ describe('continuous group state', () => {
       member('a', 'u-a', 0, now),
       { ...member('b', 'u-b', 1, now), revokedAt: new Date(now - age) },
     ];
-    // The last commit was an hour ago, but the device was revoked just now.
+    // The group started an hour ago, but the device was revoked just now.
     assert.equal(freshStartPermitted(input({ members: revokedSince(5 * MINUTE) })), false);
     assert.equal(freshStartPermitted(input({ members: revokedSince(16 * MINUTE) })), true);
     // A user that lost access counts from mls_groups.remove_required_at, and not at all without it.

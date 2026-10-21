@@ -16,18 +16,26 @@ import {
   MAX_WORKSPACE_MEMBERS,
 } from '../security/limits.js';
 import {
+  applyViewerEffectsAndRotation,
+  captureChannelAccessFromStore,
   getChannelAuthorizationFromStore,
   getChannelAuthorizationFromSnapshot,
   getWorkspaceAuthorizationFromSnapshot,
   isVisibleChannelAuthorization,
   loadWorkspaceAuthorizationSnapshot,
+  lockChannelAuthorization,
   lockWorkspaceForAuthorization,
+  type ChannelViewerEffect,
 } from './authorization.service.js';
 
 export async function createDm(workspaceId: string, actorId: string, requestedUserIds: string[]) {
   const userIds = [...new Set([actorId, ...requestedUserIds])].sort();
   if (userIds.length < 2) throw new Error('DM_REQUIRES_RECIPIENT');
-  const result = await auditedTransaction<{ channelId: string; created: boolean }>(async (tx) => {
+  const result = await auditedTransaction<{
+    channelId: string;
+    created: boolean;
+    roomEffects: ChannelViewerEffect[];
+  }>(async (tx) => {
     const locked = await tx.execute(sql`select id from ${workspaces} where ${workspaces.id} = ${workspaceId} for update`);
     if (locked.rowCount === 0) throw new Error('DM_MEMBER_NOT_FOUND');
     // The normalized member-set lock prevents two tabs/processes from creating
@@ -67,10 +75,23 @@ export async function createDm(workspaceId: string, actorId: string, requestedUs
       if (candidateUserIds.length === userIds.length && candidateUserIds.every((id, index) => id === userIds[index])) {
         // Everyone named is a current workspace member (checked above), so
         // restore live membership for anyone who rejoined after a removal.
+        // The conversation went on without them and its history stays
+        // visible to members, so a returning member cannot reopen it alone:
+        // a participant who kept it has to. When nobody kept it, any
+        // participant may reopen it.
+        const live = snapshot.privateMemberIdsByChannelId.get(candidate.channelId) ?? new Set<string>();
+        if (live.size > 0 && !live.has(actorId)) throw new Error('DM_REJOIN_REQUIRES_PARTICIPANT');
+        // That is a membership change like any other: take the channel lock
+        // and apply the viewer effects, so the group's remove requirement
+        // follows the regained access and devices are told to add them.
+        await lockChannelAuthorization(tx, candidate.channelId);
+        const before = await captureChannelAccessFromStore(tx, workspaceId, [candidate.channelId]);
         await tx.insert(channelMembers)
           .values(userIds.map((userId) => ({ channelId: candidate.channelId, userId })))
           .onConflictDoNothing();
-        return { channelId: candidate.channelId, created: false };
+        const after = await captureChannelAccessFromStore(tx, workspaceId, [candidate.channelId]);
+        const roomEffects = await applyViewerEffectsAndRotation(tx, before, after);
+        return { channelId: candidate.channelId, created: false, roomEffects };
       }
     }
 
@@ -96,15 +117,19 @@ export async function createDm(workspaceId: string, actorId: string, requestedUs
     await tx.insert(channelMembers).values(userIds.map((userId) => ({ channelId: channel.id, userId })));
     const [conversation] = await tx.insert(dmConversations).values({ channelId: channel.id, createdBy: actorId }).returning();
     await tx.insert(dmMembers).values(userIds.map((userId) => ({ conversationId: conversation.id, userId })));
-    return { channelId: channel.id, created: true };
+    return { channelId: channel.id, created: true, roomEffects: [] };
   }, (committed) => ({
     actorId,
     action: committed.created ? 'dm.create' : 'dm.reuse',
     targetType: 'channel',
     targetId: committed.channelId,
-    details: { workspaceId, memberCount: userIds.length },
+    details: {
+      workspaceId,
+      memberCount: userIds.length,
+      restoredMemberCount: committed.roomEffects.reduce((count, effect) => count + effect.gainedUserIds.length, 0),
+    },
   }));
-  return getDmByChannelId(result.channelId, actorId);
+  return { dm: await getDmByChannelId(result.channelId, actorId), roomEffects: result.roomEffects };
 }
 
 export async function listDms(workspaceId: string, userId: string) {

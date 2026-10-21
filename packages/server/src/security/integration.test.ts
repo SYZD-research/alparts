@@ -915,6 +915,20 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     assert.equal((await request(`/api/channels/${privateHierarchy.id}/members/${retryDeviceAccount.user.id}`, {
       method: 'DELETE', cookie: alice.cookie,
     })).status, 200, 'the owner may remove anyone');
+    // Role results name no channel the actor cannot see, such as the private
+    // channel it just left (GHSA-3xrh-c9vq-jh4j).
+    const repeatedRestriction = await request(`/api/workspaces/${workspace.id}/members/${bob.user.id}/roles/${mutedRole.id}`, {
+      method: 'POST', cookie: bob.cookie, body: { expectedAuthorizationRevision: await bobRevision() },
+    });
+    assert.equal(repeatedRestriction.status, 200);
+    const mutedRoleEdit = await request(`/api/workspaces/${workspace.id}/roles/${mutedRole.id}`, {
+      method: 'PUT', cookie: bob.cookie, body: { permissions: 0, expectedAuthorizationRevision: await bobRevision() },
+    });
+    assert.equal(mutedRoleEdit.status, 200);
+    for (const roleResult of [await json<Record<string, unknown>>(repeatedRestriction), await json<Record<string, unknown>>(mutedRoleEdit)]) {
+      assert.equal(Object.hasOwn(roleResult, 'allChannelIds'), false);
+      assert.equal(JSON.stringify(roleResult).includes(privateHierarchy.id), false);
+    }
     assert.equal((await request(`/api/channels/${privateHierarchy.id}`, { method: 'DELETE', cookie: alice.cookie })).status, 200);
     const ownerRemovesChannelManager = await request(`/api/workspaces/${workspace.id}/roles/preview`, {
       method: 'POST', cookie: alice.cookie,
@@ -2441,6 +2455,64 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
       speaking: false,
     });
 
+    // Revoking only CONNECT_VOICE ends the call of a member who still sees the
+    // channel: the member leaves the call and its presence, and the channel's
+    // directory no longer lists the member's device for the call's keys.
+    const voiceDirectoryIds = encodeURIComponent([aliceDevice.id, bobDevice.id].join(','));
+    const voiceDirectory = async () => (await json<Array<{ deviceId: string }>>(await request(
+      `/api/channels/${voiceChannel.id}/device-directory?ids=${voiceDirectoryIds}`,
+      { cookie: alice.cookie },
+    ))).map((device) => device.deviceId).sort();
+    assert.deepEqual(await voiceDirectory(), [aliceDevice.id, bobDevice.id].sort());
+    const revokeCallPreview = await json<{ authorizationRevision: string }>(await request(`${voiceOverridePath}/preview`, {
+      method: 'POST', cookie: alice.cookie,
+      body: { operation: 'upsert', roleId: memberRole.id, allowMask: 0, denyMask: Permissions.CONNECT_VOICE },
+    }));
+    const bobLeftCall = onceSocketEvent<{ channelId: string; participantId: string }>(aliceSocket, 'voice:participant-left');
+    const bobCallRevoked = onceSocketEventMatching<{ workspaceId: string; channelId: string }>(
+      bobSocket,
+      'channel:access-revoked',
+      (payload) => payload.channelId === voiceChannel.id,
+    );
+    const revokeCall = await request(`${voiceOverridePath}/${memberRole.id}`, {
+      method: 'PUT', cookie: alice.cookie,
+      body: {
+        allowMask: 0,
+        denyMask: Permissions.CONNECT_VOICE,
+        expectedRevision: 2,
+        expectedAuthorizationRevision: revokeCallPreview.authorizationRevision,
+      },
+    });
+    assert.equal(revokeCall.status, 200);
+    assert.deepEqual(await bobLeftCall, { channelId: voiceChannel.id, participantId: bobVoiceJoin.self!.participantId });
+    assert.deepEqual(await bobCallRevoked, { workspaceId: workspace.id, channelId: voiceChannel.id });
+    const revokeCallEffect = (await json<{
+      roomEffects: Array<{ channelId: string; lostUserIds: string[]; lostCallUserIds: string[] }>;
+    }>(revokeCall)).roomEffects.find((effect) => effect.channelId === voiceChannel.id);
+    assert.deepEqual(revokeCallEffect?.lostUserIds, []);
+    assert.equal(revokeCallEffect?.lostCallUserIds.includes(bob.user.id), true);
+    assert.equal((await request(`/api/channels/${voiceChannel.id}`, { cookie: bob.cookie })).status, 200);
+    assert.deepEqual(await voiceDirectory(), [aliceDevice.id]);
+    assert.deepEqual(await emitSocketAck(aliceSocket, 'voice:signal', {
+      ...voiceEnvelope,
+      signalId: randomUUID(),
+      sequence: 3,
+      signature: voiceSignature,
+    }), { ok: false }, 'nothing is relayed to a participant removed from the call');
+    assert.deepEqual(await joinVoice(bobSocket, voiceChannel.id), { ok: false, error: 'FORBIDDEN' });
+    const presenceAfterRevoke: any = await emitSocketAck(bobSocket, 'voice:watch', { channelIds: [voiceChannel.id] });
+    assert.equal(presenceAfterRevoke.channels?.some((entry: any) => entry.channelId === voiceChannel.id) ?? false, false);
+    const restoreCallPreview = await json<{ authorizationRevision: string }>(await request(`${voiceOverridePath}/preview`, {
+      method: 'POST', cookie: alice.cookie, body: { operation: 'delete', roleId: memberRole.id },
+    }));
+    assert.equal((await request(`${voiceOverridePath}/${memberRole.id}`, {
+      method: 'DELETE', cookie: alice.cookie,
+      body: { expectedRevision: 3, expectedAuthorizationRevision: restoreCallPreview.authorizationRevision },
+    })).status, 200);
+    assert.deepEqual(await voiceDirectory(), [aliceDevice.id, bobDevice.id].sort());
+    const bobVoiceRejoin = await joinVoice(bobSocket, voiceChannel.id);
+    assert.equal(bobVoiceRejoin.ok, true);
+
     const disposableChannelResponse = await request(`/api/workspaces/${workspace.id}/channels`, {
       method: 'POST',
       cookie: alice.cookie,
@@ -2563,7 +2635,7 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     assert.deepEqual(await channelAccessRevoked, { workspaceId: workspace.id, channelId });
     assert.deepEqual(await bobRemovedFromVoice, {
       channelId: voiceChannel.id,
-      participantId: bobVoiceJoin.self!.participantId,
+      participantId: bobVoiceRejoin.self!.participantId,
     });
     await delay(50);
     bobSocket.off('channel:permissions-updated', onRevokedRoomBroadcast);
@@ -3425,6 +3497,102 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     assert.equal((await verifyAuditChain()).valid, true);
   });
 
+  it('keeps a direct message bound to its participants when one leaves and rejoins (GHSA-8pfj-6w79-54g4)', async () => {
+    const { db } = await import('../db/index.js');
+    const { auditLogs, channelMembers, channels, dmConversations, dmMembers } = await import('../db/schema.js');
+    const ownerLogin = await request('/api/auth/login', {
+      method: 'POST', body: { email: 'unbound@example.test', password: 'Correct-Horse-Battery-9!' },
+    });
+    assert.equal(ownerLogin.status, 200);
+    const owner = {
+      cookie: ownerLogin.headers.get('set-cookie')!.split(';', 1)[0],
+      user: (await json<{ user: { id: string } }>(ownerLogin)).user,
+      password: 'Correct-Horse-Battery-9!',
+    };
+    await registerDevice(owner, deviceFixture(), 'DM participants owner device');
+    const workspace = await json<{ id: string }>(await request('/api/workspaces', {
+      method: 'POST', cookie: owner.cookie, body: { name: 'Direct message participants' },
+    }));
+    const leaverInvitation = await createWorkspaceInvitation(workspace.id, owner.cookie, 'dm-leaver@example.test');
+    const leaver = await createAccount('dm-leaver@example.test', 'Correct-Horse-Battery-61!', 'DM Leaver', leaverInvitation.token);
+    await registerDevice(leaver, deviceFixture(), 'DM leaver device');
+    const stayerInvitation = await createWorkspaceInvitation(workspace.id, owner.cookie, 'dm-stayer@example.test');
+    const stayer = await createAccount('dm-stayer@example.test', 'Correct-Horse-Battery-62!', 'DM Stayer', stayerInvitation.token);
+
+    const openDm = async (memberIds: string[]) => {
+      const response = await request(`/api/workspaces/${workspace.id}/dms`, {
+        method: 'POST', cookie: owner.cookie, body: { memberIds },
+      });
+      assert.equal(response.status, 201, await response.clone().text());
+      return json<{ channelId: string; members: Array<{ id: string }> }>(response);
+    };
+    const participants = async (channelId: string) => (await db.select({ userId: dmMembers.userId })
+      .from(dmMembers)
+      .innerJoin(dmConversations, eq(dmConversations.id, dmMembers.conversationId))
+      .where(eq(dmConversations.channelId, channelId))).map((row) => row.userId).sort();
+    const liveMembers = async (channelId: string) => (await db.select({ userId: channelMembers.userId })
+      .from(channelMembers)
+      .where(eq(channelMembers.channelId, channelId))).map((row) => row.userId).sort();
+    const workspaceDmCount = async () => (await db.select({ id: dmConversations.id })
+      .from(dmConversations)
+      .innerJoin(channels, eq(channels.id, dmConversations.channelId))
+      .where(eq(channels.workspaceId, workspace.id))).length;
+
+    const pair = await openDm([leaver.user.id]);
+    const trio = await openDm([leaver.user.id, stayer.user.id]);
+    const ownerAndStayer = await openDm([stayer.user.id]);
+    assert.equal(await workspaceDmCount(), 3);
+
+    const removal = await request(`/api/workspaces/${workspace.id}/members/${leaver.user.id}`, {
+      method: 'DELETE', cookie: owner.cookie,
+    });
+    assert.equal(removal.status, 200, await removal.text());
+    // The removal ends live access but leaves who the conversations are for.
+    assert.deepEqual(await participants(pair.channelId), [owner.user.id, leaver.user.id].sort());
+    assert.deepEqual(await liveMembers(pair.channelId), [owner.user.id]);
+    assert.deepEqual(await participants(trio.channelId), [owner.user.id, leaver.user.id, stayer.user.id].sort());
+    assert.deepEqual(await liveMembers(trio.channelId), [owner.user.id, stayer.user.id].sort());
+    // The three-person conversation does not take the place of the two-person one.
+    assert.equal((await openDm([stayer.user.id])).channelId, ownerAndStayer.channelId);
+
+    const rejoinInvitation = await createWorkspaceInvitation(workspace.id, owner.cookie, 'dm-leaver@example.test');
+    assert.equal((await request('/api/invitations/accept', {
+      method: 'POST', cookie: leaver.cookie, body: { token: rejoinInvitation.token },
+    })).status, 200);
+    // The member who came back cannot reopen a conversation that went on
+    // without them; a participant who kept it has to.
+    for (const memberIds of [[owner.user.id], [owner.user.id, stayer.user.id]]) {
+      const selfRestore = await request(`/api/workspaces/${workspace.id}/dms`, {
+        method: 'POST', cookie: leaver.cookie, body: { memberIds },
+      });
+      assert.equal(selfRestore.status, 409);
+      assert.equal((await json<{ error: string }>(selfRestore)).error, 'DM_REJOIN_REQUIRES_PARTICIPANT');
+    }
+    assert.deepEqual(await liveMembers(pair.channelId), [owner.user.id]);
+    assert.deepEqual(await liveMembers(trio.channelId), [owner.user.id, stayer.user.id].sort());
+    assert.equal(await workspaceDmCount(), 3);
+    // When a participant who kept it asks for the same people again, the
+    // original conversation comes back instead of a second one.
+    const restored = await openDm([leaver.user.id]);
+    assert.equal(restored.channelId, pair.channelId);
+    assert.deepEqual(restored.members.map((member) => member.id).sort(), [owner.user.id, leaver.user.id].sort());
+    assert.deepEqual(await liveMembers(pair.channelId), [owner.user.id, leaver.user.id].sort());
+    assert.equal(await workspaceDmCount(), 3);
+    const leaverDms = await json<Array<{ channelId: string }>>(await request(`/api/workspaces/${workspace.id}/dms`, {
+      cookie: leaver.cookie,
+    }));
+    assert.equal(leaverDms.some((dm) => dm.channelId === pair.channelId), true);
+    // Only the conversation that was asked for is restored.
+    assert.equal(leaverDms.some((dm) => dm.channelId === trio.channelId), false);
+    assert.deepEqual(await liveMembers(trio.channelId), [owner.user.id, stayer.user.id].sort());
+
+    const reuseAudit = await db.select({ action: auditLogs.action, details: auditLogs.details })
+      .from(auditLogs)
+      .where(sql`${auditLogs.targetId} = ${pair.channelId} and ${auditLogs.action} = 'dm.reuse'`);
+    assert.deepEqual(reuseAudit.map((row) => (row.details as { restoredMemberCount?: number }).restoredMemberCount), [1]);
+    assert.equal((await verifyAuditChain()).valid, true);
+  });
+
   it('binds edits, deletions, quotes and replies to the messages their authors signed (formal model M9)', async () => {
     const messageService = await import('../services/message.service.js');
     const ownerLogin = await request('/api/auth/login', {
@@ -4019,10 +4187,17 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
       assert.equal((await stallGroup.publish(ownerMember, { material: await earlierMemberPackage(o1.id, 3_600n) })).status, 201);
       let managerRestart = await stallGroup.create(ownerMember, [carolSecond], { freshStart: true });
       assert.deepEqual(await refusal(managerRestart.response!), [409, 'KEY_FRESH_START_NOT_REQUIRED']);
+      // Packages older than the group wait only from its start.
       await db.execute(sql`update mls_member_packages set created_at = created_at - interval '16 minutes' where channel_id = ${stallChannel}`);
+      assert.equal((await stallGroup.state(ownerMember)).historyRecoveryRequired, false);
+      // The group, still at its genesis, started as long ago.
       await db.execute(sql`update channel_key_epochs set created_at = created_at - interval '16 minutes'
         where channel_id = ${stallChannel} and status = 'active'`);
       assert.equal((await stallGroup.state(carolSecond)).historyRecoveryRequired, false);
+      assert.equal((await stallGroup.state(ownerMember)).historyRecoveryRequired, true);
+      // A commit that leaves the waiting devices out does not restart their wait.
+      await db.execute(sql`update mls_groups set path_refreshed_at = now() - interval '25 hours' where channel_id = ${stallChannel}`);
+      assert.equal((await stallGroup.commit(bobMember)).response!.status, 201);
       assert.equal((await stallGroup.state(ownerMember)).historyRecoveryRequired, true);
       const memberRestart = await stallGroup.create(carolSecond, [], { freshStart: true, post: false });
       assert.deepEqual(await refusal(await stallGroup.send(carolSecond, memberRestart.envelope, true)), [409, 'KEY_FRESH_START_NOT_REQUIRED']);
@@ -4033,6 +4208,52 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
         ['current', 'removed', 'removed'],
       );
       assert.equal((await groupMessage(carolSecond, stallChannel, stallGroup.key(), stallGroup.version)).status, 201);
+    });
+
+    it('drops the packages and rejoin requests of a user who loses access, so a return waits again', async () => {
+      const { db } = await import('../db/index.js');
+      const ownerMember = asGroupMember(owner.cookie, owner.user.id, o1.keys, o1);
+      const bobMember = asGroupMember(bob.cookie, bob.user.id, b1.keys, b1);
+      const carolMember = asGroupMember(carol.cookie, carol.user.id, c1.keys, c1);
+      const lostChannel = await groupChannel('lost-access', true);
+      const keptChannel = await groupChannel('kept-access', true);
+      const lostGroup = new ChannelGroup(lostChannel);
+      const keptGroup = new ChannelGroup(keptChannel);
+      for (const group of [lostGroup, keptGroup]) {
+        for (const account of [bob, carol]) {
+          assert.equal((await request(`/api/channels/${group.channelId}/members`, {
+            method: 'POST', cookie: owner.cookie, body: { userId: account.user.id },
+          })).status, 201);
+        }
+        assert.equal((await group.create(carolMember)).response!.status, 201);
+        assert.equal((await group.publish(bobMember, { material: await earlierMemberPackage(b1.id, 3_600n) })).status, 201);
+      }
+      // In both groups, which started 20 minutes ago, bob's device has waited as long to be
+      // added, and it keeps a rejoin request from an earlier membership.
+      await db.execute(sql`insert into mls_rejoin_requests (channel_id, device_id, version)
+        values (${lostChannel}, ${b1.id}, 1), (${keptChannel}, ${b1.id}, 1)`);
+      await db.execute(sql`update mls_member_packages set created_at = created_at - interval '20 minutes'
+        where channel_id in (${lostChannel}, ${keptChannel})`);
+      await db.execute(sql`update channel_key_epochs set created_at = created_at - interval '20 minutes'
+        where channel_id in (${lostChannel}, ${keptChannel})`);
+      assert.equal((await lostGroup.state(ownerMember)).historyRecoveryRequired, true);
+
+      assert.equal((await request(`/api/channels/${lostChannel}/members/${bob.user.id}`, { method: 'DELETE', cookie: owner.cookie })).status, 200);
+      const left = async (table: 'mls_member_packages' | 'mls_rejoin_requests') => (await db.execute(sql`
+        select channel_id as "channelId" from ${sql.identifier(table)}
+        where device_id = ${b1.id} and channel_id in (${lostChannel}, ${keptChannel})`)).rows.map((row: any) => row.channelId);
+      assert.deepEqual(await left('mls_member_packages'), [keptChannel]);
+      assert.deepEqual(await left('mls_rejoin_requests'), [keptChannel]);
+
+      // Back in the channel, the old package no longer counts as waiting: a new one starts the wait again.
+      assert.equal((await request(`/api/channels/${lostChannel}/members`, {
+        method: 'POST', cookie: owner.cookie, body: { userId: bob.user.id },
+      })).status, 201);
+      assert.equal((await lostGroup.state(ownerMember)).historyRecoveryRequired, false);
+      assert.equal((await lostGroup.publish(bobMember, { material: await earlierMemberPackage(b1.id, 3_600n) })).status, 201);
+      const state = await lostGroup.state(ownerMember);
+      assert.deepEqual(state.pendingAddDeviceIds, [b1.id]);
+      assert.equal(state.historyRecoveryRequired, false);
     });
 
     it('backs up history keys only for versions at which a device of the user was in the group', async () => {

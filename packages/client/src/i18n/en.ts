@@ -37,6 +37,7 @@ export const en = {
   '招待コードが正しくないか、有効期限が切れています。': 'The invitation code is incorrect or has expired.',
   'ログイン中の端末が上限に達しています。別の端末からログアウトしてお試しください。': 'Too many devices are signed in. Sign out on another device and try again.',
   '登録済みの端末が上限に達しています。不要な端末の登録を解除してください。': 'You have reached the device limit. Remove a device you no longer use.',
+  'この会話に戻るには、ほかの参加者に会話を開いてもらってください。': 'To return to this conversation, ask another participant to open it.',
   'このワークスペースは参加人数の上限に達しています。': 'This workspace has reached its member limit.',
   '入力内容を確認してください。パスワードは12文字以上必要です。': 'Check what you entered. Passwords must be at least 12 characters.',
   'メールアドレスとパスワードを確認してください。': 'Check your email address and password.',

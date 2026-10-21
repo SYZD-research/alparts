@@ -14,6 +14,7 @@ import {
   applyViewerEffectsAndRotation,
   assertNoSuperiorAccessLoss,
   assertValidChannelOverrideMask,
+  captureChannelAccessFromSnapshot,
   captureChannelViewersFromSnapshot,
   computeAuthorizationRevisionFromStore,
   getChannelAuthorizationFromStore,
@@ -170,7 +171,7 @@ export async function upsertPermissionOverride(
       input.allowMask | input.denyMask | (current?.allowMask ?? 0) | (current?.denyMask ?? 0));
     if ((current?.revision ?? 0) !== input.expectedRevision) throw new Error('STALE_OVERRIDE');
     const snapshotBefore = await requireOverrideSnapshot(transaction, workspaceId, affectedChannelIds);
-    const before = captureChannelViewersFromSnapshot(snapshotBefore);
+    const before = captureChannelAccessFromSnapshot(snapshotBefore);
     const nextRevision = input.expectedRevision + 1;
     const now = new Date();
     let row;
@@ -219,7 +220,7 @@ export async function upsertPermissionOverride(
     }
     const snapshotAfter = await requireOverrideSnapshot(transaction, workspaceId, affectedChannelIds);
     assertNoSuperiorAccessLoss(snapshotBefore, snapshotAfter, actorId);
-    const after = captureChannelViewersFromSnapshot(snapshotAfter);
+    const after = captureChannelAccessFromSnapshot(snapshotAfter);
     const roomEffects = await applyViewerEffectsAndRotation(transaction, before, after);
     return {
       row,
@@ -274,7 +275,7 @@ export async function deletePermissionOverride(
     await assertOverrideAuthority(transaction, target, workspaceId, targetId, actorId, roleId, current.allowMask | current.denyMask);
     if (current.revision !== expectedRevision) throw new Error('STALE_OVERRIDE');
     const snapshotBefore = await requireOverrideSnapshot(transaction, workspaceId, affectedChannelIds);
-    const before = captureChannelViewersFromSnapshot(snapshotBefore);
+    const before = captureChannelAccessFromSnapshot(snapshotBefore);
     if (target === 'category') {
       await transaction.delete(categoryRolePermissionOverrides).where(and(
         eq(categoryRolePermissionOverrides.workspaceId, workspaceId),
@@ -290,7 +291,7 @@ export async function deletePermissionOverride(
     }
     const snapshotAfter = await requireOverrideSnapshot(transaction, workspaceId, affectedChannelIds);
     assertNoSuperiorAccessLoss(snapshotBefore, snapshotAfter, actorId);
-    const after = captureChannelViewersFromSnapshot(snapshotAfter);
+    const after = captureChannelAccessFromSnapshot(snapshotAfter);
     const roomEffects = await applyViewerEffectsAndRotation(transaction, before, after);
     return {
       current,
