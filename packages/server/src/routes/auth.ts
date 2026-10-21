@@ -57,7 +57,12 @@ const loginAccountLimit = rateLimit({
     res.status(428).json({ error: 'LOGIN_CHALLENGE_REQUIRED', challenge: issueLoginChallenge(binding), statusCode: 428 });
   },
 });
-const loginAccountHardLimit = rateLimit({ windowMs: 15 * 60 * 1000, max: 60, key: credentialAccountRateLimitKey });
+// Caps guesses backed by solved work. Only attempts that reach the password
+// check and fail count, so requests stopped by the challenge cannot close
+// password login to the owner.
+const loginAccountHardLimit = rateLimit({
+  windowMs: 15 * 60 * 1000, max: 60, key: credentialAccountRateLimitKey, failuresOnly: true,
+});
 const registrationIpLimit = rateLimit({ windowMs: 60 * 60 * 1000, max: 30 });
 // Each request mails someone, so both the source and the address are limited.
 const registrationCodeIpLimit = rateLimit({ windowMs: 60 * 60 * 1000, max: 30 });
@@ -133,7 +138,9 @@ router.post('/register', registrationIpLimit, registrationLimit, async (req, res
   }
 });
 
-router.post('/login', loginIpLimit, loginAccountHardLimit, loginAccountLimit, loginLimit, async (req, res) => {
+// An unsolved request stops at the challenge, before the account's cap or the
+// caller's own attempts can count it.
+router.post('/login', loginIpLimit, loginAccountLimit, loginAccountHardLimit, loginLimit, async (req, res) => {
   try {
     const body = loginSchema.parse(req.body);
     const result = await authService.login(body.email, body.password, body.deviceInfo);
