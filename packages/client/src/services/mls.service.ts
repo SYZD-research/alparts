@@ -4,7 +4,7 @@ import {
   serializeMlsEpoch,
   type MlsEpoch,
 } from '@alparts/shared';
-import { channelKeyScopes } from './channel-key-scope';
+import { channelKeyScopes, type ChannelKeyScopeToken } from './channel-key-scope';
 import { api } from './api';
 import { getActiveDevice, verifyDevicePayload } from './crypto.service';
 import { verifiedDirectory } from './directory.service';
@@ -13,9 +13,11 @@ import {
   readSecurityState,
   writeSecurityState,
   deleteSecurityState,
+  listSecurityStateNames,
   sha256,
   toBase64,
   fromBase64,
+  type SecurityOwner,
 } from './security-storage';
 
 // Group protocol 3 (one group per version), kept to read history: new
@@ -26,6 +28,39 @@ interface LocalPackage {
   material: EpochKeyPackage;
   createdAt: number;
   signature?: string;
+}
+interface MlsHead {
+  /** The newest version verified here and its transcript. */
+  version: number;
+  transcript: string;
+  /** The lowest version verified here; heads saved by earlier releases lack it. */
+  lowestVersion?: number;
+}
+const deliveryLock = (owner: SecurityOwner, channelId: string) =>
+  `alparts-mls-delivery:${owner.deviceId}:${channelId}`;
+/**
+ * The pinned head with the lowest version this device verified. Earlier
+ * releases kept only the newest one, or a minimum that missed keys derived
+ * before them; the lowest is then taken once from the oldest key derived
+ * here, so versions this device read through MLS before the update never
+ * take a non-MLS key either. Callers hold the delivery lock.
+ */
+async function readHead(
+  owner: SecurityOwner,
+  channelId: string,
+  scope: ChannelKeyScopeToken,
+): Promise<Required<MlsHead> | null> {
+  const head = await readSecurityState<MlsHead>(owner, `mls-head:${channelId}`);
+  if (!head || typeof head.lowestVersion === 'number') return head as Required<MlsHead> | null;
+  const prefix = `mls-key:${channelId}:`;
+  let lowestVersion = head.version;
+  for (const name of await listSecurityStateNames(owner, prefix, 4096)) {
+    const version = Number(name.slice(prefix.length));
+    if (Number.isSafeInteger(version) && version > 0 && version < lowestVersion) lowestVersion = version;
+  }
+  const completed = { version: head.version, transcript: head.transcript, lowestVersion };
+  await writeSecurityState(owner, `mls-head:${channelId}`, completed, scope);
+  return completed;
 }
 const groupId = (epoch: Pick<MlsEpoch, 'channelId' | 'version' | 'previousTranscript'>) =>
   JSON.stringify(['alparts', epoch.channelId, epoch.version, epoch.previousTranscript]);
@@ -78,13 +113,18 @@ export async function deriveMlsDelivery(
   const scope = channelKeyScopes.capture(channelId);
   const save = (name: string, value: unknown) => writeSecurityState(owner, name, value, scope);
   return navigator.locks.request(
-    `alparts-mls-delivery:${owner.deviceId}:${channelId}`,
+    deliveryLock(owner, channelId),
     async () => {
-      const pinned = await readSecurityState<{
-        version: number;
-        transcript: string;
-        minVersion?: number;
-      }>(owner, `mls-head:${channelId}`);
+      const pinned = await readHead(owner, channelId, scope);
+      // Final epochs are pinned: the head keeps the newest version and the lowest.
+      const pin = async (status: string) => {
+        if (status !== 'active' && status !== 'retired') return;
+        const lowestVersion = Math.min(pinned?.lowestVersion ?? version, version);
+        await save(
+          `mls-head:${channelId}`,
+          !pinned || version > pinned.version ? { version, transcript, lowestVersion } : { ...pinned, lowestVersion },
+        );
+      };
       const cached = await readSecurityState<{
         raw: string;
         transcript: string;
@@ -166,11 +206,7 @@ export async function deriveMlsDelivery(
 
       if (cached) {
         if (cached.transcript !== transcript) throw new Error('INVALID_MLS_TRANSCRIPT');
-        if (response.status === 'active' || response.status === 'retired') {
-          const minVersion = Math.min(pinned?.minVersion ?? pinned?.version ?? version, version);
-          const nextHead = !pinned || version > pinned.version ? { version, transcript, minVersion } : { ...pinned, minVersion };
-          await save(`mls-head:${channelId}`, nextHead);
-        }
+        await pin(response.status);
         channelKeyScopes.assertCurrent(scope);
         return fromBase64(cached.raw);
       }
@@ -208,11 +244,7 @@ export async function deriveMlsDelivery(
         raw: toBase64(raw),
         transcript,
       });
-      if (response.status === 'active' || response.status === 'retired') {
-        const minVersion = Math.min(pinned?.minVersion ?? pinned?.version ?? version, version);
-        const nextHead = !pinned || version > pinned.version ? { version, transcript, minVersion } : { ...pinned, minVersion };
-        await save(`mls-head:${channelId}`, nextHead);
-      }
+      await pin(response.status);
       await deleteSecurityState(owner, `mls-package:${channelId}:${version}`);
       await deleteSecurityState(owner, `mls-proposal:${channelId}:${version}`);
       channelKeyScopes.assertCurrent(scope);
@@ -221,18 +253,28 @@ export async function deriveMlsDelivery(
   );
 }
 /**
- * Once this device has pinned an MLS head for a channel, every key from that
- * version on must come from MLS. Older versions may still be RSA deliveries,
- * so history from before the move to MLS stays readable.
+ * Once this device has verified an MLS version of a channel, every key from
+ * the lowest such version on must come from MLS. Older versions may still be
+ * RSA deliveries, so history from before the move to MLS stays readable.
  */
-export function nonMlsDeliveryAllowed(pinnedVersion: number | null, version: number): boolean {
-  return pinnedVersion === null || version < pinnedVersion;
+export function nonMlsDeliveryAllowed(lowestVersion: number | null, version: number): boolean {
+  return lowestVersion === null || version < lowestVersion;
 }
 
-/** The MLS head version this device pinned for the channel, if any. */
-export async function pinnedMlsVersion(channelId: string): Promise<number | null> {
-  const pinned = await readSecurityState<{ version: number; minVersion?: number }>(getActiveDevice(), `mls-head:${channelId}`);
-  return typeof pinned?.minVersion === 'number' ? pinned.minVersion : typeof pinned?.version === 'number' ? pinned.version : null;
+/** The newest MLS version this device pinned for the channel, if any. */
+export async function mlsHeadVersion(channelId: string): Promise<number | null> {
+  const pinned = await readSecurityState<MlsHead>(getActiveDevice(), `mls-head:${channelId}`);
+  return typeof pinned?.version === 'number' ? pinned.version : null;
+}
+
+/** The lowest MLS version this device verified for the channel, if any. */
+export async function lowestMlsVersion(channelId: string): Promise<number | null> {
+  const owner = getActiveDevice();
+  const pinned = await readSecurityState<MlsHead>(owner, `mls-head:${channelId}`);
+  if (!pinned || typeof pinned.lowestVersion === 'number') return pinned?.lowestVersion ?? null;
+  const scope = channelKeyScopes.capture(channelId);
+  const head = await navigator.locks.request(deliveryLock(owner, channelId), () => readHead(owner, channelId, scope));
+  return head?.lowestVersion ?? null;
 }
 
 export function mlsLocator(encryptedKey: string): { version: number; transcript: string } | null {

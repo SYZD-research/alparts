@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mlsGroupId, type User } from '@alparts/shared';
+import { mlsGroupId, serializeChannelKeyWrap, type User } from '@alparts/shared';
 
 // Which source each version key may come from (DESIGN §6.4, [sec-7]): keys of
 // a continuous group come only from that group or from a backup whose
@@ -69,7 +69,7 @@ vi.mock('./security-storage', async (importOriginal) => {
   };
 });
 
-import type { ChannelKeyRecipientState } from './api';
+import type { ChannelKeyDelivery, ChannelKeyRecipientState } from './api';
 import { channelKeyScopes } from './channel-key-scope';
 import {
   clearActiveDevice,
@@ -79,6 +79,7 @@ import {
   getChannelKeysForVersions,
   hasChannelHistoryKeys,
   saveRecoveredChannelKey,
+  wrapVoiceKey,
 } from './crypto.service';
 import { localGroupView, syncChannelGroup } from './mls-group.service';
 import { toBase64 } from './security-storage';
@@ -160,6 +161,36 @@ async function sameKey(candidate: CryptoKey | null | undefined, raw: Uint8Array)
   } catch {
     return false;
   }
+}
+
+/** Another member's device, which signs the per-device deliveries the server hands out. */
+async function memberDevice() {
+  const pair = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']);
+  const { x, y } = await crypto.subtle.exportKey('jwk', pair.publicKey);
+  const member = {
+    deviceId: '44444444-4444-4444-8444-444444444444',
+    identityKey: JSON.stringify({ version: 1, signingKey: { kty: 'EC', crv: 'P-256', alg: 'ES256', x, y } }),
+  };
+  mocks.api.getChannelDeviceDirectory.mockResolvedValue([member]);
+  /** `raw` wrapped to this device's RSA key: a delivery that does not come from MLS. */
+  return async (version: number, raw: Uint8Array): Promise<ChannelKeyDelivery> => {
+    const encryptedKey = await wrapVoiceKey(raw, getActiveDevice().identityKey);
+    const keyCommitment = await commitmentOf(raw);
+    const wrap = serializeChannelKeyWrap({ channelId, keyVersion: version, keyCommitment, recipientDeviceId: deviceId, encryptedKey });
+    const signature = await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, pair.privateKey, new TextEncoder().encode(wrap));
+    return {
+      deliveryId: crypto.randomUUID(),
+      version,
+      encryptedKey,
+      keyCommitment,
+      distributorDeviceId: member.deviceId,
+      distributorIdentityKey: member.identityKey,
+      signature: toBase64(new Uint8Array(signature)),
+      epochStatus: 'retired',
+      confirmedAt: '2026-10-01T00:00:00.000Z',
+      createdAt: '2026-10-01T00:00:00.000Z',
+    };
+  };
 }
 
 function serverState(change: Partial<ChannelKeyRecipientState> = {}): ChannelKeyRecipientState {
@@ -340,5 +371,39 @@ describe('version keys of continuous groups', () => {
     expect(await exportHistoryKey(channelId, 8)).toBeNull();
     expect(await exportHistoryKey(channelId, 9)).toEqual(key(9));
     expect(mocks.api.getChannelKeys).toHaveBeenCalledOnce();
+  });
+});
+
+describe('versions from before continuous groups', () => {
+  it('refuses a key from outside MLS for a version this device read through MLS before an update', async () => {
+    const deliver = await memberDevice();
+    vi.mocked(localGroupView).mockResolvedValue({ version: 7, v4Start: 6 });
+    mocks.api.getChannelKeys.mockResolvedValue([await deliver(3, key(0xee))]);
+    // Earlier releases pinned only the newest MLS version, or a minimum taken from it alone.
+    for (const head of [{ version: 5, transcript: 'b'.repeat(64) }, { version: 5, transcript: 'b'.repeat(64), minVersion: 4 }]) {
+      mocks.storage.clear();
+      put(`mls-head:${channelId}`, head);
+      for (const version of [3, 4, 5]) put(`mls-key:${channelId}:${version}`, { raw: toBase64(key(version)), transcript: 'a'.repeat(64) });
+      await expect(getChannelKeysForVersions(channelId, [3])).rejects.toThrow('MLS_DOWNGRADE');
+      expect(stored(`mls-head:${channelId}`)).toEqual({ version: 5, transcript: 'b'.repeat(64), lowestVersion: 3 });
+      expect(stored(`key-commitment:${channelId}:3`)).toBeNull();
+    }
+
+    // A head this release pinned refuses it the same way; older history stays readable.
+    mocks.storage.clear();
+    put(`mls-head:${channelId}`, { version: 5, transcript: 'b'.repeat(64), lowestVersion: 3 });
+    await expect(getChannelKeysForVersions(channelId, [3])).rejects.toThrow('MLS_DOWNGRADE');
+    mocks.api.getChannelKeys.mockResolvedValue([await deliver(2, key(2))]);
+    expect(await sameKey((await getChannelKeysForVersions(channelId, [2])).get(2), key(2))).toBe(true);
+  });
+
+  it('counts the newest MLS version this device verified as reached', async () => {
+    vi.mocked(localGroupView).mockResolvedValue({ version: null, v4Start: null });
+    mocks.api.getKeyRecipients.mockResolvedValue(serverState());
+    put(`mls-head:${channelId}`, { version: 4, transcript: 'b'.repeat(64), lowestVersion: 3 });
+    await getChannelKeysForVersions(channelId, [3, 4]);
+    // Both versions were reached here: nothing to catch up first.
+    expect(mocks.api.getKeyRecipients).not.toHaveBeenCalled();
+    expect(mocks.api.getChannelKeys).toHaveBeenCalledWith(channelId, [3, 4], undefined);
   });
 });

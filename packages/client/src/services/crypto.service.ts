@@ -6,7 +6,7 @@ import {
   writeSecurityState,
 } from './security-storage';
 import { padMessage, unpadMessage } from './message-padding';
-import { deriveMlsDelivery, mlsLocator, nonMlsDeliveryAllowed, pinnedMlsVersion } from './mls.service';
+import { deriveMlsDelivery, lowestMlsVersion, mlsHeadVersion, mlsLocator, nonMlsDeliveryAllowed } from './mls.service';
 import {
   cancelGroupMaintenance,
   createChannelGroupVersion,
@@ -623,7 +623,7 @@ async function unwrapCommittedChannelKey(
     }
     // A channel already on MLS never goes back to keys the server could
     // have produced itself.
-    if (!locator && !nonMlsDeliveryAllowed(await pinnedMlsVersion(channelId), wrapped.version)) {
+    if (!locator && !nonMlsDeliveryAllowed(await lowestMlsVersion(channelId), wrapped.version)) {
       throw new Error('MLS_DOWNGRADE');
     }
     raw = locator ? await deriveMlsDelivery(channelId, wrapped.version, locator.transcript, wrapped.epochStatus) : await unwrapChannelKey(wrapped.encryptedKey, device);
@@ -756,7 +756,7 @@ export async function getChannelKeysForVersions(
   const scope = channelKeyScopes.capture(channelId);
   const device = getActiveDevice();
   const local = await localGroupView(channelId);
-  const legacyHead = await pinnedMlsVersion(channelId);
+  const legacyHead = await mlsHeadVersion(channelId);
   channelKeyScopes.assertCurrent(scope);
   let groupStart = local.v4Start;
   const reached = Math.max(local.version ?? 0, legacyHead ?? 0);
