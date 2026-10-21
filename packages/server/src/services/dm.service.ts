@@ -43,15 +43,38 @@ export async function createDm(workspaceId: string, actorId: string, requestedUs
       }
     }
 
-    const existingDms = snapshot.channels.filter((channel) => channel.type === 'dm');
-    for (const candidate of existingDms) {
-      const candidateUserIds = [...(snapshot.privateMemberIdsByChannelId.get(candidate.id) ?? [])].sort();
+    // dmMembers is the canonical participant set: live channelMembers rows can
+    // lose a member through a workspace removal, but the conversation still
+    // belongs to its original set and must not be duplicated or re-created.
+    const workspaceDms = await tx.select({ conversationId: dmConversations.id, channelId: dmConversations.channelId })
+      .from(dmConversations)
+      .innerJoin(channels, eq(dmConversations.channelId, channels.id))
+      .where(and(eq(channels.workspaceId, workspaceId), eq(channels.type, 'dm')))
+      .limit(MAX_DMS_PER_WORKSPACE + 1);
+    if (workspaceDms.length > MAX_DMS_PER_WORKSPACE) throw new Error('DM_INVARIANT_EXCEEDED');
+    const canonicalRows = workspaceDms.length === 0 ? [] : await tx
+      .select({ conversationId: dmMembers.conversationId, userId: dmMembers.userId })
+      .from(dmMembers)
+      .where(inArray(dmMembers.conversationId, workspaceDms.map((dm: { conversationId: string }) => dm.conversationId)));
+    const canonicalByConversation = new Map<string, string[]>();
+    for (const row of canonicalRows) {
+      const list = canonicalByConversation.get(row.conversationId) ?? [];
+      list.push(row.userId);
+      canonicalByConversation.set(row.conversationId, list);
+    }
+    for (const candidate of workspaceDms) {
+      const candidateUserIds = (canonicalByConversation.get(candidate.conversationId) ?? []).sort();
       if (candidateUserIds.length === userIds.length && candidateUserIds.every((id, index) => id === userIds[index])) {
-        return { channelId: candidate.id, created: false };
+        // Everyone named is a current workspace member (checked above), so
+        // restore live membership for anyone who rejoined after a removal.
+        await tx.insert(channelMembers)
+          .values(userIds.map((userId) => ({ channelId: candidate.channelId, userId })))
+          .onConflictDoNothing();
+        return { channelId: candidate.channelId, created: false };
       }
     }
 
-    if (existingDms.length >= MAX_DMS_PER_WORKSPACE) throw new Error('DM_WORKSPACE_LIMIT_REACHED');
+    if (workspaceDms.length >= MAX_DMS_PER_WORKSPACE) throw new Error('DM_WORKSPACE_LIMIT_REACHED');
     const actorDms = await tx.select({ id: dmConversations.id })
       .from(dmConversations)
       .innerJoin(channels, eq(dmConversations.channelId, channels.id))
