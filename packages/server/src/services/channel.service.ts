@@ -1,10 +1,19 @@
 import { db } from '../db/index.js';
 import {
   channels,
+  channelDirectoryHeads,
+  channelKeys,
+  channelKeyEpochs,
+  channelKeyEpochRecipients,
   channelMembers,
   channelPreferences,
   categories,
+  messages,
+  mlsEpochs,
+  mlsGroupMembers,
+  mlsGroupNodeKeys,
   mlsGroups,
+  mlsKeyPackages,
   mlsMemberPackages,
   mlsRejoinRequests,
   workspaceMembers,
@@ -232,7 +241,23 @@ export async function deleteChannel(channelId: string, actorId: string) {
       // unused channel has them too. A group's key versions still block.
       await transaction.delete(mlsMemberPackages).where(eq(mlsMemberPackages.channelId, channelId));
       await transaction.delete(mlsRejoinRequests).where(eq(mlsRejoinRequests.channelId, channelId));
-      await transaction.delete(mlsGroups).where(and(eq(mlsGroups.channelId, channelId), isNull(mlsGroups.genesisVersion)));
+      const hasMessages = await transaction.query.messages.findFirst({
+        columns: { id: true },
+        where: eq(messages.channelId, channelId),
+      });
+      if (!hasMessages) {
+        await transaction.delete(channelKeys).where(eq(channelKeys.channelId, channelId));
+        await transaction.delete(channelKeyEpochRecipients).where(eq(channelKeyEpochRecipients.channelId, channelId));
+        await transaction.delete(channelKeyEpochs).where(eq(channelKeyEpochs.channelId, channelId));
+        await transaction.delete(mlsKeyPackages).where(eq(mlsKeyPackages.channelId, channelId));
+        await transaction.delete(mlsEpochs).where(eq(mlsEpochs.channelId, channelId));
+        await transaction.delete(mlsGroupMembers).where(eq(mlsGroupMembers.channelId, channelId));
+        await transaction.delete(mlsGroupNodeKeys).where(eq(mlsGroupNodeKeys.channelId, channelId));
+        await transaction.delete(channelDirectoryHeads).where(eq(channelDirectoryHeads.channelId, channelId));
+        await transaction.delete(mlsGroups).where(eq(mlsGroups.channelId, channelId));
+      } else {
+        await transaction.delete(mlsGroups).where(and(eq(mlsGroups.channelId, channelId), isNull(mlsGroups.genesisVersion)));
+      }
       const [removed] = await transaction.delete(channels)
         .where(and(eq(channels.id, channelId), eq(channels.workspaceId, existing.workspaceId)))
         .returning({ id: channels.id, workspaceId: channels.workspaceId });
