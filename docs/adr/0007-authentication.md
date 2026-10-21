@@ -18,3 +18,5 @@ Require a bootstrap/workspace invitation, normalize emails, store bcrypt cost 12
 - Rate/password gates are process-local and prohibit replicas until shared.
 
 2026-09-17: [Audit 2](../../SECURITY_AUDIT_2.md) adds pepper migration, keyed failed-login attribution and expiring one-use work challenges instead of an account-wide hard login lockout. Account creation and invitation validity remain distinct outcomes.
+
+2026-10-22: Solved work no longer buys unlimited guesses ([GHSA-8c53-h6x7-82gm](https://github.com/SYZD-research/alparts/security/advisories/GHSA-8c53-h6x7-82gm)): an account takes at most 60 failed password checks per 15 minutes from all sources together. Requests stopped by the work challenge never count, so they still cannot lock an account. Filling the cap takes solved work for each failed guess past the challenge threshold; it then closes password login, not passkey login, for the rest of the window.
