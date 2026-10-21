@@ -4115,10 +4115,17 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
       assert.equal((await stallGroup.publish(ownerMember, { material: await earlierMemberPackage(o1.id, 3_600n) })).status, 201);
       let managerRestart = await stallGroup.create(ownerMember, [carolSecond], { freshStart: true });
       assert.deepEqual(await refusal(managerRestart.response!), [409, 'KEY_FRESH_START_NOT_REQUIRED']);
+      // Packages older than the group wait only from its start.
       await db.execute(sql`update mls_member_packages set created_at = created_at - interval '16 minutes' where channel_id = ${stallChannel}`);
+      assert.equal((await stallGroup.state(ownerMember)).historyRecoveryRequired, false);
+      // The group, still at its genesis, started as long ago.
       await db.execute(sql`update channel_key_epochs set created_at = created_at - interval '16 minutes'
         where channel_id = ${stallChannel} and status = 'active'`);
       assert.equal((await stallGroup.state(carolSecond)).historyRecoveryRequired, false);
+      assert.equal((await stallGroup.state(ownerMember)).historyRecoveryRequired, true);
+      // A commit that leaves the waiting devices out does not restart their wait.
+      await db.execute(sql`update mls_groups set path_refreshed_at = now() - interval '25 hours' where channel_id = ${stallChannel}`);
+      assert.equal((await stallGroup.commit(bobMember)).response!.status, 201);
       assert.equal((await stallGroup.state(ownerMember)).historyRecoveryRequired, true);
       const memberRestart = await stallGroup.create(carolSecond, [], { freshStart: true, post: false });
       assert.deepEqual(await refusal(await stallGroup.send(carolSecond, memberRestart.envelope, true)), [409, 'KEY_FRESH_START_NOT_REQUIRED']);

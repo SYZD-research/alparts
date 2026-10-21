@@ -79,9 +79,9 @@ export async function loadGroupSnapshot(
   packageDeviceIds: readonly string[],
 ): Promise<GroupStateSnapshot> {
   const activeEpoch = await store.query.channelKeyEpochs.findFirst({
-    columns: { version: true, protocolVersion: true, createdAt: true },
+    columns: { version: true, protocolVersion: true },
     where: and(eq(channelKeyEpochs.channelId, channelId), eq(channelKeyEpochs.status, 'active')),
-  }) as { version: number; protocolVersion: number; createdAt: Date } | undefined;
+  }) as { version: number; protocolVersion: number } | undefined;
   const latestEpoch = await store.query.channelKeyEpochs.findFirst({
     columns: { version: true },
     where: eq(channelKeyEpochs.channelId, channelId),
@@ -94,6 +94,10 @@ export async function loadGroupSnapshot(
   const group = await store.query.mlsGroups.findFirst({
     where: eq(mlsGroups.channelId, channelId),
   }) as typeof mlsGroups.$inferSelect | undefined;
+  const genesisEpoch = group?.genesisVersion ? await store.query.channelKeyEpochs.findFirst({
+    columns: { createdAt: true },
+    where: and(eq(channelKeyEpochs.channelId, channelId), eq(channelKeyEpochs.version, group.genesisVersion)),
+  }) as { createdAt: Date } | undefined : undefined;
   const members = await loadCurrentGroupMembers(store, channelId);
   const packages = packageDeviceIds.length === 0 ? [] : await store.select({
     deviceId: mlsMemberPackages.deviceId,
@@ -146,11 +150,11 @@ export async function loadGroupSnapshot(
     active: activeEpoch ? {
       version: activeEpoch.version,
       protocolVersion: activeEpoch.protocolVersion,
-      createdAt: activeEpoch.createdAt,
       transcript: transcriptRow?.transcript ?? null,
     } : null,
     group: group ? {
       genesisVersion: group.genesisVersion,
+      genesisCreatedAt: genesisEpoch?.createdAt ?? null,
       pathRefreshedAt: group.pathRefreshedAt,
       genesisRequestedAt: group.genesisRequestedAt,
       removeRequiredAt: group.removeRequiredAt,
