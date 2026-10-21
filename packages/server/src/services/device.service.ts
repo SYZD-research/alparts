@@ -251,6 +251,7 @@ export async function revokeDevice(
   deviceId: string,
   userId: string,
   decision?: { actorDeviceId: string; head: DirectoryHead; signature: string },
+  revalidateStepUp?: (tx: any) => Promise<void>,
 ): Promise<{ sessionIds: string[]; affectedWorkspaceIds: string[]; affectedChannelIds: string[] }> {
   const result = await auditedTransaction<{
     boundSessionIds: string[];
@@ -259,6 +260,7 @@ export async function revokeDevice(
     affectedChannelIds: string[];
   }>(async (tx) => {
     await lockKeyProtocol(tx);
+    if (revalidateStepUp) await revalidateStepUp(tx);
     const [device] = await tx.select()
       .from(devices)
       .where(eq(devices.id, deviceId))
@@ -415,9 +417,10 @@ function formatDevice(device: typeof devices.$inferSelect) {
   };
 }
 
-export async function approveDevice(userId: string, actorDeviceId: string, deviceId: string, head: DirectoryHead, signature: string) {
+export async function approveDevice(userId: string, actorDeviceId: string, deviceId: string, head: DirectoryHead, signature: string, revalidateStepUp?: (tx: any) => Promise<void>) {
   return auditedTransaction(async (tx) => {
     await lockKeyProtocol(tx);
+    if (revalidateStepUp) await revalidateStepUp(tx);
     const [device] = await tx.select().from(devices).where(and(eq(devices.id, deviceId), eq(devices.userId, userId), isNull(devices.revokedAt))).for('update');
     if (!device || device.approvedAt || device.id === actorDeviceId) throw new Error('DEVICE_APPROVAL_REQUIRED');
     const event: DirectoryEvent = { kind: 'approve', deviceId, identityKey: device.identityKey, actorDeviceId, signature };

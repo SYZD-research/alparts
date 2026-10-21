@@ -73,10 +73,12 @@ export async function createRole(
   workspaceId: string,
   actorId: string,
   input: { name: string; permissions: number; position: number },
+  revalidateStepUp?: (tx: any) => Promise<void>,
 ) {
   assertValidPermissionMask(input.permissions);
   assertValidRolePosition(input.position);
   const role = await auditedTransaction(async (transaction) => {
+    if (revalidateStepUp) await revalidateStepUp(transaction);
     await lockWorkspace(transaction, workspaceId);
     const actor = await getRoleManager(transaction, workspaceId, actorId);
     assertRoleNameAvailable(input.name);
@@ -106,10 +108,12 @@ export async function updateRole(
   actorId: string,
   updates: { name?: string; permissions?: number; position?: number },
   expectedAuthorizationRevision: string,
+  revalidateStepUp?: (tx: any) => Promise<void>,
 ) {
   if (updates.permissions !== undefined) assertValidPermissionMask(updates.permissions);
   if (updates.position !== undefined) assertValidRolePosition(updates.position);
   const result = await auditedTransaction(async (transaction) => {
+    if (revalidateStepUp) await revalidateStepUp(transaction);
     await lockWorkspace(transaction, workspaceId);
     await assertAuthorizationRevision(transaction, workspaceId, expectedAuthorizationRevision);
     const actor = await getRoleManager(transaction, workspaceId, actorId);
@@ -175,8 +179,10 @@ export async function deleteRole(
   roleId: string,
   actorId: string,
   expectedAuthorizationRevision: string,
+  revalidateStepUp?: (tx: any) => Promise<void>,
 ) {
   await auditedTransaction(async (transaction) => {
+    if (revalidateStepUp) await revalidateStepUp(transaction);
     await lockWorkspace(transaction, workspaceId);
     await assertAuthorizationRevision(transaction, workspaceId, expectedAuthorizationRevision);
     const actor = await getRoleManager(transaction, workspaceId, actorId);
@@ -203,8 +209,10 @@ export async function changeRoleAssignment(
   actorId: string,
   action: 'assign' | 'unassign',
   expectedAuthorizationRevision: string,
+  revalidateStepUp?: (tx: any) => Promise<void>,
 ) {
   const result = await auditedTransaction(async (transaction) => {
+    if (revalidateStepUp) await revalidateStepUp(transaction);
     await lockWorkspace(transaction, workspaceId);
     await assertAuthorizationRevision(transaction, workspaceId, expectedAuthorizationRevision);
     const actor = await getRoleManager(transaction, workspaceId, actorId);

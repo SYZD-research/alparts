@@ -306,8 +306,9 @@ export async function listWarnedUserIds(workspaceId: string): Promise<{ userIds:
   };
 }
 
-export async function flagProfile(workspaceId: string, actorId: string, userId: string) {
+export async function flagProfile(workspaceId: string, actorId: string, userId: string, revalidateStepUp?: (tx: any) => Promise<void>) {
   await auditedTransaction(async (tx) => {
+    if (revalidateStepUp) await revalidateStepUp(tx);
     await lockWorkspaceForAuthorization(tx, workspaceId, 'share');
     assertFlagAuthority(await requireSnapshot(tx, workspaceId), actorId, userId);
     await tx.insert(profileFlags).values({ workspaceId, userId, flaggedBy: actorId })
@@ -317,8 +318,9 @@ export async function flagProfile(workspaceId: string, actorId: string, userId: 
 }
 
 /** Clearing a warning also settles any pending request (it was granted). */
-export async function unflagProfile(workspaceId: string, actorId: string, userId: string) {
+export async function unflagProfile(workspaceId: string, actorId: string, userId: string, revalidateStepUp?: (tx: any) => Promise<void>) {
   await auditedTransaction(async (tx) => {
+    if (revalidateStepUp) await revalidateStepUp(tx);
     await lockWorkspaceForAuthorization(tx, workspaceId, 'share');
     assertFlagAuthority(await requireSnapshot(tx, workspaceId), actorId, userId);
     const removed = await tx.delete(profileFlags)
@@ -329,8 +331,9 @@ export async function unflagProfile(workspaceId: string, actorId: string, userId
   }, () => ({ actorId, action: 'profile.unflag', targetType: 'user', targetId: userId, details: { workspaceId } }));
 }
 
-export async function denyProfileAppeal(workspaceId: string, actorId: string, userId: string) {
+export async function denyProfileAppeal(workspaceId: string, actorId: string, userId: string, revalidateStepUp?: (tx: any) => Promise<void>) {
   await auditedTransaction(async (tx) => {
+    if (revalidateStepUp) await revalidateStepUp(tx);
     await lockWorkspaceForAuthorization(tx, workspaceId, 'share');
     assertFlagAuthority(await requireSnapshot(tx, workspaceId), actorId, userId);
     const updated = await tx.update(profileFlags).set({ appealStatus: 'denied' })

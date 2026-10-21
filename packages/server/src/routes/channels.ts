@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { Permissions } from '@alparts/shared';
 import * as channelService from '../services/channel.service.js';
 import { authMiddleware, type AuthRequest } from '../middleware/auth.js';
+import { stepUpRevalidation } from '../middleware/step-up.js';
 import {
   requireChannelAccess,
   requireChannelPermission,
@@ -96,7 +97,7 @@ router.get('/channels/:id', authMiddleware, requireChannelAccess('id'), async (r
 router.put('/channels/:id', authMiddleware, requireChannelPermission(Permissions.MANAGE_CHANNELS, 'id'), async (req: AuthRequest, res) => {
   try {
     const body = updateChannelSchema.parse(req.body);
-    const result = await channelService.updateChannel(req.params.id, body, req.userId!);
+    const result = await channelService.updateChannel(req.params.id, body, req.userId!, stepUpRevalidation(req));
     if (!result) {
       res.status(404).json({ error: 'NOT_FOUND', message: 'Channel not found', statusCode: 404 });
       return;
@@ -136,7 +137,7 @@ router.put('/channels/:id', authMiddleware, requireChannelPermission(Permissions
 
 router.delete('/channels/:id', authMiddleware, requireChannelPermission(Permissions.MANAGE_CHANNELS, 'id'), async (req: AuthRequest, res) => {
   try {
-    const result = await channelService.deleteChannel(req.params.id, req.userId!);
+    const result = await channelService.deleteChannel(req.params.id, req.userId!, stepUpRevalidation(req));
     if (!result) {
       res.status(404).json({ error: 'NOT_FOUND', message: 'Channel not found', statusCode: 404 });
       return;
@@ -177,7 +178,7 @@ router.get('/channels/:id/members', authMiddleware, requireChannelAccess('id'), 
 router.post('/channels/:id/members', authMiddleware, requireChannelPermission(Permissions.MANAGE_CHANNELS, 'id'), async (req: AuthRequest, res) => {
   try {
     const body = channelMemberSchema.parse(req.body);
-    const member = await channelService.addChannelMember(req.params.id, body.userId, req.userId!);
+    const member = await channelService.addChannelMember(req.params.id, body.userId, req.userId!, stepUpRevalidation(req));
     const io = req.app.get('io') as SocketServer | undefined;
     if (io) {
       for (const effect of member.roomEffects) {
@@ -208,7 +209,7 @@ router.delete('/channels/:id/members/:userId', authMiddleware, requireChannelPer
     return;
   }
   try {
-    const result = await channelService.removeChannelMember(req.params.id, req.params.userId, req.userId!);
+    const result = await channelService.removeChannelMember(req.params.id, req.params.userId, req.userId!, stepUpRevalidation(req));
     const io = req.app.get('io') as SocketServer | undefined;
     for (const effect of result.roomEffects) {
       for (const lostUserId of effect.lostUserIds) {
@@ -298,7 +299,7 @@ router.delete('/workspaces/:wid/categories/:categoryId', authMiddleware, require
     return;
   }
   try {
-    const result = await channelService.deleteCategory(req.params.wid, req.params.categoryId, req.userId!);
+    const result = await channelService.deleteCategory(req.params.wid, req.params.categoryId, req.userId!, stepUpRevalidation(req));
     const io = req.app.get('io') as SocketServer | undefined;
     for (const effect of result.roomEffects) {
       for (const userId of effect.lostUserIds) {

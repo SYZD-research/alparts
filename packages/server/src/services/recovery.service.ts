@@ -95,10 +95,12 @@ export async function enrollRecoveryAccess(
   sessionId: string,
   generation: string,
   accessTokenHash: string,
+  revalidateStepUp?: (tx: any) => Promise<void>,
 ) {
   await auditedTransaction(
     async (tx) => {
       await lockKeyProtocol(tx);
+      if (revalidateStepUp) await revalidateStepUp(tx);
       await requireApprovedDevice(tx, userId, sessionId);
       const updated = await tx
         .update(historyRecovery)
@@ -133,6 +135,7 @@ export async function configureRecovery(
     head: DirectoryHead;
     signature: string;
   },
+  revalidateStepUp?: (tx: any) => Promise<void>,
 ) {
   let parsed;
   try {
@@ -159,6 +162,7 @@ export async function configureRecovery(
   await auditedTransaction(
     async (tx) => {
       await lockKeyProtocol(tx);
+      if (revalidateStepUp) await revalidateStepUp(tx);
       const actor = await requireApprovedDevice(tx, userId, sessionId);
       const wrap = passkeyWrap(input);
       if (wrap && (wrap.rpId !== serverConfig.webauthn.rpId || !await tx.query.passkeys.findFirst({
@@ -480,10 +484,12 @@ export async function disableRecovery(
   userId: string,
   sessionId: string,
   input: { head: DirectoryHead; signature: string },
+  revalidateStepUp?: (tx: any) => Promise<void>,
 ) {
   await auditedTransaction(
     async (tx) => {
       await lockKeyProtocol(tx);
+      if (revalidateStepUp) await revalidateStepUp(tx);
       const actor = await requireApprovedDevice(tx, userId, sessionId);
       const config = await tx.query.historyRecovery.findFirst({
         where: eq(historyRecovery.userId, userId),

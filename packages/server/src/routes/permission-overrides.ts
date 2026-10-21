@@ -3,6 +3,7 @@ import type { Server as SocketServer } from 'socket.io';
 import { z } from 'zod';
 import { Permissions } from '@alparts/shared';
 import { authMiddleware, type AuthRequest } from '../middleware/auth.js';
+import { stepUpRevalidation } from '../middleware/step-up.js';
 import { requireChannelPermission, requireWorkspacePermission } from '../middleware/rbac.js';
 import * as overrideService from '../services/permission-override.service.js';
 import type { ChannelViewerEffect } from '../services/authorization.service.js';
@@ -149,6 +150,7 @@ function upsertHandler(target: overrideService.OverrideTarget) {
         roleId,
         req.userId!,
         body,
+        stepUpRevalidation(req),
       );
       await applyRealtimeEffects(req, result.roomEffects);
       res.json(result);
@@ -173,6 +175,7 @@ function deleteHandler(target: overrideService.OverrideTarget) {
         req.userId!,
         body.expectedRevision,
         body.expectedAuthorizationRevision,
+        stepUpRevalidation(req),
       );
       await applyRealtimeEffects(req, result.roomEffects);
       res.json(result);

@@ -4,6 +4,7 @@ import type { Server as SocketServer } from 'socket.io';
 import type { WsAttentionNotification } from '@alparts/shared';
 import { z } from 'zod';
 import { authMiddleware, type AuthRequest } from '../middleware/auth.js';
+import { stepUpRevalidation } from '../middleware/step-up.js';
 import { requireWorkspaceMembership } from '../middleware/rbac.js';
 import { rateLimit, requestSource } from '../middleware/rate-limit.js';
 import { rawRequestBody, reserveKnownLengthBody } from '../middleware/body-admission.js';
@@ -156,21 +157,21 @@ function announceFlags(req: Request, workspaceId: string) {
 
 router.put('/workspaces/:wid/members/:userId/profile-flag', authMiddleware, requireWorkspaceMembership('wid'), flagLimit,
   handle(async (req, res) => {
-    await profileService.flagProfile(req.params.wid, req.userId!, uuid.parse(req.params.userId));
+    await profileService.flagProfile(req.params.wid, req.userId!, uuid.parse(req.params.userId), stepUpRevalidation(req));
     announceFlags(req, req.params.wid);
     res.json({ success: true });
   }));
 
 router.delete('/workspaces/:wid/members/:userId/profile-flag', authMiddleware, requireWorkspaceMembership('wid'), flagLimit,
   handle(async (req, res) => {
-    await profileService.unflagProfile(req.params.wid, req.userId!, uuid.parse(req.params.userId));
+    await profileService.unflagProfile(req.params.wid, req.userId!, uuid.parse(req.params.userId), stepUpRevalidation(req));
     announceFlags(req, req.params.wid);
     res.json({ success: true });
   }));
 
 router.post('/workspaces/:wid/members/:userId/profile-flag/deny', authMiddleware, requireWorkspaceMembership('wid'), flagLimit,
   handle(async (req, res) => {
-    await profileService.denyProfileAppeal(req.params.wid, req.userId!, uuid.parse(req.params.userId));
+    await profileService.denyProfileAppeal(req.params.wid, req.userId!, uuid.parse(req.params.userId), stepUpRevalidation(req));
     announceFlags(req, req.params.wid);
     res.json({ success: true });
   }));

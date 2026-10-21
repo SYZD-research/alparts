@@ -199,8 +199,9 @@ export async function getWorkspaceMembers(workspaceId: string) {
   }));
 }
 
-export async function removeMember(workspaceId: string, userId: string, actorId: string) {
+export async function removeMember(workspaceId: string, userId: string, actorId: string, revalidateStepUp?: (tx: any) => Promise<void>) {
   const result = await auditedTransaction(async (tx) => {
+    if (revalidateStepUp) await revalidateStepUp(tx);
     const workspace = await lockWorkspace(tx, workspaceId);
     await assertMemberRemovalAuthorized(tx, workspaceId, actorId, userId);
     if (workspace.ownerId === userId) throw new Error('OWNER_CANNOT_BE_REMOVED');

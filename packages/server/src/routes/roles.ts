@@ -4,6 +4,7 @@ import type { Server as SocketServer } from 'socket.io';
 import { z } from 'zod';
 import { Permissions } from '@alparts/shared';
 import { authMiddleware, type AuthRequest } from '../middleware/auth.js';
+import { stepUpRevalidation } from '../middleware/step-up.js';
 import {
   getUserPermissions,
   requireWorkspaceMember,
@@ -57,7 +58,7 @@ router.get('/workspaces/:wid/roles', authMiddleware, requireWorkspaceMember('wid
 router.post('/workspaces/:wid/roles', authMiddleware, requireWorkspacePermission(Permissions.MANAGE_ROLES, 'wid'), async (req: AuthRequest, res) => {
   try {
     const body = createRoleSchema.parse(req.body);
-    res.status(201).json(await roleService.createRole(req.params.wid, req.userId!, body));
+    res.status(201).json(await roleService.createRole(req.params.wid, req.userId!, body, stepUpRevalidation(req)));
   } catch (error: any) {
     if (!sendRoleError(res, error)) throw error;
   }
@@ -74,6 +75,7 @@ router.put('/workspaces/:wid/roles/:roleId', authMiddleware, requireWorkspacePer
       req.userId!,
       updates,
       expectedAuthorizationRevision,
+      stepUpRevalidation(req),
     );
     await applyRealtimeEffects(req, result);
     res.json(result);
@@ -86,7 +88,7 @@ router.delete('/workspaces/:wid/roles/:roleId', authMiddleware, requireWorkspace
   try {
     const roleId = uuid.parse(req.params.roleId);
     const body = authorizationRevisionSchema.parse(req.body);
-    const result = await roleService.deleteRole(req.params.wid, roleId, req.userId!, body.expectedAuthorizationRevision);
+    const result = await roleService.deleteRole(req.params.wid, roleId, req.userId!, body.expectedAuthorizationRevision, stepUpRevalidation(req));
     getIo(req)?.to(`workspace:${req.params.wid}`).emit('workspace:roles-changed', result);
     res.json(result);
   } catch (error: any) {
@@ -139,6 +141,7 @@ async function changeAssignment(req: AuthRequest, res: Response, action: 'assign
       req.userId!,
       action,
       body.expectedAuthorizationRevision,
+      stepUpRevalidation(req),
     );
     await applyRealtimeEffects(req, result);
     res.json(result);

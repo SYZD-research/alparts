@@ -153,11 +153,13 @@ export async function upsertPermissionOverride(
   roleId: string,
   actorId: string,
   input: OverrideWriteInput,
+  revalidateStepUp?: (tx: any) => Promise<void>,
 ) {
   assertValidChannelOverrideMask(input.allowMask);
   assertValidChannelOverrideMask(input.denyMask);
   assertExpectedRevision(input.expectedRevision);
   const result = await auditedTransaction(async (transaction) => {
+    if (revalidateStepUp) await revalidateStepUp(transaction);
     await lockWorkspaceForAuthorization(transaction, workspaceId, 'update');
     await assertAuthorizationRevision(transaction, workspaceId, input.expectedAuthorizationRevision);
     const affectedChannelIds = await getAffectedChannelIds(transaction, target, workspaceId, targetId);
@@ -257,9 +259,11 @@ export async function deletePermissionOverride(
   actorId: string,
   expectedRevision: number,
   expectedAuthorizationRevision: string,
+  revalidateStepUp?: (tx: any) => Promise<void>,
 ) {
   assertExpectedRevision(expectedRevision);
   const result = await auditedTransaction(async (transaction) => {
+    if (revalidateStepUp) await revalidateStepUp(transaction);
     await lockWorkspaceForAuthorization(transaction, workspaceId, 'update');
     await assertAuthorizationRevision(transaction, workspaceId, expectedAuthorizationRevision);
     const affectedChannelIds = await getAffectedChannelIds(transaction, target, workspaceId, targetId);

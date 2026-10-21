@@ -55,6 +55,7 @@ async function issueChallenge(
   purpose: string,
   userId: string | null,
   sessionId: string | null,
+  authentication?: unknown,
 ) {
   const id = randomUUID();
   await auditedTransaction(
@@ -81,7 +82,7 @@ async function issueChallenge(
       }
       await tx.insert(authenticationChallenges).values({
         id,
-        challenge,
+        challenge: authentication === undefined ? challenge : JSON.stringify({ challenge, authentication }),
         purpose,
         userId,
         sessionId,
@@ -157,7 +158,7 @@ export async function requireApprovedDevice(tx: any, userId: string, sessionId: 
   return device;
 }
 
-export async function registrationOptions(userId: string, sessionId: string) {
+export async function registrationOptions(userId: string, sessionId: string, authentication?: unknown) {
   await requireApprovedDevice(db, userId, sessionId);
   const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
   if (!user) throw new Error('AUTHENTICATION_FAILED');
@@ -178,9 +179,21 @@ export async function registrationOptions(userId: string, sessionId: string) {
     excludeCredentials: keys.map(({ id }) => ({ id })),
   });
   return {
-    id: await issueChallenge(options.challenge, 'register', userId, sessionId),
+    id: await issueChallenge(options.challenge, 'register', userId, sessionId, authentication),
     options,
   };
+}
+
+function decodeBoundChallenge(stored: string): { challenge: string; authentication: unknown } {
+  try {
+    const parsed = JSON.parse(stored);
+    if (parsed && typeof parsed.challenge === 'string' && 'authentication' in parsed) {
+      return { challenge: parsed.challenge, authentication: parsed.authentication };
+    }
+  } catch {
+    // Plain challenge without a bound step-up snapshot.
+  }
+  return { challenge: stored, authentication: undefined };
 }
 
 export async function finishRegistration(
@@ -192,9 +205,10 @@ export async function finishRegistration(
 ) {
   const challenge = await takeChallenge(id, 'register', sessionId);
   if (challenge.userId !== userId) throw new Error('AUTHENTICATION_FAILED');
+  const bound = decodeBoundChallenge(challenge.challenge);
   const result = await verifyRegistrationResponse({
     response,
-    expectedChallenge: challenge.challenge,
+    expectedChallenge: bound.challenge,
     expectedOrigin: config.webauthn.origins,
     expectedRPID: config.webauthn.rpId,
     requireUserVerification: true,
@@ -208,7 +222,7 @@ export async function finishRegistration(
       await tx.execute(
         sql`select pg_advisory_xact_lock(hashtext(${`passkeys:${userId}`})::bigint)`,
       );
-      await requireApprovedDevice(tx, userId, sessionId);
+      await validateStepUpAuthentication(tx, userId, sessionId, bound.authentication);
       const rows = await tx
         .select({ id: passkeys.id })
         .from(passkeys)
@@ -418,9 +432,14 @@ export async function consumeStepUp(sessionId: string, purpose: string, token: s
   );
 }
 
-export async function deletePasskey(userId: string, id: string) {
+export async function deletePasskey(
+  userId: string,
+  id: string,
+  revalidateStepUp?: (tx: any) => Promise<void>,
+) {
   await auditedTransaction(
     async (tx) => {
+      if (revalidateStepUp) await revalidateStepUp(tx);
       await tx.execute(
         sql`select pg_advisory_xact_lock(hashtext(${`passkeys:${userId}`})::bigint)`,
       );
@@ -449,6 +468,15 @@ export interface StepUpProof {
   readonly expiresAt: number;
 }
 const stepUpProofs = new WeakMap<StepUpProof, unknown>();
+
+/**
+ * Reads the authentication snapshot bound to a consumed step-up proof without
+ * spending it. Used to carry the snapshot into a challenge row so a later
+ * verify step can re-check it.
+ */
+export function stepUpAuthentication(proof: StepUpProof | undefined): unknown {
+  return proof ? stepUpProofs.get(proof) : undefined;
+}
 async function validateStepUpAuthentication(
   tx: any,
   userId: string,

@@ -2,6 +2,7 @@ import { Router, type NextFunction } from 'express';
 import { isAccountSecurityError } from '../security/account-errors.js';
 import { z } from 'zod';
 import { authMiddleware, type AuthRequest } from '../middleware/auth.js';
+import { stepUpRevalidation } from '../middleware/step-up.js';
 import { rateLimit } from '../middleware/rate-limit.js';
 import * as service from '../services/recovery.service.js';
 import { emitUserKeyState } from '../websocket/key-state.js';
@@ -90,6 +91,7 @@ router.post(
       req.sessionId!,
       body.generation,
       body.accessTokenHash,
+      stepUpRevalidation(req),
     );
     res.json({ success: true });
   }),
@@ -108,7 +110,7 @@ router.post(
       })
       .strict()
       .parse(req.body);
-    await service.configureRecovery(req.userId!, req.sessionId!, body);
+    await service.configureRecovery(req.userId!, req.sessionId!, body, stepUpRevalidation(req));
     req.app.get('io')?.to(`user:${req.userId}`).emit('account:security-changed');
     res.json({ success: true });
   }),
@@ -123,6 +125,7 @@ router.delete(
         .object({ head, signature: z.string().length(88) })
         .strict()
         .parse(req.body),
+      stepUpRevalidation(req),
     );
     req.app.get('io')?.to(`user:${req.userId}`).emit('account:security-changed');
     res.json({ success: true });

@@ -5,6 +5,7 @@ import type { Server as SocketServer } from 'socket.io';
 import { z } from 'zod';
 import * as deviceService from '../services/device.service.js';
 import { authMiddleware, type AuthRequest } from '../middleware/auth.js';
+import { stepUpRevalidation } from '../middleware/step-up.js';
 import { expiredSessionCookie } from '../security/cookies.js';
 import { rateLimit, requestSource } from '../middleware/rate-limit.js';
 import { emitChannelKeyState, emitUserKeyState } from '../websocket/key-state.js';
@@ -140,7 +141,7 @@ router.delete('/:id', authMiddleware, revocationLimit, async (req: AuthRequest, 
     return;
   }
   try {
-    const { sessionIds, affectedWorkspaceIds, affectedChannelIds } = await deviceService.revokeDevice(req.params.id, req.userId!, { ...decisionSchema.parse(req.body), actorDeviceId: req.deviceId! });
+    const { sessionIds, affectedWorkspaceIds, affectedChannelIds } = await deviceService.revokeDevice(req.params.id, req.userId!, { ...decisionSchema.parse(req.body), actorDeviceId: req.deviceId! }, stepUpRevalidation(req));
     const io = req.app.get('io') as SocketServer | undefined;
     for (const sessionId of sessionIds) io?.in(`session:${sessionId}`).disconnectSockets(true);
     io?.to(`user:${req.userId}`).emit('device:revoked', { deviceId: req.params.id });
@@ -175,7 +176,7 @@ router.post('/:id/approve', authMiddleware, enrollmentLimit, async (req: AuthReq
   }
   try {
     const body = decisionSchema.parse(req.body);
-    const result = await deviceService.approveDevice(req.userId!, req.deviceId!, idSchema.parse(req.params.id), body.head, body.signature);
+    const result = await deviceService.approveDevice(req.userId!, req.deviceId!, idSchema.parse(req.params.id), body.head, body.signature, stepUpRevalidation(req));
     const io = req.app.get('io') as SocketServer | undefined;
     io?.to(`user:${req.userId}`).emit('device:approved', { deviceId: req.params.id });
     for (const workspaceId of result.dirtyWorkspaceIds) io?.to(`workspace:${workspaceId}`).emit('workspace:key-state-dirty', { workspaceId });
