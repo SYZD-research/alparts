@@ -2124,6 +2124,22 @@ process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
     assert.deepEqual(await json(await request('/api/auth/password-login')), { enabled: false });
     const refused = await request('/api/auth/login', { email: user.email, password: newPassword }, '');
     assert.equal(refused.status, 401, 'the right password no longer signs in');
+    // Nor does it add a device, unlock the app or tell whether it is right:
+    // the right password gets the answer of a wrong one.
+    const passwordDevice = deviceKeys();
+    for (const secret of [newPassword, 'Not-The-Account-Password!']) {
+      const unlock = await request('/api/auth/reauthenticate', { password: secret });
+      assert.equal((await json(unlock, 403)).error, 'INVALID_CREDENTIALS');
+      const { challenge } = await json(await request('/api/devices/challenge', {}));
+      const added = await request('/api/devices', {
+        name: 'Password device',
+        identityKey: passwordDevice.identityKey,
+        challenge,
+        proof: signature(passwordDevice.privateKey, serializeDeviceChallengeProof(userId, challenge)),
+        currentPassword: secret,
+      });
+      assert.equal((await json(added, 403)).error, 'DEVICE_STEP_UP_REQUIRED');
+    }
 
     // An operator reset sets a new password, turns password login back on,
     // removes every passkey (one could be an attacker's) and ends every login.
