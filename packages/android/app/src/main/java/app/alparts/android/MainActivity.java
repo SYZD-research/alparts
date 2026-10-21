@@ -59,6 +59,7 @@ public final class MainActivity extends Activity {
     private int idleMinutes = 5;
     private JavaScriptReplyProxy saveReply;
     private int saveRequest;
+    private boolean externalPickerOpen;
     private long expectedBytes, writtenBytes;
     private String saveToken;
     private OutputStream saveStream;
@@ -276,7 +277,7 @@ public final class MainActivity extends Activity {
                 String path = uri.getPath();
                 if (path == null || path.contains("..") || path.contains("\\")) return blocked();
                 // Only API requests can reach the server. No remote HTML or script is used as the app UI.
-                if (path.startsWith("/api/") && !request.isForMainFrame()) return null;
+                if ((path.startsWith("/api/") || path.startsWith("/socket.io/")) && !request.isForMainFrame()) return null;
                 if (!"GET".equals(request.getMethod())) return blocked();
                 String asset = path.equals("/") ? "index.html" : path.substring(1);
                 try {
@@ -492,12 +493,15 @@ public final class MainActivity extends Activity {
         try {
             Intent save = new Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE)
                 .setType("application/octet-stream").putExtra(Intent.EXTRA_TITLE, name);
+            externalPickerOpen = true;
             startActivityForResult(save, 20);
         } catch (RuntimeException ignored) { cancelSaveDialog(); }
     }
     private void cancelSaveDialog() {
         if (saveReply != null) respond(saveReply, saveRequest, null, null);
         saveReply = null;
+        externalPickerOpen = false;
+        if (unlocked && web != null) { web.setVisibility(View.VISIBLE); web.onResume(); }
     }
     private void cancelSave() {
         try { if (saveStream != null) saveStream.close(); } catch (Exception ignored) { }
@@ -511,6 +515,7 @@ public final class MainActivity extends Activity {
     }
     @Override protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
+        if (request == 20) externalPickerOpen = false;
         if (request == 10) {
             authenticating = false;
             if (result == RESULT_OK) { unlocked = true; openClient(); }
@@ -567,7 +572,7 @@ public final class MainActivity extends Activity {
         // A permission dialog only pauses the activity. A real stop still cancels
         // microphone access and locks, even if an OS permission result is pending.
         clearMicrophoneRequest(true);
-        if (saveReply != null || fileSelection != null) { if (web != null) { web.setVisibility(View.INVISIBLE); web.onPause(); } return; }
+        if (externalPickerOpen || fileSelection != null) { if (web != null) { web.setVisibility(View.INVISIBLE); web.onPause(); } return; }
         if (unlocked) lock();
     }
     @Override protected void onResume() {
