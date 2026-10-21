@@ -146,7 +146,8 @@ export async function updateRole(
     const accessChanges = compareAccess(affectedBefore, affectedAfter);
     const channelViewersAfter = captureChannelViewersFromSnapshot(snapshotAfter);
     const roomEffects = await applyViewerEffectsAndRotation(transaction, channelViewersBefore, channelViewersAfter);
-    return { existing, updated, affectedBefore, affectedAfter, accessChanges, roomEffects };
+    const allChannelIds = [...new Set([...channelViewersBefore.keys(), ...channelViewersAfter.keys()])].sort();
+    return { existing, updated, affectedBefore, affectedAfter, accessChanges, roomEffects, allChannelIds };
   }, (committed) => ({
     actorId,
     action: 'role.update',
@@ -165,7 +166,7 @@ export async function updateRole(
     affectedMembers: pairEvaluations(result.affectedBefore, result.affectedAfter),
     ...result.accessChanges,
     roomEffects: result.roomEffects,
-    allChannelIds: [...new Set(result.roomEffects.map((effect) => effect.channelId))],
+    allChannelIds: result.allChannelIds,
     keyedChannelIds: result.roomEffects.filter((effect) => effect.rotationRequired).map((effect) => effect.channelId),
   };
 }
@@ -245,7 +246,8 @@ export async function changeRoleAssignment(
     const accessChanges = compareAccess([before], [after]);
     const channelViewersAfter = captureChannelViewersFromSnapshot(snapshotAfter);
     const roomEffects = await applyViewerEffectsAndRotation(transaction, channelViewersBefore, channelViewersAfter);
-    return { role, before, after, changed, accessChanges, roomEffects };
+    const allChannelIds = [...new Set([...channelViewersBefore.keys(), ...channelViewersAfter.keys()])].sort();
+    return { role, before, after, changed, accessChanges, roomEffects, allChannelIds };
   }, (committed) => ({
     actorId,
     action: `role.${action}`,
@@ -269,7 +271,7 @@ export async function changeRoleAssignment(
     after: result.after,
     ...result.accessChanges,
     roomEffects: result.roomEffects,
-    allChannelIds: [...new Set(result.roomEffects.map((effect) => effect.channelId))],
+    allChannelIds: result.allChannelIds,
     keyedChannelIds: result.roomEffects.filter((effect) => effect.rotationRequired).map((effect) => effect.channelId),
   };
 }
