@@ -20,6 +20,7 @@ import {
 } from '../websocket/message.handler.js';
 import { logError } from '../security/logger.js';
 import { keyWriteErrorDetails } from '../security/key-write-errors.js';
+import { canonicalUuid } from '../security/canonical-id.js';
 
 const router = Router();
 const ciphertextMax = Math.ceil((MAX_PADDED_MESSAGE_BYTES + 16) / 3) * 4;
@@ -27,21 +28,21 @@ const encryptedContent = z.string().min(24).max(ciphertextMax).regex(/^[A-Za-z0-
 const nonce = z.string().length(16).regex(/^[A-Za-z0-9+/]+$/);
 const signature = z.string().length(88).regex(/^[A-Za-z0-9+/]{86}==$/);
 const cryptoFields = {
-  deviceId: z.string().uuid(),
+  deviceId: canonicalUuid,
   keyVersion: z.number().int().min(1).max(1_000_000),
-  idempotencyKey: z.string().uuid(),
+  idempotencyKey: canonicalUuid,
   signature,
 };
 // Forum channels: the post a reply, edit or delete belongs to (signed in v4).
 // Posts themselves are started through the forum routes.
-const postId = z.string().uuid().optional();
+const postId = canonicalUuid.optional();
 const createMessageSchema = z.object({
   encryptedContent,
   contentNonce: nonce,
-  refMessageId: z.string().uuid().optional(),
+  refMessageId: canonicalUuid.optional(),
   postId,
   broadcastMention: z.boolean(),
-  mentionedUserIds: z.array(z.string().uuid())
+  mentionedUserIds: z.array(canonicalUuid)
     .max(MAX_DIRECT_MENTION_RECIPIENTS_PER_MESSAGE)
     .refine((ids) => new Set(ids).size === ids.length)
     .optional(),
@@ -56,9 +57,9 @@ const editMessageSchema = z.object({
 }).strict();
 const deleteMessageSchema = z.object({ ...cryptoFields, postId }).strict();
 const reactionSchema = z.object({ emoji: z.string().min(1).max(10) }).strict();
-const readSchema = z.object({ messageId: z.string().uuid() }).strict();
+const readSchema = z.object({ messageId: canonicalUuid }).strict();
 const paginationSchema = z.object({
-  cursor: z.string().uuid().optional(),
+  cursor: canonicalUuid.optional(),
   limit: z.coerce.number().int().min(1).max(100).default(MESSAGES_PER_PAGE),
 }).strict();
 

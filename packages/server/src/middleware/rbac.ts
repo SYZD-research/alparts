@@ -1,6 +1,5 @@
 import type { NextFunction, Response } from 'express';
 import { and, eq } from 'drizzle-orm';
-import { z } from 'zod';
 import { Permissions } from '@alparts/shared';
 import type { AuthRequest } from './auth.js';
 import { db } from '../db/index.js';
@@ -11,8 +10,9 @@ import {
   type ChannelAuthorization,
 } from '../services/authorization.service.js';
 import { setLogTenant } from '../security/log-context.js';
+import { canonicalUuid } from '../security/canonical-id.js';
 
-const uuid = z.string().uuid();
+const uuid = canonicalUuid;
 
 export async function getUserPermissions(userId: string, workspaceId: string): Promise<number> {
   return (await getWorkspaceAuthorization(workspaceId, userId))?.permissionMask ?? 0;

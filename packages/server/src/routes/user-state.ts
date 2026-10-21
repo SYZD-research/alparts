@@ -4,9 +4,10 @@ import { authMiddleware, type AuthRequest } from '../middleware/auth.js';
 import { requireChannelAccess, requireWorkspaceMembership } from '../middleware/rbac.js';
 import * as userStateService from '../services/user-state.service.js';
 import { rateLimit, requestSource } from '../middleware/rate-limit.js';
+import { canonicalUuid } from '../security/canonical-id.js';
 
 const router = Router();
-const messageId = z.string().uuid();
+const messageId = canonicalUuid;
 const preferenceSchema = z.object({
   favorite: z.boolean().optional(),
   muted: z.boolean().optional(),

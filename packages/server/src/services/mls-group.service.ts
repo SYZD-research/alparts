@@ -387,6 +387,11 @@ async function precheckUnlocked(
  * The keys of each added package, from its published row. The entry must be
  * that row byte for byte (rule 4, checked again under the locks); the row was
  * fully validated when it was published.
+ *
+ * Its signature is checked again over the stored id, as every member's client
+ * checks it. A row published before ids were held to lowercase can carry a
+ * signature over another letter case of its id; a group that added it would
+ * be refused by every client from then on.
  */
 async function publishedPackageKeys(commit: MlsGroupCommit): Promise<MemberPackageKeys[]> {
   if (commit.added.length === 0) return [];
@@ -396,12 +401,14 @@ async function publishedPackageKeys(commit: MlsGroupCommit): Promise<MemberPacka
     packageId: mlsMemberPackages.packageId,
     keyPackage: mlsMemberPackages.keyPackage,
     signature: mlsMemberPackages.signature,
+    identityKey: devices.identityKey,
     initKey: mlsMemberPackages.initKey,
     encryptionKey: mlsMemberPackages.encryptionKey,
     signatureKey: mlsMemberPackages.signatureKey,
     notBefore: mlsMemberPackages.notBefore,
     notAfter: mlsMemberPackages.notAfter,
   }).from(mlsMemberPackages)
+    .innerJoin(devices, eq(devices.id, mlsMemberPackages.deviceId))
     .where(and(eq(mlsMemberPackages.channelId, commit.channelId), inArray(mlsMemberPackages.packageId, packageIds)))
     .limit(packageIds.length);
   const byId = new Map(rows.map((row) => [row.packageId, row]));
@@ -414,6 +421,11 @@ async function publishedPackageKeys(commit: MlsGroupCommit): Promise<MemberPacka
       || row.keyPackage !== entry.keyPackage
       || row.signature !== entry.signature
     ) throw new Error('MLS_CONFLICT');
+    if (!verifyDevicePayloadSignature(
+      row.identityKey,
+      serializeMlsMemberPackage(commit.channelId, row),
+      row.signature,
+    )) throw new Error('INVALID_MLS');
     keys.push(await storedMemberPackageKeys(row));
   }
   return keys;

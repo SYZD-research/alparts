@@ -13,9 +13,10 @@ import { MAX_AVATAR_BYTES, profileBio } from '../security/profile-input.js';
 import { logError } from '../security/logger.js';
 import { acquireAvatarDownloadLease } from '../security/download-limits.js';
 import * as profileService from '../services/profile.service.js';
+import { canonicalUuid } from '../security/canonical-id.js';
 
 const router = Router();
-const uuid = z.string().uuid();
+const uuid = canonicalUuid;
 const perUser = (max: number) => rateLimit({
   windowMs: 60 * 60 * 1000,
   max,

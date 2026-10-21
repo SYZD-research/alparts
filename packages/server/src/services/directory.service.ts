@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { and, asc, desc, eq, gt, isNotNull, isNull, lte } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, isNotNull, isNull, lte, sql } from 'drizzle-orm';
 import {
   DIRECTORY_GENESIS,
   serializeDirectoryEntry,
@@ -28,6 +28,25 @@ export async function directoryHead(
   return entry
     ? { userId, sequence: entry.sequence, hash: entry.hash }
     : { userId, sequence: 0, hash: DIRECTORY_GENESIS };
+}
+
+/**
+ * The history recovery generation in effect, exactly as its configuration
+ * event wrote it, or null. Clients compare later recovery events with it as
+ * text, so an event naming it in another letter case breaks the directory for
+ * every client that verifies it. Caller holds the key-protocol lock.
+ */
+export async function recordedRecoveryGeneration(store: any, userId: string): Promise<string | null> {
+  const [latest] = await store
+    .select({ event: deviceDirectoryEvents.event })
+    .from(deviceDirectoryEvents)
+    .where(and(
+      eq(deviceDirectoryEvents.userId, userId),
+      sql`${deviceDirectoryEvents.event}->>'kind' in ('recovery-config', 'recovery-disable')`,
+    ))
+    .orderBy(desc(deviceDirectoryEvents.sequence))
+    .limit(1) as Array<{ event: DirectoryEvent }>;
+  return latest?.event.kind === 'recovery-config' ? latest.event.deviceId : null;
 }
 
 /** Caller holds the key-protocol lock. Events and security mutations commit together. */

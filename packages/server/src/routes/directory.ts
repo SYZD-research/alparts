@@ -13,16 +13,17 @@ import {
 } from '../services/authorization.service.js';
 import { db } from '../db/index.js';
 import { messages, channels, channelKeyEpochRecipients, mlsGroupMembers } from '../db/schema.js';
+import { canonicalUuid } from '../security/canonical-id.js';
 const router = Router();
 router.get('/directory/:userId', authMiddleware, async (req: AuthRequest, res) => {
   const query = z
     .object({
       after: z.coerce.number().int().min(0).max(8192).default(0),
-      channelId: z.string().uuid().optional(),
+      channelId: canonicalUuid.optional(),
     })
     .strict()
     .safeParse(req.query);
-  if (!query.success || !z.string().uuid().safeParse(req.params.userId).success) {
+  if (!query.success || !canonicalUuid.safeParse(req.params.userId).success) {
     res.sendStatus(400);
     return;
   }

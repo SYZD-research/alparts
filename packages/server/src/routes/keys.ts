@@ -10,6 +10,7 @@ import {
   MAX_KEY_VERSION_LOOKUP_IDS,
 } from '../security/limits.js';
 import { rateLimit, requestSource } from '../middleware/rate-limit.js';
+import { canonicalUuid } from '../security/canonical-id.js';
 
 const router = Router();
 const wrappedKey = z.string().min(100).max(2048).regex(/^[A-Za-z0-9+/]+={0,2}$/);
@@ -17,13 +18,13 @@ const distributionSchema = z.object({
   version: z.number().int().min(1).max(1_000_000),
   keyCommitment: z.string().length(43).regex(/^[A-Za-z0-9_-]+$/),
   keys: z.array(z.object({
-    deviceId: z.string().uuid(),
+    deviceId: canonicalUuid,
     encryptedKey: wrappedKey,
     signature: z.string().length(88).regex(/^[A-Za-z0-9+/]{86}==$/),
   }).strict()).min(1).max(MAX_KEY_RECIPIENTS),
 }).strict();
 const acknowledgementSchema = z.object({
-  deliveryId: z.string().uuid(),
+  deliveryId: canonicalUuid,
   signature: z.string().length(88).regex(/^[A-Za-z0-9+/]{86}==$/),
 }).strict();
 const abortSchema = z.object({
@@ -49,7 +50,7 @@ const deviceDirectoryQuerySchema = z.object({
     .min(36)
     .max(MAX_DEVICE_DIRECTORY_LOOKUP_IDS * 37 - 1)
     .transform((value) => value.split(','))
-    .pipe(z.array(z.string().uuid()).min(1).max(MAX_DEVICE_DIRECTORY_LOOKUP_IDS))
+    .pipe(z.array(canonicalUuid).min(1).max(MAX_DEVICE_DIRECTORY_LOOKUP_IDS))
     .refine((values) => new Set(values).size === values.length, 'Device IDs must be unique')
     .optional(),
 }).strict();

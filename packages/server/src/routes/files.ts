@@ -8,10 +8,11 @@ import { keyWriteErrorDetails } from '../security/key-write-errors.js';
 import { authMiddleware, type AuthRequest } from '../middleware/auth.js';
 import { rateLimit, requestSource } from '../middleware/rate-limit.js';
 import { rawRequestBody, reserveKnownLengthBody } from '../middleware/body-admission.js';
+import { canonicalUuid } from '../security/canonical-id.js';
 
 const router = Router();
 const base64 = z.string().min(16).max(8192).regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/);
-const id = z.string().uuid();
+const id = canonicalUuid;
 const chunkIndex = z.coerce.number().int().min(0).max(fileService.MAX_ATTACHMENT_CHUNKS - 1);
 const uploadSchema = z.object({
   idempotencyKey: id,

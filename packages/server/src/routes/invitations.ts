@@ -9,9 +9,10 @@ import { rateLimit } from '../middleware/rate-limit.js';
 import * as invitationService from '../services/invitation.service.js';
 import { joinAuthorizedUserToWorkspaceRoom } from '../websocket/room-membership.js';
 import { emitJoinedWorkspaceKeyState } from '../websocket/key-state.js';
+import { canonicalUuid } from '../security/canonical-id.js';
 
 const router = Router();
-const uuid = z.string().uuid();
+const uuid = canonicalUuid;
 const createSchema = z.object({
   email: z.string().email().max(254).optional(),
   roleId: uuid.optional(),

@@ -4,8 +4,10 @@ import { z } from 'zod';
  * Ids are stored as PostgreSQL uuid and come back as lowercase text, and the
  * server compares them as text: audit-log scopes, authorization snapshots and
  * realtime room names. An id in another letter case still finds its row, but
- * would be recorded and compared as given, so only the lowercase form is
- * accepted from clients.
+ * would be recorded and compared as given, and a signature over it (a group
+ * package, a directory event) would no longer match the stored form. So only
+ * the lowercase form is accepted from clients, in paths, bodies, queries and
+ * socket events alike.
  */
 export const CANONICAL_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const ANY_CASE_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

@@ -9,6 +9,7 @@ import { rateLimit } from '../middleware/rate-limit.js';
 import * as service from '../services/passkey.service.js';
 import { sessionCookie } from '../security/cookies.js';
 import { config } from '../config/index.js';
+import { canonicalUuid } from '../security/canonical-id.js';
 
 const router = Router();
 router.use('/passkeys', rateLimit({ windowMs: 15 * 60_000, max: 40 }));
@@ -42,7 +43,7 @@ const responseSchema = z
   })
   .passthrough()
   .refine((v) => JSON.stringify(v).length <= 16_384);
-const assertionSchema = z.object({ id: z.string().uuid(), response: responseSchema }).strict();
+const assertionSchema = z.object({ id: canonicalUuid, response: responseSchema }).strict();
 const purposeSchema = z
   .string()
   .regex(/^(POST|PUT|PATCH|DELETE) \/api\/[A-Za-z0-9/_%.-]+ [A-Za-z0-9_-]{43}$/)
@@ -135,7 +136,7 @@ router.post(
   handle(async (req, res) => {
     const body = z
       .object({
-        id: z.string().uuid(),
+        id: canonicalUuid,
         purpose: purposeSchema,
         response: responseSchema.optional(),
         password: z

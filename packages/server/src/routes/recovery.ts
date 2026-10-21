@@ -6,6 +6,7 @@ import { stepUpRevalidation } from '../middleware/step-up.js';
 import { rateLimit } from '../middleware/rate-limit.js';
 import * as service from '../services/recovery.service.js';
 import { emitUserKeyState } from '../websocket/key-state.js';
+import { canonicalUuid } from '../security/canonical-id.js';
 const router = Router();
 router.use(authMiddleware);
 router.use(
@@ -17,14 +18,14 @@ router.use(
 );
 const head = z
   .object({
-    userId: z.string().uuid(),
+    userId: canonicalUuid,
     sequence: z.number().int().min(0).max(8192),
     hash: z.string().regex(/^[a-f0-9]{64}$/),
   })
   .strict();
 const cursor = z
   .object({
-    channelId: z.string().uuid(),
+    channelId: canonicalUuid,
     version: z.coerce.number().int().min(1).max(1_000_000),
   })
   .strict();
@@ -66,7 +67,7 @@ router.post(
   handler(async (req, res) => {
     const body = z
       .object({
-        generation: z.string().uuid(),
+        generation: canonicalUuid,
         token: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
       })
       .strict()
@@ -81,7 +82,7 @@ router.post(
   handler(async (req, res) => {
     const body = z
       .object({
-        generation: z.string().uuid(),
+        generation: canonicalUuid,
         accessTokenHash: z.string().regex(/^[a-f0-9]{64}$/),
       })
       .strict()
@@ -101,7 +102,7 @@ router.post(
   handler(async (req, res) => {
     const body = z
       .object({
-        generation: z.string().uuid(),
+        generation: canonicalUuid,
         signingKey: z.string().max(1024),
         encryptedSecret: z.string().min(64).max(4096),
         accessTokenHash: z.string().regex(/^[a-f0-9]{64}$/),
@@ -141,7 +142,7 @@ router.post(
   handler(async (req, res) => {
     const body = z
       .object({
-        generation: z.string().uuid(),
+        generation: canonicalUuid,
         head,
         signature: z.string().length(88),
       })
@@ -163,8 +164,8 @@ router.post(
   handler(async (req, res) => {
     const record = z
       .object({
-        generation: z.string().uuid(),
-        channelId: z.string().uuid(),
+        generation: canonicalUuid,
+        channelId: canonicalUuid,
         version: z.number().int().min(1).max(1_000_000),
         keyCommitment: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
         ciphertext: z.string().min(64).max(512),

@@ -17,22 +17,22 @@ import { logError } from '../security/logger.js';
 import { authorizeSocketChannel, consumeSocketRate, type AuthenticatedSocket } from './security.js';
 
 const ciphertextMax = Math.ceil((MAX_MESSAGE_LENGTH * 4 + 16) / 3) * 4;
-const uuid = z.string().uuid();
+const uuid = canonicalUuid;
 const cryptoFields = {
-  deviceId: z.string().uuid(),
+  deviceId: canonicalUuid,
   keyVersion: z.number().int().min(1).max(1_000_000),
-  idempotencyKey: z.string().uuid(),
+  idempotencyKey: canonicalUuid,
   signature: z.string().length(88).regex(/^[A-Za-z0-9+/]{86}==$/),
 };
 const encryptedContent = z.string().min(24).max(ciphertextMax).regex(/^[A-Za-z0-9+/]+={0,2}$/);
 const contentNonce = z.string().length(16).regex(/^[A-Za-z0-9+/]+$/);
 // Forum replies only; posts are started over HTTP with their tags.
-const postId = z.string().uuid().optional();
+const postId = canonicalUuid.optional();
 const sendSchema = z.object({
   channelId: canonicalUuid,
   encryptedContent,
   contentNonce,
-  refMessageId: z.string().uuid().optional(),
+  refMessageId: canonicalUuid.optional(),
   postId,
   broadcastMention: z.boolean(),
   mentionedUserIds: z.array(uuid)
@@ -42,7 +42,7 @@ const sendSchema = z.object({
   ...cryptoFields,
 }).strict();
 const editSchema = z.object({
-  messageId: z.string().uuid(),
+  messageId: canonicalUuid,
   channelId: canonicalUuid,
   encryptedContent,
   contentNonce,
@@ -51,7 +51,7 @@ const editSchema = z.object({
   ...cryptoFields,
 }).strict();
 const deleteSchema = z.object({
-  messageId: z.string().uuid(),
+  messageId: canonicalUuid,
   channelId: canonicalUuid,
   postId,
   ...cryptoFields,
