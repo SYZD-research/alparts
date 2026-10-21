@@ -12,7 +12,7 @@ import { mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs, promisify } from 'node:util';
-import { DEPENDENCY_SECTIONS, manifestChanges } from './manifest-policy.mjs';
+import { DEPENDENCY_SECTIONS, VERSION_SPEC, manifestChanges } from './manifest-policy.mjs';
 
 const run = promisify(execFile);
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -46,7 +46,6 @@ export const CHECKS = {
 };
 
 const PACKAGE_NAME = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
-const VERSION_SPEC = /^[\^~]?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 const VERSION_QUERY = /^(?:latest|[0-9A-Za-z.^~<>=*|+ -]+)$/;
 
 // Returns the normalised repository-relative path, or null if it leaves the

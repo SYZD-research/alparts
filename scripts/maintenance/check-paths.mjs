@@ -5,8 +5,9 @@
 //
 //   node check-paths.mjs [--allow-manifests] [--allow <path>]...
 //
-// --allow-manifests accepts staged package.json changes that only move or
-// remove existing dependencies. --allow accepts one generated file.
+// --allow-manifests accepts staged package.json changes that only move
+// existing registry dependencies to another version or remove them
+// (manifest-policy.mjs). --allow accepts one generated file.
 
 import { parseArgs } from 'node:util';
 import { isProtectedPath, normalisePath } from './agent.mjs';
