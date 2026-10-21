@@ -339,7 +339,7 @@ function memberRank(snapshot: WorkspaceAuthorizationSnapshot, userId: string): n
   return Math.max(-1, ...assignedRolesFromSnapshot(snapshot, userId, {}).map((role: any) => role.position));
 }
 
-function isChannelViewer(authorization: ChannelAuthorization | null, channel: SnapshotChannel): boolean {
+function isChannelKeyRecipient(authorization: ChannelAuthorization | null, channel: SnapshotChannel): boolean {
   return isVisibleChannelAuthorization(authorization)
     && (channel.type !== 'voice' || (authorization.permissions & Permissions.CONNECT_VOICE) !== 0);
 }
@@ -373,7 +373,8 @@ export function assertNoSuperiorAccessLoss(
       if (
         !now
         || (was.permissions & ~now.permissions) !== 0
-        || (isChannelViewer(was, channel) && !isChannelViewer(now, nextChannel!))
+        || (isVisibleChannelAuthorization(was) && !isVisibleChannelAuthorization(now))
+        || (isChannelKeyRecipient(was, channel) && !isChannelKeyRecipient(now, nextChannel!))
       ) throw new Error('MEMBER_HIERARCHY');
     }
   }
@@ -596,7 +597,7 @@ export function captureChannelViewersFromSnapshot(
   const userIds = [...snapshot.membersByUserId.keys()].sort();
   for (const channel of snapshot.channels) {
     const viewers = userIds.filter((userId) => (
-      isChannelViewer(getChannelAuthorizationFromSnapshot(snapshot, userId, channel, options, false), channel)
+      isVisibleChannelAuthorization(getChannelAuthorizationFromSnapshot(snapshot, userId, channel, options, false))
     ));
     result.set(channel.id, viewers);
   }
