@@ -46,12 +46,14 @@ function passkeyWrap(config: { encryptedSecret: string }) {
   try { envelope = JSON.parse(config.encryptedSecret); }
   catch { throw new Error('INVALID_RECOVERY'); }
   const wrap = envelope.passkeyWrap;
-  if (envelope.version !== 2 || !wrap || wrap.version !== 1
+  if (envelope.version !== 2 || typeof envelope.codeSecret !== 'string' || !/^[A-Za-z0-9+/]+={0,2}$/.test(envelope.codeSecret))
+    throw new Error('INVALID_RECOVERY');
+  if (wrap === undefined) return undefined;
+  if (!wrap || wrap.version !== 1
     || typeof wrap.credentialId !== 'string' || !/^[A-Za-z0-9_-]{1,2048}$/.test(wrap.credentialId)
     || typeof wrap.rpId !== 'string' || !wrap.rpId || wrap.rpId.length > 253
     || typeof wrap.salt !== 'string' || !/^[A-Za-z0-9+/]{43}=$/.test(wrap.salt)
-    || typeof wrap.ciphertext !== 'string' || !/^[A-Za-z0-9+/]{80}$/.test(wrap.ciphertext)
-    || typeof envelope.codeSecret !== 'string' || !/^[A-Za-z0-9+/]+={0,2}$/.test(envelope.codeSecret)) throw new Error('INVALID_RECOVERY');
+    || typeof wrap.ciphertext !== 'string' || !/^[A-Za-z0-9+/]{80}$/.test(wrap.ciphertext)) throw new Error('INVALID_RECOVERY');
   return { version: 1, credentialId: wrap.credentialId, rpId: wrap.rpId, salt: wrap.salt, ciphertext: wrap.ciphertext };
 }
 export async function recoveryMetadata(userId: string, sessionId: string) {

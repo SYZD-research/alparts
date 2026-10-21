@@ -88,7 +88,14 @@ export async function createRecoveryPlan() {
     );
     const passkeys = await api.securityRequest<Array<{ id: string }>>('/auth/passkeys');
     const options = await api.securityRequest<{ rpId: string }>('/auth/passkeys/vault');
-    const passkeyWrap = await wrapMasterSeed(raw, owner.userId, generation, passkeys.map((key) => key.id), options.rpId);
+    let passkeyWrap: PasskeyWrap | undefined;
+    if (passkeys.length > 0) {
+      try {
+        passkeyWrap = await wrapMasterSeed(raw, owner.userId, generation, passkeys.map((key) => key.id), options.rpId);
+      } catch (error) {
+        if (!(error instanceof Error && error.message === 'PASSKEY_VAULT_UNAVAILABLE')) throw error;
+      }
+    }
     assertRecoveryOwner(owner);
     const code = Array.from(raw, (b) => b.toString(16).padStart(2, '0'))
       .join('')
@@ -98,7 +105,7 @@ export async function createRecoveryPlan() {
       code,
       generation,
       signingKey,
-      encryptedSecret: JSON.stringify({ version: 2, codeSecret: encryptedSecret, passkeyWrap }),
+      encryptedSecret: JSON.stringify({ version: 2, codeSecret: encryptedSecret, ...(passkeyWrap ? { passkeyWrap } : {}) }),
       accessTokenHash: (await recoveryAccess(raw, owner.userId, generation)).accessTokenHash,
     };
   } finally {
@@ -345,7 +352,7 @@ export async function restoreHistory(code?: string) {
     if (codeSecret.startsWith('{')) {
       const secret = JSON.parse(codeSecret);
       if (secret.version !== 2 || typeof secret.codeSecret !== 'string') throw new Error('INVALID_RECOVERY');
-      parsePasskeyWrap(secret.passkeyWrap);
+      if (secret.passkeyWrap !== undefined) parsePasskeyWrap(secret.passkeyWrap);
       codeSecret = secret.codeSecret;
       archiveBytes = await deriveArchiveKey(raw, owner.userId, config.generation);
     } else archiveBytes = new Uint8Array(raw);
