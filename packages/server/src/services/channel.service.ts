@@ -143,13 +143,14 @@ export async function getChannelById(channelId: string) {
   return formatChannel(channel);
 }
 
-export async function updateChannel(channelId: string, updates: { name?: string; topic?: string; categoryId?: string | null; position?: number; isPrivate?: boolean }, actorId: string) {
+export async function updateChannel(channelId: string, updates: { name?: string; topic?: string; categoryId?: string | null; position?: number; isPrivate?: boolean }, actorId: string, revalidateStepUp?: (tx: any) => Promise<void>) {
   const location = await db.query.channels.findFirst({
     columns: { workspaceId: true },
     where: eq(channels.id, channelId),
   });
   if (!location) return null;
   const result = await auditedTransaction(async (transaction) => {
+    if (revalidateStepUp) await revalidateStepUp(transaction);
     const existing = await lockChannelForMutation(transaction, channelId, location.workspaceId);
     if (!existing) throw new Error('CHANNEL_NOT_FOUND');
     assertGenericChannel(existing);
@@ -210,7 +211,7 @@ export async function updateChannel(channelId: string, updates: { name?: string;
   };
 }
 
-export async function deleteChannel(channelId: string, actorId: string) {
+export async function deleteChannel(channelId: string, actorId: string, revalidateStepUp?: (tx: any) => Promise<void>) {
   const location = await db.query.channels.findFirst({
     columns: { workspaceId: true },
     where: eq(channels.id, channelId),
@@ -219,6 +220,7 @@ export async function deleteChannel(channelId: string, actorId: string) {
   let deleted;
   try {
     deleted = await auditedTransaction(async (transaction) => {
+      if (revalidateStepUp) await revalidateStepUp(transaction);
       const existing = await lockChannelForMutation(transaction, channelId, location.workspaceId);
       if (!existing) throw new Error('CHANNEL_NOT_FOUND');
       assertGenericChannel(existing);
@@ -348,8 +350,9 @@ export async function updateCategory(
   return result.updated;
 }
 
-export async function deleteCategory(workspaceId: string, categoryId: string, actorId: string) {
+export async function deleteCategory(workspaceId: string, categoryId: string, actorId: string, revalidateStepUp?: (tx: any) => Promise<void>) {
   const result = await auditedTransaction(async (transaction) => {
+    if (revalidateStepUp) await revalidateStepUp(transaction);
     await lockWorkspaceForMutation(transaction, workspaceId);
     await assertWorkspaceChannelManager(transaction, workspaceId, actorId);
     await transaction.execute(sql`
@@ -432,13 +435,14 @@ export async function getChannelMembers(channelId: string) {
   }));
 }
 
-export async function addChannelMember(channelId: string, userId: string, actorId: string) {
+export async function addChannelMember(channelId: string, userId: string, actorId: string, revalidateStepUp?: (tx: any) => Promise<void>) {
   const location = await db.query.channels.findFirst({
     columns: { workspaceId: true },
     where: eq(channels.id, channelId),
   });
   if (!location) throw new Error('PRIVATE_CHANNEL_NOT_FOUND');
   const result = await auditedTransaction(async (transaction) => {
+    if (revalidateStepUp) await revalidateStepUp(transaction);
     const channel = await lockChannelForMutation(transaction, channelId, location.workspaceId);
     if (!channel || !channel.isPrivate || channel.type === 'dm') throw new Error('PRIVATE_CHANNEL_NOT_FOUND');
     await assertChannelManager(transaction, channel, actorId);
@@ -464,13 +468,14 @@ export async function addChannelMember(channelId: string, userId: string, actorI
   return { channelId, userId, ...result };
 }
 
-export async function removeChannelMember(channelId: string, userId: string, actorId: string) {
+export async function removeChannelMember(channelId: string, userId: string, actorId: string, revalidateStepUp?: (tx: any) => Promise<void>) {
   const location = await db.query.channels.findFirst({
     columns: { workspaceId: true },
     where: eq(channels.id, channelId),
   });
   if (!location) throw new Error('PRIVATE_CHANNEL_NOT_FOUND');
   const result = await auditedTransaction(async (transaction) => {
+    if (revalidateStepUp) await revalidateStepUp(transaction);
     const channel = await lockChannelForMutation(transaction, channelId, location.workspaceId);
     if (!channel || !channel.isPrivate || channel.type === 'dm') throw new Error('PRIVATE_CHANNEL_NOT_FOUND');
     await assertChannelManager(transaction, channel, actorId);

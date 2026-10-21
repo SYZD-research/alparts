@@ -16,6 +16,7 @@ import directoryRoutes from './routes/directory.js';
 import passkeyRoutes from './routes/passkeys.js';
 import { hasNonCanonicalUuid } from './security/canonical-id.js';
 import { sensitiveActionBoundary } from './middleware/step-up.js';
+import type { AuthRequest } from './middleware/auth.js';
 import workspaceRoutes from './routes/workspaces.js';
 import channelRoutes from './routes/channels.js';
 import messageRoutes from './routes/messages.js';
@@ -292,6 +293,15 @@ export function createApp() {
 
   // Error handler
   app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    if (err?.message === 'STEP_UP_STALE') {
+      res.status(428).json({
+        error: 'STEP_UP_REQUIRED',
+        purpose: (_req as AuthRequest).stepUpProof?.purpose,
+        message: 'Confirm your identity to continue.',
+        statusCode: 428,
+      });
+      return;
+    }
     if (err?.message === 'AUTH_CAPACITY') {
       res.setHeader('Retry-After', '5');
       res.status(503).json({ error: 'AUTH_CAPACITY', message: 'Authentication capacity is temporarily exhausted', statusCode: 503 });

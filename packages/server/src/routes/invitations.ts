@@ -3,6 +3,7 @@ import type { Server as SocketServer } from 'socket.io';
 import { z } from 'zod';
 import { Permissions } from '@alparts/shared';
 import { authMiddleware, type AuthRequest } from '../middleware/auth.js';
+import { stepUpRevalidation } from '../middleware/step-up.js';
 import { requireWorkspacePermission } from '../middleware/rbac.js';
 import { rateLimit } from '../middleware/rate-limit.js';
 import * as invitationService from '../services/invitation.service.js';
@@ -44,7 +45,7 @@ router.post(
   async (req: AuthRequest, res) => {
     try {
       const body = createSchema.parse(req.body);
-      res.status(201).json(await invitationService.createInvitation(req.params.wid, req.userId!, body));
+      res.status(201).json(await invitationService.createInvitation(req.params.wid, req.userId!, body, stepUpRevalidation(req)));
     } catch (error: any) {
       if (!sendInvitationError(res, error)) throw error;
     }
@@ -72,7 +73,7 @@ router.delete(
   async (req: AuthRequest, res) => {
     try {
       const invitationId = uuid.parse(req.params.invitationId);
-      res.json(await invitationService.revokeInvitation(req.params.wid, invitationId, req.userId!));
+      res.json(await invitationService.revokeInvitation(req.params.wid, invitationId, req.userId!, stepUpRevalidation(req)));
     } catch (error: any) {
       if (!sendInvitationError(res, error)) throw error;
     }

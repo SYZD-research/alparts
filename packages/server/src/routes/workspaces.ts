@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { Permissions } from '@alparts/shared';
 import * as workspaceService from '../services/workspace.service.js';
 import { authMiddleware, type AuthRequest } from '../middleware/auth.js';
+import { stepUpRevalidation } from '../middleware/step-up.js';
 import { requireWorkspaceMember, requireWorkspacePermission } from '../middleware/rbac.js';
 import { rateLimit } from '../middleware/rate-limit.js';
 import { leaveUserChannelRooms } from '../websocket/room-membership.js';
@@ -67,7 +68,7 @@ router.delete('/:id/members/:userId', authMiddleware, requireWorkspacePermission
     return;
   }
   try {
-    const result = await workspaceService.removeMember(req.params.id, req.params.userId, req.userId!);
+    const result = await workspaceService.removeMember(req.params.id, req.params.userId, req.userId!, stepUpRevalidation(req));
     const io = req.app.get('io') as SocketServer | undefined;
     io?.to(`user:${req.params.userId}`).emit('workspace:access-revoked', {
       workspaceId: req.params.id,

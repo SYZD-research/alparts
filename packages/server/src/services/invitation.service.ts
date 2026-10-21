@@ -83,6 +83,7 @@ export async function createInvitation(
   workspaceId: string,
   actorId: string,
   input: { email?: string; roleId?: string; expiresInSeconds: number },
+  revalidateStepUp?: (tx: any) => Promise<void>,
 ) {
   assertValidInvitationLifetime(input.expiresInSeconds);
   const token = randomBytes(32).toString('base64url');
@@ -90,6 +91,7 @@ export async function createInvitation(
   const email = input.email ? normalizeInvitationEmail(input.email) : null;
   const expiresAt = new Date(Date.now() + input.expiresInSeconds * 1000);
   const invitation = await auditedTransaction(async (transaction) => {
+    if (revalidateStepUp) await revalidateStepUp(transaction);
     await lockWorkspace(transaction, workspaceId);
     const role = await getInvitationRole(transaction, workspaceId, actorId, input.roleId);
     const now = new Date();
@@ -181,8 +183,9 @@ export async function listInvitations(workspaceId: string) {
   return rows.map((row) => formatInvitation(row, row.roleId ? rolesById.get(row.roleId) : undefined));
 }
 
-export async function revokeInvitation(workspaceId: string, invitationId: string, actorId: string) {
+export async function revokeInvitation(workspaceId: string, invitationId: string, actorId: string, revalidateStepUp?: (tx: any) => Promise<void>) {
   const invitation = await auditedTransaction(async (transaction) => {
+    if (revalidateStepUp) await revalidateStepUp(transaction);
     await lockWorkspace(transaction, workspaceId);
     // Middleware authorization is only a hint. Recheck after acquiring the
     // workspace lock so a concurrent role revocation cannot race this write.

@@ -4,6 +4,7 @@ import { passkeyRouteError } from '../security/account-errors.js';
 import { z } from 'zod';
 import type { AuthenticationResponseJSON, RegistrationResponseJSON } from '@simplewebauthn/server';
 import { authMiddleware, type AuthRequest } from '../middleware/auth.js';
+import { stepUpRevalidation } from '../middleware/step-up.js';
 import { rateLimit } from '../middleware/rate-limit.js';
 import * as service from '../services/passkey.service.js';
 import { sessionCookie } from '../security/cookies.js';
@@ -75,7 +76,7 @@ router.post(
   '/passkeys/register/options',
   authMiddleware,
   handle(async (req, res) => {
-    res.json(await service.registrationOptions(req.userId!, req.sessionId!));
+    res.json(await service.registrationOptions(req.userId!, req.sessionId!, service.stepUpAuthentication(req.stepUpProof)));
   }),
 );
 router.post(
@@ -98,7 +99,7 @@ router.delete(
   '/passkeys/:id',
   authMiddleware,
   handle(async (req, res) => {
-    await service.deletePasskey(req.userId!, z.string().max(2048).parse(req.params.id));
+    await service.deletePasskey(req.userId!, z.string().max(2048).parse(req.params.id), stepUpRevalidation(req));
     res.json({ success: true });
   }),
 );
