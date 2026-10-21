@@ -9,6 +9,7 @@ import { stepUpRevalidation } from '../middleware/step-up.js';
 import { expiredSessionCookie } from '../security/cookies.js';
 import { rateLimit, requestSource } from '../middleware/rate-limit.js';
 import { emitChannelKeyState, emitUserKeyState } from '../websocket/key-state.js';
+import { canonicalUuid } from '../security/canonical-id.js';
 
 const router = Router();
 const registerSchema = z.object({
@@ -24,8 +25,8 @@ const proofSchema = z.object({
   challenge: z.string().length(43).regex(/^[A-Za-z0-9_-]+$/),
   proof: z.string().length(88).regex(/^[A-Za-z0-9+/]{86}==$/),
 }).strict();
-const decisionSchema = z.object({ head: z.object({ userId: z.string().uuid(), sequence: z.number().int().min(0).max(8192), hash: z.string().regex(/^[a-f0-9]{64}$/) }).strict(), signature: z.string().length(88) }).strict();
-const idSchema = z.string().uuid();
+const decisionSchema = z.object({ head: z.object({ userId: canonicalUuid, sequence: z.number().int().min(0).max(8192), hash: z.string().regex(/^[a-f0-9]{64}$/) }).strict(), signature: z.string().length(88) }).strict();
+const idSchema = canonicalUuid;
 const challengeLimit = rateLimit({
   windowMs: 60_000,
   max: 20,

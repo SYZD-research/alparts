@@ -18,9 +18,10 @@ import {
   leaveUserChannelRooms,
 } from '../websocket/room-membership.js';
 import { emitChannelKeyState, keyStateChannelIds } from '../websocket/key-state.js';
+import { canonicalUuid } from '../security/canonical-id.js';
 
 const router = Router();
-const uuid = z.string().uuid();
+const uuid = canonicalUuid;
 const permissionMask = z.number().int().min(0).max(0x7fffffff);
 const position = z.number().int().min(0).max(1_000_000);
 const authorizationRevision = z.string().regex(/^[a-f0-9]{64}$/);

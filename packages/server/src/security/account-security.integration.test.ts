@@ -1874,6 +1874,90 @@ process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
       })),
     }, 'DELETE'));
   });
+  it('takes a recovery generation only in lowercase and keeps a directory that recorded another letter case valid', async () => {
+    const recoveryService = await import('../services/recovery.service.js');
+    const verifier = await import('../../../client/src/services/' + 'directory-verifier.ts');
+    // An account of its own, in a workspace of its own, since its directory
+    // keeps the code for good.
+    const workspace = await json(await request('/api/workspaces', { name: 'Recovery case' }), 201);
+    const roles = await json(await request(`/api/workspaces/${workspace.id}/roles`));
+    const invitation = await json(await sensitive(`/api/workspaces/${workspace.id}/invitations`, {
+      roleId: roles.find((role: { name: string }) => role.name === 'Member').id,
+      expiresInSeconds: 3600,
+    }), 201);
+    const email = `recovery-case-${randomUUID()}@example.test`;
+    const account = await json(await request('/api/auth/register', {
+      email, password, displayName: 'Recovery case',
+      inviteToken: invitation.token, emailCode: await emailCode(email, invitation.token),
+    }, ''), 201);
+    const login = async () => {
+      const response = await request('/api/auth/login', { email, password }, '');
+      await json(response);
+      return response.headers.get('set-cookie')!.split(';')[0];
+    };
+    const enroll = async (auth: string, keys: ReturnType<typeof deviceKeys>, name: string) => {
+      const { challenge } = await json(await request('/api/devices/challenge', {}, auth));
+      return json(await request('/api/devices', {
+        name, identityKey: keys.identityKey, challenge,
+        proof: signature(keys.privateKey, serializeDeviceChallengeProof(account.id, challenge)),
+        currentPassword: password,
+      }, auth), 201);
+    };
+    const auth = await login();
+    const keys = deviceKeys();
+    const device = await enroll(auth, keys, 'Recovery case');
+    const accountHead = async () => (await json(await request(`/api/directory/${account.id}?after=0`, undefined, auth))).head;
+    const signingKey = JSON.stringify(recoveryPair.publicKey.export({ format: 'jwk' }));
+    const generation = `a${randomUUID().slice(1)}`;
+    const capitalGeneration = generation.toUpperCase();
+    const configuration = async (value: string) => {
+      const currentHead = await accountHead();
+      return {
+        generation: value, signingKey,
+        encryptedSecret: JSON.stringify({ version: 2, codeSecret: randomBytes(256).toString('base64') }),
+        accessTokenHash: randomBytes(32).toString('hex'), head: currentHead,
+        signature: signature(keys.privateKey, serializeDeviceDecision(currentHead, {
+          kind: 'recovery-config', deviceId: value, identityKey: signingKey, actorDeviceId: device.id,
+        })),
+      };
+    };
+    // The directory would record the generation as sent and the stored row in
+    // lowercase, so one in capitals is refused.
+    assert.equal((await sensitive('/api/recovery/configure', await configuration(capitalGeneration), 'POST', auth)).status, 403);
+    assert.equal(await json(await request('/api/recovery', undefined, auth)), null);
+
+    // A code set up that way before ids were held to lowercase can neither be
+    // turned off nor approve a device under the stored lowercase generation:
+    // either event would break the directory for every client that verifies it.
+    const sessions = await json(await request('/api/auth/sessions', undefined, auth));
+    await recoveryService.configureRecovery(
+      account.id,
+      sessions.find((session: { current: boolean }) => session.current).id,
+      await configuration(capitalGeneration),
+    );
+    const disableHead = await accountHead();
+    assert.equal((await sensitive('/api/recovery', {
+      head: disableHead,
+      signature: signature(keys.privateKey, serializeDeviceDecision(disableHead, {
+        kind: 'recovery-disable', deviceId: generation, identityKey: signingKey, actorDeviceId: device.id,
+      })),
+    }, 'DELETE', auth)).status, 403);
+    const replacementAuth = await login();
+    const replacement = await enroll(replacementAuth, deviceKeys(), 'Replacement');
+    assert.equal(replacement.approvedAt, null);
+    const restoreHead = await accountHead();
+    assert.equal((await request('/api/recovery/restore-device', {
+      generation,
+      head: restoreHead,
+      signature: signature(recoveryPair.privateKey, serializeDeviceDecision(restoreHead, {
+        kind: 'recovery', deviceId: replacement.id, identityKey: replacement.identityKey, actorDeviceId: generation,
+      })),
+    }, replacementAuth)).status, 403);
+    const directory = await json(await request(`/api/directory/${account.id}?after=0`, undefined, auth));
+    const verified = await verifier.verifyDirectoryEntries(verifier.emptyDirectory(account.id), directory.entries);
+    assert.equal(verified.recovery?.generation, capitalGeneration);
+    assert.equal(verified.devices[replacement.id].approved, false);
+  });
   it('asks members to add a visible member’s first device and starts over only when confirmed and needed', async () => {
     const { db } = await import('../db/index.js');
     const { sql } = await import('drizzle-orm');

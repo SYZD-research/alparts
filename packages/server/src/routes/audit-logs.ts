@@ -5,9 +5,10 @@ import { authMiddleware, type AuthRequest } from '../middleware/auth.js';
 import { requireWorkspacePermission } from '../middleware/rbac.js';
 import { rateLimit, requestSource } from '../middleware/rate-limit.js';
 import * as auditLogService from '../services/audit-log.service.js';
+import { canonicalUuid } from '../security/canonical-id.js';
 
 const router = Router();
-const uuid = z.string().uuid();
+const uuid = canonicalUuid;
 const listQuery = z.object({
   cursor: uuid.optional(),
   limit: z.coerce.number().int().min(1).max(100).optional(),

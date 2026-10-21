@@ -7,6 +7,7 @@ import {
   MAX_WORKSPACE_MEMBERS,
 } from '@alparts/shared';
 import { MAX_MLS_GROUP_COMMIT_PAGE } from '../security/limits.js';
+import { canonicalUuid } from '../security/canonical-id.js';
 
 /** Signed group proposals carry every member's public package and the Welcome. */
 export const MLS_EPOCH_BODY_BYTES = 2 * 1024 * 1024;
@@ -19,21 +20,21 @@ export const mlsSignature = encoded.length(88);
 export const mlsVersion = z.number().int().min(1).max(1_000_000);
 export const mlsPackage = z
   .object({
-    packageId: z.string().uuid(),
+    packageId: canonicalUuid,
     keyPackage: encoded.max(MAX_MLS_KEY_PACKAGE_LENGTH),
     signature: mlsSignature,
   })
   .strict();
 const member = mlsPackage
   .extend({
-    deviceId: z.string().uuid(),
-    userId: z.string().uuid(),
+    deviceId: canonicalUuid,
+    userId: canonicalUuid,
     identityKey: z.string().max(16_384),
   })
   .strict();
 export const mlsEpoch = z
   .object({
-    channelId: z.string().uuid(),
+    channelId: canonicalUuid,
     version: mlsVersion,
     previousVersion: z.number().int().min(0).max(1_000_000),
     previousTranscript: z.string().regex(/^[a-f0-9]{64}$/),
@@ -45,7 +46,7 @@ export const mlsEpoch = z
       .array(
         z
           .object({
-            userId: z.string().uuid(),
+            userId: canonicalUuid,
             sequence: z.number().int().min(1).max(8192),
             hash: z.string().regex(/^[a-f0-9]{64}$/),
           })
@@ -53,7 +54,7 @@ export const mlsEpoch = z
       )
       .min(1)
       .max(MAX_WORKSPACE_MEMBERS),
-    distributorDeviceId: z.string().uuid(),
+    distributorDeviceId: canonicalUuid,
     signature: mlsSignature,
   })
   .strict();
@@ -65,7 +66,7 @@ export const mlsEpochProposal = z
       .array(
         z
           .object({
-            deviceId: z.string().uuid(),
+            deviceId: canonicalUuid,
             encryptedKey: encoded.max(2048),
             signature: mlsSignature,
           })
@@ -81,7 +82,7 @@ export const mlsEpochProposal = z
 export const mlsMemberPackageRequest = mlsPackage.extend({ rejoin: z.boolean().optional() }).strict();
 export const mlsGroupCommit = z
   .object({
-    channelId: z.string().uuid(),
+    channelId: canonicalUuid,
     version: mlsVersion,
     previousVersion: z.number().int().min(0).max(1_000_000),
     previousTranscript: z.string().regex(/^[a-f0-9]{64}$/),
@@ -92,14 +93,14 @@ export const mlsGroupCommit = z
     commit: encoded.max(MAX_MLS_COMMIT_LENGTH),
     welcome: z.union([z.literal(''), encoded.max(MAX_MLS_WELCOME_LENGTH)]),
     added: z.array(member).max(MAX_KEY_RECIPIENTS),
-    removed: z.array(z.string().uuid()).max(MAX_KEY_RECIPIENTS),
+    removed: z.array(canonicalUuid).max(MAX_KEY_RECIPIENTS),
     // Adds fill the lowest free leaf, so no leaf index reaches the roster bound.
     members: z
       .array(
         z
           .object({
-            deviceId: z.string().uuid(),
-            userId: z.string().uuid(),
+            deviceId: canonicalUuid,
+            userId: canonicalUuid,
             leafIndex: z.number().int().min(0).max(MAX_KEY_RECIPIENTS - 1),
           })
           .strict(),
@@ -110,7 +111,7 @@ export const mlsGroupCommit = z
       .array(
         z
           .object({
-            userId: z.string().uuid(),
+            userId: canonicalUuid,
             sequence: z.number().int().min(1).max(8192),
             hash: z.string().regex(/^[a-f0-9]{64}$/),
           })
@@ -118,7 +119,7 @@ export const mlsGroupCommit = z
       )
       .min(1)
       .max(MAX_WORKSPACE_MEMBERS),
-    committerDeviceId: z.string().uuid(),
+    committerDeviceId: canonicalUuid,
     signature: mlsSignature,
   })
   .strict();
@@ -135,4 +136,4 @@ export const mlsGroupCommitsQuery = z
 export const mlsGroupMembersQuery = z
   .object({ version: z.coerce.number().int().min(1).max(1_000_000) })
   .strict();
-export const mlsGroupPendingQuery = z.object({ cursor: z.string().uuid().optional() }).strict();
+export const mlsGroupPendingQuery = z.object({ cursor: canonicalUuid.optional() }).strict();

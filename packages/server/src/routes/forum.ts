@@ -21,9 +21,10 @@ import {
   broadcastForumTagsUpdated,
   broadcastMessageCreated,
 } from '../websocket/message.handler.js';
+import { canonicalUuid } from '../security/canonical-id.js';
 
 const router = Router();
-const uuid = z.string().uuid();
+const uuid = canonicalUuid;
 const ciphertextMax = Math.ceil((MAX_PADDED_MESSAGE_BYTES + 16) / 3) * 4;
 const tagIds = z.array(uuid)
   .max(MAX_FORUM_TAGS_PER_POST)

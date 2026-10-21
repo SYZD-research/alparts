@@ -16,6 +16,7 @@ import { config } from '../config/index.js';
 import { expiredSessionCookie, sessionCookie } from '../security/cookies.js';
 import { emailLocale } from '../services/email-messages.js';
 import { assertStepUpStillValid } from '../services/passkey.service.js';
+import { canonicalUuid } from '../security/canonical-id.js';
 
 const router = Router();
 const password = z.string().min(12).max(72).refine((value) => Buffer.byteLength(value, 'utf8') <= 72);
@@ -79,7 +80,7 @@ const passwordSettingsLimit = rateLimit({
   max: 10,
   key: (req) => (req as AuthRequest).userId || requestSource(req),
 });
-const sessionIdSchema = z.string().uuid();
+const sessionIdSchema = canonicalUuid;
 
 function disconnectSessions(req: AuthRequest, sessionIds: string[]): void {
   const io = req.app.get('io') as SocketServer | undefined;

@@ -10,9 +10,10 @@ import { requireWorkspaceMember, requireWorkspacePermission } from '../middlewar
 import { rateLimit } from '../middleware/rate-limit.js';
 import { leaveUserChannelRooms } from '../websocket/room-membership.js';
 import { emitChannelKeyState } from '../websocket/key-state.js';
+import { canonicalUuid } from '../security/canonical-id.js';
 
 const router = Router();
-const uuid = z.string().uuid();
+const uuid = canonicalUuid;
 const createSchema = z.object({
   name: displayText(),
   iconUrl: z.string().url().max(2048).refine((value) => new URL(value).protocol === 'https:').optional(),

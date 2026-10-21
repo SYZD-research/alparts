@@ -15,7 +15,7 @@ import { config as serverConfig } from '../config/index.js';
 import { auditedTransaction } from '../middleware/audit.js';
 import { requireApprovedDevice } from './passkey.service.js';
 import { lockKeyProtocol } from './key.service.js';
-import { appendDirectoryEvent, assertDeviceDecision, directoryHead } from './directory.service.js';
+import { appendDirectoryEvent, assertDeviceDecision, directoryHead, recordedRecoveryGeneration } from './directory.service.js';
 import { abortPendingEpochsForNewDevice } from './device.service.js';
 import {
   getChannelAuthorizationFromStore,
@@ -239,9 +239,13 @@ export async function restoreDevice(
         ),
       });
       const head = await directoryHead(tx, userId);
+      // The event names the generation as given, which must be the one the
+      // directory recorded (a code set up before ids were held to lowercase
+      // may differ in letter case).
       if (
         !device ||
         !recovery ||
+        await recordedRecoveryGeneration(tx, userId) !== input.generation ||
         head.hash !== input.head.hash ||
         head.sequence !== input.head.sequence ||
         input.head.userId !== userId
@@ -496,7 +500,11 @@ export async function disableRecovery(
       const config = await tx.query.historyRecovery.findFirst({
         where: eq(historyRecovery.userId, userId),
       });
-      if (!config) throw new Error('INVALID_RECOVERY');
+      // The event names the stored generation, which must be the one the
+      // directory recorded (see restoreDevice).
+      if (!config || await recordedRecoveryGeneration(tx, userId) !== config.generation) {
+        throw new Error('INVALID_RECOVERY');
+      }
       const event: DirectoryEvent = {
         kind: 'recovery-disable',
         deviceId: config.generation,

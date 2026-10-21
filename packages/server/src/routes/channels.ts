@@ -18,12 +18,13 @@ import {
   leaveUserChannelRooms,
 } from '../websocket/room-membership.js';
 import { emitChannelKeyState, keyStateChannelIds } from '../websocket/key-state.js';
+import { canonicalUuid } from '../security/canonical-id.js';
 
 const router = Router();
 const position = z.number().int().min(0).max(1_000_000);
 const createChannelSchema = z.object({
   name: displayText(),
-  categoryId: z.string().uuid().optional(),
+  categoryId: canonicalUuid.optional(),
   type: z.enum(['text', 'announcement', 'voice', 'forum']).optional(),
   isPrivate: z.boolean().optional(),
   topic: displayText(500, true).optional(),
@@ -32,7 +33,7 @@ const createChannelSchema = z.object({
 const updateChannelSchema = z.object({
   name: displayText().optional(),
   topic: displayText(500, true).optional(),
-  categoryId: z.string().uuid().nullable().optional(),
+  categoryId: canonicalUuid.nullable().optional(),
   position: position.optional(),
   isPrivate: z.boolean().optional(),
 }).strict().refine((value) => Object.keys(value).length > 0);
@@ -44,7 +45,7 @@ const updateCategorySchema = z.object({
   name: displayText().optional(),
   position: position.optional(),
 }).strict().refine((value) => Object.keys(value).length > 0);
-const channelMemberSchema = z.object({ userId: z.string().uuid() }).strict();
+const channelMemberSchema = z.object({ userId: canonicalUuid }).strict();
 
 router.get('/workspaces/:wid/channels', authMiddleware, requireWorkspaceMembership('wid'), async (req: AuthRequest, res) => {
   res.json(await channelService.getWorkspaceChannels(req.params.wid, req.userId!));
@@ -206,7 +207,7 @@ router.post('/channels/:id/members', authMiddleware, requireChannelPermission(Pe
 });
 
 router.delete('/channels/:id/members/:userId', authMiddleware, requireChannelPermission(Permissions.MANAGE_CHANNELS, 'id'), async (req: AuthRequest, res) => {
-  if (!z.string().uuid().safeParse(req.params.userId).success) {
+  if (!canonicalUuid.safeParse(req.params.userId).success) {
     res.status(404).json({ error: 'NOT_FOUND', message: 'Channel member not found', statusCode: 404 });
     return;
   }
@@ -270,7 +271,7 @@ router.post('/workspaces/:wid/categories', authMiddleware, requireWorkspacePermi
 
 router.put('/workspaces/:wid/categories/:categoryId', authMiddleware, requireWorkspacePermission(Permissions.MANAGE_CHANNELS, 'wid'), async (req: AuthRequest, res) => {
   try {
-    const categoryId = z.string().uuid().parse(req.params.categoryId);
+    const categoryId = canonicalUuid.parse(req.params.categoryId);
     const body = updateCategorySchema.parse(req.body);
     const category = await channelService.updateCategory(req.params.wid, categoryId, body, req.userId!);
     if (!category) {
@@ -296,7 +297,7 @@ router.put('/workspaces/:wid/categories/:categoryId', authMiddleware, requireWor
 });
 
 router.delete('/workspaces/:wid/categories/:categoryId', authMiddleware, requireWorkspacePermission(Permissions.MANAGE_CHANNELS, 'wid'), async (req: AuthRequest, res) => {
-  if (!z.string().uuid().safeParse(req.params.categoryId).success) {
+  if (!canonicalUuid.safeParse(req.params.categoryId).success) {
     res.status(404).json({ error: 'NOT_FOUND', message: 'Category not found', statusCode: 404 });
     return;
   }

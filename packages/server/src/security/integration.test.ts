@@ -4302,6 +4302,34 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
       assert.equal((await db.execute(sql`select count(*)::int as count from mls_published_package_ids where channel_id = ${unused}`)).rows[0].count, 2);
     });
 
+    it('takes package ids only in lowercase and adds no package signed over another letter case of its id', async () => {
+      const { publishMemberPackage } = await import('../services/mls-group.service.js');
+      const channelId = await groupChannel('package-case');
+      await publishPackage(o1, channelId);
+      const group = new GroupRun(channelId);
+      assert.equal((await group.create(o1, [])).response.status, 201);
+
+      // PostgreSQL hands a stored id back in lowercase, so a package id in
+      // capitals would no longer match the signature over it.
+      const fresh = await newGroupPackage(b1, channelId);
+      const id = `a${fresh.id.slice(1)}`;
+      const capital = signPackage(b1, channelId, id.toUpperCase(), fresh.pub, fresh.priv);
+      assert.equal((await publishPackage(b1, channelId, { pkg: capital })).status, 400);
+
+      // A package published that way before ids were held to lowercase is
+      // never added: every member's client would refuse the group from then on.
+      await publishMemberPackage(channelId, bob.user.id, b1.id, {
+        packageId: capital.id, keyPackage: capital.encoded, signature: capital.signature,
+      });
+      b1.packages.set(channelId, { ...capital, id });
+      const poisoned = await group.commit(o1, { add: [b1] }, { post: false });
+      assert.deepEqual(await refusal(await postCommit(o1, poisoned.commit)), [403, 'INVALID_MLS']);
+
+      // Published again, in lowercase, the device is added as before.
+      assert.equal((await publishPackage(b1, channelId)).status, 201);
+      assert.equal((await group.commit(o1, { add: [b1] })).response.status, 201);
+    });
+
     it('stops writes while the group holds a device without access until a commit removes it', async () => {
       const { db } = await import('../db/index.js');
       const service = await import('../services/mls-group.service.js');

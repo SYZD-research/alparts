@@ -6,10 +6,11 @@ import { requireWorkspaceMember, requireWorkspaceMembership } from '../middlewar
 import * as dmService from '../services/dm.service.js';
 import { emitChannelKeyState, keyStateChannelIds } from '../websocket/key-state.js';
 import { joinAuthorizedUserToChannelRoom } from '../websocket/room-membership.js';
+import { canonicalUuid } from '../security/canonical-id.js';
 
 const router = Router();
 const createSchema = z.object({
-  memberIds: z.array(z.string().uuid()).min(1).max(19),
+  memberIds: z.array(canonicalUuid).min(1).max(19),
 }).strict();
 
 router.get('/workspaces/:wid/dms', authMiddleware, requireWorkspaceMembership('wid'), async (req: AuthRequest, res) => {
