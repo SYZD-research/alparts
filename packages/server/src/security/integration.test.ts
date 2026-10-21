@@ -939,6 +939,95 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
       body: { expectedAuthorizationRevision: (await json<{ authorizationRevision: string }>(ownerRemovesChannelManager)).authorizationRevision },
     })).status, 200);
     assert.equal((await request(`/api/channels/${hierarchyChannel.id}`, { method: 'DELETE', cookie: alice.cookie })).status, 200);
+    // Any viewer may start a channel's group (clients do when it is opened)
+    // and back its key up for history recovery, and a channel from before
+    // group protocol 4 may hold acknowledged deliveries. Without messages
+    // none of this keeps the channel from being deleted; messages still do.
+    // A channel with messages stays for good, so this runs in its own workspace.
+    const deletionWorkspaceResponse = await request('/api/workspaces', {
+      method: 'POST', cookie: alice.cookie, body: { name: 'Channel deletion' },
+    });
+    assert.equal(deletionWorkspaceResponse.status, 201);
+    const deletionWorkspace = await json<{ id: string }>(deletionWorkspaceResponse);
+    const deletionInvitation = await createWorkspaceInvitation(deletionWorkspace.id, alice.cookie, 'bob@example.test');
+    assert.equal((await request('/api/invitations/accept', {
+      method: 'POST', cookie: bob.cookie, body: { token: deletionInvitation.token },
+    })).status, 200);
+    const { db: deletionDb } = await import('../db/index.js');
+    const { directoryHead: deletionHead } = await import('../services/directory.service.js');
+    const newChannel = async (body: { name: string; type?: string }) => {
+      const response = await request(`/api/workspaces/${deletionWorkspace.id}/channels`, { method: 'POST', cookie: alice.cookie, body });
+      assert.equal(response.status, 201);
+      return (await json<{ id: string }>(response)).id;
+    };
+    const deleteAsOwner = (channelId: string) => request(`/api/channels/${channelId}`, { method: 'DELETE', cookie: alice.cookie });
+    const unusedVoice = await newChannel({ name: 'unused-voice', type: 'voice' });
+    assert.equal((await new ChannelGroup(unusedVoice).publish(aliceMember)).status, 404, 'a voice channel has no group');
+    assert.equal((await deleteAsOwner(unusedVoice)).status, 200);
+    const unusedGroupChannel = await newChannel({ name: 'unused-group' });
+    const unusedGroup = new ChannelGroup(unusedGroupChannel);
+    assert.equal((await unusedGroup.create(bobMember, [aliceMember])).response!.status, 201);
+    const recoveryGeneration = randomUUID();
+    const recoverySigningKey = JSON.stringify(generateKeyPairSync('ec', { namedCurve: 'prime256v1' }).publicKey.export({ format: 'jwk' }));
+    const bobHead = await deletionHead(deletionDb, bob.user.id);
+    assert.equal((await request('/api/recovery/configure', {
+      method: 'POST',
+      cookie: bob.cookie,
+      body: {
+        generation: recoveryGeneration,
+        signingKey: recoverySigningKey,
+        encryptedSecret: randomBytes(96).toString('base64'),
+        accessTokenHash: randomBytes(32).toString('hex'),
+        head: bobHead,
+        signature: signDevicePayload(bobKeys, serializeDeviceDecision(bobHead, {
+          kind: 'recovery-config', deviceId: recoveryGeneration, identityKey: recoverySigningKey, actorDeviceId: bobDevice.id,
+        })),
+      },
+    })).status, 200);
+    const backUpKey = (channelId: string, version: number, keyCommitment: string) => request('/api/recovery/keys', {
+      method: 'POST',
+      cookie: bob.cookie,
+      body: { generation: recoveryGeneration, channelId, version, keyCommitment, ciphertext: randomBytes(96).toString('base64') },
+    });
+    assert.equal((await backUpKey(unusedGroupChannel, 1, keyCommitmentOf(unusedGroup.key(1)))).status, 200);
+    assert.equal((await deleteAsOwner(unusedGroupChannel)).status, 200, 'the group and the key a member backed up go with the channel');
+    // What an earlier release leaves of a channel whose key every recipient
+    // acknowledged but nobody used.
+    const unusedLegacyChannel = await newChannel({ name: 'unused-legacy' });
+    const legacyCommitment = keyCommitmentOf(randomBytes(32));
+    await deletionDb.execute(sql`insert into channel_key_epochs
+      (channel_id, version, protocol_version, status, key_commitment, distributor_device_id, activated_at)
+      values (${unusedLegacyChannel}, 1, 2, 'active', ${legacyCommitment}, ${aliceDevice.id}, now())`);
+    await deletionDb.execute(sql`insert into channel_key_epoch_recipients (channel_id, version, device_id, user_id)
+      values (${unusedLegacyChannel}, 1, ${aliceDevice.id}, ${alice.user.id}), (${unusedLegacyChannel}, 1, ${bobDevice.id}, ${bob.user.id})`);
+    await deletionDb.execute(sql`insert into channel_keys (channel_id, version, encrypted_key, device_id, distributor_device_id, signature)
+      values (${unusedLegacyChannel}, 1, 'fixture', ${aliceDevice.id}, ${aliceDevice.id}, 'fixture'),
+        (${unusedLegacyChannel}, 1, 'fixture', ${bobDevice.id}, ${aliceDevice.id}, 'fixture')`);
+    await deletionDb.execute(sql`update channel_key_epoch_recipients as recipient
+      set accepted_delivery_id = delivery.id, acknowledgement_signature = 'fixture', acknowledged_at = now()
+      from channel_keys as delivery
+      where delivery.channel_id = recipient.channel_id and delivery.version = recipient.version
+        and delivery.device_id = recipient.device_id and recipient.channel_id = ${unusedLegacyChannel}`);
+    await deletionDb.execute(sql`update channels set key_rotation_required = true where id = ${unusedLegacyChannel}`);
+    assert.equal((await backUpKey(unusedLegacyChannel, 1, legacyCommitment)).status, 200);
+    assert.equal((await deleteAsOwner(unusedLegacyChannel)).status, 200, 'acknowledged deliveries go with an unused channel');
+    for (const channelId of [unusedVoice, unusedGroupChannel, unusedLegacyChannel]) {
+      assert.equal((await request(`/api/channels/${channelId}`, { cookie: alice.cookie })).status, 404);
+    }
+    const usedChannel = await newChannel({ name: 'used-group' });
+    const usedGroup = new ChannelGroup(usedChannel);
+    assert.equal((await usedGroup.create(bobMember, [aliceMember])).response!.status, 201);
+    assert.equal((await groupMessage(bobMember, usedChannel, usedGroup.key(1), 1)).status, 201);
+    assert.equal((await backUpKey(usedChannel, 1, keyCommitmentOf(usedGroup.key(1)))).status, 200);
+    const inUse = await deleteAsOwner(usedChannel);
+    assert.equal(inUse.status, 409, 'messages are history: their channel stays');
+    assert.equal((await json<{ error: string }>(inUse)).error, 'CONFLICT');
+    assert.equal((await groupMessage(aliceMember, usedChannel, usedGroup.key(1), 1)).status, 201, 'the refused deletion changed nothing');
+    const backedUp = await json<{ keys: Array<{ channelId: string; version: number }> }>(
+      await request('/api/recovery/keys', { cookie: bob.cookie }),
+    );
+    assert.deepEqual(backedUp.keys.map((key) => [key.channelId, key.version]), [[usedChannel, 1]],
+      'the recovery archive keeps only the key of the channel that stays');
     const ownerRemovesManager = await request(`/api/workspaces/${workspace.id}/roles/preview`, {
       method: 'POST', cookie: alice.cookie,
       body: { operation: 'role.unassign', roleId: limitedRoleManager.id, userId: bob.user.id },

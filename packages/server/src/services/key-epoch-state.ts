@@ -1,4 +1,4 @@
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import {
   channelKeyEpochRecipients,
   channelKeyEpochs,
@@ -71,35 +71,31 @@ export async function abortPendingChannelKeyEpochs(
   if (aborted.length === 0) return [];
 
   // Pending epochs never authorize ciphertext. Clean every returned epoch in
-  // three set operations, independent of epoch count. The acknowledgement FK
-  // requires clearing accepted delivery references before key rows, while key
-  // rows must be removed before recipient rows. Keeping these as ordered SQL
-  // statements avoids PostgreSQL data-modifying CTE execution-order ambiguity.
-  const epochValues = () => sql.join(aborted.map((epoch) => (
+  // three set operations, independent of epoch count.
+  const epochValues = sql.join(aborted.map((epoch) => (
     sql`(${epoch.channelId}::uuid, ${epoch.version}::integer)`
   )), sql`, `);
+  await deleteEpochRecipients(store, sql`(channel_id, version) in (values ${epochValues})`);
+  return [...new Set(aborted.map((row) => row.channelId))].sort();
+}
+
+/**
+ * Delete the recipients of the epochs `scope` selects (a condition on
+ * channel_id and version), with their deliveries. The acknowledgement FK
+ * requires clearing accepted delivery references before key rows, while key
+ * rows must be removed before recipient rows. Keeping these as ordered SQL
+ * statements avoids PostgreSQL data-modifying CTE execution-order ambiguity.
+ */
+export async function deleteEpochRecipients(store: any, scope: SQL): Promise<void> {
   await store.execute(sql`
-    update ${channelKeyEpochRecipients} as recipient
+    update ${channelKeyEpochRecipients}
     set accepted_delivery_id = null,
         acknowledgement_signature = null,
         acknowledged_at = null
-    from (values ${epochValues()}) as aborted(channel_id, version)
-    where recipient.channel_id = aborted.channel_id
-      and recipient.version = aborted.version
+    where ${scope}
   `);
-  await store.execute(sql`
-    delete from ${channelKeys} as delivery
-    using (values ${epochValues()}) as aborted(channel_id, version)
-    where delivery.channel_id = aborted.channel_id
-      and delivery.version = aborted.version
-  `);
-  await store.execute(sql`
-    delete from ${channelKeyEpochRecipients} as recipient
-    using (values ${epochValues()}) as aborted(channel_id, version)
-    where recipient.channel_id = aborted.channel_id
-      and recipient.version = aborted.version
-  `);
-  return [...new Set(aborted.map((row) => row.channelId))].sort();
+  await store.execute(sql`delete from ${channelKeys} where ${scope}`);
+  await store.execute(sql`delete from ${channelKeyEpochRecipients} where ${scope}`);
 }
 
 /**

@@ -2,12 +2,11 @@ import { db } from '../db/index.js';
 import {
   channels,
   channelDirectoryHeads,
-  channelKeys,
   channelKeyEpochs,
-  channelKeyEpochRecipients,
   channelMembers,
   channelPreferences,
   categories,
+  historyRecoveryKeys,
   messages,
   mlsEpochs,
   mlsGroupMembers,
@@ -20,7 +19,7 @@ import {
   workspaces,
   users,
 } from '../db/schema.js';
-import { eq, and, asc, inArray, isNull, ne, sql } from 'drizzle-orm';
+import { eq, and, asc, inArray, ne, sql } from 'drizzle-orm';
 import { Permissions } from '@alparts/shared';
 import { auditedTransaction } from '../middleware/audit.js';
 import {
@@ -43,6 +42,7 @@ import {
   loadWorkspaceAuthorizationSnapshot,
   lockWorkspaceForAuthorization,
 } from './authorization.service.js';
+import { deleteEpochRecipients } from './key-epoch-state.js';
 
 export async function getWorkspaceChannels(workspaceId: string, userId: string) {
   return db.transaction(async (transaction) => {
@@ -234,34 +234,33 @@ export async function deleteChannel(channelId: string, actorId: string, revalida
       assertNoSuperiorAccessLoss(snapshotBefore, {
         ...snapshotBefore, channels: [], channelsById: new Map(),
       }, actorId);
-      const viewerUserIds = await getChannelViewerIdsFromStore(transaction, existing);
-      // Explicit private-channel grants are part of the channel itself. Other
-      // durable dependants (messages, keys, uploads, DM records) deliberately
-      // make deletion fail with CHANNEL_IN_USE instead of being cascaded.
-      await transaction.delete(channelMembers).where(eq(channelMembers.channelId, channelId));
-      await transaction.delete(channelPreferences).where(eq(channelPreferences.channelId, channelId));
-      // Packages and rejoin requests wait for a group commit; they are not
-      // history. Devices publish packages for every channel they see, so an
-      // unused channel has them too. A group's key versions still block.
-      await transaction.delete(mlsMemberPackages).where(eq(mlsMemberPackages.channelId, channelId));
-      await transaction.delete(mlsRejoinRequests).where(eq(mlsRejoinRequests.channelId, channelId));
+      // Messages are history and are never removed, so a channel that has any
+      // stays in use (uploads and forum posts belong to its messages).
       const hasMessages = await transaction.query.messages.findFirst({
         columns: { id: true },
         where: eq(messages.channelId, channelId),
       });
-      if (!hasMessages) {
-        await transaction.delete(channelKeys).where(eq(channelKeys.channelId, channelId));
-        await transaction.delete(channelKeyEpochRecipients).where(eq(channelKeyEpochRecipients.channelId, channelId));
-        await transaction.delete(channelKeyEpochs).where(eq(channelKeyEpochs.channelId, channelId));
-        await transaction.delete(mlsKeyPackages).where(eq(mlsKeyPackages.channelId, channelId));
-        await transaction.delete(mlsEpochs).where(eq(mlsEpochs.channelId, channelId));
-        await transaction.delete(mlsGroupMembers).where(eq(mlsGroupMembers.channelId, channelId));
-        await transaction.delete(mlsGroupNodeKeys).where(eq(mlsGroupNodeKeys.channelId, channelId));
-        await transaction.delete(channelDirectoryHeads).where(eq(channelDirectoryHeads.channelId, channelId));
-        await transaction.delete(mlsGroups).where(eq(mlsGroups.channelId, channelId));
-      } else {
-        await transaction.delete(mlsGroups).where(and(eq(mlsGroups.channelId, channelId), isNull(mlsGroups.genesisVersion)));
-      }
+      if (hasMessages) throw new Error('CHANNEL_IN_USE');
+      const viewerUserIds = await getChannelViewerIdsFromStore(transaction, existing);
+      // Without messages nothing is stored under this channel's keys, so what
+      // was set up for it goes with it: private grants, preferences, waiting
+      // packages, its group and key versions, and members' history recovery
+      // copies of those keys. Opening a channel starts its group, and members
+      // with history recovery back its key up at once, so an unused channel
+      // has all of these.
+      await transaction.delete(channelMembers).where(eq(channelMembers.channelId, channelId));
+      await transaction.delete(channelPreferences).where(eq(channelPreferences.channelId, channelId));
+      await transaction.delete(mlsMemberPackages).where(eq(mlsMemberPackages.channelId, channelId));
+      await transaction.delete(mlsRejoinRequests).where(eq(mlsRejoinRequests.channelId, channelId));
+      await deleteEpochRecipients(transaction, sql`channel_id = ${channelId}`);
+      await transaction.delete(channelKeyEpochs).where(eq(channelKeyEpochs.channelId, channelId));
+      await transaction.delete(historyRecoveryKeys).where(eq(historyRecoveryKeys.channelId, channelId));
+      await transaction.delete(mlsKeyPackages).where(eq(mlsKeyPackages.channelId, channelId));
+      await transaction.delete(mlsEpochs).where(eq(mlsEpochs.channelId, channelId));
+      await transaction.delete(mlsGroupMembers).where(eq(mlsGroupMembers.channelId, channelId));
+      await transaction.delete(mlsGroupNodeKeys).where(eq(mlsGroupNodeKeys.channelId, channelId));
+      await transaction.delete(channelDirectoryHeads).where(eq(channelDirectoryHeads.channelId, channelId));
+      await transaction.delete(mlsGroups).where(eq(mlsGroups.channelId, channelId));
       const [removed] = await transaction.delete(channels)
         .where(and(eq(channels.id, channelId), eq(channels.workspaceId, existing.workspaceId)))
         .returning({ id: channels.id, workspaceId: channels.workspaceId });
