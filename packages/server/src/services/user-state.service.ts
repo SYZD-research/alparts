@@ -175,15 +175,6 @@ export async function toggleMessageBookmark(messageId: string, userId: string) {
       .where(and(eq(messages.id, messageId), eq(messages.type, 'message')))
       .for('share');
     if (!lockedMessage || lockedMessage.channelId !== message.channelId) throw new Error('MESSAGE_NOT_FOUND');
-    const deleted = await transaction.query.messages.findFirst({
-      columns: { id: true },
-      where: and(eq(messages.refMessageId, messageId), eq(messages.type, 'delete')),
-    });
-    if (deleted) throw new Error('MESSAGE_NOT_FOUND');
-    const channel = await transaction.query.channels.findFirst({ where: eq(channels.id, message.channelId) });
-    if (!channel || !isVisibleChannelAuthorization(await getChannelAuthorizationFromStore(transaction, userId, channel))) {
-      throw new Error('MESSAGE_NOT_FOUND');
-    }
     const existing = await transaction.query.messageBookmarks.findFirst({
       where: and(eq(messageBookmarks.userId, userId), eq(messageBookmarks.messageId, messageId)),
     });
@@ -193,6 +184,15 @@ export async function toggleMessageBookmark(messageId: string, userId: string) {
         eq(messageBookmarks.messageId, messageId),
       ));
       return { messageId, channelId: message.channelId, bookmarked: false, createdAt: null };
+    }
+    const deleted = await transaction.query.messages.findFirst({
+      columns: { id: true },
+      where: and(eq(messages.refMessageId, messageId), eq(messages.type, 'delete')),
+    });
+    if (deleted) throw new Error('MESSAGE_NOT_FOUND');
+    const channel = await transaction.query.channels.findFirst({ where: eq(channels.id, message.channelId) });
+    if (!channel || !isVisibleChannelAuthorization(await getChannelAuthorizationFromStore(transaction, userId, channel))) {
+      throw new Error('MESSAGE_NOT_FOUND');
     }
     await transaction.execute(sql`select pg_advisory_xact_lock(hashtext(${`bookmark-user:${userId}`})::bigint)`);
     const retained = await transaction.query.messageBookmarks.findMany({

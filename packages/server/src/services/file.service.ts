@@ -943,26 +943,32 @@ async function canViewChannelFromStore(
 }
 
 export async function getCiphertextUsage(store: any, workspaceId: string, channelId: string, userId: string) {
+  const messageNotDeleted = sql<boolean>`not exists (
+    select 1
+    from "messages" as "usage_message_deletions"
+    where "usage_message_deletions"."ref_message_id" = ${messages.id}
+      and "usage_message_deletions"."type" = 'delete'
+  )`;
   const finalizedUserRows = await store.select({
     bytes: sql<string>`coalesce(sum(${attachments.sizeBytes}), 0)::bigint`,
   }).from(attachments)
     .innerJoin(messages, eq(attachments.messageId, messages.id))
     .innerJoin(channels, eq(messages.channelId, channels.id))
-    .where(and(eq(messages.authorId, userId), eq(channels.workspaceId, workspaceId)));
+    .where(and(eq(messages.authorId, userId), eq(channels.workspaceId, workspaceId), messageNotDeleted));
   const activeUserRows = await store.select({
     bytes: sql<string>`coalesce(sum(${attachmentUploadChunks.sizeBytes}), 0)::bigint`,
   }).from(attachmentUploadChunks)
     .innerJoin(attachmentUploads, eq(attachmentUploadChunks.uploadId, attachmentUploads.id))
     .innerJoin(messages, eq(attachmentUploads.messageId, messages.id))
     .innerJoin(channels, eq(messages.channelId, channels.id))
-    .where(and(eq(attachmentUploads.uploaderId, userId), eq(channels.workspaceId, workspaceId), isNull(attachmentUploads.completedAt)));
+    .where(and(eq(attachmentUploads.uploaderId, userId), eq(channels.workspaceId, workspaceId), isNull(attachmentUploads.completedAt), messageNotDeleted));
   const finalizedRows = await store.select({
     channelBytes: sql<string>`coalesce(sum(${attachments.sizeBytes}) filter (where ${messages.channelId} = ${channelId}), 0)::bigint`,
     workspaceBytes: sql<string>`coalesce(sum(${attachments.sizeBytes}), 0)::bigint`,
   }).from(attachments)
     .innerJoin(messages, eq(attachments.messageId, messages.id))
     .innerJoin(channels, eq(messages.channelId, channels.id))
-    .where(eq(channels.workspaceId, workspaceId));
+    .where(and(eq(channels.workspaceId, workspaceId), messageNotDeleted));
   const activeRows = await store.select({
     channelBytes: sql<string>`coalesce(sum(${attachmentUploadChunks.sizeBytes}) filter (where ${messages.channelId} = ${channelId}), 0)::bigint`,
     workspaceBytes: sql<string>`coalesce(sum(${attachmentUploadChunks.sizeBytes}), 0)::bigint`,
@@ -970,7 +976,7 @@ export async function getCiphertextUsage(store: any, workspaceId: string, channe
     .innerJoin(attachmentUploads, eq(attachmentUploadChunks.uploadId, attachmentUploads.id))
     .innerJoin(messages, eq(attachmentUploads.messageId, messages.id))
     .innerJoin(channels, eq(messages.channelId, channels.id))
-    .where(and(eq(channels.workspaceId, workspaceId), isNull(attachmentUploads.completedAt)));
+    .where(and(eq(channels.workspaceId, workspaceId), isNull(attachmentUploads.completedAt), messageNotDeleted));
   const result = {
     userBytes: Number(finalizedUserRows[0]?.bytes ?? 0) + Number(activeUserRows[0]?.bytes ?? 0),
     channelBytes: Number(finalizedRows[0]?.channelBytes ?? 0) + Number(activeRows[0]?.channelBytes ?? 0),

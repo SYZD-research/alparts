@@ -14,6 +14,7 @@ import {
   devices,
   forumPostReads,
   forumPosts,
+  messageBookmarks,
   messagePins,
   messageReactions,
   messages,
@@ -378,6 +379,10 @@ export async function deleteMessage(messageId: string, userId: string, input: Cr
       if (priorDelete.idempotencyKey !== expectedKey) throw new Error('MESSAGE_NOT_FOUND');
     }
     const storedEvent = await insertCryptoEvent(transaction, original.channelId, userId, deleteInput, 'delete', messageId);
+    if (storedEvent.isNewEvent) {
+      await transaction.delete(messagePins).where(eq(messagePins.messageId, messageId));
+      await transaction.delete(messageBookmarks).where(eq(messageBookmarks.messageId, messageId));
+    }
     let forumPost: ForumPostBroadcastState | null = null;
     let forumPostRemoved = false;
     if (forumPostId) {
