@@ -91,7 +91,9 @@ async function lockedChannel(tx: any, channelId: string, userId: string, mode: '
   if (mode === 'update') await lockChannelAuthorization(tx, channelId);
   const channel = await tx.query.channels.findFirst({ where: eq(channels.id, channelId) }) as
     typeof channels.$inferSelect | undefined;
-  if (!channel || channel.workspaceId !== location.workspaceId) throw new Error('CHANNEL_NOT_FOUND');
+  if (!channel || channel.workspaceId !== location.workspaceId || channel.type === 'voice') {
+    throw new Error('CHANNEL_NOT_FOUND');
+  }
   const authorization = await getChannelAuthorizationFromStore(tx, userId, channel);
   if (!isVisibleChannelAuthorization(authorization)) throw new Error('CHANNEL_NOT_FOUND');
   return { channel, authorization };
