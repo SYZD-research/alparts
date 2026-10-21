@@ -347,7 +347,6 @@ export interface RoleUpdateResult {
   affectedMembers: AffectedRoleMember[];
   lostAccessUserIds: string[];
   gainedAccessUserIds: string[];
-  allChannelIds: string[];
   keyedChannelIds: string[];
 }
 
@@ -361,7 +360,6 @@ export interface RoleAssignmentResult {
   after: EffectivePermissions;
   lostAccessUserIds: string[];
   gainedAccessUserIds: string[];
-  allChannelIds: string[];
   keyedChannelIds: string[];
 }
 

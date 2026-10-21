@@ -78,7 +78,7 @@ router.put('/workspaces/:wid/roles/:roleId', authMiddleware, requireWorkspacePer
       stepUpRevalidation(req),
     );
     await applyRealtimeEffects(req, result);
-    res.json(result);
+    res.json(roleChangeResponse(result));
   } catch (error: any) {
     if (!sendRoleError(res, error)) throw error;
   }
@@ -144,10 +144,16 @@ async function changeAssignment(req: AuthRequest, res: Response, action: 'assign
       stepUpRevalidation(req),
     );
     await applyRealtimeEffects(req, result);
-    res.json(result);
+    res.json(roleChangeResponse(result));
   } catch (error: any) {
     if (!sendRoleError(res, error)) throw error;
   }
+}
+
+/** `allChannelIds` lists every channel of the workspace for room cleanup, including ones the actor cannot see. */
+function roleChangeResponse<T extends { allChannelIds: string[] }>(result: T): Omit<T, 'allChannelIds'> {
+  const { allChannelIds: _allChannelIds, ...response } = result;
+  return response;
 }
 
 async function applyRealtimeEffects(req: AuthRequest, result: {

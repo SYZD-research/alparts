@@ -915,6 +915,20 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     assert.equal((await request(`/api/channels/${privateHierarchy.id}/members/${retryDeviceAccount.user.id}`, {
       method: 'DELETE', cookie: alice.cookie,
     })).status, 200, 'the owner may remove anyone');
+    // Role results name no channel the actor cannot see, such as the private
+    // channel it just left (GHSA-3xrh-c9vq-jh4j).
+    const repeatedRestriction = await request(`/api/workspaces/${workspace.id}/members/${bob.user.id}/roles/${mutedRole.id}`, {
+      method: 'POST', cookie: bob.cookie, body: { expectedAuthorizationRevision: await bobRevision() },
+    });
+    assert.equal(repeatedRestriction.status, 200);
+    const mutedRoleEdit = await request(`/api/workspaces/${workspace.id}/roles/${mutedRole.id}`, {
+      method: 'PUT', cookie: bob.cookie, body: { permissions: 0, expectedAuthorizationRevision: await bobRevision() },
+    });
+    assert.equal(mutedRoleEdit.status, 200);
+    for (const roleResult of [await json<Record<string, unknown>>(repeatedRestriction), await json<Record<string, unknown>>(mutedRoleEdit)]) {
+      assert.equal(Object.hasOwn(roleResult, 'allChannelIds'), false);
+      assert.equal(JSON.stringify(roleResult).includes(privateHierarchy.id), false);
+    }
     assert.equal((await request(`/api/channels/${privateHierarchy.id}`, { method: 'DELETE', cookie: alice.cookie })).status, 200);
     const ownerRemovesChannelManager = await request(`/api/workspaces/${workspace.id}/roles/preview`, {
       method: 'POST', cookie: alice.cookie,
