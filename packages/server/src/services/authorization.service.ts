@@ -7,7 +7,10 @@ import {
   channelMembers,
   channelRolePermissionOverrides,
   channels,
+  devices,
   memberRoles,
+  mlsMemberPackages,
+  mlsRejoinRequests,
   roles,
   workspaceMembers,
   workspaces,
@@ -620,6 +623,22 @@ export async function applyViewerEffectsAndRotation(
       const result = await requireChannelKeyRotation(store, [channelId]);
       rotationRequired = result.keyedChannelIds.includes(channelId);
       await refreshGroupRemoveRequirement(store, channelId, [...next]);
+      if (lostUserIds.length > 0) {
+        const lostDeviceIds = (await store
+          .select({ id: devices.id })
+          .from(devices)
+          .where(inArray(devices.userId, lostUserIds))).map((row: { id: string }) => row.id);
+        if (lostDeviceIds.length > 0) {
+          await store.delete(mlsMemberPackages).where(and(
+            eq(mlsMemberPackages.channelId, channelId),
+            inArray(mlsMemberPackages.deviceId, lostDeviceIds),
+          ));
+          await store.delete(mlsRejoinRequests).where(and(
+            eq(mlsRejoinRequests.channelId, channelId),
+            inArray(mlsRejoinRequests.deviceId, lostDeviceIds),
+          ));
+        }
+      }
     }
     if (lostUserIds.length > 0 || gainedUserIds.length > 0 || rotationRequired) {
       effects.push({ channelId, lostUserIds, gainedUserIds, rotationRequired });

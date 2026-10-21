@@ -285,8 +285,7 @@ export function pendingSince(input: FreshStartInput): Date | null {
     if (since) times.push(since);
   }
   if (times.length === 0) return null;
-  const earliest = times.reduce((left, right) => (left < right ? left : right));
-  return earliest > input.activeCreatedAt ? earliest : input.activeCreatedAt;
+  return times.reduce((left, right) => (left < right ? left : right));
 }
 
 /** §5.3.4: who may replace an existing group with a new one (step-up still required). */
