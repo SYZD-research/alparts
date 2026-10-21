@@ -14,8 +14,6 @@ import {
   channelKeys,
   devices,
   mlsGroupMembers,
-  dmConversations,
-  dmMembers,
   profileFlags,
 } from '../db/schema.js';
 import { eq, and, inArray } from 'drizzle-orm';
@@ -29,7 +27,6 @@ import {
 } from './authorization.service.js';
 import {
   MAX_ROLE_ASSIGNMENTS_PER_MEMBER,
-  MAX_DMS_PER_WORKSPACE,
   MAX_TOTAL_CHANNELS_PER_WORKSPACE,
   MAX_WORKSPACE_MEMBERS,
   MAX_WORKSPACES_OWNED_PER_USER,
@@ -271,22 +268,11 @@ export async function removeMember(workspaceId: string, userId: string, actorId:
       }
     }
 
+    // dmMembers is the canonical participant set of the conversation and is
+    // left intact: shrinking it would leak an undeletable DM row and let a
+    // later set of removals collide two distinct conversations onto the same
+    // member set. Live access ends with the channelMembers delete below.
     if (channelIds.length > 0) {
-      const workspaceDmRows = await tx.select({ conversationId: dmConversations.id })
-        .from(dmConversations)
-        .innerJoin(channels, eq(dmConversations.channelId, channels.id))
-        .where(and(
-          eq(channels.workspaceId, workspaceId),
-          inArray(channels.id, channelIds),
-        ))
-        .limit(MAX_DMS_PER_WORKSPACE + 1);
-      if (workspaceDmRows.length > MAX_DMS_PER_WORKSPACE) throw new Error('DM_INVARIANT_EXCEEDED');
-      if (workspaceDmRows.length > 0) {
-        await tx.delete(dmMembers).where(and(
-          eq(dmMembers.userId, userId),
-          inArray(dmMembers.conversationId, workspaceDmRows.map((row: { conversationId: string }) => row.conversationId)),
-        ));
-      }
       await tx.delete(channelMembers).where(and(
         eq(channelMembers.userId, userId),
         inArray(channelMembers.channelId, channelIds),
