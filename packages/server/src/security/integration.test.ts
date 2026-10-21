@@ -2441,6 +2441,64 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
       speaking: false,
     });
 
+    // Revoking only CONNECT_VOICE ends the call of a member who still sees the
+    // channel: the member leaves the call and its presence, and the channel's
+    // directory no longer lists the member's device for the call's keys.
+    const voiceDirectoryIds = encodeURIComponent([aliceDevice.id, bobDevice.id].join(','));
+    const voiceDirectory = async () => (await json<Array<{ deviceId: string }>>(await request(
+      `/api/channels/${voiceChannel.id}/device-directory?ids=${voiceDirectoryIds}`,
+      { cookie: alice.cookie },
+    ))).map((device) => device.deviceId).sort();
+    assert.deepEqual(await voiceDirectory(), [aliceDevice.id, bobDevice.id].sort());
+    const revokeCallPreview = await json<{ authorizationRevision: string }>(await request(`${voiceOverridePath}/preview`, {
+      method: 'POST', cookie: alice.cookie,
+      body: { operation: 'upsert', roleId: memberRole.id, allowMask: 0, denyMask: Permissions.CONNECT_VOICE },
+    }));
+    const bobLeftCall = onceSocketEvent<{ channelId: string; participantId: string }>(aliceSocket, 'voice:participant-left');
+    const bobCallRevoked = onceSocketEventMatching<{ workspaceId: string; channelId: string }>(
+      bobSocket,
+      'channel:access-revoked',
+      (payload) => payload.channelId === voiceChannel.id,
+    );
+    const revokeCall = await request(`${voiceOverridePath}/${memberRole.id}`, {
+      method: 'PUT', cookie: alice.cookie,
+      body: {
+        allowMask: 0,
+        denyMask: Permissions.CONNECT_VOICE,
+        expectedRevision: 2,
+        expectedAuthorizationRevision: revokeCallPreview.authorizationRevision,
+      },
+    });
+    assert.equal(revokeCall.status, 200);
+    assert.deepEqual(await bobLeftCall, { channelId: voiceChannel.id, participantId: bobVoiceJoin.self!.participantId });
+    assert.deepEqual(await bobCallRevoked, { workspaceId: workspace.id, channelId: voiceChannel.id });
+    const revokeCallEffect = (await json<{
+      roomEffects: Array<{ channelId: string; lostUserIds: string[]; lostCallUserIds: string[] }>;
+    }>(revokeCall)).roomEffects.find((effect) => effect.channelId === voiceChannel.id);
+    assert.deepEqual(revokeCallEffect?.lostUserIds, []);
+    assert.equal(revokeCallEffect?.lostCallUserIds.includes(bob.user.id), true);
+    assert.equal((await request(`/api/channels/${voiceChannel.id}`, { cookie: bob.cookie })).status, 200);
+    assert.deepEqual(await voiceDirectory(), [aliceDevice.id]);
+    assert.deepEqual(await emitSocketAck(aliceSocket, 'voice:signal', {
+      ...voiceEnvelope,
+      signalId: randomUUID(),
+      sequence: 3,
+      signature: voiceSignature,
+    }), { ok: false }, 'nothing is relayed to a participant removed from the call');
+    assert.deepEqual(await joinVoice(bobSocket, voiceChannel.id), { ok: false, error: 'FORBIDDEN' });
+    const presenceAfterRevoke: any = await emitSocketAck(bobSocket, 'voice:watch', { channelIds: [voiceChannel.id] });
+    assert.equal(presenceAfterRevoke.channels?.some((entry: any) => entry.channelId === voiceChannel.id) ?? false, false);
+    const restoreCallPreview = await json<{ authorizationRevision: string }>(await request(`${voiceOverridePath}/preview`, {
+      method: 'POST', cookie: alice.cookie, body: { operation: 'delete', roleId: memberRole.id },
+    }));
+    assert.equal((await request(`${voiceOverridePath}/${memberRole.id}`, {
+      method: 'DELETE', cookie: alice.cookie,
+      body: { expectedRevision: 3, expectedAuthorizationRevision: restoreCallPreview.authorizationRevision },
+    })).status, 200);
+    assert.deepEqual(await voiceDirectory(), [aliceDevice.id, bobDevice.id].sort());
+    const bobVoiceRejoin = await joinVoice(bobSocket, voiceChannel.id);
+    assert.equal(bobVoiceRejoin.ok, true);
+
     const disposableChannelResponse = await request(`/api/workspaces/${workspace.id}/channels`, {
       method: 'POST',
       cookie: alice.cookie,
@@ -2563,7 +2621,7 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     assert.deepEqual(await channelAccessRevoked, { workspaceId: workspace.id, channelId });
     assert.deepEqual(await bobRemovedFromVoice, {
       channelId: voiceChannel.id,
-      participantId: bobVoiceJoin.self!.participantId,
+      participantId: bobVoiceRejoin.self!.participantId,
     });
     await delay(50);
     bobSocket.off('channel:permissions-updated', onRevokedRoomBroadcast);

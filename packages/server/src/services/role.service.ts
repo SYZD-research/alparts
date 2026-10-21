@@ -14,7 +14,7 @@ import { auditedTransaction } from '../middleware/audit.js';
 import {
   applyViewerEffectsAndRotation,
   assertNoSuperiorAccessLoss,
-  captureChannelViewersFromSnapshot,
+  captureChannelAccessFromSnapshot,
   computeAuthorizationRevisionFromStore,
   loadWorkspaceAuthorizationSnapshot,
   lockWorkspaceForAuthorization,
@@ -136,7 +136,7 @@ export async function updateRole(
       .map(([userId]) => userId)
       .sort();
     const affectedBefore = affectedUserIds.map((userId) => evaluateMemberFromSnapshot(snapshotBefore, userId));
-    const channelViewersBefore = captureChannelViewersFromSnapshot(snapshotBefore);
+    const channelAccessBefore = captureChannelAccessFromSnapshot(snapshotBefore);
 
     const [updated] = await transaction.update(roles)
       .set(updates)
@@ -148,9 +148,9 @@ export async function updateRole(
     assertNoSuperiorAccessLoss(snapshotBefore, snapshotAfter, actorId);
     const affectedAfter = affectedUserIds.map((userId) => evaluateMemberFromSnapshot(snapshotAfter, userId));
     const accessChanges = compareAccess(affectedBefore, affectedAfter);
-    const channelViewersAfter = captureChannelViewersFromSnapshot(snapshotAfter);
-    const roomEffects = await applyViewerEffectsAndRotation(transaction, channelViewersBefore, channelViewersAfter);
-    const allChannelIds = [...new Set([...channelViewersBefore.keys(), ...channelViewersAfter.keys()])].sort();
+    const channelAccessAfter = captureChannelAccessFromSnapshot(snapshotAfter);
+    const roomEffects = await applyViewerEffectsAndRotation(transaction, channelAccessBefore, channelAccessAfter);
+    const allChannelIds = [...new Set([...channelAccessBefore.viewers.keys(), ...channelAccessAfter.viewers.keys()])].sort();
     return { existing, updated, affectedBefore, affectedAfter, accessChanges, roomEffects, allChannelIds };
   }, (committed) => ({
     actorId,
@@ -229,7 +229,7 @@ export async function changeRoleAssignment(
     const snapshotBefore = await requireAuthorizationSnapshot(transaction, workspaceId);
     if (action === 'unassign') assertMemberCanBeManaged(actor, actorId, snapshotBefore, userId);
     const before = evaluateMemberFromSnapshot(snapshotBefore, userId);
-    const channelViewersBefore = captureChannelViewersFromSnapshot(snapshotBefore);
+    const channelAccessBefore = captureChannelAccessFromSnapshot(snapshotBefore);
     const existing = await transaction.query.memberRoles.findFirst({
       where: and(eq(memberRoles.memberId, member.id), eq(memberRoles.roleId, roleId)),
     });
@@ -252,9 +252,9 @@ export async function changeRoleAssignment(
     assertNoSuperiorAccessLoss(snapshotBefore, snapshotAfter, actorId);
     const after = evaluateMemberFromSnapshot(snapshotAfter, userId);
     const accessChanges = compareAccess([before], [after]);
-    const channelViewersAfter = captureChannelViewersFromSnapshot(snapshotAfter);
-    const roomEffects = await applyViewerEffectsAndRotation(transaction, channelViewersBefore, channelViewersAfter);
-    const allChannelIds = [...new Set([...channelViewersBefore.keys(), ...channelViewersAfter.keys()])].sort();
+    const channelAccessAfter = captureChannelAccessFromSnapshot(snapshotAfter);
+    const roomEffects = await applyViewerEffectsAndRotation(transaction, channelAccessBefore, channelAccessAfter);
+    const allChannelIds = [...new Set([...channelAccessBefore.viewers.keys(), ...channelAccessAfter.viewers.keys()])].sort();
     return { role, before, after, changed, accessChanges, roomEffects, allChannelIds };
   }, (committed) => ({
     actorId,

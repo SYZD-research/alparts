@@ -22,7 +22,7 @@ import { DefaultRoles, Permissions } from '@alparts/shared';
 import { auditedTransaction } from '../middleware/audit.js';
 import {
   applyViewerEffectsAndRotation,
-  captureChannelViewersFromStore,
+  captureChannelAccessFromStore,
   getWorkspaceAuthorizationFromStore,
 } from './authorization.service.js';
 import {
@@ -224,13 +224,13 @@ export async function removeMember(workspaceId: string, userId: string, actorId:
     if (explicitPrivateMemberships.length > MAX_TOTAL_CHANNELS_PER_WORKSPACE) {
       throw new Error('PRIVATE_MEMBERSHIP_INVARIANT_EXCEEDED');
     }
-    const before = await captureChannelViewersFromStore(tx, workspaceId, channelIds);
+    const before = await captureChannelAccessFromStore(tx, workspaceId, channelIds);
     // Realtime removal must tell the client which locally persisted channel
     // state to erase without revealing private/overridden channels it never
     // knew. Include currently visible channels plus durable evidence of prior
     // authorization or interaction.
     const knownChannelIds = new Set<string>();
-    for (const [channelId, viewerIds] of before) {
+    for (const [channelId, viewerIds] of before.viewers) {
       if (viewerIds.includes(userId)) knownChannelIds.add(channelId);
     }
     for (const membership of explicitPrivateMemberships) knownChannelIds.add(membership.channelId);
@@ -280,7 +280,7 @@ export async function removeMember(workspaceId: string, userId: string, actorId:
     }
     await tx.delete(memberRoles).where(eq(memberRoles.memberId, member.id));
     await tx.delete(workspaceMembers).where(eq(workspaceMembers.id, member.id));
-    const after = await captureChannelViewersFromStore(tx, workspaceId, channelIds);
+    const after = await captureChannelAccessFromStore(tx, workspaceId, channelIds);
     const roomEffects = await applyViewerEffectsAndRotation(tx, before, after);
     const keyedChannelIds = roomEffects.filter((effect) => effect.rotationRequired).map((effect) => effect.channelId);
     return {

@@ -159,13 +159,16 @@ async function applyRealtimeEffects(req: AuthRequest, result: {
     channelId: string;
     lostUserIds: string[];
     gainedUserIds: string[];
+    lostCallUserIds: string[];
     rotationRequired: boolean;
   }>;
 }) {
   const io = getIo(req);
   if (!io) return;
   for (const effect of result.roomEffects ?? []) {
-    for (const userId of effect.lostUserIds) {
+    // Losing a voice channel's call leaves its rooms too, which ends the call;
+    // the client then reloads the channels it still sees.
+    for (const userId of [...effect.lostUserIds, ...effect.lostCallUserIds]) {
       io.to(`user:${userId}`).emit('channel:access-revoked', {
         workspaceId: req.params.wid,
         channelId: effect.channelId,
@@ -184,7 +187,7 @@ async function applyRealtimeEffects(req: AuthRequest, result: {
     await joinAuthorizedUserToWorkspaceRoom(io, userId, req.params.wid);
   }
   for (const effect of result.roomEffects ?? []) {
-    for (const userId of effect.lostUserIds) {
+    for (const userId of [...effect.lostUserIds, ...effect.lostCallUserIds]) {
       leaveUserChannelRooms(io, userId, effect.channelId);
     }
     for (const userId of effect.gainedUserIds) {

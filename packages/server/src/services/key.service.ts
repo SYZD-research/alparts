@@ -19,6 +19,7 @@ import { auditedTransaction } from '../middleware/audit.js';
 import { getChannelAuthorization } from '../middleware/rbac.js';
 import {
   getChannelAuthorizationFromStore,
+  getChannelKeyRecipientIdsFromStore,
   getChannelViewerIdsFromStore,
   getWorkspaceAuthorizationFromSnapshot,
   isVisibleChannelAuthorization,
@@ -1053,7 +1054,8 @@ export async function abortPendingChannelKey(
 async function getRecipientUserIds(channelId: string): Promise<string[]> {
   const channel = await db.query.channels.findFirst({ where: eq(channels.id, channelId) });
   if (!channel) throw new Error('CHANNEL_NOT_FOUND');
-  return getChannelViewerIdsFromStore(db, channel);
+  // A voice channel lists only the devices of those who may join its call.
+  return getChannelKeyRecipientIdsFromStore(db, channel);
 }
 
 async function hasAcceptedEpoch(

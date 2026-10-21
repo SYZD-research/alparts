@@ -17,7 +17,7 @@ import {
 } from '../security/limits.js';
 import {
   applyViewerEffectsAndRotation,
-  captureChannelViewersFromStore,
+  captureChannelAccessFromStore,
   getChannelAuthorizationFromStore,
   getChannelAuthorizationFromSnapshot,
   getWorkspaceAuthorizationFromSnapshot,
@@ -85,11 +85,11 @@ export async function createDm(workspaceId: string, actorId: string, requestedUs
         // and apply the viewer effects, so the group's remove requirement
         // follows the regained access and devices are told to add them.
         await lockChannelAuthorization(tx, candidate.channelId);
-        const before = await captureChannelViewersFromStore(tx, workspaceId, [candidate.channelId]);
+        const before = await captureChannelAccessFromStore(tx, workspaceId, [candidate.channelId]);
         await tx.insert(channelMembers)
           .values(userIds.map((userId) => ({ channelId: candidate.channelId, userId })))
           .onConflictDoNothing();
-        const after = await captureChannelViewersFromStore(tx, workspaceId, [candidate.channelId]);
+        const after = await captureChannelAccessFromStore(tx, workspaceId, [candidate.channelId]);
         const roomEffects = await applyViewerEffectsAndRotation(tx, before, after);
         return { channelId: candidate.channelId, created: false, roomEffects };
       }
