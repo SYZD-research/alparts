@@ -1,12 +1,12 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { authMiddleware, type AuthRequest } from '../middleware/auth.js';
-import { requireChannelAccess, requireMessagePermission, requireWorkspaceMembership } from '../middleware/rbac.js';
-import { Permissions } from '@alparts/shared';
+import { requireChannelAccess, requireWorkspaceMembership } from '../middleware/rbac.js';
 import * as userStateService from '../services/user-state.service.js';
 import { rateLimit, requestSource } from '../middleware/rate-limit.js';
 
 const router = Router();
+const messageId = z.string().uuid();
 const preferenceSchema = z.object({
   favorite: z.boolean().optional(),
   muted: z.boolean().optional(),
@@ -43,7 +43,13 @@ router.patch('/channels/:id/preferences', authMiddleware, requireChannelAccess('
   }
 });
 
-router.post('/messages/:id/bookmark', authMiddleware, requireMessagePermission(Permissions.VIEW_CHANNELS, 'id'), async (req: AuthRequest, res) => {
+// The service checks the channel itself: a member who lost it may still
+// remove a bookmark they made there.
+router.post('/messages/:id/bookmark', authMiddleware, async (req: AuthRequest, res) => {
+  if (!messageId.safeParse(req.params.id).success) {
+    res.status(404).json({ error: 'NOT_FOUND', message: 'Message not found', statusCode: 404 });
+    return;
+  }
   try {
     res.json(await userStateService.toggleMessageBookmark(req.params.id, req.userId!));
   } catch (error: any) {
