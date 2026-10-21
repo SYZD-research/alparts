@@ -1784,6 +1784,30 @@ process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
       })),
     }, 'DELETE'));
   });
+  it('accepts a recovery code set up without a passkey and reports no passkey for it', async () => {
+    const generation = randomUUID();
+    const signingKey = JSON.stringify(recoveryPair.publicKey.export({ format: 'jwk' }));
+    const currentHead = await head();
+    // What the client sends when no passkey could be used or the user declined one.
+    await json(await sensitive('/api/recovery/configure', {
+      generation, signingKey,
+      encryptedSecret: JSON.stringify({ version: 2, codeSecret: randomBytes(256).toString('base64') }),
+      accessTokenHash: randomBytes(32).toString('hex'), head: currentHead,
+      signature: signature(firstKeys.privateKey, serializeDeviceDecision(currentHead, {
+        kind: 'recovery-config', deviceId: generation, identityKey: signingKey, actorDeviceId: first.id,
+      })),
+    }));
+    const metadata = await json(await request('/api/recovery/metadata'));
+    assert.equal(metadata.generation, generation);
+    assert.equal(metadata.passkeyWrap, undefined);
+    const disableHead = await head();
+    await json(await sensitive('/api/recovery', {
+      head: disableHead,
+      signature: signature(firstKeys.privateKey, serializeDeviceDecision(disableHead, {
+        kind: 'recovery-disable', deviceId: generation, identityKey: signingKey, actorDeviceId: first.id,
+      })),
+    }, 'DELETE'));
+  });
   it('asks members to add a visible member’s first device and starts over only when confirmed and needed', async () => {
     const { db } = await import('../db/index.js');
     const { sql } = await import('drizzle-orm');
