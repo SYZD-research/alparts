@@ -1,5 +1,6 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { readConfiguredValue } from '../config/source.js';
+import { parseNodeEnvironment } from '../config/validation.js';
 
 const BCRYPT_HASH = /^\$2[aby]\$(12|13|14|15)\$[./A-Za-z0-9]{53}$/;
 const BCRYPT_SALT = /^\$2[aby]\$(12|13|14|15)\$[./A-Za-z0-9]{22}$/;
@@ -7,7 +8,7 @@ const V1_STORED = /^p1:([A-Za-z0-9_-]{39}):([A-Za-z0-9_-]{43})$/;
 const V2_STORED = /^p2:([A-Za-z0-9_-]{11}):([A-Za-z0-9_-]{39}):([A-Za-z0-9_-]{43})$/;
 
 function readPepper(name: string, required: boolean): string | undefined {
-  const value = readConfiguredValue(name, process.env, process.env.NODE_ENV === 'production');
+  const value = readConfiguredValue(name, process.env, parseNodeEnvironment(process.env.NODE_ENV) === 'production');
   if (!value) {
     if (required) throw new Error('PASSWORD_PEPPER_REQUIRED');
     return undefined;

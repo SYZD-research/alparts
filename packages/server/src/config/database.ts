@@ -1,4 +1,4 @@
-import { parseBoundedInteger } from './validation.js';
+import { parseBoundedInteger, parseNodeEnvironment, type NodeEnvironment } from './validation.js';
 import { readConfiguredValue } from './source.js';
 
 export interface DatabaseRuntimeConfig {
@@ -15,7 +15,7 @@ export interface DatabaseRuntimeConfig {
  */
 export function loadDatabaseRuntimeConfig(
   environment: NodeJS.ProcessEnv = process.env,
-  nodeEnvironment = environment.NODE_ENV || 'development',
+  nodeEnvironment: NodeEnvironment = parseNodeEnvironment(environment.NODE_ENV),
 ): DatabaseRuntimeConfig {
   const isProduction = nodeEnvironment === 'production';
   const url = readConfiguredValue('DATABASE_URL', environment, isProduction);

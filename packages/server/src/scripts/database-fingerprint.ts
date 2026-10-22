@@ -19,7 +19,7 @@ if (operation === 'compare' && output && comparison) {
   }
   console.log(`Verified ${left.tables.length} tables: identical columns, row counts and content hashes`);
 } else if (operation === 'capture' && output && !comparison) {
-  const config = loadDatabaseRuntimeConfig(process.env, process.env.NODE_ENV || 'development');
+  const config = loadDatabaseRuntimeConfig();
   const client = new pg.Client({ connectionString: config.url,
     ssl: config.ssl ? { rejectUnauthorized: true } : undefined,
     connectionTimeoutMillis: config.connectTimeoutMs, statement_timeout: 300_000,

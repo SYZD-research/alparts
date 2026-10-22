@@ -1,6 +1,23 @@
 import { isIP } from 'node:net';
 import type { VoiceIceServer } from '@alparts/shared';
 
+export type NodeEnvironment = 'production' | 'development' | 'test';
+
+/**
+ * NODE_ENV chooses between the production and the development settings (TLS to
+ * dependencies, the Secure cookie, the allowed origins, the audit checkpoint),
+ * so a value that is neither, such as `prod` or `Production`, must stop
+ * startup instead of quietly selecting the development ones. Unset means
+ * development.
+ */
+export function parseNodeEnvironment(configured: string | undefined): NodeEnvironment {
+  if (configured === undefined) return 'development';
+  if (configured !== 'production' && configured !== 'development' && configured !== 'test') {
+    throw new Error('NODE_ENV must be production, development or test');
+  }
+  return configured;
+}
+
 export function parseBindHost(configured: string | undefined): string {
   const host = configured?.trim() || '127.0.0.1';
   if (isIP(host) === 0) {

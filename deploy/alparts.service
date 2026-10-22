@@ -9,9 +9,7 @@ StartLimitBurst=5
 Type=simple
 DynamicUser=yes
 WorkingDirectory=/opt/alparts
-Environment=NODE_ENV=production
 EnvironmentFile=-/etc/alparts/alparts.env
-Environment=BIND_HOST=127.0.0.1
 LoadCredential=database_url:/etc/alparts/credentials/database_url
 LoadCredential=s3_access_key:/etc/alparts/credentials/s3_access_key
 LoadCredential=s3_secret_key:/etc/alparts/credentials/s3_secret_key
@@ -33,7 +31,10 @@ Environment=AUDIT_CHECKPOINT_REQUIRED=true
 #Environment=SMTP_PASSWORD_FILE=%d/smtp_password
 # Provision/upgrade while stopped; do not restore this bucket with the DB.
 Environment=ALLOW_INSECURE_LOOPBACK_DEPENDENCIES=true
-ExecStart=/usr/bin/node --permission --allow-fs-read=/opt/alparts --allow-fs-read=%d --allow-fs-read=/var/lib/alparts-audit --allow-fs-write=/var/lib/alparts-audit --allow-worker --disallow-code-generation-from-strings /opt/alparts/packages/server/dist/index.js
+# NODE_ENV and BIND_HOST are set here and not with Environment=: a value in
+# EnvironmentFile= overrides Environment= (systemd.exec(5)), and alparts.env
+# must not be able to change these two.
+ExecStart=/usr/bin/env NODE_ENV=production BIND_HOST=127.0.0.1 /usr/bin/node --permission --allow-fs-read=/opt/alparts --allow-fs-read=%d --allow-fs-read=/var/lib/alparts-audit --allow-fs-write=/var/lib/alparts-audit --allow-worker --disallow-code-generation-from-strings /opt/alparts/packages/server/dist/index.js
 Restart=on-failure
 RestartSec=5s
 TimeoutStopSec=30s

@@ -25,6 +25,8 @@ The implementation has two sources, in this order:
 
 There is no general config file, external secret-provider API, or runtime override layer. Docker secrets and systemd credentials are adapters into `NAME_FILE`. Supplying both `NAME` and `NAME_FILE` is an error. Invalid types/ranges, weak required secrets, unsafe bind/origins, missing production audit witness, or insecure non-loopback dependencies abort startup.
 
+`NODE_ENV` must be `production`, `development` or `test`, and unset means development. Any other value, such as `prod`, `staging` or `Production`, stops startup, because it would otherwise select the development settings: plaintext dependencies, a cookie without `Secure`, localhost origins and no audit checkpoint requirement.
+
 `S3_ENDPOINT` is a bare host name or IP address (no scheme, port or path; use `S3_PORT` and `S3_USE_SSL`), and `S3_REGION`, `S3_BUCKET` and `AUDIT_HEAD_BUCKET` must be valid region and DNS-safe bucket names; anything else stops startup. Plaintext object storage is allowed only for a literal loopback address. The S3 client ignores the ambient `AWS_USE_FIPS_ENDPOINT` and `AWS_USE_DUALSTACK_ENDPOINT` switches.
 
 Registration mails a code to the address being registered. Configure `SMTP_HOST`, `SMTP_FROM`, optionally `SMTP_USER` with `SMTP_PASSWORD_FILE`, and `SMTP_SECURE=true` for TLS from the first byte; otherwise production requires STARTTLS. Without SMTP, production keeps serving existing accounts but refuses new registrations, logging `registration.unavailable` at startup, unless `EMAIL_VERIFICATION=disabled` explicitly turns the check off. With the check off no code proves the address, so a registration can show whether an address already has an account to anyone who holds a valid invitation. To keep that from being free, an attempt with an address that has an account spends the invitation, as a registration would, and is answered like an invalid invitation: each address tested costs one invitation. Accept that before turning the check off. The emails are written in English or Japanese, following the language the user chose in the app; no setting is needed.
@@ -113,6 +115,8 @@ sudo systemctl daemon-reload
 ```
 
 The example app uses a dynamic nonroot UID, read-only filesystem protections, no capabilities, finite memory/tasks/fds, restart backoff, and loopback bind. Its explicit insecure-dependency acknowledgement is valid only when PostgreSQL/object-store endpoints are truly loopback or unix-socket local; remote endpoints must use verified TLS and remove that acknowledgement.
+
+The unit sets `NODE_ENV=production` and `BIND_HOST=127.0.0.1` on the `ExecStart` command line through `env`, because a value in `EnvironmentFile=` overrides an `Environment=` line of the unit (systemd.exec(5)) and `/etc/alparts/alparts.env` must not be able to change them. If Node.js is installed elsewhere, change only the `/usr/bin/node` after them; to listen on another address, change the unit itself.
 
 Provision the initial audit checkpoint while the app is stopped and with production credentials:
 
