@@ -19,7 +19,7 @@ import { api } from '../services/api';
 import { encryptMessage } from '../services/crypto.service';
 import { useChannelStore } from './channel.store';
 import { channelSecurityError, useMessageStore } from './message.store';
-import { belongsToPost, getMessageCryptoVerificationState } from './message-projector';
+import { belongsToPost, getMessageCryptoVerificationState, quotedMessage } from './message-projector';
 
 const KEY_VERSION = 7;
 const textChannel = 'channel-text';
@@ -196,5 +196,111 @@ describe('events the server makes up', () => {
     const message = shownMessage(textChannel, 'unsigned');
     expect(message.content).toBe('');
     expect(getMessageCryptoVerificationState(message)).toBe(false);
+  });
+});
+
+describe('a message that failed verification in a text channel', () => {
+  const question = () => signedEvent(bob, 'question', '2026-10-22T09:00:00.000Z', 'Can I wire the money today?', {
+    type: 'message', channelId: textChannel, idempotencyKey: 'key-question', refMessageId: null, broadcastMention: false,
+  });
+  const lunch = () => signedEvent(alice, 'lunch', '2026-10-22T09:01:00.000Z', 'Lunch at 12?', {
+    type: 'message', channelId: textChannel, idempotencyKey: 'key-lunch', refMessageId: null, broadcastMention: false,
+  });
+  const editOfLunch = (lunchEvent: Message) => signedEvent(alice, 'lunch-edit', '2026-10-22T09:02:00.000Z', 'Yes, approved.', {
+    type: 'edit', channelId: textChannel, idempotencyKey: 'key-lunch-edit', refMessageId: lunchEvent.id, broadcastMention: false,
+    refBinding: pairOf(lunchEvent),
+  });
+  /** The server serves Alice's message as if it answered Bob's question. */
+  const moved = (lunchEvent: Message, questionEvent: Message) => (
+    { ...lunchEvent, refMessageId: questionEvent.id, refBinding: pairOf(questionEvent) } as Message
+  );
+
+  it('keeps the text of the author edit off a message the server moved under a quote', async () => {
+    const [asked, original] = await Promise.all([question(), lunch()]);
+    const tampered = moved(original, asked);
+    await load(textChannel, [asked, tampered, await editOfLunch(original)]);
+
+    const events = store().eventsByChannel[textChannel];
+    expect(getMessageCryptoVerificationState(events.find((event) => event.id === asked.id)!)).toBe(true);
+    expect(getMessageCryptoVerificationState(events.find((event) => event.id === 'lunch-edit')!)).toBe(true);
+    const message = shownMessage(textChannel, 'lunch');
+    expect(getMessageCryptoVerificationState(message)).toBe(false);
+    expect(message).toMatchObject({ type: 'message', content: '' });
+    expect(quotedMessage(message, shown(textChannel))).toBeNull();
+    expect(channelSecurityError(store(), textChannel)).toBeNull();
+  });
+
+  it('does not show the quote the server chose even before any edit', async () => {
+    const [asked, original] = await Promise.all([question(), lunch()]);
+    await load(textChannel, [asked, moved(original, asked)]);
+    const message = shownMessage(textChannel, 'lunch');
+    expect(message.content).toBe('');
+    expect(quotedMessage(message, shown(textChannel))).toBeNull();
+  });
+
+  it('still shows a verified quote and the verified edit of it', async () => {
+    const asked = await question();
+    const quote = await signedEvent(alice, 'answer', '2026-10-22T09:01:00.000Z', 'Let me check.', {
+      type: 'message', channelId: textChannel, idempotencyKey: 'key-answer', refMessageId: asked.id, broadcastMention: false,
+      refBinding: pairOf(asked),
+    });
+    const edit = await signedEvent(alice, 'answer-edit', '2026-10-22T09:02:00.000Z', 'Yes, approved.', {
+      type: 'edit', channelId: textChannel, idempotencyKey: 'key-answer-edit', refMessageId: quote.id, broadcastMention: false,
+      refBinding: pairOf(quote),
+    });
+    await load(textChannel, [asked, quote, edit]);
+
+    const message = shownMessage(textChannel, 'answer');
+    expect(message).toMatchObject({ type: 'edit', content: 'Yes, approved.' });
+    expect(getMessageCryptoVerificationState(message)).toBe(true);
+    expect(quotedMessage(message, shown(textChannel))?.id).toBe(asked.id);
+  });
+
+  it('still applies a verified edit to a verified message without references', async () => {
+    const original = await lunch();
+    await load(textChannel, [original, await editOfLunch(original)]);
+    expect(shownMessage(textChannel, 'lunch')).toMatchObject({ type: 'edit', content: 'Yes, approved.' });
+  });
+});
+
+describe('a reply that failed verification in a forum', () => {
+  const forumPost = (id: string, key: string, createdAt: string, title: string) => signedEvent(bob, id, createdAt, JSON.stringify({ title, body: '' }), {
+    type: 'message', channelId: forumChannel, idempotencyKey: key, refMessageId: null, broadcastMention: false, postId: null,
+  });
+  const reply = (post: Message) => signedEvent(alice, 'reply', '2026-10-22T10:02:00.000Z', 'the usual place', {
+    type: 'message', channelId: forumChannel, idempotencyKey: 'key-reply', refMessageId: null, broadcastMention: false,
+    postId: post.id, refBinding: null, postBinding: pairOf(post),
+  });
+  const editOfReply = (post: Message, replyEvent: Message) => signedEvent(alice, 'reply-edit', '2026-10-22T10:03:00.000Z', 'I fully agree.', {
+    type: 'edit', channelId: forumChannel, idempotencyKey: 'key-reply-edit', refMessageId: replyEvent.id, broadcastMention: false,
+    postId: post.id, refBinding: pairOf(replyEvent), postBinding: pairOf(post),
+  });
+  const repliesOf = (postId: string) => {
+    const root = shownMessage(forumChannel, postId);
+    return shown(forumChannel).filter((message) => belongsToPost(message, root)).map((message) => `${message.author.displayName}: ${message.content}`);
+  };
+
+  it('lists a verified reply and its verified edit under the post it was signed for', async () => {
+    const lunchPost = await forumPost('post-lunch', 'key-lunch', '2026-10-22T10:00:00.000Z', 'Team lunch');
+    const layoffPost = await forumPost('post-layoffs', 'key-layoffs', '2026-10-22T10:01:00.000Z', 'Layoffs: who agrees?');
+    const original = await reply(lunchPost);
+    await load(forumChannel, [lunchPost, layoffPost, original, await editOfReply(lunchPost, original)]);
+
+    expect(repliesOf('post-lunch')).toEqual(['Alice: I fully agree.']);
+    expect(repliesOf('post-layoffs')).toEqual([]);
+  });
+
+  it('lists neither a reply the server moved to another post nor the edit of it', async () => {
+    const lunchPost = await forumPost('post-lunch', 'key-lunch', '2026-10-22T10:00:00.000Z', 'Team lunch');
+    const layoffPost = await forumPost('post-layoffs', 'key-layoffs', '2026-10-22T10:01:00.000Z', 'Layoffs: who agrees?');
+    const original = await reply(lunchPost);
+    const edit = await editOfReply(lunchPost, original);
+    const moved = { ...original, postId: layoffPost.id, postBinding: pairOf(layoffPost) } as Message;
+    await load(forumChannel, [lunchPost, layoffPost, moved, edit]);
+
+    expect(getMessageCryptoVerificationState(shownMessage(forumChannel, 'reply'))).toBe(false);
+    expect(shownMessage(forumChannel, 'reply')).toMatchObject({ type: 'message', content: '' });
+    expect(repliesOf('post-layoffs')).toEqual([]);
+    expect(repliesOf('post-lunch')).toEqual([]);
   });
 });

@@ -71,18 +71,26 @@ function namesEvent(
 
 /**
  * The message a quote shows: undefined while the message under its id is not
- * loaded, null when the message under that id is not the one quoted.
+ * loaded, null when the quote cannot be trusted: the message carrying it did
+ * not verify, so its refMessageId is whatever the server served, or the
+ * message under that id is not the one quoted.
  */
 export function quotedMessage(message: Message, messages: readonly ProjectedMessage[]): ProjectedMessage | null | undefined {
   if (!message.refMessageId) return undefined;
+  if (getMessageCryptoVerificationState(message) !== true) return null;
   const target = messages.find((candidate) => candidate.id === message.refMessageId);
   if (!target) return undefined;
   return namesEvent(message, target, message.refBinding) ? target : null;
 }
 
-/** Whether a forum message belongs under this post's first message. */
+/**
+ * Whether a forum message belongs under this post's first message. Only a
+ * message that verified names its post: otherwise postId is the server's.
+ */
 export function belongsToPost(message: Message, root: ProjectedMessage): boolean {
-  return message.postId === root.id && namesEvent(message, root, message.postBinding);
+  return getMessageCryptoVerificationState(message) === true
+    && message.postId === root.id
+    && namesEvent(message, root, message.postBinding);
 }
 
 export function markMessageKeyUnavailable(message: Message): Message {
@@ -313,6 +321,9 @@ export function projectOrderedMessageEvents(orderedEvents: Message[]): Projected
     if (event.type === 'edit') {
       if (getMessageCryptoVerificationState(event) !== true) continue;
       if (target.type === 'delete' || event.authorId !== target.authorId) continue;
+      // The edited message keeps its base's references, which are the
+      // author's only if the base verified.
+      if (getMessageCryptoVerificationState(target) !== true) continue;
       // A v5 edit applies only to the message it was signed for.
       if (!namesEvent(event, target, event.refBinding)) continue;
       projected.set(targetId, {

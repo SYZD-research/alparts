@@ -17,6 +17,23 @@ describe('MessageItem reply presentation', () => {
   });
 });
 
+describe('MessageItem quotes', () => {
+  it('says the original cannot be shown when the message carrying the quote did not verify', () => {
+    for (const held of [markMessageCryptoVerification(replyMessage(), false), markMessageKeyUnavailable(replyMessage()), replyMessage()]) {
+      const html = renderToStaticMarkup(<MessageItem message={held} isFirst onJumpToMessage={() => undefined} />);
+      expect(html).toContain('元のメッセージを表示できません');
+    }
+  });
+
+  it('offers the original of a quote that verified', () => {
+    const html = renderToStaticMarkup(
+      <MessageItem message={markMessageCryptoVerification(replyMessage(), true, true)} isFirst onJumpToMessage={() => undefined} />,
+    );
+    expect(html).toContain('元のメッセージを表示');
+    expect(html).not.toContain('元のメッセージを表示できません');
+  });
+});
+
 describe('message swipe actions', () => {
   it('replies at 64 pixels and edits an own message at 136 pixels', () => {
     expect(messageSwipeAction(-63, true)).toBeNull();

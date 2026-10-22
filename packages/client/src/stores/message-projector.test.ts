@@ -480,6 +480,93 @@ describe('v5 references (formal model M9)', () => {
   });
 });
 
+describe('messages that did not verify (formal model M9)', () => {
+  const binding = (key: string) => ({ authorId: author.id, idempotencyKey: key });
+  const verifiedBound = (message: Message) => markMessageCryptoVerification(message, true, true);
+  // The author's verified message, and a verified edit of the message with key k-m2.
+  const quoted = verifiedBound(event({ id: 'id-1', type: 'message', content: 'meet at 10', idempotencyKey: 'k-m1', createdAt: '2026-01-01T00:00:01.000Z' }));
+  const base = (overrides: Partial<Message> = {}) => event({
+    id: 'id-2', type: 'message', content: 'server injected', idempotencyKey: 'k-m2',
+    refMessageId: quoted.id, refBinding: binding('k-m1'), createdAt: '2026-01-01T00:00:02.000Z', ...overrides,
+  });
+  const edit = verifiedBound(event({
+    id: 'id-3', type: 'edit', content: 'edited', refMessageId: 'id-2', refBinding: binding('k-m2'),
+    idempotencyKey: 'k-edit', createdAt: '2026-01-01T00:00:03.000Z',
+  }));
+  const shownBase = (held: Message) => projectMessageEvents([quoted, held, edit]).find((message) => message.id === 'id-2')!;
+
+  it('applies a verified edit to a verified message, which keeps the quote it was signed with', () => {
+    const shown = projectMessageEvents([quoted, verifiedBound(base()), edit]);
+    const edited = shown.find((message) => message.id === 'id-2')!;
+    expect(edited).toMatchObject({ type: 'edit', content: 'edited' });
+    expect(quotedMessage(edited, shown)?.id).toBe(quoted.id);
+  });
+
+  it('does not apply a verified edit to a message whose own signature failed', () => {
+    const failed = markMessageCryptoVerification(base(), false);
+    const shown = shownBase(failed);
+    // The author's words do not reach a quote the server chose.
+    expect(shown).toMatchObject({ type: 'message', content: '' });
+    expect(getMessageCryptoVerificationState(shown)).toBe(false);
+    expect(quotedMessage(shown, projectMessageEvents([quoted, failed, edit]))).toBeNull();
+  });
+
+  it('does not apply an edit to a message that could not be read or is not verified yet', () => {
+    expect(shownBase(markMessageKeyUnavailable(base()))).toMatchObject({ type: 'message', content: '' });
+    expect(shownBase(retryMessageKeyVerification(base()))).toMatchObject({ type: 'message', content: '' });
+  });
+
+  it('does not apply a second edit to a message whose first edit was refused', () => {
+    const failed = markMessageCryptoVerification(base(), false);
+    const second = verifiedBound(event({
+      id: 'id-4', type: 'edit', content: 'edited again', refMessageId: 'id-2', refBinding: binding('k-m2'),
+      idempotencyKey: 'k-edit-2', createdAt: '2026-01-01T00:00:04.000Z',
+    }));
+    expect(projectMessageEvents([quoted, failed, edit, second]).find((message) => message.id === 'id-2')).toMatchObject({ type: 'message', content: '' });
+  });
+
+  it('still lets a verified deletion remove a message that did not verify', () => {
+    const failed = markMessageCryptoVerification(base(), false);
+    const removal = verifiedBound(event({
+      id: 'id-5', type: 'delete', refMessageId: 'id-2', refBinding: binding('k-m2'), idempotencyKey: 'k-delete',
+      createdAt: '2026-01-01T00:00:05.000Z',
+    }));
+    expect(projectMessageEvents([quoted, failed, removal]).find((message) => message.id === 'id-2')).toMatchObject({ type: 'delete', content: '' });
+  });
+
+  it('shows a quote only on a message that verified', () => {
+    const verifiedQuote = verifiedBound(base());
+    expect(quotedMessage(verifiedQuote, [quoted])?.id).toBe(quoted.id);
+    // Loaded or not, the quote of any other message names whatever the server served.
+    for (const held of [markMessageCryptoVerification(base(), false), markMessageKeyUnavailable(base()), retryMessageKeyVerification(base()), wireEvent(base())]) {
+      expect(quotedMessage(held, [quoted])).toBeNull();
+      expect(quotedMessage(held, [])).toBeNull();
+    }
+    expect(quotedMessage(event({ id: 'id-6', type: 'message', createdAt: '2026-01-01T00:00:06.000Z' }), [quoted])).toBeUndefined();
+  });
+
+  it('lists a forum reply only when it verified', () => {
+    const root = projectMessageEvents([verifiedBound(event({
+      id: 'post-1', type: 'message', idempotencyKey: 'k-p1', postId: null, createdAt: '2026-01-01T00:00:01.000Z',
+    }))])[0];
+    const reply = (overrides: Partial<Message> = {}) => event({
+      id: 'reply', type: 'message', authorId: 'user-2', idempotencyKey: 'k-x1', postId: 'post-1', postBinding: binding('k-p1'),
+      createdAt: '2026-01-01T00:00:02.000Z', ...overrides,
+    });
+    expect(belongsToPost(verifiedBound(reply()), root)).toBe(true);
+    for (const held of [markMessageCryptoVerification(reply(), false), markMessageKeyUnavailable(reply()), retryMessageKeyVerification(reply()), wireEvent(reply())]) {
+      expect(belongsToPost(held, root)).toBe(false);
+    }
+  });
+
+  it('keeps naming older verified events by id, as documented', () => {
+    const older = markMessageCryptoVerification(base(), true);
+    expect(quotedMessage(older, [quoted])?.id).toBe(quoted.id);
+    const root = projectMessageEvents([markMessageCryptoVerification(event({ id: 'post-1', type: 'message', postId: null, createdAt: '2026-01-01T00:00:01.000Z' }), true)])[0];
+    expect(belongsToPost(markMessageCryptoVerification(event({ id: 'reply', type: 'message', postId: 'post-1', createdAt: '2026-01-01T00:00:02.000Z' }), true), root)).toBe(true);
+  });
+});
+
 describe('forum events in the projector', () => {
   it('treats one event id carrying two different posts as an equivocation', () => {
     const first = event({ id: 'reply', type: 'message', createdAt: '2026-01-01T00:00:00.000Z', postId: 'post-1', content: 'hello' });
