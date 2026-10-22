@@ -26,6 +26,7 @@ import {
   isAllowedExternalUrl,
   isAllowedMediaPermission,
   isBackendPath,
+  isSandboxStartAllowed,
   isTrustedRendererUrl,
   normalizeIdleLockMinutes,
   normalizeServerUrl,
@@ -103,6 +104,14 @@ app.on('activate', () => {
 if (singleInstance) {
   void app.whenReady().then(async () => {
     locale = desktopLocale(app.getPreferredSystemLanguages());
+    // --no-sandbox overrides app.enableSandbox() and sandbox: true, and the AppImage launcher adds
+    // it when the system has no user namespaces. Refuse before anything is loaded.
+    if (!isSandboxStartAllowed(app.isPackaged, (name) => app.commandLine.hasSwitch(name))) {
+      const text = desktopStrings(locale);
+      dialog.showErrorBox(text.sandboxUnavailableTitle, text.sandboxUnavailableMessage);
+      app.exit(1);
+      return;
+    }
     DEVELOPMENT_URL = readDevelopmentUrl();
     transportPins = parseTransportPins(JSON.parse(await readFile(new URL('./transport-pins.json', import.meta.url), 'utf8')), app.isPackaged);
     MANAGED_SERVER_URL = readManagedServerUrl();

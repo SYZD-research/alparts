@@ -16,6 +16,8 @@ The Electron client in `packages/desktop` packages the same Phase 1 client for W
 
 Native packages are built on their matching operating system by `.github/workflows/desktop.yml`. The unpacked Linux x64 package is also suitable for a local smoke test.
 
+The Linux AppImage needs unprivileged user namespaces for Chromium's sandbox. Where the system does not allow them, for example Ubuntu 24.04 unless an AppArmor profile permits them, the AppImage launcher would switch the sandbox off. The app does not accept that: it shows a message and quits. On such a system install the Debian package, whose installer sets up the sandbox helper and the AppArmor profile, or allow user namespaces. The same check applies to the unpacked package used for a smoke test. A unit test confirms that the launcher entry electron-builder writes for the AppImage carries no sandbox switch.
+
 ## Development
 
 Start the normal development deployment first. In another terminal, build the bundled UI and open Electron:
@@ -48,7 +50,7 @@ The repository can create unsigned development artifacts. A public release must 
 
 ## Security boundary
 
-- Renderer processes have Chromium sandboxing, context isolation, and no Node.js, shell, webview, or raw filesystem access.
+- Renderer processes have Chromium sandboxing, context isolation, and no Node.js, shell, webview, or raw filesystem access. A packaged app does not start with the sandbox switched off (`--no-sandbox`): it shows a message and quits before it loads any window. Runs from a development checkout are not affected.
 - The preload exposes only bounded settings, lock, protected-secret, and streamed-save operations, plus a notice of the display language. Every call is restricted to the main top-level bundled frame.
 - Production pages keep the configured deployment’s origin for secure cookies and Socket.IO, while the response body for UI routes comes from the packaged renderer assets.
 - API and real-time routes are data-only: they cannot be loaded as a script, style, frame, or top-level page, and redirects cannot bypass the protocol boundary.

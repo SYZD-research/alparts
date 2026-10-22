@@ -131,6 +131,7 @@
     },
     "linux": {
       "executableName": "alparts",
+      "executableArgs": [],
       "icon": "build/icon.png",
       "target": [
         {
