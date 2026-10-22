@@ -14,7 +14,7 @@
 // root. The agent uses sandboxed() for the same.
 
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { delimiter, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -39,6 +39,16 @@ function onPath(name, env) {
   throw new Error(`${name} is not on PATH`);
 }
 
+// Null when there is no such file or it is a directory.
+function readTextFile(path) {
+  try {
+    return readFileSync(path, 'utf8');
+  } catch (error) {
+    if (error.code === 'ENOENT' || error.code === 'EISDIR') return null;
+    throw error;
+  }
+}
+
 // The directories outside the repository that the command reads from the
 // hidden areas: the top directory there of node and pnpm (both the
 // command and its real path), and the git directory of a worktree.
@@ -52,12 +62,13 @@ export function readableDirs(root, { env = process.env, home = homedir(), areas 
       }
     }
   }
-  const dotGit = join(root, '.git');
-  if (existsSync(dotGit) && statSync(dotGit).isFile()) {
-    const gitDir = resolve(root, readFileSync(dotGit, 'utf8').match(/^gitdir: (.+)$/m)[1]);
+  // In a worktree, .git is a file that names the git directory.
+  const gitDirLine = readTextFile(join(root, '.git'))?.match(/^gitdir: (.+)$/m);
+  if (gitDirLine) {
+    const gitDir = resolve(root, gitDirLine[1]);
     dirs.add(gitDir);
-    const common = join(gitDir, 'commondir');
-    if (existsSync(common)) dirs.add(resolve(gitDir, readFileSync(common, 'utf8').trim()));
+    const common = readTextFile(join(gitDir, 'commondir'));
+    if (common !== null) dirs.add(resolve(gitDir, common.trim()));
   }
   return [...dirs];
 }
