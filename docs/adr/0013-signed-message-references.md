@@ -19,7 +19,7 @@ Clients sign message protocol v5 for every event that references another message
 
 ## Consequences
 
-For v5 histories the server can no longer move an edit, a deletion, a quote or a reply (M9 MI-edit, MI-delete, MI-quote, MI-reply hold over every bounded history), and served honestly every reference still shows where it was signed for (MI-honest). Nor can it give a message it altered or made up a quote, a place under a post or the words of the author's own edit: a message that did not verify shows none of them, and an event the server makes up changes nothing the client shows.
+For v5 histories the server can no longer move an edit, a deletion, a quote or a reply (M9 MI-edit, MI-delete, MI-quote, MI-reply hold over every bounded history), and served honestly every reference still shows where it was signed for (MI-honest). Nor can it give a message it altered or made up a quote, a place under a post or the words of the author's own edit: a message that did not verify shows none of them (MI-unverified), and an event the server makes up changes nothing the client shows (MI-forged).
 
 The older layouts no longer count for references, so the server cannot move those either. It refuses them for new writes, and the client neither applies them nor shows them as verified: MI-edit-legacy, MI-reply-legacy, MI-quote-legacy and MI-delete-legacy hold over the same histories in the older layout. MI-legacy-ctl shows what the client accepted before. Files are refused the same way (MI-file-v2, MI-file-v2-ctl).
 

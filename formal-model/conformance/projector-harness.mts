@@ -4,14 +4,21 @@
 // the client would show against what the authors signed.
 //
 // The server cannot forge a signature or an AEAD tag (EUF-CMA, INT-CTXT), so
-// it only serves genuine envelopes. It chooses which events to serve, their
-// server ids (permuted among the served events, or a fresh id for a second
-// copy), their createdAt, and in two deliveries (a page, then a later page or
-// socket event that repeats some events). The client's verification step is
-// the client's own choice of signed layouts (message-envelope.ts, as
+// every event that verifies is a genuine envelope. It chooses which events to
+// serve, their server ids (permuted among the served events, or a fresh id for
+// a second copy), their createdAt, and in two deliveries (a page, then a later
+// page or socket event that repeats some events). The client's verification
+// step is the client's own choice of signed layouts (message-envelope.ts, as
 // decryptMessages uses it) checked against the genuine signature; directory
 // binding and AEAD pass for genuine envelopes. An edit or deletion that does
 // not verify is dropped, a message is kept as one that could not be verified.
+//
+// The server also serves what no author signed (the fabrication pass, in the
+// same bounds but with honest ids or two swapped, and no second delivery): events
+// of other types (system, reaction, unknown), unsigned messages, edits and
+// deletions, some of them before verification has finished, and a genuine
+// message with its references changed, whose signature then fails (a message
+// that could not be verified, with the references the server chose).
 //
 // The display rules are the client's: a quote shows quotedMessage (MessageItem),
 // a post shows the replies belongsToPost accepts under the root served by id
@@ -116,9 +123,10 @@ function envelopeOf(g: Genuine) {
 const signatures = new Map(genuine.map((g) => [g.name, `sig(${serializeMessageEnvelope(envelopeOf(g) as never)})`]));
 const signature = (g: Genuine) => signatures.get(g.name)!;
 
-function served(g: Genuine, serverId: string, time: number): Message | null {
+/** A genuine event as the server serves it under serverId, before the client verifies it. */
+function wireEvent(g: Genuine, serverId: string, time: number): Message {
   const envelope = envelopeOf(g);
-  const event = {
+  return {
     id: serverId,
     channelId: envelope.channelId,
     authorId: g.authorId,
@@ -141,6 +149,13 @@ function served(g: Genuine, serverId: string, time: number): Message | null {
     idempotencyKey: g.key,
     createdAt: new Date(Date.UTC(2026, 9, 1, 0, 0, time)).toISOString(),
   } as unknown as Message;
+}
+
+/**
+ * What decryptMessages makes of a served event: verified (against the genuine
+ * signature), a message kept as one that could not be verified, or dropped.
+ */
+function decide(event: Message): Message | null {
   // The client tries its signed layouts for this event against the genuine signature.
   const { older, bound: boundLayout } = signedEnvelopeLayouts(event, forum);
   const candidates = acceptOlder ? [boundLayout, older] : signedEnvelopeCandidates(event, forum);
@@ -152,11 +167,14 @@ function served(g: Genuine, serverId: string, time: number): Message | null {
     }
   });
   if (!layout) {
-    return g.type === 'message'
+    return event.type === 'message'
       ? projector.markMessageCryptoVerification({ ...event, content: UNVERIFIED_MESSAGE_MARKER }, false)
       : null;
   }
   return projector.markMessageCryptoVerification(event, true, isBoundMessageEnvelope(layout));
+}
+function served(g: Genuine, serverId: string, time: number): Message | null {
+  return decide(wireEvent(g, serverId, time));
 }
 const verified = (event: Message | undefined) => Boolean(event) && projector.getMessageCryptoVerificationState(event!) === true;
 
@@ -174,7 +192,10 @@ const note = (property: string, trace: string[]) => {
   entry.violations++;
   if (!entry.example || trace.length < entry.example.length) entry.example = trace;
 };
-for (const property of ['MI-replay', 'MI-redate', 'MI-edit', 'MI-reply', 'MI-quote', 'MI-delete', 'MI-honest', 'MI-file-v3', 'MI-file-v2', 'MI-latest']) {
+for (const property of [
+  'MI-replay', 'MI-redate', 'MI-edit', 'MI-reply', 'MI-quote', 'MI-delete', 'MI-honest',
+  'MI-file-v3', 'MI-file-v2', 'MI-latest', 'MI-forged', 'MI-unverified',
+]) {
   results[property] = { violations: 0, example: null };
 }
 
@@ -225,6 +246,192 @@ for (const chosen of subsets(names)) {
   }
 }
 
+// The fabrication pass: what the server serves besides genuine events (see the
+// header). Every order, with honest ids or two events under each other's ids,
+// and no second delivery. It must exercise what MI-unverified is about, or the
+// property would hold for want of a case: a tampered message with a quote, a
+// place under a post, or a verified edit the client could have applied.
+const witnessed = { quote: 0, post: 0, edit: 0 };
+for (const chosen of subsets(names)) {
+  if (chosen.length === 0) continue;
+  const honest = chosen.map((n) => honestId.get(n)!);
+  const swapped = chosen.flatMap((_, i) => chosen.slice(i + 1).map((__, j) => {
+    const ids = [...honest];
+    [ids[i], ids[i + 1 + j]] = [ids[i + 1 + j], ids[i]];
+    return ids;
+  }));
+  for (const ids of [honest, ...swapped]) {
+    for (const order of permutations(chosen)) {
+      const idOf = new Map(chosen.map((n, i) => [n, ids[i]]));
+      const timeOf = new Map(order.map((n, i) => [n, i + 1]));
+      const events = chosen.map((n) => wireEvent(byName.get(n)!, idOf.get(n)!, timeOf.get(n)!));
+      const trace = chosen.map((n) => `serve ${n} (honest id ${honestId.get(n)!.slice(-2)}) as id ${idOf.get(n)!.slice(-2)} at t${timeOf.get(n)}`);
+      histories++;
+      checkMadeUp(events.flatMap((event) => decide(event) ?? []), chosen, idOf, trace);
+      for (const change of tamperings(chosen, idOf)) {
+        const original = events[chosen.indexOf(change.name)];
+        const altered = { ...original, ...change.fields } as Message;
+        if (JSON.stringify(altered) === JSON.stringify(original)) continue;
+        histories++;
+        const held = events.flatMap((event, i) => decide(chosen[i] === change.name ? altered : event) ?? []);
+        const { merged, shown } = project(held);
+        check(shown, merged, idOf, [...trace, `serve ${change.name} with ${change.what}`], true);
+        for (const base of merged.filter((e) => e.type === 'message' && !verified(e))) {
+          if (base.refMessageId && shown.some((m) => m.id === base.refMessageId)) witnessed.quote++;
+          if (forum && base.postId && shown.some((m) => m.id === base.postId)) witnessed.post++;
+          if (merged.some((e) => e.type === 'edit' && verified(e) && e.refMessageId === base.id && e.authorId === base.authorId
+            && (!e.refBinding || e.refBinding.idempotencyKey === base.idempotencyKey))) witnessed.edit++;
+        }
+      }
+    }
+  }
+}
+// Edits are refused in the older layout, so only v5 (and the control) has a verified edit to apply.
+const unexercised = Object.entries({
+  quote: witnessed.quote,
+  ...(forum ? { post: witnessed.post } : {}),
+  ...(bound || acceptOlder ? { edit: witnessed.edit } : {}),
+}).filter(([, count]) => count === 0).map(([what]) => what);
+if (unexercised.length) {
+  throw new Error(`the fabrication pass never served a tampered message with a ${unexercised.join(' or ')} the client could have honoured`);
+}
+
+type Shown = ReturnType<typeof projector.projectOrderedMessageEvents>;
+
+function project(...batches: Message[][]) {
+  const merged = projector.mergeMessageEvents(...batches);
+  return { merged, shown: projector.projectOrderedMessageEvents(merged) };
+}
+
+/** An event nobody signed, as the server makes it up about the event served under about.id. */
+function madeUp(type: string, serverId: string, about: { name: string; id: string } | null, content: string, signed = false): Message {
+  return {
+    id: serverId,
+    channelId: CHANNEL,
+    authorId: about ? byName.get(about.name)!.authorId : 'A',
+    author: { id: 'A', displayName: 'A' },
+    deviceId: signed ? 'device-A' : null,
+    content,
+    encryptedContent: '',
+    contentNonce: '',
+    keyVersion: 1,
+    signature: signed ? 'sig(made up)' : null,
+    broadcastMention: true,
+    type,
+    refMessageId: about?.id ?? null,
+    ...(forum ? { postId: about?.id ?? null } : {}),
+    // The server copies the pair of the event it names, as a v5 event would carry it.
+    refBinding: bindingOf(about?.name ?? null),
+    ...(forum ? { postBinding: bindingOf(about?.name ?? null) } : {}),
+    reactions: [],
+    isPinned: false,
+    idempotencyKey: `made-up-${serverId}`,
+    createdAt: new Date(Date.UTC(2026, 9, 1, 0, 0, 50)).toISOString(),
+  } as unknown as Message;
+}
+
+/**
+ * What the server makes up about each served message. The client must ignore
+ * the first kind (types it does not store, and an edit and a deletion that have
+ * not verified), and must show no text, quote or place for the second (an
+ * unsigned message: not verified yet, or verified to fail).
+ */
+function madeUpEvents(chosen: string[], idOf: Map<string, string>): { ignored: Message[]; unsigned: Message[] } {
+  const ignored: Message[] = [];
+  const unsigned: Message[] = [];
+  let serial = 0;
+  const fresh = () => id(100 + serial++);
+  for (const name of chosen) {
+    const about = { name, id: idOf.get(name)! };
+    for (const type of ['system', 'reaction', 'announcement']) {
+      ignored.push(madeUp(type, fresh(), about, type === 'reaction' ? '👍' : 'server injected'));
+    }
+    ignored.push(madeUp('edit', fresh(), about, 'server injected edit'), madeUp('delete', fresh(), about, ''));
+    // Under the id of a served event, where it would be taken for a second copy of it.
+    ignored.push(madeUp('system', about.id, null, 'replaces the message'));
+    unsigned.push(madeUp('message', fresh(), about, 'server injected'), decide(madeUp('message', fresh(), about, 'server injected', true))!);
+  }
+  return { ignored, unsigned };
+}
+
+/**
+ * Each served message with its references changed to name another served
+ * event, or none: its signature then fails, and the client keeps it as a
+ * message it could not verify, carrying the references the server chose.
+ */
+function tamperings(chosen: string[], idOf: Map<string, string>) {
+  const changes: Array<{ name: string; what: string; fields: Record<string, unknown> }> = [];
+  for (const name of chosen) {
+    if (byName.get(name)!.type !== 'message') continue;
+    for (const target of [...chosen.filter((n) => n !== name), null]) {
+      const targetId = target === null ? null : idOf.get(target)!;
+      changes.push({ name, what: `a quote of ${target ?? 'nothing'}`, fields: { refMessageId: targetId, refBinding: bindingOf(target) } });
+      if (forum) changes.push({ name, what: `a place under ${target ?? 'nothing'}`, fields: { postId: targetId, postBinding: bindingOf(target) } });
+    }
+  }
+  return changes;
+}
+
+/** Everything the client shows of a history: each message with its text, reactions, quote and the posts it is listed under. */
+function appearance(shown: Shown, merged: Message[], skip: ReadonlySet<string> = new Set()): string {
+  const roots = shown.filter((m) => !m.postId && m.type !== 'delete');
+  return JSON.stringify([
+    merged.some(projector.hasAuthenticatedEnvelopeConflict),
+    shown.filter((m) => !skip.has(m.id)).map((m) => {
+      const quoted = m.refMessageId ? projector.quotedMessage(m, shown) : undefined;
+      return [
+        m.id, m.type, m.content, m.reactions,
+        m.refMessageId ? (quoted === undefined ? 'not loaded' : quoted?.id ?? 'cannot be shown') : null,
+        forum ? roots.filter((root) => projector.belongsToPost(m, root)).map((root) => root.id) : [],
+      ];
+    }),
+  ]);
+}
+
+/**
+ * MI-forged: serving what the server made up (other types, an unverified edit
+ * and deletion) changes nothing the client shows, and an unsigned message
+ * changes nothing about the others; MI-unverified: it shows nothing itself.
+ */
+function checkMadeUp(first: Message[], chosen: string[], idOf: Map<string, string>, trace: string[]) {
+  const { ignored, unsigned } = madeUpEvents(chosen, idOf);
+  const without = project(first);
+  const expected = appearance(without.shown, without.merged);
+  const withIgnored = project(first, ignored);
+  const afterIgnored = appearance(withIgnored.shown, withIgnored.merged);
+  if (afterIgnored !== expected) {
+    note('MI-forged', [...trace, '=> serving events of other types, or an edit and a deletion nobody signed, changes what is shown',
+      `=> shown without: ${expected}`, `=> shown with: ${afterIgnored}`]);
+  }
+  const withUnsigned = project(first, unsigned);
+  const afterUnsigned = appearance(withUnsigned.shown, withUnsigned.merged, new Set(unsigned.map((event) => event.id)));
+  if (afterUnsigned !== expected) {
+    note('MI-forged', [...trace, '=> serving messages nobody signed changes what is shown of the others',
+      `=> shown without: ${expected}`, `=> shown with: ${afterUnsigned}`]);
+  }
+  checkUnverified(withUnsigned.shown, withUnsigned.merged, trace);
+}
+
+/**
+ * MI-unverified: a message that did not verify, or has not yet, shows no text,
+ * not even that of a verified edit of it, no quote and no place under a post.
+ * Its references are whatever the server served.
+ */
+function checkUnverified(shown: Shown, merged: Message[], trace: string[]) {
+  const roots = shown.filter((m) => !m.postId && m.type !== 'delete');
+  for (const m of shown) {
+    const base = merged.find((e) => e.id === m.id && e.type === 'message');
+    if (!base || verified(base)) continue;
+    const who = genuineOf(base)?.name ?? 'a message nobody signed';
+    if (m.type === 'edit' || m.content !== '') note('MI-unverified', [...trace, `=> ${who} did not verify but shows "${m.content}"`]);
+    const quoted = m.refMessageId ? projector.quotedMessage(m, shown) : undefined;
+    if (quoted) note('MI-unverified', [...trace, `=> ${who} did not verify but is shown quoting "${quoted.content}"`]);
+    if (forum && roots.some((root) => projector.belongsToPost(m, root))) {
+      note('MI-unverified', [...trace, `=> ${who} did not verify but is listed under a post`]);
+    }
+  }
+}
+
 function genuineOf(message: { signature: string | null; idempotencyKey: string; authorId: string }): Genuine | undefined {
   return genuine.find((g) => g.authorId === message.authorId && g.key === message.idempotencyKey && signature(g) === message.signature);
 }
@@ -257,6 +464,7 @@ function checkHonest(shown: ReturnType<typeof projector.projectOrderedMessageEve
 
 function check(shown: ReturnType<typeof projector.projectOrderedMessageEvents>, merged: Message[], idOf: Map<string, string>,
   trace: string[], second: boolean) {
+  checkUnverified(shown, merged, trace);
   const visible = shown.filter((m) => m.type !== 'delete' && m.content !== '');
   // MI-replay: one signed operation (channel, author, key) is shown at most once.
   const counts = new Map<string, number>();
@@ -282,7 +490,7 @@ function check(shown: ReturnType<typeof projector.projectOrderedMessageEvents>, 
       const rootBase = merged.find((e) => e.id === root.id && e.type === 'message');
       const rootGenuine = rootBase && genuineOf(rootBase);
       if (!rootGenuine) continue;
-      for (const reply of shown.filter((m) => m.type !== 'reaction' && m.content !== '' && projector.belongsToPost(m, root))) {
+      for (const reply of shown.filter((m) => m.content !== '' && projector.belongsToPost(m, root))) {
         const replyBase = merged.find((e) => e.id === reply.id && e.type === 'message');
         // A reply the client could not verify is shown as such, not as the author's.
         const replyGenuine = verified(replyBase) && genuineOf(replyBase!);

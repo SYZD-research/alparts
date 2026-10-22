@@ -6,11 +6,23 @@ rules (packages/client/src/stores/message-projector.ts: the projection,
 quotedMessage, belongsToPost) on every history a server can build from a
 fixed set of genuine signed events: which events it serves, their server ids
 (permuted), their times, and a second delivery that repeats an event under
-the same id or a new one. Signatures and AEAD are assumed unforgeable, so only
-genuine envelopes are served. Two scenarios: a forum (two posts by A, a reply
-by B, an edit of the first post, a deletion of the second) and a text channel
-(two messages by A, one with a file signed for it and one with a file in
-the unbound v2 layout, a quote by B, an edit, a deletion).
+the same id or a new one. Signatures and AEAD are assumed unforgeable, so an
+event that verifies is a genuine envelope. Two scenarios: a forum (two posts by
+A, a reply by B, an edit of the first post, a deletion of the second) and a
+text channel (two messages by A, one with a file signed for it and one with a
+file in the unbound v2 layout, a quote by B, an edit, a deletion).
+
+The server can also serve what no author signed (a second pass over the same
+scenarios, in every order, with honest ids or two events under each other's
+ids, and no second delivery): events of other types (system, reaction, an
+unknown type), edits and deletions that never verify, unsigned messages (not
+verified yet, or verified to fail), and a genuine message with its references
+changed to name another served event or none. The signature of such a message
+fails, so the client keeps it as a message it could not verify, with the
+quote or the post the server chose; the author's genuine edit of it is served
+too. The pass fails if it never serves such a message with a quote, a place
+under a post or an edit that the client could have honoured, so that
+MI-unverified cannot hold for want of a case.
 
 What the protocol signs: the event's own fields (type, channel, author,
 device, key version, idempotency key, the server id of its target, and in a
@@ -33,7 +45,7 @@ from harness import HarnessError, run_harness
 
 PROPERTIES = (
     'MI-replay', 'MI-redate', 'MI-edit', 'MI-reply', 'MI-quote', 'MI-delete', 'MI-honest',
-    'MI-file-v3', 'MI-file-v2', 'MI-latest',
+    'MI-file-v3', 'MI-file-v2', 'MI-latest', 'MI-forged', 'MI-unverified',
 )
 PROTOCOLS = ('v5', 'older')
 SCENARIOS = ('forum', 'text')
@@ -83,6 +95,10 @@ def run() -> None:
                                             'changes nothing the client shows', 'HOLDS')
     check('MI-file-v3', merged('MI-file-v3'), 'a file opens only on the message it was signed with', 'HOLDS')
     check('MI-file-v2', merged('MI-file-v2'), 'a file in the unbound v2 layout opens on no message (refused)', 'HOLDS')
+    check('MI-forged', merged('MI-forged'), 'what the server makes up (events of other types, an edit or a deletion nobody signed) '
+                                            'changes nothing the client shows, and an unsigned message changes nothing about the others', 'HOLDS')
+    check('MI-unverified', merged('MI-unverified'), 'a message that did not verify (or has not yet) shows no text, not even a verified '
+                                                    'edit of it, no quote and no place under a post', 'HOLDS')
     check('MI-edit', v5['MI-edit'], 'v5: edited text is shown on the message the edit was signed for', 'HOLDS')
     check('MI-reply', v5['MI-reply'], 'v5: a forum reply is shown under the post it was signed for', 'HOLDS')
     check('MI-quote', v5['MI-quote'], 'v5: a quote shows the message it was signed for, or that it cannot be shown', 'HOLDS')
