@@ -51,6 +51,8 @@ services:
       TRUSTED_PROXIES: ${TRUSTED_PROXIES:-}
       # Registration codes. Without SMTP_HOST, new registrations are refused
       # unless EMAIL_VERIFICATION=disabled; existing accounts keep working.
+      # Disabled, a registration shows whether an address has an account to
+      # anyone holding a valid invitation, at one invitation per address tested.
       EMAIL_VERIFICATION: ${EMAIL_VERIFICATION:-required}
       SMTP_HOST: ${SMTP_HOST:-}
       SMTP_PORT: ${SMTP_PORT:-587}

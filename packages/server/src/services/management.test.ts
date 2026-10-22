@@ -181,6 +181,41 @@ describe('management security invariants', () => {
     ), true);
   });
 
+  it('asks whether a workspace has room for one more member, and spends an invitation without adding anyone', async () => {
+    const { MAX_WORKSPACE_MEMBERS } = await import('@alparts/shared');
+    const { assertWorkspaceHasRoom, spendLockedInvitation } = await import('./invitation.service.js');
+    const claim = { invitation: { id: 'invitation-a', workspaceId: 'workspace-a' }, role: { id: 'role-a' }, now: new Date(0) } as any;
+    const limits: number[] = [];
+    const workspaceOfMembers = (count: number) => ({
+      query: {
+        workspaceMembers: {
+          findMany: async ({ limit }: { limit: number }) => {
+            limits.push(limit);
+            return Array.from({ length: Math.min(count, limit) }, () => ({ id: 'member' }));
+          },
+        },
+      },
+    });
+    await assertWorkspaceHasRoom(workspaceOfMembers(MAX_WORKSPACE_MEMBERS - 1), claim);
+    await assert.rejects(assertWorkspaceHasRoom(workspaceOfMembers(MAX_WORKSPACE_MEMBERS), claim), /WORKSPACE_MEMBER_LIMIT/);
+    await assert.rejects(assertWorkspaceHasRoom(workspaceOfMembers(MAX_WORKSPACE_MEMBERS + 100), claim), /WORKSPACE_MEMBER_LIMIT/);
+    assert.deepEqual(limits, [MAX_WORKSPACE_MEMBERS + 1, MAX_WORKSPACE_MEMBERS + 1, MAX_WORKSPACE_MEMBERS + 1], 'the count stays bounded');
+
+    // Spending records when and no user, and only while the invitation is still open.
+    const updates: Array<Record<string, unknown>> = [];
+    const invitationsUpdating = (updated: number) => ({
+      update: () => ({
+        set: (values: Record<string, unknown>) => {
+          updates.push(values);
+          return { where: () => ({ returning: async () => Array.from({ length: updated }, () => ({ id: 'invitation-a' })) }) };
+        },
+      }),
+    });
+    assert.equal(await spendLockedInvitation(invitationsUpdating(1), claim), 'invitation-a');
+    assert.deepEqual(updates, [{ usedAt: claim.now, usedBy: null }]);
+    await assert.rejects(spendLockedInvitation(invitationsUpdating(0), claim), /INVALID_INVITATION/);
+  });
+
   it('applies role union, category, then channel overrides with deny winning within each level', async () => {
     const { Permissions } = await import('@alparts/shared');
     const {

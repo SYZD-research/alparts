@@ -305,12 +305,28 @@ export async function lockInvitationForConsumption(
   return { invitation, role, now };
 }
 
+type InvitationClaim = Awaited<ReturnType<typeof lockInvitationForConsumption>>;
+
+/**
+ * Refuses a locked invitation whose workspace has no room for another member.
+ * Registration asks this before it looks at the address, so that a full
+ * workspace answers every address the same way.
+ */
+export async function assertWorkspaceHasRoom(transaction: any, claim: InvitationClaim): Promise<void> {
+  const currentMembers = await transaction.query.workspaceMembers.findMany({
+    columns: { id: true },
+    where: eq(workspaceMembers.workspaceId, claim.invitation.workspaceId),
+    limit: MAX_WORKSPACE_MEMBERS + 1,
+  });
+  if (currentMembers.length >= MAX_WORKSPACE_MEMBERS) throw new Error('WORKSPACE_MEMBER_LIMIT');
+}
+
 export async function consumeLockedInvitation(
   transaction: any,
-  claim: Awaited<ReturnType<typeof lockInvitationForConsumption>>,
+  claim: InvitationClaim,
   userId: string,
 ) {
-  const { invitation, role, now } = claim;
+  const { invitation, role } = claim;
   // Canonical admission order is workspace row -> account membership lock.
   // Invitations for separate workspaces therefore serialize only when they
   // would change the same account's bounded membership set.
@@ -325,17 +341,27 @@ export async function consumeLockedInvitation(
   if (userMemberships.length >= MAX_WORKSPACE_MEMBERSHIPS_PER_USER) {
     throw new Error('WORKSPACE_MEMBERSHIP_LIMIT_REACHED');
   }
-  const currentMembers = await transaction.query.workspaceMembers.findMany({
-    columns: { id: true },
-    where: eq(workspaceMembers.workspaceId, invitation.workspaceId),
-    limit: MAX_WORKSPACE_MEMBERS + 1,
-  });
-  if (currentMembers.length >= MAX_WORKSPACE_MEMBERS) throw new Error('WORKSPACE_MEMBER_LIMIT');
+  await assertWorkspaceHasRoom(transaction, claim);
   const [member] = await transaction.insert(workspaceMembers).values({
     workspaceId: invitation.workspaceId,
     userId,
   }).returning();
   await transaction.insert(memberRoles).values({ memberId: member.id, roleId: role.id });
+  await markInvitationUsed(transaction, claim, userId);
+  return { invitationId: invitation.id, workspaceId: invitation.workspaceId, roleId: role.id };
+}
+
+/**
+ * Spends a locked invitation without adding anyone, for a registration that
+ * created no account but must cost what one would. No account is recorded as
+ * its user.
+ */
+export async function spendLockedInvitation(transaction: any, claim: InvitationClaim): Promise<string> {
+  await markInvitationUsed(transaction, claim, null);
+  return claim.invitation.id;
+}
+
+async function markInvitationUsed(transaction: any, { invitation, now }: InvitationClaim, userId: string | null) {
   const consumed = await transaction.update(workspaceInvitations)
     .set({ usedAt: now, usedBy: userId })
     .where(and(
@@ -346,7 +372,6 @@ export async function consumeLockedInvitation(
     ))
     .returning({ id: workspaceInvitations.id });
   if (consumed.length !== 1) throw new Error('INVALID_INVITATION');
-  return { invitationId: invitation.id, workspaceId: invitation.workspaceId, roleId: role.id };
 }
 
 async function getInvitationRole(store: any, workspaceId: string, actorId: string, requestedRoleId?: string) {

@@ -15,6 +15,7 @@ import { cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
+  MAX_WORKSPACE_MEMBERS,
   canonicalActionBody,
   mlsGroupId,
   serializeChannelKeyFreshStart,
@@ -349,6 +350,27 @@ describe('account security end to end', { skip: !enabled }, () => {
     const code = [...developmentEmails()].reverse().find((message) => message.to === email)?.text.match(/\b(\d{6})\b/)?.[1];
     assert.ok(code, `no code was mailed to ${email}`);
     return code;
+  }
+  /** A workspace of its own for a registration check, and a way to issue single-use invitations to it. */
+  async function inviter(name: string) {
+    const workspaces = await import('../services/workspace.service.js');
+    const invitations = await import('../services/invitation.service.js');
+    const workspace = await workspaces.createWorkspace(name, userId);
+    return { workspace, invite: () => invitations.createInvitation(workspace.id, userId, { expiresInSeconds: 3600 }) };
+  }
+  const registerWith = (email: string, inviteToken: string, extra: { emailCode?: string } = {}) =>
+    request('/api/auth/register', { email, password, displayName: 'Registration', inviteToken, ...extra }, '');
+  /** Runs `work` as a deployment with EMAIL_VERIFICATION=disabled would. */
+  async function withoutEmailVerification<T>(work: () => Promise<T>): Promise<T> {
+    const { config } = await import('../config/index.js');
+    const email = config.email as { verification: 'disabled' | 'required' };
+    const before = email.verification;
+    email.verification = 'disabled';
+    try {
+      return await work();
+    } finally {
+      email.verification = before;
+    }
   }
   async function head() {
     return (await json(await request(`/api/directory/${userId}?after=0`))).head;
@@ -2025,6 +2047,96 @@ process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
     const verified = await verifier.verifyDirectoryEntries(verifier.emptyDirectory(account.id), directory.entries);
     assert.equal(verified.recovery?.generation, capitalGeneration);
     assert.equal(verified.devices[replacement.id].approved, false);
+  });
+  it('spends the invitation on an existing address and answers like an invalid invitation while email verification is off', async () => {
+    const { db } = await import('../db/index.js');
+    const { sql } = await import('drizzle-orm');
+    const auditLogs = await import('../services/audit-log.service.js');
+    const { workspace, invite } = await inviter('Registration answers');
+    const invitationRow = async (id: string) =>
+      (await db.execute(sql`SELECT used_at, used_by FROM workspace_invitations WHERE id = ${id}`)).rows[0];
+    const accountsWith = async (email: string) =>
+      (await db.execute(sql`SELECT count(*)::int AS count FROM users WHERE email = ${email}`)).rows[0].count;
+    const existing = String((await db.execute(sql`SELECT email FROM users WHERE id = ${userId}`)).rows[0].email);
+    const free = () => `free-${randomUUID()}@example.test`;
+    await withoutEmailVerification(async () => {
+      const invalid = await json(await registerWith(free(), randomBytes(32).toString('base64url')), 403);
+      assert.equal(invalid.error, 'INVITE_REQUIRED');
+
+      // An address that has an account gets the same answer, and costs the invitation.
+      const probe = await invite();
+      assert.deepEqual(await json(await registerWith(existing, probe.token), 403), invalid);
+      const spent = await invitationRow(probe.id);
+      assert.ok(spent.used_at);
+      assert.equal(spent.used_by, null);
+      const retry = free();
+      assert.equal((await registerWith(retry, probe.token)).status, 403, 'a spent invitation admits no one');
+      assert.equal(await accountsWith(retry), 0);
+      assert.equal(await accountsWith(existing), 1);
+      const refused = await db.execute(sql`SELECT actor_id, details FROM audit_logs
+        WHERE action = 'user.register.refused' AND target_id = ${probe.id}`);
+      assert.deepEqual(
+        refused.rows.map((row) => [row.actor_id, (row.details as { reason?: string }).reason]),
+        [[null, 'email-exists']],
+      );
+
+      // A free address still registers with a fresh invitation and joins the workspace.
+      const welcome = await invite();
+      const email = free();
+      const account = await json(await registerWith(email, welcome.token), 201);
+      assert.equal(account.email, email);
+      assert.equal((await invitationRow(welcome.id)).used_by, account.id);
+      assert.equal((await db.execute(sql`SELECT 1 FROM workspace_members
+        WHERE workspace_id = ${workspace.id} AND user_id = ${account.id}`)).rows.length, 1);
+
+      // The workspace's audit view shows the registration, not the refusal.
+      const actions = (await auditLogs.listWorkspaceAuditLogs(workspace.id, userId, { limit: 100 })).data.map((entry) => entry.action);
+      assert.ok(actions.includes('workspace.invitation.use'));
+      assert.ok(!actions.includes('user.register.refused'));
+    });
+  });
+  it('answers a full workspace the same for every address while email verification is off', async () => {
+    const { db } = await import('../db/index.js');
+    const { users, workspaceMembers } = await import('../db/schema.js');
+    const { sql } = await import('drizzle-orm');
+    const { workspace, invite } = await inviter('Full registration');
+    // The owner and the others fill the workspace to its limit.
+    const others = await db.insert(users).values(Array.from({ length: MAX_WORKSPACE_MEMBERS - 1 }, (_, index) => ({
+      email: `member-${index}-${randomUUID()}@example.test`, passwordHash: 'test-fixture', displayName: `Member ${index}`,
+    }))).returning({ id: users.id });
+    await db.insert(workspaceMembers).values(others.map(({ id }) => ({ workspaceId: workspace.id, userId: id })));
+    const probe = await invite();
+    const existing = String((await db.execute(sql`SELECT email FROM users WHERE id = ${userId}`)).rows[0].email);
+    const answer = async (email: string) => {
+      const response = await registerWith(email, probe.token);
+      return { status: response.status, body: await response.json() };
+    };
+    await withoutEmailVerification(async () => {
+      const taken = await answer(existing);
+      assert.deepEqual(taken, await answer(`free-${randomUUID()}@example.test`));
+      assert.deepEqual(taken, {
+        status: 409,
+        body: { error: 'WORKSPACE_MEMBER_LIMIT', message: 'Workspace member limit reached', statusCode: 409 },
+      });
+    });
+    const left = await db.execute(sql`SELECT used_at FROM workspace_invitations WHERE id = ${probe.id}`);
+    assert.equal(left.rows[0].used_at, null, 'a refusal for a full workspace spends nothing');
+  });
+  it('keeps an address that got an account after its code was sent from registering, without spending the invitation, while email verification is on', async () => {
+    const { db } = await import('../db/index.js');
+    const { users } = await import('../db/schema.js');
+    const { sql } = await import('drizzle-orm');
+    const { invite } = await inviter('Late account');
+    const probe = await invite();
+    const late = `late-${randomUUID()}@example.test`;
+    const code = await emailCode(late, probe.token);
+    await db.insert(users).values({ email: late, passwordHash: 'test-fixture', displayName: 'Late' });
+    assert.deepEqual(await json(await registerWith(late, probe.token, { emailCode: code }), 403), {
+      error: 'INVITE_REQUIRED', message: 'A valid invitation is required', statusCode: 403,
+    });
+    assert.equal((await db.execute(sql`SELECT used_at FROM workspace_invitations WHERE id = ${probe.id}`)).rows[0].used_at, null);
+    const free = `free-${randomUUID()}@example.test`;
+    await json(await registerWith(free, probe.token, { emailCode: await emailCode(free, probe.token) }), 201);
   });
   it('asks members to add a visible member’s first device and starts over only when confirmed and needed', async () => {
     const { db } = await import('../db/index.js');

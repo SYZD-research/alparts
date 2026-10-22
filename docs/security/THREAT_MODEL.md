@@ -64,7 +64,7 @@ See [account/group security](ACCOUNT_AND_GROUP_SECURITY.md) for the updated devi
 
 | Surface | Representative abuse | Primary controls |
 | --- | --- | --- |
-| Registration/login | account enumeration, bcrypt CPU flood/corrupt cost, pending-epoch enrollment denial, stolen tracked credential | uniform invite failure, cheap preflight, source/account limits, two-Worker/16-pending password bulkhead, stored-cost validation/30s watchdog, per-workspace bounded device reconciliation, hashed sessions, secret scan |
+| Registration/login | account enumeration, bcrypt CPU flood/corrupt cost, pending-epoch enrollment denial, stolen tracked credential | uniform invite failure (with email verification off, an attempt on an existing address spends its invitation), cheap preflight, source/account limits, two-Worker/16-pending password bulkhead, stored-cost validation/30s watchdog, per-workspace bounded device reconciliation, hashed sessions, secret scan |
 | REST bodies/IDs | parser exhaustion, injection, cross-tenant object reference | pre-parser byte/concurrency budgets, Zod/exact forms, parameterized DB access, current resource authorization, no raw shell execution |
 | Cookie/browser boundary | CSRF/cross-origin credential use, XSS/exfiltration | SameSite/HttpOnly/Secure cookie, exact Origin checks, CSP/Helmet, no runtime third-party scripts, safe URL/Markdown rendering |
 | Desktop host/IPC | remote-code loading, privileged navigation, key/file theft, arbitrary native calls | packaged UI interception, sandbox/context isolation, no Node/webview/shell, top-frame sender validation, narrow typed IPC, OS vault, bounded opaque file handles, external system browser, hardened fuses |
