@@ -44,15 +44,20 @@ async function authenticate(req: AuthRequest): Promise<boolean> {
 }
 
 export async function authMiddleware(req: AuthRequest, res: Response, next: NextFunction) {
+  let authenticated: boolean;
   try {
-    if (!await authenticate(req)) {
-      res.status(401).json({ error: 'UNAUTHORIZED', message: 'Authentication required', statusCode: 401 });
-      return;
-    }
-    next();
-  } catch {
-    res.status(401).json({ error: 'UNAUTHORIZED', message: 'Authentication required', statusCode: 401 });
+    authenticated = await authenticate(req);
+  } catch (error) {
+    // A session that could not be looked up is not a missing one. A 401 would
+    // tell a client that is signing out that its session has already ended.
+    next(error);
+    return;
   }
+  if (!authenticated) {
+    res.status(401).json({ error: 'UNAUTHORIZED', message: 'Authentication required', statusCode: 401 });
+    return;
+  }
+  next();
 }
 
 export async function optionalAuth(req: AuthRequest, _res: Response, next: NextFunction) {
