@@ -67,6 +67,17 @@ export function parseCorsOrigins(configured: string, isProduction: boolean): str
   return origins;
 }
 
+/**
+ * The SFU runs its media workers as child processes. Under the Node
+ * permission model they need --allow-child-process, which the shipped start
+ * commands leave out because it lifts the model's limits.
+ */
+export function assertVoiceSfuCanStart(permission: { has(scope: string): boolean } | undefined): void {
+  if (permission && !permission.has('child')) {
+    throw new Error('VOICE_SFU_ENABLED needs node --allow-child-process when the server runs with --permission');
+  }
+}
+
 export function parseVoiceIceServers(configured: string | undefined): VoiceIceServer[] {
   const raw = configured?.trim();
   if (!raw) return [];

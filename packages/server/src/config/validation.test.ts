@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { parseBindHost, parseBoundedInteger, parseCorsOrigins, parseTrustedProxies, parseVoiceIceServers } from './validation.js';
+import { assertVoiceSfuCanStart, parseBindHost, parseBoundedInteger, parseCorsOrigins, parseTrustedProxies, parseVoiceIceServers } from './validation.js';
 
 describe('configuration validation', () => {
   it('accepts only literal trusted proxies and bounded ranges', () => {
@@ -81,5 +81,13 @@ describe('configuration validation', () => {
       JSON.stringify([{ urls: 'stun:turn.example.test', credential: 'secret' }]),
       JSON.stringify([{ urls: 'stun:turn.example.test', credentialType: 'password' }]),
     ]) assert.throws(() => parseVoiceIceServers(invalid));
+  });
+
+  it('starts the SFU only where its worker processes may be started', () => {
+    const permission = (allowed: string[]) => ({ has: (scope: string) => allowed.includes(scope) });
+    assert.throws(() => assertVoiceSfuCanStart(permission(['worker'])), /--allow-child-process/);
+    assert.doesNotThrow(() => assertVoiceSfuCanStart(permission(['worker', 'child'])));
+    // Without --permission there is no permission model to ask.
+    assert.doesNotThrow(() => assertVoiceSfuCanStart(undefined));
   });
 });
