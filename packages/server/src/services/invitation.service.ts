@@ -6,6 +6,8 @@ import { config } from '../config/index.js';
 import { db } from '../db/index.js';
 import { memberRoles, roles, users, workspaceInvitations, workspaceMembers, workspaces } from '../db/schema.js';
 import { auditedTransaction } from '../middleware/audit.js';
+import { loadWorkspaceAuthorizationSnapshot } from './authorization.service.js';
+import { assertRoleOverridesHeld, loadRoleOverrides } from './role.service.js';
 import {
   INVITATION_RETENTION_DAYS,
   MAX_ACTIVE_INVITATIONS_PER_WORKSPACE,
@@ -356,7 +358,12 @@ async function getInvitationRole(store: any, workspaceId: string, actorId: strin
   const role = requestedRoleId
     ? await store.query.roles.findFirst({ where: and(eq(roles.id, requestedRoleId), eq(roles.workspaceId, workspaceId)) })
     : await store.query.roles.findFirst({ where: and(eq(roles.workspaceId, workspaceId), eq(roles.name, 'Member')) });
-  if (!role || role.name === 'Owner' || !mayGrantInvitationRole(actor, role, Boolean(requestedRoleId))) {
+  if (
+    !role
+    || role.name === 'Owner'
+    || !mayGrantInvitationRole(actor, role, Boolean(requestedRoleId))
+    || !(await inviterHoldsRoleOverrides(store, workspaceId, actorId, actor, role))
+  ) {
     throw new Error('INVALID_INVITATION_ROLE');
   }
   return role;
@@ -367,12 +374,13 @@ async function getInvitationRole(store: any, workspaceId: string, actorId: strin
  * It is checked again when the invitation is used, so a member who was removed
  * or lost the right to invite does not keep admitting people. The owner
  * always may. An invitation for the default role is one its creator could
- * still make without naming a role.
+ * still make without naming a role; for any other role the creator must also
+ * still hold the bits its overrides allow.
  */
 async function assertCreatorMayStillInvite(
   store: any,
   invitation: { workspaceId: string; createdBy: string },
-  role: { name: string; permissions: number; position: number },
+  role: { id: string; name: string; permissions: number; position: number },
 ) {
   const creator = await loadInviter(store, invitation.workspaceId, invitation.createdBy);
   if (!creator) throw new Error('INVALID_INVITATION');
@@ -380,6 +388,7 @@ async function assertCreatorMayStillInvite(
   if (
     (creator.permissions & Permissions.MANAGE_MEMBERS) !== Permissions.MANAGE_MEMBERS
     || !mayGrantInvitationRole(creator, role, role.name !== 'Member')
+    || !(await inviterHoldsRoleOverrides(store, invitation.workspaceId, invitation.createdBy, creator, role))
   ) throw new Error('INVALID_INVITATION');
 }
 
@@ -436,6 +445,33 @@ export function mayGrantInvitationRole(
     role.position < inviter.highestPosition
     && (inviter.permissions & Permissions.MANAGE_ROLES) === Permissions.MANAGE_ROLES
   );
+}
+
+/**
+ * Whoever holds a role gets the bits that the category and channel overrides
+ * written for it allow, so handing out a role other than the default one takes
+ * the bits that assigning it to a member takes. The default role is what an
+ * invitation without a role hands out, so a manager who may only add members
+ * still can, and the owner holds every bit.
+ */
+export async function inviterHoldsRoleOverrides(
+  store: any,
+  workspaceId: string,
+  userId: string,
+  inviter: Inviter,
+  role: { id: string; name: string },
+): Promise<boolean> {
+  if (inviter.isOwner || role.name === 'Member') return true;
+  const snapshot = await loadWorkspaceAuthorizationSnapshot(store, workspaceId);
+  if (!snapshot) throw new Error('WORKSPACE_NOT_FOUND');
+  const overrides = await loadRoleOverrides(store, workspaceId, role.id);
+  try {
+    assertRoleOverridesHeld(snapshot, userId, overrides, 'assign');
+    return true;
+  } catch (error: any) {
+    if (error?.message === 'PERMISSION_ESCALATION' || error?.message === 'NOT_AUTHORIZED') return false;
+    throw error;
+  }
 }
 
 async function lockWorkspace(store: any, workspaceId: string) {

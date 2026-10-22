@@ -3874,6 +3874,126 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     assert.equal((await verifyAuditChain()).valid, true);
   });
 
+  it('refuses an invitation for a role whose overrides its creator does not hold, when it is made and when it is used', async () => {
+    const { db } = await import('../db/index.js');
+    const {
+      channelRolePermissionOverrides, channels, memberRoles, roles, users, workspaceInvitations, workspaceMembers,
+    } = await import('../db/schema.js');
+    const { hashNewPassword } = await import('../services/auth.service.js');
+    const { acceptInvitation, createInvitation, hashInvitationToken } = await import('../services/invitation.service.js');
+    // The owner and the manager are made directly (sign-ups from this one
+    // source are limited per hour) but sign in, and confirm what the server
+    // asks them to confirm, with a device. The invitees only accept invitations.
+    const person = async (name: string, password?: string) => {
+      const [created] = await db.insert(users).values({
+        email: `${name}-${randomUUID()}@example.test`,
+        passwordHash: password ? await hashNewPassword(password) : 'disabled-test-fixture',
+        displayName: name,
+      }).returning();
+      return created;
+    };
+    const signIn = async (name: string, password: string) => {
+      const created = await person(name, password);
+      const login = await request('/api/auth/login', { method: 'POST', body: { email: created.email, password } });
+      assert.equal(login.status, 200);
+      const account = { cookie: login.headers.get('set-cookie')!.split(';', 1)[0], user: { id: created.id }, password };
+      await registerDevice(account, deviceFixture(), `${name} device`);
+      return account;
+    };
+    const owner = await signIn('override-roles-owner', 'Correct-Horse-Battery-53!');
+    const manager = await signIn('override-roles-manager', 'Correct-Horse-Battery-54!');
+    const workspace = await json<{ id: string }>(await request('/api/workspaces', {
+      method: 'POST', cookie: owner.cookie, body: { name: 'Invitation role overrides' },
+    }));
+
+    // A manager who may invite and manage roles, and two roles below it. The
+    // manager holds the default role too, as managers do. Fixtures go in
+    // directly: the override API would not let the manager write them.
+    const [moderator, helper, plain] = await db.insert(roles).values([
+      {
+        workspaceId: workspace.id, name: 'Moderator', position: 60,
+        permissions: Permissions.VIEW_CHANNELS | Permissions.SEND_MESSAGES | Permissions.MANAGE_MEMBERS | Permissions.MANAGE_ROLES,
+      },
+      { workspaceId: workspace.id, name: 'Helper', position: 40, permissions: Permissions.SEND_MESSAGES },
+      { workspaceId: workspace.id, name: 'Plain', position: 30, permissions: Permissions.VIEW_CHANNELS | Permissions.SEND_MESSAGES },
+    ]).returning({ id: roles.id });
+    const memberRole = await db.query.roles.findFirst({
+      where: and(eq(roles.workspaceId, workspace.id), eq(roles.name, 'Member')),
+    });
+    assert.ok(memberRole);
+    const [joined] = await db.insert(workspaceMembers).values({ workspaceId: workspace.id, userId: manager.user.id })
+      .returning({ id: workspaceMembers.id });
+    await db.insert(memberRoles).values([moderator.id, memberRole.id].map((roleId) => ({ memberId: joined.id, roleId })));
+    const [vault] = await db.insert(channels).values({ workspaceId: workspace.id, name: 'vault' }).returning({ id: channels.id });
+    const override = (roleId: string, allowMask: number, denyMask: number) => db.insert(channelRolePermissionOverrides)
+      .values({ workspaceId: workspace.id, channelId: vault.id, roleId, allowMask, denyMask, revision: 1 });
+    const invite = (account: { cookie: string }, roleId?: string) => request(`/api/workspaces/${workspace.id}/invitations`, {
+      method: 'POST', cookie: account.cookie, body: { ...(roleId ? { roleId } : {}), expiresInSeconds: 3_600 },
+    });
+    const heldRoles = async (userId: string) => {
+      const member = await db.query.workspaceMembers.findFirst({
+        where: and(eq(workspaceMembers.workspaceId, workspace.id), eq(workspaceMembers.userId, userId)),
+      });
+      if (!member) return [];
+      return (await db.query.memberRoles.findMany({ where: eq(memberRoles.memberId, member.id), with: { role: true } }))
+        .map((assignment) => assignment.role.name).sort();
+    };
+    const joinsWith = async (token: string) => {
+      const invitee = await person('override-roles-invitee');
+      await acceptInvitation(invitee.id, token);
+      return heldRoles(invitee.id);
+    };
+
+    // The helper role sees #vault through an override. While nothing hides the
+    // channel from the manager, the manager may hand the role out.
+    await override(helper.id, Permissions.VIEW_CHANNELS, 0);
+    const earlier = await invite(manager, helper.id);
+    assert.equal(earlier.status, 201);
+    const earlierToken = (await json<{ token: string }>(earlier)).token;
+
+    // Then #vault is hidden from the manager's role. The manager cannot see it
+    // and cannot give it to anyone through a role, any more than through the
+    // override API: the invitation is refused and nothing is made.
+    await override(moderator.id, 0, Permissions.VIEW_CHANNELS);
+    assert.equal((await request(`/api/channels/${vault.id}`, { cookie: manager.cookie })).status, 404);
+    const refused = await invite(manager, helper.id);
+    assert.equal(refused.status, 403);
+    assert.equal((await json<{ error: string }>(refused)).error, 'FORBIDDEN');
+
+    // The invitation from before is refused when used, and so is one made
+    // before creation checked the bits, which is a row like any other.
+    const legacyToken = randomBytes(32).toString('base64url');
+    await db.insert(workspaceInvitations).values({
+      workspaceId: workspace.id, roleId: helper.id, tokenHash: hashInvitationToken(legacyToken),
+      createdBy: manager.user.id, expiresAt: new Date(Date.now() + 3_600_000),
+    });
+    for (const token of [earlierToken, legacyToken]) {
+      const invitee = await person('override-roles-refused');
+      await assert.rejects(acceptInvitation(invitee.id, token), /INVALID_INVITATION/);
+      assert.deepEqual(await heldRoles(invitee.id), []);
+    }
+    assert.equal((await db.select({ id: workspaceInvitations.id }).from(workspaceInvitations)
+      .where(and(eq(workspaceInvitations.workspaceId, workspace.id), eq(workspaceInvitations.roleId, helper.id)))).length, 2);
+
+    // What the manager hands out otherwise is unchanged: a role without such
+    // overrides, and the default role, named or not, although it too lets
+    // people see #vault.
+    await override(memberRole.id, Permissions.VIEW_CHANNELS, 0);
+    const plainInvitation = await invite(manager, plain.id);
+    assert.equal(plainInvitation.status, 201);
+    assert.deepEqual(await joinsWith((await json<{ token: string }>(plainInvitation)).token), ['Plain']);
+    for (const roleId of [undefined, memberRole.id]) {
+      const made = await createInvitation(workspace.id, manager.user.id, { ...(roleId ? { roleId } : {}), expiresInSeconds: 3_600 });
+      assert.deepEqual(await joinsWith(made.token), ['Member']);
+    }
+
+    // The owner holds every bit and may hand out the role.
+    const ownerInvitation = await invite(owner, helper.id);
+    assert.equal(ownerInvitation.status, 201);
+    assert.deepEqual(await joinsWith((await json<{ token: string }>(ownerInvitation)).token), ['Helper']);
+    assert.equal((await verifyAuditChain()).valid, true);
+  });
+
   it('hands a private channel to the owner when its last member is removed from the workspace', async () => {
     const { db } = await import('../db/index.js');
     const { auditLogs, channelMembers, channels, users } = await import('../db/schema.js');

@@ -137,6 +137,50 @@ describe('management security invariants', () => {
     assert.equal(mayGrantInvitationRole(inviter(manages | Permissions.MANAGE_ROLES, 80), role(Permissions.VIEW_AUDIT_LOG, 20), true), false);
   });
 
+  it('holds an invitation for a role to the bits its overrides allow, unless it is the default role or the owner invites', async () => {
+    const { Permissions } = await import('@alparts/shared');
+    const { inviterHoldsRoleOverrides } = await import('./invitation.service.js');
+    const world = authorizationSnapshot({
+      roles: {
+        // The manager may not mention everyone.
+        manager: {
+          permissions: Permissions.VIEW_CHANNELS | Permissions.SEND_MESSAGES | Permissions.MANAGE_MEMBERS | Permissions.MANAGE_ROLES,
+          position: 60,
+        },
+        announcer: { permissions: Permissions.VIEW_CHANNELS, position: 40 },
+        Member: { permissions: Permissions.VIEW_CHANNELS | Permissions.SEND_MESSAGES, position: 50 },
+      },
+      members: { manager: ['manager'] },
+      channels: [],
+    });
+    // Only whether the inviter owns the workspace is read from it.
+    const inviter = { isOwner: false, permissions: 0, highestPosition: 60 };
+    const row = (allowMask: number, denyMask: number) => ({ allowMask, denyMask });
+    const holds = (userId: string, roleName: string, categories: Array<ReturnType<typeof row>>) => inviterHoldsRoleOverrides(
+      channellessStore(world, categories), 'workspace-a', userId, inviter, { id: roleName, name: roleName },
+    );
+
+    // Handing out a role takes the bits that assigning it takes: those its overrides allow.
+    assert.equal(await holds('manager', 'announcer', [row(Permissions.MENTION_EVERYONE, 0)]), false);
+    assert.equal(await holds('manager', 'announcer', [row(Permissions.SEND_MESSAGES | Permissions.MENTION_EVERYONE, 0)]), false);
+    assert.equal(await holds('manager', 'announcer', [row(Permissions.SEND_MESSAGES, 0)]), true);
+    // Restricting people, or having no overrides, takes none.
+    assert.equal(await holds('manager', 'announcer', [row(0, Permissions.MENTION_EVERYONE)]), true);
+    assert.equal(await holds('manager', 'announcer', []), true);
+    // Someone who is not in the workspace holds nothing.
+    assert.equal(await holds('stranger', 'announcer', []), false);
+
+    // The default role is what an invitation without a role hands out, whatever its overrides.
+    assert.equal(await holds('manager', 'Member', [row(Permissions.MENTION_EVERYONE, 0)]), true);
+    // For the default role and for the owner nothing is looked up at all.
+    assert.equal(await inviterHoldsRoleOverrides(
+      untouchedStore, 'workspace-a', 'manager', inviter, { id: 'Member', name: 'Member' },
+    ), true);
+    assert.equal(await inviterHoldsRoleOverrides(
+      untouchedStore, 'workspace-a', 'owner', { isOwner: true, permissions: 0, highestPosition: -1 }, { id: 'announcer', name: 'announcer' },
+    ), true);
+  });
+
   it('applies role union, category, then channel overrides with deny winning within each level', async () => {
     const { Permissions } = await import('@alparts/shared');
     const {
@@ -499,6 +543,28 @@ function authorizationSnapshot(input: {
     privateMemberIdsByChannelId: new Map<string, Set<string>>(
       Object.entries(input.privateMembers ?? {}).map(([channelId, userIds]) => [channelId, new Set(userIds)]),
     ),
+  };
+}
+
+/**
+ * The reads behind the authorization snapshot of a workspace without channels
+ * and behind the category overrides written for one role. A table answers with
+ * all its rows whatever the filter, which holds while no channel exists.
+ */
+function channellessStore(world: ReturnType<typeof authorizationSnapshot>, categoryOverrides: Array<{ allowMask: number; denyMask: number }>) {
+  const table = (rows: unknown[]) => ({ findFirst: async () => rows[0], findMany: async () => rows });
+  return {
+    query: {
+      workspaces: table([{ ownerId: world.ownerId }]),
+      channels: table([]),
+      workspaceMembers: table([...world.membersByUserId.values()]),
+      roles: table([...world.rolesById.values()]),
+      memberRoles: table([...world.roleIdsByUserId].flatMap(([userId, roleIds]) => roleIds.map((roleId) => ({
+        memberId: world.membersByUserId.get(userId)!.id, roleId,
+      })))),
+      categoryRolePermissionOverrides: table(categoryOverrides),
+      channelRolePermissionOverrides: table([]),
+    },
   };
 }
 

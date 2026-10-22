@@ -15,8 +15,8 @@ Per-transition properties (actor a, member u):
 Scope of H1: overrides range over VIEW_CHANNELS and SEND_MESSAGES only, bits that
 every role of the initial state holds, so the model never exercises a grant of a
 channel-scoped bit the actor never held (MENTION_EVERYONE, say). A channel move, a
-category deletion or a role assignment can grant such a bit through an override
-the actor could not write itself. The server refuses that with the override API's
+category deletion, a role assignment or an invitation that names the role can grant
+such a bit through an override the actor could not write itself. The server refuses that with the override API's
 own authority checks (assertCategoryChangeAuthority, assertRoleOverridesHeld);
 unit and integration tests cover them, this model does not.
 """

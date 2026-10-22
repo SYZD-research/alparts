@@ -443,7 +443,7 @@ export function assertRoleOverridesHeld(
   }
 }
 
-async function loadRoleOverrides(store: any, workspaceId: string, roleId: string): Promise<RoleOverrides> {
+export async function loadRoleOverrides(store: any, workspaceId: string, roleId: string): Promise<RoleOverrides> {
   const categories = await store.query.categoryRolePermissionOverrides.findMany({
     columns: { allowMask: true, denyMask: true },
     where: and(

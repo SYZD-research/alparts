@@ -20,7 +20,7 @@
 - Category/channel role permission overrideはallow/deny/inherit、適用前preview、override・認可の両revision、実効権限理由、失権時のroom退出とrekey、公式clientの局所消去に対応する。
 - Attachmentはfile別key、暗号化filename、5 MiB chunk AEAD、中断再開、取消、短命予約、opaque download復号、危険形式警告に対応する。Desktop保存では平文をbounded native streamへ渡し、危険形式にWindows/macOSの隔離属性またはLinuxの非実行権限を付ける。Protocol-levelの複数chunk中断再開からdownload SHA一致を隔離PostgreSQL/MinIOで確認している。
 - 音声はchannelに紐づく最大8人のP2P WebRTC meshとして、参加・退出、ミュート、音声検出／プッシュトゥトーク、入出力device切替、発言者・接続品質表示に対応する。Signalingの参加認可・中継・失権退出を隔離integrationで確認している。
-- 招待は一回限り、期限付き、個別失効、任意email bindingに対応し、管理UIで作成・一覧・失効できる。利用時には作成者の権限（ownerであるか、現在も招待できるmemberであること）を再確認し、member removalは対象が作った有効な招待を失効させる。tokenの配送はoperatorによる安全なout-of-band共有であり、email配送機能はない。
+- 招待は一回限り、期限付き、個別失効、任意email bindingに対応し、管理UIで作成・一覧・失効できる。利用時には作成者の権限（ownerであるか、現在も招待できるmemberであること。既定のMember以外のroleでは、roleの割当と同じく、そのroleのcategory/channel overrideが許可するbitも作成者が持つこと）を再確認し、作成時にも同じ規則で拒否する。member removalは対象が作った有効な招待を失効させる。tokenの配送はoperatorによる安全なout-of-band共有であり、email配送機能はない。
 - channel別draftと未送信outboxは暗号化してIndexedDBへ保存される。同じidempotency keyと同一署名済みrequestで、上限付きexponential backoff+jitterによりonline復帰時に再送し、queued/sending/failedを区別する。Outboxはactive deviceごとに100件を上限とする。
 - 検索UIは、このbrowser tabがすでに読み込み、復号してmemoryへ保持しているmessageだけを検索する。検索語はHTTP/WebSocketへ送信しない。
 - auditはcanonical HMAC chain、state変更と同一transactionのappend、起動時検証、監査閲覧の自己監査、HMAC付きcheckpointを備える。Required modeの初期checkpointは明示operator commandでのみprovisionする。通常append/checkpoint更新は外部anchorからDB tailまでの連続性を同じlock内で検証し、欠落・rollback・tail切断時は起動/readiness/writeをfail closedにする。
