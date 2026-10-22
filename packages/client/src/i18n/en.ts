@@ -47,6 +47,7 @@ export const en = {
   'ログインできませんでした。時間をおいてもう一度お試しください。': 'Could not sign in. Wait a while and try again.',
   'パスキーでログインできませんでした。もう一度お試しください。': 'Could not sign in with a passkey. Please try again.',
   'ログイン状態が終了しました。もう一度ログインしてください。心当たりがない場合は、ログイン後にログイン中の端末を確認してください。': 'You have been signed out. Sign in again. If you did not expect this, check your signed-in devices after signing in.',
+  'ログアウトを完了できませんでした。次にアプリを開いたときに、もう一度試します。': 'Signing out did not finish. It will be tried again the next time you open the app.',
 
   // Stores and services
   'チャンネルを読み込めませんでした。接続を確認して再度お試しください。': 'Could not load channels. Check your connection and try again.',

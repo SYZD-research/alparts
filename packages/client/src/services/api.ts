@@ -631,7 +631,8 @@ class ApiService {
     if (!response.ok) {
       // An unauthenticated startup probe is normal on a new installation.
       // loadUser handles it; it must not claim a never-created session expired.
-      if (response.status === 401 && path !== '/auth/login' && path !== '/auth/me') {
+      // Signing out of a session the server no longer knows is no expiry either.
+      if (response.status === 401 && path !== '/auth/login' && path !== '/auth/me' && path !== '/auth/logout') {
         queueMicrotask(() => this.unauthorizedHandler?.());
       }
       const raw = await response.json().catch(() => null) as unknown;

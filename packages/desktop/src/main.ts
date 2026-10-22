@@ -36,6 +36,7 @@ import {
 import { AppLock, SettingsStore, type DesktopSettings } from './settings.js';
 import { SecretVault, type VaultCrypto } from './vault.js';
 import { NativeFileSaveManager } from './file-save.js';
+import { clearDeploymentCookies } from './session-cookies.js';
 import { desktopLocale, desktopStrings, normalizeDesktopLocale, type DesktopLocale } from './strings.js';
 
 const PARTITION = 'persist:alparts';
@@ -393,8 +394,10 @@ function registerIpcHandlers(): void {
     return true;
   }));
   ipcMain.handle('desktop:clear-http-cache', checked(async () => {
-    // Device keys live in IndexedDB and must survive a sign-out; only the
-    // HTTP-level caches are dropped here.
+    // The session cookie is HttpOnly and survives a sign-out the server did not
+    // confirm, so it is dropped here. Device keys live in IndexedDB and must
+    // survive a sign-out; besides the cookies only HTTP-level caches go.
+    await clearDeploymentCookies(desktopSession.cookies, [settings.serverUrl, DEVELOPMENT_URL]);
     await desktopSession.clearCache();
     await desktopSession.clearStorageData({ storages: ['cachestorage', 'serviceworkers', 'shadercache'] });
     return true;

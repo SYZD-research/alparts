@@ -15,6 +15,7 @@ export interface AlpartsDesktopBridge {
   configureServer(serverUrl: string): Promise<AlpartsDesktopInfo>;
   setIdleLockMinutes(minutes: number): Promise<number>;
   lockNow(): Promise<boolean>;
+  /** Called at sign-out: drops cached responses and, on desktop, the server's cookies. */
   clearHttpCache(): Promise<boolean>;
   unlockComplete(): Promise<boolean>;
   showConnectionSettings(): Promise<boolean>;

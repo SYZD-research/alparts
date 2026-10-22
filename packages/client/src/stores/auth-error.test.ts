@@ -25,6 +25,16 @@ describe('login connection failures', () => {
     expect(unauthorized).toHaveBeenCalledOnce();
   });
 
+  it('does not report an expired session when signing out of one that is already gone', async () => {
+    const unauthorized = vi.fn();
+    api.setUnauthorizedHandler(unauthorized);
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(() => Promise.resolve(
+      Response.json({ error: 'UNAUTHORIZED' }, { status: 401 }),
+    )));
+    await expect(api.logout()).rejects.toMatchObject({ status: 401 });
+    expect(unauthorized).not.toHaveBeenCalled();
+  });
+
   it('reports an unreachable server separately from account credentials', async () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')));
     const error = await loginFailure();
