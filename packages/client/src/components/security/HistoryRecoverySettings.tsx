@@ -9,9 +9,18 @@ import {
   getHistoryRecoveryConfiguration,
   disableHistoryRecovery,
 } from '../../services/recovery.service';
-import { msg, useT } from '../../i18n';
+import { msg, useT, type MessageKey, type MessageParams } from '../../i18n';
 type RecoveryPlan = Awaited<ReturnType<typeof createRecoveryPlan>>;
 const CODE_ONLY_WARNING = msg('保存済みの履歴は、復旧コードでのみ復元できます。コードを失うと、管理者に依頼しても復元できません。');
+/** What the user is told once a restore has finished. */
+export function restoreResultMessage(
+  t: (key: MessageKey, params?: MessageParams) => string,
+  { restored, failed }: { restored: number; failed: number },
+): string {
+  return failed > 0
+    ? t('履歴を復元しました（{count}件）。{failed}件は復元できませんでした。', { count: restored, failed })
+    : t('履歴を復元しました（{count}件）。', { count: restored });
+}
 export function HistoryRecoverySettings({
   pending = false,
   onRestored,
@@ -83,9 +92,9 @@ export function HistoryRecoverySettings({
       {passkeyAvailable && (
         <button disabled={busy} className="rounded-sm bg-discord-accent px-3 py-2 text-white"
           onClick={() => { void run(async () => {
-            const count = await restoreHistory();
+            const result = await restoreHistory();
             refreshRestoredHistory();
-            return t('履歴を復元しました（{count}件）。', { count });
+            return restoreResultMessage(t, result);
           }); }}>
           {t('パスキーで履歴を復元')}
         </button>
@@ -181,10 +190,10 @@ export function HistoryRecoverySettings({
         onSubmit={(e) => {
           e.preventDefault();
           void run(async () => {
-            const count = await restoreHistory(code);
+            const result = await restoreHistory(code);
             setCode('');
             refreshRestoredHistory();
-            return t('履歴を復元しました（{count}件）。', { count });
+            return restoreResultMessage(t, result);
           });
         }}
       >

@@ -11,10 +11,12 @@ import {
   serializeChannelKeyEpochAbort,
   serializeChannelKeyFreshStart,
   serializeChannelKeyWrap,
+  serializeHistoryKeyBackup,
   referencesOtherMessages,
   serializeMessageAad,
   serializeMessageEnvelope,
   type SignedAttachmentEnvelope,
+  type SignedHistoryKeyBackup,
   type SignedMessageEnvelope,
 } from '@alparts/shared';
 import {
@@ -25,6 +27,7 @@ import {
   verifyChannelKeyAcknowledgementSignature,
   verifyChannelKeyEpochAbortSignature,
   verifyChannelKeyFreshStartSignature,
+  verifyHistoryKeyBackupSignature,
   verifyMessageEnvelopeSignature,
 } from './message.js';
 
@@ -462,6 +465,50 @@ describe('signed message envelopes', () => {
       { ...envelope, deviceId: '00000000-0000-4000-8000-000000000099' },
       signature,
     ), false);
+  });
+
+  it('binds a history backup record to its account, recovery code, channel, version, key and ciphertext', () => {
+    const keys = fixture();
+    const envelope: SignedHistoryKeyBackup = {
+      userId: '00000000-0000-4000-8000-000000000004',
+      generation: '00000000-0000-4000-8000-000000000005',
+      channelId: '00000000-0000-4000-8000-000000000001',
+      version: 4,
+      keyCommitment: 'BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB',
+      ciphertextHash: 'DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD',
+    };
+    assert.equal(
+      serializeHistoryKeyBackup(envelope),
+      '[1,"history-key-backup","00000000-0000-4000-8000-000000000004","00000000-0000-4000-8000-000000000005","00000000-0000-4000-8000-000000000001",4,"BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB","DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD"]',
+    );
+    const signature = sign('sha256', Buffer.from(serializeHistoryKeyBackup(envelope)), {
+      key: keys.signingPrivateKey,
+      dsaEncoding: 'ieee-p1363',
+    }).toString('base64');
+    assert.equal(verifyHistoryKeyBackupSignature(keys.identityKey, envelope, signature), true);
+    const mutations: SignedHistoryKeyBackup[] = [
+      { ...envelope, userId: '00000000-0000-4000-8000-000000000099' },
+      { ...envelope, generation: '00000000-0000-4000-8000-000000000099' },
+      { ...envelope, channelId: '00000000-0000-4000-8000-000000000099' },
+      { ...envelope, version: 5 },
+      { ...envelope, keyCommitment: 'CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC' },
+      { ...envelope, ciphertextHash: 'EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE' },
+    ];
+    for (const mutation of mutations) {
+      assert.equal(verifyHistoryKeyBackupSignature(keys.identityKey, mutation, signature), false);
+    }
+    // Only the device's own key counts: not another device of the account, not no signature at all.
+    assert.equal(verifyHistoryKeyBackupSignature(fixture().identityKey, envelope, signature), false);
+    assert.equal(verifyHistoryKeyBackupSignature(keys.identityKey, envelope, ''), false);
+    assert.equal(verifyHistoryKeyBackupSignature(keys.identityKey, envelope, 'A'.repeat(86) + '=='), false);
+    // A signature over another statement with the same fields is not a backup record.
+    const freshStart = sign('sha256', Buffer.from(serializeChannelKeyFreshStart({
+      channelId: envelope.channelId,
+      keyVersion: envelope.version,
+      keyCommitment: envelope.keyCommitment,
+      deviceId: envelope.userId,
+    })), { key: keys.signingPrivateKey, dsaEncoding: 'ieee-p1363' }).toString('base64');
+    assert.equal(verifyHistoryKeyBackupSignature(keys.identityKey, envelope, freshStart), false);
   });
 });
 

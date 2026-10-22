@@ -1,6 +1,11 @@
 import { createHash, timingSafeEqual, createPublicKey, verify } from 'node:crypto';
 import { and, asc, eq, gt, isNotNull, isNull, lte, or, sql } from 'drizzle-orm';
-import { serializeDeviceDecision, type DirectoryHead, type DirectoryEvent } from '@alparts/shared';
+import {
+  serializeDeviceDecision,
+  type DirectoryHead,
+  type DirectoryEvent,
+  type SignedHistoryKeyBackup,
+} from '@alparts/shared';
 import { db } from '../db/index.js';
 import {
   devices,
@@ -13,6 +18,7 @@ import {
 } from '../db/schema.js';
 import { config as serverConfig } from '../config/index.js';
 import { auditedTransaction } from '../middleware/audit.js';
+import { verifyHistoryKeyBackupSignature } from '../security/message.js';
 import { requireApprovedDevice } from './passkey.service.js';
 import { lockKeyProtocol } from './key.service.js';
 import { appendDirectoryEvent, assertDeviceDecision, directoryHead, recordedRecoveryGeneration } from './directory.service.js';
@@ -296,18 +302,41 @@ export interface HistoryKeyBackup {
   version: number;
   keyCommitment: string;
   ciphertext: string;
+  /** The uploading device's signature over the record (serializeHistoryKeyBackup). */
+  signature: string;
+}
+/** `present`: the archive already held a record for that version, and it stays. */
+export interface HistoryKeyBackupResult {
+  channelId: string;
+  version: number;
+  status: 'stored' | 'present';
+}
+function signedBackup(userId: string, input: HistoryKeyBackup): SignedHistoryKeyBackup {
+  return {
+    userId,
+    generation: input.generation,
+    channelId: input.channelId,
+    version: input.version,
+    keyCommitment: input.keyCommitment,
+    ciphertextHash: createHash('sha256').update(input.ciphertext).digest('base64url'),
+  };
 }
 export async function backupHistoryKeys(
   userId: string,
   sessionId: string,
   inputs: HistoryKeyBackup[],
-) {
+): Promise<HistoryKeyBackupResult[]> {
   if (!inputs.length || inputs.length > 64) throw new Error('RECOVERY_LIMIT');
-  await auditedTransaction(
+  return auditedTransaction(
     async (tx) => {
       await lockKeyProtocol(tx);
-      await requireApprovedDevice(tx, userId, sessionId);
+      const device = await requireApprovedDevice(tx, userId, sessionId);
+      const results: HistoryKeyBackupResult[] = [];
       for (const input of inputs) {
+        // The session is not proof enough (a cookie can be stolen): the record must carry
+        // the signature of the key of the device the session is bound to.
+        if (!verifyHistoryKeyBackupSignature(device.identityKey, signedBackup(userId, input), input.signature))
+          throw new Error('INVALID_RECOVERY');
         const config = await tx.query.historyRecovery.findFirst({
           where: and(
             eq(historyRecovery.userId, userId),
@@ -347,17 +376,34 @@ export async function backupHistoryKeys(
             eq(historyRecoveryKeys.version, input.version),
           ),
         });
-        if (existing) continue;
+        if (existing) {
+          results.push({ channelId: input.channelId, version: input.version, status: 'present' });
+          continue;
+        }
         const [count] = await tx
           .select({ value: sql<number>`count(*)::int` })
           .from(historyRecoveryKeys)
           .where(eq(historyRecoveryKeys.userId, userId));
         if (count.value >= 100_000) throw new Error('RECOVERY_LIMIT');
-        await tx
+        const [stored] = await tx
           .insert(historyRecoveryKeys)
-          .values({ ...input, userId })
-          .onConflictDoNothing();
+          .values({
+            userId,
+            generation: input.generation,
+            channelId: input.channelId,
+            version: input.version,
+            keyCommitment: input.keyCommitment,
+            ciphertext: input.ciphertext,
+          })
+          .onConflictDoNothing()
+          .returning({ version: historyRecoveryKeys.version });
+        results.push({
+          channelId: input.channelId,
+          version: input.version,
+          status: stored ? 'stored' : 'present',
+        });
       }
+      return results;
     },
     () => ({
       actorId: userId,

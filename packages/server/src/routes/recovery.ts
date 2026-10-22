@@ -169,17 +169,22 @@ router.post(
         version: z.number().int().min(1).max(1_000_000),
         keyCommitment: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
         ciphertext: z.string().min(64).max(512),
+        // Absent from clients that predate signed records.
+        signature: z.string().length(88).optional(),
       })
       .strict();
     const body = z
       .union([record, z.object({ keys: z.array(record).min(1).max(64) }).strict()])
       .parse(req.body);
-    await service.backupHistoryKeys(
-      req.userId!,
-      req.sessionId!,
-      'keys' in body ? body.keys : [body],
+    const records = 'keys' in body ? body.keys : [body];
+    const signed = records.filter(
+      (entry): entry is typeof entry & { signature: string } => entry.signature !== undefined,
     );
-    res.json({ success: true });
+    if (signed.length !== records.length) {
+      res.status(410).json({ error: 'UPDATE_REQUIRED', message: 'Update the application and try again', statusCode: 410 });
+      return;
+    }
+    res.json({ results: await service.backupHistoryKeys(req.userId!, req.sessionId!, signed) });
   }),
 );
 router.get(

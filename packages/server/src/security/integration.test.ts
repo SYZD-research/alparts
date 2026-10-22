@@ -58,6 +58,7 @@ import {
   serializeChannelKeyFreshStart,
   serializeChannelKeyWrap,
   serializeDeviceChallengeProof,
+  serializeHistoryKeyBackup,
   serializeMessageAad,
   serializeMessageEnvelope,
   serializeVoiceSignalEnvelope,
@@ -987,7 +988,9 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     const backUpKey = (channelId: string, version: number, keyCommitment: string) => request('/api/recovery/keys', {
       method: 'POST',
       cookie: bob.cookie,
-      body: { generation: recoveryGeneration, channelId, version, keyCommitment, ciphertext: randomBytes(96).toString('base64') },
+      body: historyBackup(bobKeys, bob.user.id, {
+        generation: recoveryGeneration, channelId, version, keyCommitment, ciphertext: randomBytes(96).toString('base64'),
+      }),
     });
     assert.equal((await backUpKey(unusedGroupChannel, 1, keyCommitmentOf(unusedGroup.key(1)))).status, 200);
     assert.equal((await deleteAsOwner(unusedGroupChannel)).status, 200, 'the group and the key a member backed up go with the channel');
@@ -5213,11 +5216,22 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
         await request('/api/recovery/candidates', { cookie: bob.cookie }),
       );
       assert.deepEqual(candidates.candidates.filter((entry) => entry.channelId === channelId).map((entry) => entry.version), [1, 3]);
+      const record = (version: number, keyCommitment: string) => (
+        { generation, channelId, version, keyCommitment, ciphertext: randomBytes(96).toString('base64') }
+      );
       const backup = (version: number, keyCommitment: string) => request('/api/recovery/keys', {
         method: 'POST',
         cookie: bob.cookie,
-        body: { generation, channelId, version, keyCommitment, ciphertext: randomBytes(96).toString('base64') },
+        body: historyBackup(b1.keys, bob.user.id, record(version, keyCommitment)),
       });
+      // Only a record the session's own device signed is taken.
+      const unsigned = await request('/api/recovery/keys', {
+        method: 'POST', cookie: bob.cookie, body: record(1, keyCommitmentOf(history.key(1))),
+      });
+      assert.deepEqual([unsigned.status, (await json<{ error: string }>(unsigned)).error], [410, 'UPDATE_REQUIRED']);
+      assert.equal((await request('/api/recovery/keys', {
+        method: 'POST', cookie: bob.cookie, body: historyBackup(o1.keys, bob.user.id, record(1, keyCommitmentOf(history.key(1)))),
+      })).status, 403, 'signed by a device that is not the one on the session');
       assert.equal((await backup(1, keyCommitmentOf(history.key(1)))).status, 200);
       assert.equal((await backup(2, keyCommitmentOf(history.key(2)))).status, 403, 'no device of the user was in the group at version 2');
       assert.equal((await backup(3, keyCommitmentOf(history.key(2)))).status, 403, 'the commitment must name the key of that version');
@@ -6734,6 +6748,22 @@ function verifyDevicePayload(identityKey: string, payload: string, signature: st
 /** base64url(SHA-256(key)), as envelopes and recovery records name a key. */
 function keyCommitmentOf(raw: Buffer): string {
   return createHash('sha256').update(raw).digest('base64url');
+}
+
+/** A history backup record, signed the way the uploading device signs it. */
+function historyBackup(
+  keys: ReturnType<typeof deviceFixture>,
+  accountId: string,
+  record: { generation: string; channelId: string; version: number; keyCommitment: string; ciphertext: string },
+) {
+  return {
+    ...record,
+    signature: signDevicePayload(keys, serializeHistoryKeyBackup({
+      userId: accountId,
+      ...record,
+      ciphertextHash: createHash('sha256').update(record.ciphertext).digest('base64url'),
+    })),
+  };
 }
 
 /** The transcript that names an accepted version. */

@@ -74,6 +74,34 @@ export function serializeDirectoryEntry(entry: Omit<DirectoryEntry, 'hash'>): st
     e.recoveryKey ?? null,
   ]);
 }
+export interface SignedHistoryKeyBackup {
+  userId: string;
+  /** The recovery code the record belongs to. */
+  generation: string;
+  channelId: string;
+  version: number;
+  keyCommitment: string;
+  /** base64url(SHA-256) of the encrypted record exactly as uploaded. */
+  ciphertextHash: string;
+}
+/**
+ * Proof that the uploading device itself made one history backup record. The
+ * server checks it with the identity key of the device the session is bound
+ * to, so a stolen session cookie cannot write to the archive without that
+ * device's key.
+ */
+export function serializeHistoryKeyBackup(envelope: SignedHistoryKeyBackup): string {
+  return JSON.stringify([
+    1,
+    'history-key-backup',
+    envelope.userId,
+    envelope.generation,
+    envelope.channelId,
+    envelope.version,
+    envelope.keyCommitment,
+    envelope.ciphertextHash,
+  ]);
+}
 export function canonicalActionBody(value: unknown): string {
   if (value === undefined) return 'null';
   if (value === null || typeof value !== 'object') return JSON.stringify(value);

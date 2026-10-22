@@ -22,6 +22,7 @@ import {
   serializeDeviceChallengeProof,
   serializeDeviceDecision,
   serializeChannelKeyWrap,
+  serializeHistoryKeyBackup,
   serializeMessageEnvelope,
   serializeMessageAad,
   serializeMlsGroupCommit,
@@ -52,6 +53,18 @@ const signedBy = (identityKey: string, value: string, signed: string) =>
   );
 /** base64url(SHA-256(key)): how envelopes and recovery records name a key. */
 const keyCommitmentOf = (raw: Uint8Array) => hash(raw).toString('base64url');
+/** A history backup record, signed the way the uploading device signs it. */
+const signedBackup = (
+  signer: KeyObject,
+  accountId: string,
+  record: { generation: string; channelId: string; version: number; keyCommitment: string; ciphertext: string },
+) => ({
+  ...record,
+  signature: signature(
+    signer,
+    serializeHistoryKeyBackup({ userId: accountId, ...record, ciphertextHash: hash(record.ciphertext).toString('base64url') }),
+  ),
+});
 /** The transcript that names an accepted group version. */
 const groupTranscript = (envelope: Omit<MlsGroupCommit, 'signature'>) =>
   hash(serializeMlsGroupCommit(envelope)).toString('hex');
@@ -1863,14 +1876,31 @@ process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
       cipher.aad(userId, `${generation}:${channelId}:${version}:${commitment}`),
     );
     const originalMessage = await encryptedMessage();
-    await json(
-      await request('/api/recovery/keys', {
-        generation,
-        channelId,
-        version,
-        keyCommitment: commitment,
-        ciphertext: encryptedHistory,
-      }),
+    const backup = { generation, channelId, version, keyCommitment: commitment, ciphertext: encryptedHistory };
+    // A session alone cannot write to the archive: the record needs the signature of the device it is bound to.
+    assert.equal(
+      (await json(await request('/api/recovery/keys', backup), 410)).error,
+      'UPDATE_REQUIRED',
+      'an unsigned record',
+    );
+    assert.equal(
+      (await request('/api/recovery/keys', signedBackup(secondKeys.privateKey, userId, backup))).status,
+      403,
+      'a signature of another device',
+    );
+    assert.equal(
+      (
+        await request('/api/recovery/keys', {
+          ...signedBackup(firstKeys.privateKey, userId, backup),
+          ciphertext: randomBytes(80).toString('base64'),
+        })
+      ).status,
+      403,
+      'a signature over another record',
+    );
+    assert.deepEqual(
+      (await json(await request('/api/recovery/keys', signedBackup(firstKeys.privateKey, userId, backup)))).results,
+      [{ channelId, version, status: 'stored' }],
     );
     assert.equal(
       (await json(await request('/api/recovery/keys'))).keys[0].ciphertext,
@@ -1994,31 +2024,37 @@ process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
       (
         await request(
           '/api/recovery/keys',
-          {
-            generation,
-            channelId,
-            version,
+          signedBackup(replacementKeys.privateKey, userId, {
+            ...backup,
             keyCommitment: keyCommitmentOf(earlierKey),
-            ciphertext: encryptedHistory,
-          },
+          }),
           replacementCookie,
         )
       ).status,
       403,
       'the commitment must name the key of that version',
     );
-    await json(
-      await request(
-        '/api/recovery/keys',
-        {
-          generation,
-          channelId,
-          version,
-          keyCommitment: commitment,
-          ciphertext: encryptedHistory,
-        },
-        replacementCookie,
-      ),
+    // The archive already holds the version, which the answer says; the record it holds stays.
+    const secondRecord = await cipher.seal(
+      archive,
+      key,
+      cipher.aad(userId, `${generation}:${channelId}:${version}:${commitment}`),
+    );
+    assert.deepEqual(
+      (
+        await json(
+          await request(
+            '/api/recovery/keys',
+            signedBackup(replacementKeys.privateKey, userId, { ...backup, ciphertext: secondRecord }),
+            replacementCookie,
+          ),
+        )
+      ).results,
+      [{ channelId, version, status: 'present' }],
+    );
+    assert.equal(
+      (await json(await request('/api/recovery/keys', undefined, replacementCookie))).keys[0].ciphertext,
+      encryptedHistory,
     );
     const recovered = await cipher.open(
       await cipher.aes(code),

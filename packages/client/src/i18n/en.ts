@@ -359,6 +359,7 @@ export const en = {
   'この復旧コードは、以前から使っている端末で更新が必要です。その端末で復旧コードを入力してください。': 'This recovery code needs to be updated on a device you used before. Enter the recovery code on that device.',
   '復元の設定を更新するため、保管済みの復旧コードを入力してください。更新が終わるまで、この端末を保持してください。': 'Enter your saved recovery code to update the restore settings. Keep this device until the update is finished.',
   '履歴を復元しました（{count}件）。': (p) => `Restored ${count(p)} ${plural(count(p), 'item', 'items')} of history.`,
+  '履歴を復元しました（{count}件）。{failed}件は復元できませんでした。': (p) => `Restored ${count(p)} ${plural(count(p), 'item', 'items')} of history. ${count(p, 'failed')} could not be restored.`,
   'パスキーで履歴を復元': 'Restore history with a passkey',
   '保存済みの履歴は、復旧コードでのみ復元できます。コードを失うと、管理者に依頼しても復元できません。': 'Saved history can be restored only with the recovery code. If you lose the code, even an administrator cannot restore it.',
   'パスキーで本人確認してください。': 'Confirm it is you with your passkey.',
