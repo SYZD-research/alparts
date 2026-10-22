@@ -58,6 +58,7 @@
       "dist/transport-pins.js",
       "dist/transport-pins.json",
       "dist/settings.js",
+      "dist/strings.js",
       "dist/vault.js",
       "dist/preload.cjs",
       "package.json"
