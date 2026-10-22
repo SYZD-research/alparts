@@ -94,7 +94,7 @@ Development authentication and TLS settings must never be copied into production
 Requirements:
 
 - Linux host, Node.js 24+, built repository at `/opt/alparts`;
-- reverse proxy that exposes only HTTPS and forwards to `127.0.0.1:3000`;
+- reverse proxy that exposes only HTTPS, forwards to `127.0.0.1:3000` and buffers whole request bodies (see [Reverse proxy](#reverse-proxy));
 - durable PostgreSQL and S3-compatible object store, private to the service;
 - protected credentials under `/etc/alparts/credentials` and non-secret policy in `/etc/alparts/alparts.env`;
 - durable `/var/lib/alparts-audit`, ideally on an authority-separated mount;
@@ -155,6 +155,12 @@ Set `AUDIT_HEAD_BUCKET` to a separate object-store bucket and `AUDIT_HEAD_OBJECT
 The image contains the exact ordered migration bundle used to build it. Its database-only runtime migrator receives only the separate migration URL and bounded DB settings, uses a non-waiting PostgreSQL advisory lock, honors connection/statement deadlines, and exits if another migrator is active. The server then compares every applied migration timestamp and SHA-256 plus the bounded PostgreSQL 16 `public` catalog fingerprint with the image contract at startup and readiness; an empty, stale, modified, reordered, newer unknown, or persistently altered schema fails closed. This requires a dedicated Alparts `public` schema and deliberately rejects another PostgreSQL major until a reviewed compatibility migration updates the fingerprint. Existing deployments must complete the quiesced backup/isolated-restore gate before this command. Skip the checkpoint initializer after the first deployment; an existing checkpoint is never overwritten.
 
 Pin and deploy the resulting image by digest in a real release system. The repository currently pins base image tags and CI actions but does not publish signed releases or attestations.
+
+## Reverse proxy
+
+Terminate public TLS at a reverse proxy that reads each request body completely before it forwards the request, so a client that sends its headers and then trickles or stalls its body never reaches the application. nginx does this by default (`proxy_request_buffering on`); with Caddy, set `request_buffers` in `reverse_proxy` to at least 2 MiB, the largest JSON body.
+
+The application bounds the wait itself as well. A JSON body that is not fully received within 10 seconds plus the time its declared size needs at 32 KiB per second is answered with 408 and gives its share of the body budget back at once. Only a request that presents a session token with a valid signature, audience and expiry may send a body above 512 KiB (up to the 2 MiB of a group commit); every other request is limited to 512 KiB and counted in a smaller budget of its own, so unauthenticated traffic such as sign-in cannot use up what signed-in users need. That smaller budget can still be filled by many addresses at once, which is why the proxy's buffering matters.
 
 ## Rolling, canary, and rollback policy
 
