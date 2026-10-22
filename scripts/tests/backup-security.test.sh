@@ -253,4 +253,12 @@ done
 printf 'rclone v1.74.3\n' > "$RCLONE_VERSION_OUTPUT"
 expect_failure 'rclone 1.75.1 or newer is required' "$TEST_TMP/preflight-old-rclone.err" run_preflight
 
+# The backup unit mounts everything read-only except its ReadWritePaths, so the
+# directory of the wrapper's lock file must be one of them.
+BACKUP_UNIT_WRITABLE=" $(sed -n 's/^ReadWritePaths=//p' "$REPOSITORY_ROOT/deploy/alparts-backup.service" | tr '\n' ' ') "
+BACKUP_LOCK_DEFAULT="$(sed -n 's/^LOCK_FILE="\${ALPARTS_BACKUP_LOCK_FILE:-\(.*\)}"$/\1/p' "$REPOSITORY_ROOT/scripts/backup-under-systemd.sh")"
+[[ -n "$BACKUP_LOCK_DEFAULT" ]] || fail 'backup-under-systemd.sh lock file default not found'
+[[ "$BACKUP_UNIT_WRITABLE" == *" $(dirname -- "$BACKUP_LOCK_DEFAULT") "* ]] \
+  || fail 'deploy/alparts-backup.service does not let the wrapper write its lock file'
+
 printf 'backup security tests passed\n'
