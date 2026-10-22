@@ -101,6 +101,22 @@ describe('production startup configuration', () => {
     }
   });
 
+  it('refuses a DATABASE_URL whose parameters would undo the TLS setting', () => {
+    for (const query of ['?sslmode=disable', '?sslmode=no-verify', '?ssl=false']) {
+      const result = loadConfiguration(productionEnvironment({ DATABASE_URL: `${syntheticDatabaseUrl('db.example.test')}${query}` }));
+      assert.notEqual(result.status, 0, query);
+      assert.match(result.stderr, /DATABASE_URL must not carry the "ssl[a-z]*" query parameter/, query);
+    }
+    // The host that passes the loopback check must be the host the client uses.
+    const moved = loadConfiguration(productionEnvironment({
+      DATABASE_URL: `${syntheticDatabaseUrl('127.0.0.1:5432')}?host=db.example.test`,
+      DB_SSL: 'false',
+      ALLOW_INSECURE_LOOPBACK_DEPENDENCIES: 'true',
+    }));
+    assert.notEqual(moved.status, 0);
+    assert.match(moved.stderr, /DATABASE_URL must not carry the "host" query parameter/);
+  });
+
   it('requires a strong metrics token when metrics are enabled', () => {
     const missing = loadConfiguration(productionEnvironment({ METRICS_ENABLED: 'true' }));
     assert.notEqual(missing.status, 0);

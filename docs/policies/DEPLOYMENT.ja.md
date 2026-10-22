@@ -27,6 +27,8 @@
 
 `NODE_ENV` は `production`、`development`、`test` のいずれかで、未設定は development として扱います。`prod`、`staging`、`Production` など、それ以外の値では起動を止めます。そのままにすると、暗号化されない依存サービスへの接続、`Secure` 属性のないCookie、localhostのオリジン、監査チェックポイントを要求しない動作という、development の設定が選ばれてしまうためです。
 
+`DATABASE_URL` にはユーザー、パスワード、ホスト、ポート、データベース名を含め、TLSを決めるのは `DB_SSL` だけです（本番の既定は、検証付きのTLSです）。TLSや接続先を指定するクエリパラメーター（`ssl`、`sslmode`、`sslcert`、`sslkey`、`sslrootcert`、`sslpassword`、そのほかの `ssl…`、`uselibpqcompat`、`hostaddr`、`host`、`port`）がURLにあると、起動を止めます。PostgreSQLのクライアントは、このようなパラメーターで、検証済みの設定を上書きしてしまうためです。たとえば、リモートのホストに対する `sslmode=disable` がそうです。例外は、UNIXソケットのディレクトリだけで、ホスト名のないURLに `?host=/var/run/postgresql` を1回だけ指定できます（ソケットのファイル名に必要なら `port` も指定できます）。データベースの提供元からコピーした接続文字列には、通常 `sslmode` が付いています。取り除いて、`DB_SSL` は既定のままにしてください。
+
 `S3_ENDPOINT` はホスト名またはIPアドレスだけを指定します（スキーム、ポート、パスは含めず、`S3_PORT` と `S3_USE_SSL` を使います）。`S3_REGION`、`S3_BUCKET`、`AUDIT_HEAD_BUCKET` は、有効なリージョン名と、DNSで使えるバケット名でなければなりません。それ以外の値では起動を止めます。暗号化されないオブジェクトストレージは、ループバックのアドレスを直接指定した場合にだけ許可します。S3クライアントは、環境にある `AWS_USE_FIPS_ENDPOINT` と `AWS_USE_DUALSTACK_ENDPOINT` の切り替えを無視します。
 
 登録時には、登録するアドレスに確認コードをメールで送ります。`SMTP_HOST`、`SMTP_FROM`、必要に応じて `SMTP_USER` と `SMTP_PASSWORD_FILE` を設定し、最初からTLSで接続する場合は `SMTP_SECURE=true` を設定します。それ以外の場合、本番ではSTARTTLSが必須です。SMTPがない場合、本番では既存のアカウントの利用は続けられますが、`EMAIL_VERIFICATION=disabled` で確認を明示的に無効にしない限り、新規登録を拒否し、起動時に `registration.unavailable` をログに記録します。確認を無効にすると、確認コードでアドレスを確かめないため、有効な招待を持つ人は、登録を試すことで、そのアドレスにすでにアカウントがあるかを知ることができます。これを無料で行えないように、アカウントのあるアドレスでの登録は、成功したときと同じように招待を使い切り、無効な招待と同じ応答を返します。試すアドレスごとに招待が1つ必要になります。確認を無効にする前に、この点を受け入れられるか判断してください。メールは、利用者がアプリで選んだ言語に合わせて日本語または英語で送ります。設定は不要です。

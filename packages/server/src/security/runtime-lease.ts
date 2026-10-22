@@ -1,6 +1,7 @@
 import pg from 'pg';
 import { sql } from 'drizzle-orm';
 import { config } from '../config/index.js';
+import { databaseConnectionOptions } from '../config/database.js';
 import { db } from '../db/index.js';
 
 const OWNER_LOCK = 1095520341;
@@ -106,8 +107,7 @@ export class RuntimeLease {
 export async function acquireRuntimeLease(): Promise<RuntimeLease> {
   if (config.db.poolMax < 2) throw new Error('RUNTIME_REQUIRES_TWO_DATABASE_CONNECTIONS');
   const client = new pg.Client({
-    connectionString: config.db.url,
-    ssl: config.db.ssl ? { rejectUnauthorized: true } : undefined,
+    ...databaseConnectionOptions(config.db),
     connectionTimeoutMillis: config.db.connectTimeoutMs,
     query_timeout: config.db.statementTimeoutMs + 1_000,
     keepAlive: true,
@@ -147,8 +147,7 @@ export function requireRuntimeLease(): RuntimeLease {
  * window without acquiring the HTTP runtime's owner lock. */
 export async function withOperatorMutation<T>(operation: () => Promise<T>): Promise<T> {
   const client = new pg.Client({
-    connectionString: config.db.url,
-    ssl: config.db.ssl ? { rejectUnauthorized: true } : undefined,
+    ...databaseConnectionOptions(config.db),
     connectionTimeoutMillis: config.db.connectTimeoutMs,
     query_timeout: config.db.statementTimeoutMs,
     application_name: 'alparts-operator-mutation',
