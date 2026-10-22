@@ -8,10 +8,15 @@ name: AI dependency maintenance
 #
 # Trust: plan and agent have read-only repository access, and only the agent
 # step holds the OpenRouter key. Checks in the agent job run code the model
-# wrote, so they only catch honest mistakes. derive rebuilds the lockfile and
-# license notices from the proposed manifests without code from the change,
-# and publish, which can write, enforces protected paths and manifest rules
-# with the checker from the base commit and never runs code from the change.
+# wrote, so they only catch honest mistakes, and every command the agent runs
+# is sandboxed (scripts/maintenance/sandbox.mjs): it cannot reach the key,
+# other processes or the files later steps run, and only installs reach the
+# network. Jobs that handle the change keep no dependency cache, so nothing
+# from it reaches the caches other workflows restore. derive rebuilds the
+# lockfile and license notices from the proposed manifests without code from
+# the change, and publish, which can write, enforces the writable paths,
+# manifest rules and lockfile sources with the checks from the base commit
+# and never runs code from the change.
 #
 # Setup: add the OPENROUTER_API_KEY secret (use a key with a credit limit),
 # optionally set the MAINTENANCE_MODEL variable, and allow GitHub Actions to
@@ -96,15 +101,27 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24.8.0"
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
+      - name: Set up the command sandbox
+        run: |
+          set -euo pipefail
+          # Ubuntu 24.04 lets only programs with an AppArmor profile use the
+          # user namespaces the sandbox is built on.
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -q -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends bubblewrap >/dev/null
+          # The agent's commands can rewrite the repository, so the steps
+          # after it use this copy.
+          cp -R scripts/maintenance "$RUNNER_TEMP/tools"
+      - run: pnpm install --frozen-lockfile --ignore-scripts
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: maintenance-task
           path: ${{ runner.temp }}/task
       # Runs before the model, so the token used for fetching is never on disk
       # while model-written code can run.
-      - name: Apply the Dependabot updates
+      - name: Merge the Dependabot updates
         env:
           GH_TOKEN: ${{ github.token }}
           PRS: ${{ needs.plan.outputs.prs }}
@@ -138,10 +155,6 @@ jobs:
           done
           git reset -q --soft "$base"
           git checkout -q "$base" -- pnpm-lock.yaml
-          pnpm install --no-frozen-lockfile
-          pnpm notices
-          git add --all
-          echo "MAINTENANCE_SNAPSHOT=$(git write-tree)" >>"$GITHUB_ENV"
           {
             echo "## Applied before you started"
             echo
@@ -153,7 +166,16 @@ jobs:
               printf -- '- %s\n' "${skipped[@]}"
             fi
           } >>"$task"
-          cat "$task"
+      # Without build scripts or a pnpmfile, installing runs no code from the
+      # updated packages.
+      - name: Rebuild the lockfile and license notices
+        run: |
+          set -euo pipefail
+          pnpm install --no-frozen-lockfile --ignore-scripts --ignore-pnpmfile
+          pnpm notices
+          git add --all
+          echo "MAINTENANCE_SNAPSHOT=$(git write-tree)" >>"$GITHUB_ENV"
+          cat "$RUNNER_TEMP/task/task.md"
       - name: Run the maintenance agent
         id: agent
         # The Dependabot updates are still proposed if the model fails.
@@ -198,13 +220,11 @@ jobs:
         if: steps.result.outputs.changed == 'true'
         run: |
           set -euo pipefail
-          git diff --cached --name-only --no-renames -z \
-            | node scripts/maintenance/check-paths.mjs --allow-manifests --allow pnpm-lock.yaml --allow "$NOTICES"
-          pnpm lint
-          pnpm typecheck
-          pnpm test
-          pnpm notices:check
-          pnpm security:secrets
+          tools="$RUNNER_TEMP/tools"
+          node "$tools/check-paths.mjs" --allow-manifests --allow pnpm-lock.yaml --allow "$NOTICES"
+          for check in lint typecheck test notices:check security:secrets; do
+            node "$tools/sandbox.mjs" -- pnpm "$check"
+          done
           git diff --cached --check -- . ':(exclude)pnpm-lock.yaml' ":(exclude)$NOTICES"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: steps.result.outputs.changed == 'true'
@@ -231,7 +251,6 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24.8.0"
-          cache: pnpm
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: maintenance-change
@@ -245,8 +264,8 @@ jobs:
           # Use the checks from the base commit: the patch may replace them.
           cp -R scripts/maintenance "$RUNNER_TEMP/path-check"
           git apply --index --exclude=pnpm-lock.yaml --exclude="$NOTICES" "$RUNNER_TEMP/maintenance/change.patch"
-          git diff --cached --name-only --no-renames -z | node "$RUNNER_TEMP/path-check/check-paths.mjs" --allow-manifests
-          pnpm install --no-frozen-lockfile --ignore-scripts
+          node "$RUNNER_TEMP/path-check/check-paths.mjs" --allow-manifests
+          pnpm install --no-frozen-lockfile --ignore-scripts --ignore-pnpmfile
           pnpm notices
           auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
           for n in $PRS; do
@@ -300,11 +319,11 @@ jobs:
           dir="$RUNNER_TEMP/maintenance"
           derived="$RUNNER_TEMP/derived"
           # Use the checks from the base commit: the patch may replace them.
-          # Without renames, a moved file lists both its old and new path.
           cp -R scripts/maintenance "$RUNNER_TEMP/path-check"
           git apply --index --exclude=pnpm-lock.yaml --exclude="$NOTICES" "$dir/change.patch"
-          git diff --cached --name-only --no-renames -z | node "$RUNNER_TEMP/path-check/check-paths.mjs" --allow-manifests
+          node "$RUNNER_TEMP/path-check/check-paths.mjs" --allow-manifests
           cp "$derived/pnpm-lock.yaml" pnpm-lock.yaml
+          node "$RUNNER_TEMP/path-check/check-lockfile.mjs" pnpm-lock.yaml
           cp "$derived/THIRD_PARTY_NOTICES.txt" "$NOTICES"
           git add pnpm-lock.yaml "$NOTICES"
           included=()

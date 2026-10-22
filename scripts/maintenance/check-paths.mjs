@@ -1,7 +1,7 @@
-// Reads NUL-separated repository paths from stdin and fails if any of them is
-// one the maintenance agent must not change. Checks run by the agent can write
-// any file, this one included, so the publish job runs a copy taken from the
-// base commit on the final diff.
+// Fails if the staged changes touch a path the maintenance agent must not
+// change, or stage anything other than a regular file (a symlink or a
+// submodule). Checks run by the agent can write any file, this one included,
+// so the jobs after the agent run a copy taken before it started.
 //
 //   node check-paths.mjs [--allow-manifests] [--allow <path>]...
 //
@@ -9,32 +9,55 @@
 // existing registry dependencies to another version or remove them
 // (manifest-policy.mjs). --allow accepts one generated file.
 
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
-import { isProtectedPath, normalisePath } from './agent.mjs';
+import { isWritablePath, normalisePath } from './agent.mjs';
 import { stagedManifestViolations } from './manifest-policy.mjs';
 
-const { values } = parseArgs({
-  options: { 'allow-manifests': { type: 'boolean' }, allow: { type: 'string', multiple: true } },
-});
-const allowed = new Set(values.allow ?? []);
+const REGULAR_FILE = /^100(?:644|755)$/;
+const WORKSPACE_MANIFEST = /^(?:packages\/[^/]+\/)?package\.json$/;
 
-let input = '';
-for await (const chunk of process.stdin) input += chunk;
-
-const refused = [];
-for (const path of input.split('\0').filter(Boolean)) {
-  const rel = normalisePath(path);
-  if (!rel) {
-    refused.push(path);
-  } else if (allowed.has(rel)) {
-    continue;
-  } else if (values['allow-manifests'] && rel.split('/').at(-1) === 'package.json') {
-    refused.push(...stagedManifestViolations(rel));
-  } else if (isProtectedPath(rel)) {
-    refused.push(rel);
+// Parses `git diff --cached --raw -z --no-renames` into { mode, path }, with
+// mode 000000 for a deleted path.
+export function parseRawDiff(text) {
+  const fields = text.split('\0');
+  const entries = [];
+  for (let i = 0; i + 1 < fields.length; i += 2) {
+    entries.push({ mode: fields[i].split(' ')[1], path: fields[i + 1] });
   }
+  return entries;
 }
-if (refused.length) {
-  console.error(`Protected paths changed:\n${refused.join('\n')}`);
-  process.exit(1);
+
+export function refusedChanges(entries, { allowManifests = false, allowed = [], manifestViolations = stagedManifestViolations } = {}) {
+  const refused = [];
+  for (const { mode, path } of entries) {
+    const rel = normalisePath(path);
+    if (!rel) {
+      refused.push(path);
+    } else if (mode !== '000000' && !REGULAR_FILE.test(mode)) {
+      refused.push(`${rel} (not a regular file)`);
+    } else if (allowed.includes(rel)) {
+      continue;
+    } else if (allowManifests && WORKSPACE_MANIFEST.test(rel)) {
+      refused.push(...manifestViolations(rel));
+    } else if (!isWritablePath(rel)) {
+      refused.push(rel);
+    }
+  }
+  return refused;
+}
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  const { values } = parseArgs({
+    options: { 'allow-manifests': { type: 'boolean' }, allow: { type: 'string', multiple: true } },
+  });
+  const diff = execFileSync('git', ['diff', '--cached', '--raw', '-z', '--no-renames', '--no-abbrev'], {
+    encoding: 'utf8', maxBuffer: 64 * 1024 * 1024,
+  });
+  const refused = refusedChanges(parseRawDiff(diff), { allowManifests: values['allow-manifests'], allowed: values.allow ?? [] });
+  if (refused.length) {
+    console.error(`Changes outside what the maintenance agent may change:\n${refused.join('\n')}`);
+    process.exit(1);
+  }
 }
