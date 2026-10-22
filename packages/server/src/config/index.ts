@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { isIP } from 'node:net';
-import { parseBindHost, parseBoundedInteger, parseCorsOrigins, parseTrustedProxies, parseVoiceIceServers } from './validation.js';
+import { assertVoiceSfuCanStart, parseBindHost, parseBoundedInteger, parseCorsOrigins, parseTrustedProxies, parseVoiceIceServers } from './validation.js';
 import { loadDatabaseRuntimeConfig } from './database.js';
 import { readConfiguredValue } from './source.js';
 
@@ -196,6 +196,8 @@ if (config.voice.sfu.enabled) {
 	if (config.voice.sfu.basePort + config.voice.sfu.workerCount - 1 > 65535) {
 		throw new Error('VOICE_SFU_PORT_RANGE_EXCEEDED');
 	}
+
+	assertVoiceSfuCanStart(process.permission);
 }
 
 if (env.EMAIL_VERIFICATION?.trim() && !['required', 'disabled'].includes(env.EMAIL_VERIFICATION.trim())) {
