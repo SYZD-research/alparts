@@ -154,12 +154,14 @@ export async function login(email: string, password: string, deviceInfo?: Record
   });
 }
 
+/** `passkeyId` is the credential a passkey login was made with, so deleting that passkey can end the session. */
 export async function establishSession(
   user: typeof users.$inferSelect,
   deviceInfo?: Record<string, unknown>,
   method = 'password',
   beforeCreate?: (transaction: any) => Promise<void>,
   upgradedPasswordHash?: string,
+  passkeyId?: string,
 ) {
   const sessionId = randomUUID();
   const expiresAt = new Date(Date.now() + config.jwt.expiresInSeconds * 1000);
@@ -201,6 +203,7 @@ export async function establishSession(
       tokenHash: hashSessionToken(token),
       deviceInfo: deviceInfo || null,
       authenticationMethod: method,
+      passkeyId: passkeyId ?? null,
       expiresAt,
     });
     // A pepper rotation rewraps each credential the first time its password is proven.
@@ -244,6 +247,7 @@ export async function listSessions(userId: string, currentSessionId: string) {
     id: session.id,
     deviceId: session.deviceId,
     deviceInfo: session.deviceInfo,
+    authenticationMethod: session.authenticationMethod,
     createdAt: session.createdAt.toISOString(),
     expiresAt: session.expiresAt.toISOString(),
     current: session.id === currentSessionId,

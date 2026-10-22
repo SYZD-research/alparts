@@ -820,7 +820,7 @@ process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
     process.env.AUDIT_HEAD_OBJECT_KEY = `test-${randomUUID()}`;
     const database = await import('../db/index.js');
     closeDb = database.closeDb;
-    assert.equal(await database.checkDatabaseSchema(), 25);
+    assert.equal(await database.checkDatabaseSchema(), 26);
     const audit = await import('../middleware/audit.js');
     await audit.provisionAuditCheckpoint();
     const app = await import('../app.js');
@@ -1488,6 +1488,74 @@ process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
       }),
       /AUTHENTICATION_FAILED/,
     );
+  });
+  it('ends the other logins made with a deleted passkey and keeps the rest', { timeout: 20_000 }, async () => {
+    const { db } = await import('../db/index.js');
+    const { sql } = await import('drizzle-orm');
+    const { io } = await import('socket.io-client');
+    const { config } = await import('../config/index.js');
+    const auth = await import('../services/auth.service.js');
+    const service = await import('../services/passkey.service.js');
+    const { hashSessionToken } = await import('./session.js');
+    const user = await db.query.users.findFirst({ where: (u, { eq }) => eq(u.id, userId) });
+    assert.ok(user);
+    const cookieOf = (token: string) => `${config.auth.cookieName}=${token}`;
+    const sessionOf = async (token: string) => (await db.query.sessions.findFirst({
+      columns: { id: true },
+      where: (s, { eq }) => eq(s.tokenHash, hashSessionToken(token)),
+    }))?.id;
+    const signIn = async (key: ReturnType<typeof authenticator>) => {
+      const ceremony = await service.authenticationOptions('login', null, null);
+      return (await service.passkeyLogin(ceremony.id, key.assertion(ceremony.options.challenge) as any)).token;
+    };
+    const passkeyIds = async () => (await db.query.passkeys.findMany({ where: (p, { eq }) => eq(p.userId, userId) })).map((p) => p.id);
+
+    // A second passkey, and logins with each passkey and with the password.
+    const spare = authenticator(userId);
+    const registration = await json(await sensitive('/api/auth/passkeys/register/options', {}));
+    await json(await request('/api/auth/passkeys/register/verify', {
+      id: registration.id, name: 'Spare authenticator', response: spare.registration(registration.options.challenge),
+    }));
+    const asking = await signIn(spare);
+    const connected = await signIn(spare);
+    const keptPasskey = await signIn(passkey);
+    const keptPassword = (await auth.login(user.email, password)).token;
+    // A passkey login from before the passkey was kept on sessions cannot be matched.
+    const keptUnmatched = (await auth.establishSession(user, undefined, 'passkey')).token;
+    // A socket and a confirmation need the approved device.
+    await db.execute(sql`UPDATE sessions SET device_id = ${first.id}
+      WHERE id IN (${await sessionOf(asking)}, ${await sessionOf(connected)})`);
+
+    const socket = io(base, { transports: ['websocket'], extraHeaders: { Cookie: cookieOf(connected), Origin: origin } });
+    try {
+      await new Promise<void>((resolve, reject) => { socket.once('connect', resolve); socket.once('connect_error', reject); });
+      const disconnected = new Promise<void>((resolve) => socket.once('disconnect', () => resolve()));
+      // The login that deletes the passkey stays, though it was made with it.
+      const deleted = await json(await sensitive(`/api/auth/passkeys/${spare.id}`, undefined, 'DELETE', cookieOf(asking)));
+      assert.equal(deleted.revoked, 1);
+      await disconnected;
+    } finally { socket.disconnect(); }
+    assert.equal(await sessionOf(connected), undefined);
+    assert.equal((await request('/api/auth/me', undefined, cookieOf(connected))).status, 401);
+    for (const token of [asking, keptPasskey, keptPassword, keptUnmatched]) assert.ok(await sessionOf(token));
+    assert.deepEqual(await passkeyIds(), [passkey.id]);
+    const audited = (await db.execute(sql`SELECT details FROM audit_logs
+      WHERE action = 'passkey.delete' AND actor_id = ${userId} ORDER BY created_at DESC, id DESC LIMIT 1`)).rows[0]?.details as
+      { revokedSessions?: number } | undefined;
+    assert.equal(audited?.revokedSessions, 1);
+
+    // The list says how each login was made.
+    const listed = await json(await request('/api/auth/sessions', undefined, cookieOf(asking)));
+    assert.equal(listed.find((entry: { current: boolean }) => entry.current)?.authenticationMethod, 'passkey');
+    assert.ok(listed.some((entry: { authenticationMethod: string }) => entry.authenticationMethod === 'password'));
+
+    // The last passkey stays, and nothing ends.
+    const last = await sensitive(`/api/auth/passkeys/${passkey.id}`, undefined, 'DELETE');
+    assert.equal(last.status, 409);
+    assert.equal(((await last.json()) as { error: string }).error, 'LAST_PASSKEY');
+    assert.deepEqual(await passkeyIds(), [passkey.id]);
+    assert.ok(await sessionOf(keptPasskey));
+    for (const token of [asking, keptPasskey, keptPassword, keptUnmatched]) await auth.logout((await sessionOf(token))!, userId);
   });
   it('backs up opaque history and requires the recovery signing key to approve a replacement', async () => {
     generation = randomUUID();

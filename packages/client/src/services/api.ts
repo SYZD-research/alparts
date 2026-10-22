@@ -137,6 +137,7 @@ export interface AuthSession {
   id: string;
   deviceId: string | null;
   deviceInfo: Record<string, unknown> | null;
+  authenticationMethod: string;
   createdAt: string;
   expiresAt: string;
   current: boolean;

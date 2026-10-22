@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from 'node:crypto';
-import { and, eq, gt, isNotNull, isNull, lte, sql } from 'drizzle-orm';
+import { and, eq, gt, isNotNull, isNull, lte, ne, sql } from 'drizzle-orm';
 import {
   generateAuthenticationOptions,
   generateRegistrationOptions,
@@ -318,7 +318,7 @@ export async function passkeyLogin(id: string, response: AuthenticationResponseJ
     where: eq(users.id, result.credential.userId),
   });
   if (!user) throw new Error('AUTHENTICATION_FAILED');
-  return establishSession(user, undefined, 'passkey', (tx) => advanceCounter(tx, result));
+  return establishSession(user, undefined, 'passkey', (tx) => advanceCounter(tx, result), undefined, result.credential.id);
 }
 
 export async function finishStepUp(
@@ -432,12 +432,20 @@ export async function consumeStepUp(sessionId: string, purpose: string, token: s
   );
 }
 
+/**
+ * Deletes a passkey and ends the other sessions opened with it, so logins made
+ * with a passkey someone else added do not outlive it. The session that asks
+ * stays, as for a password change. Sessions from before the passkey was kept on
+ * them cannot be matched and expire as usual.
+ * Returns the ended sessions so their connections can be closed.
+ */
 export async function deletePasskey(
   userId: string,
+  currentSessionId: string,
   id: string,
   revalidateStepUp?: (tx: any) => Promise<void>,
-) {
-  await auditedTransaction(
+): Promise<string[]> {
+  return auditedTransaction(
     async (tx) => {
       if (revalidateStepUp) await revalidateStepUp(tx);
       await tx.execute(
@@ -449,13 +457,31 @@ export async function deletePasskey(
         .where(eq(passkeys.userId, userId))
         .limit(MAX_PASSKEYS + 1);
       if (keys.length <= 1) throw new Error('LAST_PASSKEY');
-      await tx.delete(passkeys).where(and(eq(passkeys.id, id), eq(passkeys.userId, userId)));
+      // A login with this passkey that is still committing holds its row, so
+      // this waits for it and that session is among the ones ended below.
+      const [removed] = await tx
+        .delete(passkeys)
+        .where(and(eq(passkeys.id, id), eq(passkeys.userId, userId)))
+        .returning({ id: passkeys.id });
+      if (!removed) return [];
+      const ended = await tx
+        .delete(sessions)
+        .where(
+          and(
+            eq(sessions.userId, userId),
+            eq(sessions.passkeyId, id),
+            ne(sessions.id, currentSessionId),
+          ),
+        )
+        .returning({ id: sessions.id });
+      return ended.map((session: { id: string }) => session.id);
     },
-    () => ({
+    (ended) => ({
       actorId: userId,
       action: 'passkey.delete',
       targetType: 'user',
       targetId: userId,
+      details: { revokedSessions: ended.length },
     }),
   );
 }

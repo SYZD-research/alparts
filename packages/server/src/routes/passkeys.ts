@@ -1,5 +1,6 @@
 import { displayText } from '../security/display-text.js';
 import { Router, type NextFunction } from 'express';
+import type { Server as SocketServer } from 'socket.io';
 import { passkeyRouteError } from '../security/account-errors.js';
 import { z } from 'zod';
 import type { AuthenticationResponseJSON, RegistrationResponseJSON } from '@simplewebauthn/server';
@@ -100,8 +101,15 @@ router.delete(
   '/passkeys/:id',
   authMiddleware,
   handle(async (req, res) => {
-    await service.deletePasskey(req.userId!, z.string().max(2048).parse(req.params.id), stepUpRevalidation(req));
-    res.json({ success: true });
+    const ended = await service.deletePasskey(
+      req.userId!,
+      req.sessionId!,
+      z.string().max(2048).parse(req.params.id),
+      stepUpRevalidation(req),
+    );
+    const io = req.app.get('io') as SocketServer | undefined;
+    for (const sessionId of ended) io?.in(`session:${sessionId}`).disconnectSockets(true);
+    res.json({ success: true, revoked: ended.length });
   }),
 );
 router.post(
