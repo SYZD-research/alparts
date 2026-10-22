@@ -33,12 +33,11 @@ describe('message swipe actions', () => {
     expect(messageSwipeAction(-20, true)).toBeNull();
   });
 
-  it('excludes deleted, reaction, unavailable, and verification-failed messages', () => {
+  it('excludes deleted, unavailable, and verification-failed messages', () => {
     const message = replyMessage();
     expect(canSwipeMessage(message)).toBe(true);
     expect(canSwipeMessage({ ...message, type: 'edit' })).toBe(true);
     expect(canSwipeMessage({ ...message, type: 'delete' })).toBe(false);
-    expect(canSwipeMessage({ ...message, type: 'reaction' })).toBe(false);
     expect(canSwipeMessage({ ...message, content: '[表示できないメッセージ]' })).toBe(false);
     expect(canSwipeMessage(markMessageCryptoVerification(message, false))).toBe(false);
     expect(canSwipeMessage(markMessageKeyUnavailable(message))).toBe(false);

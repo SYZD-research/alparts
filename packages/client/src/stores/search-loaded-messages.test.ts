@@ -27,6 +27,18 @@ describe('searchLoadedMessages', () => {
     expect(result.map((item) => item.messageId)).toEqual(['valid']);
   });
 
+  it('does not return an event that is not a message or an edit', () => {
+    const result = searchLoadedMessages('release', {
+      'channel-1': [
+        message({ id: 'valid' }),
+        message({ id: 'edited', type: 'edit' }),
+        message({ id: 'system', type: 'system' }),
+      ],
+    }, [{ id: 'channel-1', name: 'general' }]);
+
+    expect(result.map((item) => item.messageId).sort()).toEqual(['edited', 'valid']);
+  });
+
   it('normalizes case and full-width characters and ranks content before metadata', () => {
     const result = searchLoadedMessages('ＡＬＰＡＲＴＳ', {
       'channel-1': [

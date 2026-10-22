@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Message } from '@alparts/shared';
 import { api } from '../services/api';
+import { markMessageCryptoVerification } from './message-projector';
 import { MAX_RESIDENT_MESSAGE_EVENTS_PER_CHANNEL, setForumRetention, useMessageStore } from './message.store';
 
 const channelId = '11111111-1111-4111-8111-111111111111';
@@ -14,36 +15,36 @@ afterEach(() => {
 describe('message channel cleanup', () => {
   it('retains only the newest bounded event window for a channel', () => {
     for (let index = 0; index <= MAX_RESIDENT_MESSAGE_EVENTS_PER_CHANNEL; index += 1) {
-      useMessageStore.getState().addMessage(channelId, systemEvent(index));
+      useMessageStore.getState().addMessage(channelId, verifiedEvent(index));
     }
     const retained = useMessageStore.getState().eventsByChannel[channelId];
     expect(retained).toHaveLength(MAX_RESIDENT_MESSAGE_EVENTS_PER_CHANNEL);
-    expect(retained[0].id).toBe(systemEvent(1).id);
-    expect(retained[retained.length - 1]?.id).toBe(systemEvent(MAX_RESIDENT_MESSAGE_EVENTS_PER_CHANNEL).id);
+    expect(retained[0].id).toBe(verifiedEvent(1).id);
+    expect(retained[retained.length - 1]?.id).toBe(verifiedEvent(MAX_RESIDENT_MESSAGE_EVENTS_PER_CHANNEL).id);
   });
 
   it('keeps forum posts on screen even when they are older than the window', () => {
-    const listedPost = systemEvent(0);
-    const openPost = systemEvent(1);
-    const reply = { ...systemEvent(2), postId: openPost.id };
-    const rootEdit = { ...systemEvent(3), type: 'edit' as const, postId: listedPost.id, refMessageId: listedPost.id };
-    const otherReply = { ...systemEvent(4), postId: listedPost.id };
+    const listedPost = verifiedEvent(0);
+    const openPost = verifiedEvent(1);
+    const reply = { ...verifiedEvent(2), postId: openPost.id };
+    const rootEdit = { ...verifiedEvent(3), type: 'edit' as const, postId: listedPost.id, refMessageId: listedPost.id };
+    const otherReply = { ...verifiedEvent(4), postId: listedPost.id };
     setForumRetention(channelId, { rootIds: new Set([listedPost.id, openPost.id]), activePostId: openPost.id });
     useMessageStore.getState().addMessages(channelId, [listedPost, openPost, reply, rootEdit, otherReply]);
     for (let index = 5; index <= MAX_RESIDENT_MESSAGE_EVENTS_PER_CHANNEL + 5; index += 1) {
-      useMessageStore.getState().addMessage(channelId, systemEvent(index));
+      useMessageStore.getState().addMessage(channelId, verifiedEvent(index));
     }
 
     const ids = useMessageStore.getState().eventsByChannel[channelId].map((event) => event.id);
     expect(ids).toEqual(expect.arrayContaining([listedPost.id, openPost.id, reply.id, rootEdit.id]));
     expect(ids).not.toContain(otherReply.id);
-    expect(ids).not.toContain(systemEvent(5).id);
-    expect(ids).toContain(systemEvent(MAX_RESIDENT_MESSAGE_EVENTS_PER_CHANNEL + 5).id);
+    expect(ids).not.toContain(verifiedEvent(5).id);
+    expect(ids).toContain(verifiedEvent(MAX_RESIDENT_MESSAGE_EVENTS_PER_CHANNEL + 5).id);
 
     useMessageStore.getState().clearChannel(channelId);
     useMessageStore.getState().addMessages(channelId, [listedPost]);
     for (let index = 5; index <= MAX_RESIDENT_MESSAGE_EVENTS_PER_CHANNEL + 5; index += 1) {
-      useMessageStore.getState().addMessage(channelId, systemEvent(index));
+      useMessageStore.getState().addMessage(channelId, verifiedEvent(index));
     }
     expect(useMessageStore.getState().eventsByChannel[channelId].map((event) => event.id)).not.toContain(listedPost.id);
   });
@@ -82,32 +83,33 @@ describe('message channel cleanup', () => {
   });
 });
 
-function systemEvent(index: number): Message {
+/** A message already marked verified, so holding it starts no verification. */
+function verifiedEvent(index: number): Message {
   const suffix = index.toString(16).padStart(12, '0');
-  return {
+  return markMessageCryptoVerification({
     id: `00000000-0000-4000-8000-${suffix}`,
     channelId,
     authorId: '33333333-3333-4333-8333-333333333333',
     author: {
       id: '33333333-3333-4333-8333-333333333333',
-      displayName: 'System',
+      displayName: 'Alice',
       avatarUrl: null,
       status: 'offline',
       createdAt: '2026-01-01T00:00:00.000Z',
     },
-    deviceId: null,
+    deviceId: '44444444-4444-4444-8444-444444444444',
     content: `event-${index}`,
-    encryptedContent: '',
-    contentNonce: '',
-    keyVersion: 0,
-    signature: null,
-    type: 'system',
+    encryptedContent: 'ciphertext',
+    contentNonce: 'nonce',
+    keyVersion: 1,
+    signature: 'signature',
+    type: 'message',
     refMessageId: null,
     reactions: [],
     isPinned: false,
-    idempotencyKey: `system-${index}`,
+    idempotencyKey: `event-${index}`,
     createdAt: new Date(Date.UTC(2026, 0, 1, 0, 0, index)).toISOString(),
-  };
+  }, true);
 }
 
 function promiseWithResolvers<T>(): {

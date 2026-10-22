@@ -64,7 +64,7 @@ export function ForumPostView({ channelId, postId, sendDisabled }: Props) {
   // names the post's first message as its author signed it, so a server that
   // serves another post under this id cannot show the reply under it.
   const replies = useMemo(
-    () => (root ? messages.filter((message) => message.type !== 'reaction' && belongsToPost(message, root)) : []),
+    () => (root ? messages.filter((message) => belongsToPost(message, root)) : []),
     [messages, root],
   );
   const state = view?.states[postId];

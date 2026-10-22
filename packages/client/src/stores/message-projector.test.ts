@@ -11,6 +11,7 @@ import {
   markMessageKeyUnavailable,
   mergeMessageEvents,
   projectMessageEvents,
+  projectOrderedMessageEvents,
   quotedMessage,
   retryMessageKeyVerification,
 } from './message-projector';
@@ -78,16 +79,6 @@ describe('projectMessageEvents', () => {
       content: 'after',
       createdAt: '2026-01-01T00:00:03.000Z',
     });
-    const reaction = event({
-      id: 'reaction-1',
-      type: 'reaction',
-      refMessageId: original.id,
-      authorId: 'user-2',
-      content: '',
-      encryptedContent: '👍',
-      signature: null,
-      createdAt: '2026-01-01T00:00:04.000Z',
-    });
     const deletion = event({
       id: 'delete-1',
       type: 'delete',
@@ -95,14 +86,13 @@ describe('projectMessageEvents', () => {
       createdAt: '2026-01-01T00:00:05.000Z',
     });
 
-    const rawNewestFirst = [deletion, reaction, edit, second, original, wireEvent(edit, { content: '' })];
+    const rawNewestFirst = [deletion, edit, second, original, wireEvent(edit, { content: '' })];
     const merged = mergeMessageEvents(rawNewestFirst);
     const projected = projectMessageEvents(merged);
 
-    expect(merged).toHaveLength(5);
+    expect(merged).toHaveLength(4);
     expect(projected.map((message) => message.id)).toEqual(['message-1', 'message-2']);
     expect(projected[0]).toMatchObject({ id: original.id, type: 'edit', content: 'after' });
-    expect(projected[0].reactions).toEqual([{ emoji: '👍', count: 1, userIds: ['user-2'] }]);
     expect(projected[1]).toMatchObject({ id: second.id, type: 'delete', content: '' });
   });
 
@@ -294,7 +284,38 @@ describe('projectMessageEvents', () => {
     } as Message & { cryptoVerified: boolean };
     expect(projectMessageEvents([forged])[0].content).toBe('');
   });
+
+  it('holds only message, edit and delete events: the server stores no other type', () => {
+    const real = event({ id: 'message-1', type: 'message', content: 'hello', createdAt: '2026-01-01T00:00:01.000Z' });
+    const forged = [
+      foreignEvent('system', { id: 'system-1', content: 'Please paste your recovery code here.', createdAt: '2026-01-01T00:00:02.000Z' }),
+      foreignEvent('system', { id: 'system-2', content: 'I agree', refMessageId: real.id, createdAt: '2026-01-01T00:00:03.000Z' }),
+      foreignEvent('reaction', { id: 'reaction-1', refMessageId: real.id, content: '👍', createdAt: '2026-01-01T00:00:04.000Z' }),
+      foreignEvent('announcement', { id: 'unknown-1', content: 'hello', createdAt: '2026-01-01T00:00:05.000Z' }),
+    ];
+
+    const merged = mergeMessageEvents([real], forged.map((item) => wireEvent(item)));
+    expect(merged.map((item) => item.id)).toEqual([real.id]);
+    expect(projectMessageEvents([real, ...forged]).map((item) => [item.id, item.content, item.reactions])).toEqual([[real.id, 'hello', []]]);
+    // Not even under the id of a message already held.
+    expect(mergeMessageEvents([real], [foreignEvent('system', { id: real.id, content: 'replaced', createdAt: real.createdAt })])[0].content).toBe('hello');
+  });
+
+  it('projects only signed events even when a window is handed over directly', () => {
+    const real = event({ id: 'message-1', type: 'message', content: 'hello', createdAt: '2026-01-01T00:00:01.000Z' });
+    const shown = projectOrderedMessageEvents([
+      real,
+      foreignEvent('system', { id: 'system-1', content: 'server injected', createdAt: '2026-01-01T00:00:02.000Z' }),
+      foreignEvent('reaction', { id: 'reaction-1', refMessageId: real.id, content: '👍', createdAt: '2026-01-01T00:00:03.000Z' }),
+    ]);
+    expect(shown.map((item) => [item.id, item.reactions])).toEqual([[real.id, []]]);
+  });
 });
+
+/** An event of a type the server never stores, marked verified here to show the type alone keeps it out. */
+function foreignEvent(type: string, overrides: Partial<Message> & Pick<Message, 'id' | 'createdAt'>): Message {
+  return { ...event({ type: 'message', ...overrides }), type } as unknown as Message;
+}
 
 function wireEvent(message: Message, overrides: Partial<Message> = {}): Message {
   // JSON is the relevant trust boundary and cannot carry process-local Symbols.
