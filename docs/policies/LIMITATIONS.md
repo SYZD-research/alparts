@@ -16,7 +16,7 @@
 - Webおよびdesktopクライアントでworkspace/category/channel、private channel、基本的な暗号化text message、返信、編集、削除、reaction、pin、bookmarkを利用できる。
 - 1対1 DM/group DMのAPI、鍵受信者となるmember model、一覧・作成UIがある。
 - message eventはREST/Socketの耐久化後経路から取り込まれ（message/edit/delete以外の種別は捨てる）、client projectorが`(createdAt, id)`順序、重複排除、edit/delete stateを決定的に投影し、reaction/pinはserverが返すsnapshotを反映する。
-- workspace作成・一覧・member removal、category/channel管理、private member管理、role CRUD/割当/変更preview/有効権限理由、session/device一覧と失効UIがある。
+- workspace作成・一覧・member removal（最後の明示memberだった非DMのprivate channelはownerに引き継ぐ）、category/channel管理、private member管理、role CRUD/割当/変更preview/有効権限理由、session/device一覧と失効UIがある。
 - Category/channel role permission overrideはallow/deny/inherit、適用前preview、override・認可の両revision、実効権限理由、失権時のroom退出とrekey、公式clientの局所消去に対応する。
 - Attachmentはfile別key、暗号化filename、5 MiB chunk AEAD、中断再開、取消、短命予約、opaque download復号、危険形式警告に対応する。Desktop保存では平文をbounded native streamへ渡し、危険形式にWindows/macOSの隔離属性またはLinuxの非実行権限を付ける。Protocol-levelの複数chunk中断再開からdownload SHA一致を隔離PostgreSQL/MinIOで確認している。
 - 音声はchannelに紐づく最大8人のP2P WebRTC meshとして、参加・退出、ミュート、音声検出／プッシュトゥトーク、入出力device切替、発言者・接続品質表示に対応する。Signalingの参加認可・中継・失権退出を隔離integrationで確認している。

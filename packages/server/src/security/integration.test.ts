@@ -3874,6 +3874,129 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     assert.equal((await verifyAuditChain()).valid, true);
   });
 
+  it('hands a private channel to the owner when its last member is removed from the workspace', async () => {
+    const { db } = await import('../db/index.js');
+    const { auditLogs, channelMembers, channels, users } = await import('../db/schema.js');
+    const { hashNewPassword } = await import('../services/auth.service.js');
+    const { addChannelMember, createChannel, getWorkspaceChannels } = await import('../services/channel.service.js');
+    const { createDm } = await import('../services/dm.service.js');
+    const { acceptInvitation, createInvitation } = await import('../services/invitation.service.js');
+    const { MAX_CHANNELS_PER_WORKSPACE } = await import('../security/limits.js');
+    // The owner signs in to remove members and delete channels through the
+    // routes. The others are made directly and act through the services:
+    // sign-ups from this one source are limited per hour.
+    const ownerPassword = 'Correct-Horse-Battery-51!';
+    const [ownerRow] = await db.insert(users).values({
+      email: `channel-owner-${randomUUID()}@example.test`,
+      passwordHash: await hashNewPassword(ownerPassword),
+      displayName: 'Channel Owner',
+    }).returning();
+    const ownerLogin = await request('/api/auth/login', {
+      method: 'POST', body: { email: ownerRow.email, password: ownerPassword },
+    });
+    assert.equal(ownerLogin.status, 200);
+    const owner = {
+      cookie: ownerLogin.headers.get('set-cookie')!.split(';', 1)[0],
+      user: { id: ownerRow.id },
+      password: ownerPassword,
+    };
+    await registerDevice(owner, deviceFixture(), 'Channel owner device');
+    const workspace = await json<{ id: string }>(await request('/api/workspaces', {
+      method: 'POST', cookie: owner.cookie, body: { name: 'Orphaned private channels' },
+    }));
+    const workspaceRoles = await json<Array<{ id: string; name: string }>>(
+      await request(`/api/workspaces/${workspace.id}/roles`, { cookie: owner.cookie }),
+    );
+    const person = async (name: string, roleName: string) => {
+      const [created] = await db.insert(users).values({
+        email: `${name}-${randomUUID()}@example.test`, passwordHash: 'disabled-test-fixture', displayName: name,
+      }).returning();
+      const role = workspaceRoles.find((candidate) => candidate.name === roleName);
+      assert.ok(role, roleName);
+      const invitation = await createInvitation(workspace.id, owner.user.id, { roleId: role.id, expiresInSeconds: 3_600 });
+      await acceptInvitation(created.id, invitation.token);
+      return created;
+    };
+    const explicitMembers = async (channelId: string) => (await db.select({ userId: channelMembers.userId })
+      .from(channelMembers)
+      .where(eq(channelMembers.channelId, channelId))).map((row) => row.userId).sort();
+    const removeFromWorkspace = async (userId: string) => {
+      const removal = await request(`/api/workspaces/${workspace.id}/members/${userId}`, {
+        method: 'DELETE', cookie: owner.cookie,
+      });
+      assert.equal(removal.status, 200, await removal.text());
+    };
+    const handedOver = async (userId: string) => (await db.select({ details: auditLogs.details }).from(auditLogs)
+      .where(sql`${auditLogs.action} = 'workspace.member.remove' and ${auditLogs.targetId} = ${workspace.id}`))
+      .map((row) => row.details as { removedUserId?: string; ownerAddedChannelCount?: number })
+      .filter((details) => details.removedUserId === userId)
+      .map((details) => details.ownerAddedChannelCount);
+
+    const manager = await person('channel-manager', 'Administrator');
+    const peer = await person('channel-peer', 'Member');
+    const remaining = await person('channel-remaining', 'Member');
+    // A private channel only its creator is in, one the manager shares with a
+    // member who stays, and a conversation with the peer; public channels fill
+    // the rest of the quota.
+    const solo = await createChannel(workspace.id, 'solo', 'text', { isPrivate: true }, manager.id);
+    const shared = await createChannel(workspace.id, 'shared', 'text', { isPrivate: true }, manager.id);
+    await addChannelMember(shared.id, remaining.id, manager.id);
+    const conversation = (await createDm(workspace.id, manager.id, [peer.id])).dm.channelId;
+    const counted = await db.execute(sql`select count(*)::int as count from channels where workspace_id = ${workspace.id} and type <> 'dm'`);
+    await db.insert(channels).values(Array.from({ length: MAX_CHANNELS_PER_WORKSPACE - Number(counted.rows[0].count) }, (_, index) => ({
+      workspaceId: workspace.id, name: `filler-${index}`,
+    })));
+    const ownersChannels = async () => (await json<Array<{ id: string }>>(
+      await request(`/api/workspaces/${workspace.id}/channels`, { cookie: owner.cookie }),
+    )).map((channel) => channel.id);
+    assert.equal((await ownersChannels()).includes(solo.id), false, 'the owner is not in a private channel they never joined');
+    const createChannelRequest = () => request(`/api/workspaces/${workspace.id}/channels`, {
+      method: 'POST', cookie: owner.cookie, body: { name: 'fresh' },
+    });
+    const quotaRefusal = await createChannelRequest();
+    assert.equal(quotaRefusal.status, 409);
+    assert.equal((await json<{ error: string }>(quotaRefusal)).error, 'CHANNEL_LIMIT_REACHED');
+
+    // Nothing is handed over for a member who is in no private channel.
+    await removeFromWorkspace(peer.id);
+    assert.deepEqual(await explicitMembers(conversation), [manager.id]);
+    assert.deepEqual(await handedOver(peer.id), [0]);
+
+    const { io } = await import('socket.io-client');
+    const ownerSocket = io(baseUrl, {
+      transports: ['websocket'],
+      extraHeaders: { Cookie: owner.cookie, Origin: 'http://localhost:5173' },
+    });
+    sockets.push(ownerSocket);
+    await onceConnected(ownerSocket);
+    const told = onceSocketEventMatching<{ channelId: string }>(
+      ownerSocket, 'channel:permissions-updated', (payload) => payload.channelId === solo.id, 5_000,
+    );
+    const keyStateTold = onceSocketEventMatching<{ channelId: string }>(
+      ownerSocket, 'channel:key-rotation-required', (payload) => payload.channelId === solo.id, 5_000,
+    );
+    await removeFromWorkspace(manager.id);
+    // The channel only the manager was in goes to the owner. The one shared with
+    // a member who stays does not, and a conversation is never handed over.
+    assert.deepEqual(await explicitMembers(solo.id), [owner.user.id]);
+    assert.deepEqual(await explicitMembers(shared.id), [remaining.id]);
+    assert.deepEqual(await explicitMembers(conversation), []);
+    assert.deepEqual(await handedOver(manager.id), [1]);
+    await told;
+    await keyStateTold;
+    const afterwards = await ownersChannels();
+    assert.equal(afterwards.includes(solo.id), true);
+    assert.equal(afterwards.includes(shared.id), false);
+    assert.equal(afterwards.includes(conversation), false);
+    assert.equal((await getWorkspaceChannels(workspace.id, remaining.id)).some((channel) => channel.id === shared.id), true);
+
+    // It can be managed again, and deleting it frees the quota it kept.
+    assert.equal((await createChannelRequest()).status, 409);
+    assert.equal((await request(`/api/channels/${solo.id}`, { method: 'DELETE', cookie: owner.cookie })).status, 200);
+    assert.equal((await createChannelRequest()).status, 201);
+    assert.equal((await verifyAuditChain()).valid, true);
+  });
+
   it('binds edits, deletions, quotes and replies to the messages their authors signed (formal model M9)', async () => {
     const messageService = await import('../services/message.service.js');
     const ownerLogin = await request('/api/auth/login', {

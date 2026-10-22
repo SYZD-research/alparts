@@ -17,7 +17,7 @@ import {
   profileFlags,
   workspaceInvitations,
 } from '../db/schema.js';
-import { eq, and, gt, inArray, isNull } from 'drizzle-orm';
+import { eq, and, gt, inArray, isNull, ne } from 'drizzle-orm';
 import { sql } from 'drizzle-orm';
 import { DefaultRoles, Permissions } from '@alparts/shared';
 import { auditedTransaction } from '../middleware/audit.js';
@@ -217,7 +217,10 @@ export async function removeMember(workspaceId: string, userId: string, actorId:
     for (const channelId of [...channelIds].sort()) {
       await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${channelId})::bigint)`);
     }
-    const explicitPrivateMemberships = channelIds.length === 0 ? [] : await tx.select({ channelId: channelMembers.channelId })
+    const explicitPrivateMemberships = channelIds.length === 0 ? [] : await tx.select({
+      channelId: channelMembers.channelId,
+      type: channels.type,
+    })
       .from(channelMembers)
       .innerJoin(channels, and(eq(channels.id, channelMembers.channelId), eq(channels.isPrivate, true)))
       .where(and(eq(channelMembers.userId, userId), inArray(channelMembers.channelId, channelIds)))
@@ -225,6 +228,23 @@ export async function removeMember(workspaceId: string, userId: string, actorId:
     if (explicitPrivateMemberships.length > MAX_TOTAL_CHANNELS_PER_WORKSPACE) {
       throw new Error('PRIVATE_MEMBERSHIP_INVARIANT_EXCEEDED');
     }
+    // Only explicit members see a private channel, the owner included. One that
+    // loses its last member could never be seen, managed or deleted again and
+    // would keep counting toward the channel limit, so the owner takes it over.
+    // Only members of the workspace count, and direct messages stay with their
+    // participants.
+    const ownPrivateChannelIds: string[] = explicitPrivateMemberships
+      .filter((membership: { type: string }) => membership.type !== 'dm')
+      .map((membership: { channelId: string }) => membership.channelId);
+    const sharedChannels = ownPrivateChannelIds.length === 0 ? [] : await tx.selectDistinct({ channelId: channelMembers.channelId })
+      .from(channelMembers)
+      .innerJoin(workspaceMembers, and(
+        eq(workspaceMembers.userId, channelMembers.userId),
+        eq(workspaceMembers.workspaceId, workspaceId),
+      ))
+      .where(and(inArray(channelMembers.channelId, ownPrivateChannelIds), ne(channelMembers.userId, userId)));
+    const sharedChannelIds = new Set<string>(sharedChannels.map((row: { channelId: string }) => row.channelId));
+    const orphanedChannelIds = ownPrivateChannelIds.filter((channelId) => !sharedChannelIds.has(channelId));
     const before = await captureChannelAccessFromStore(tx, workspaceId, channelIds);
     // Realtime removal must tell the client which locally persisted channel
     // state to erase without revealing private/overridden channels it never
@@ -279,6 +299,12 @@ export async function removeMember(workspaceId: string, userId: string, actorId:
         inArray(channelMembers.channelId, channelIds),
       ));
     }
+    if (orphanedChannelIds.length > 0) {
+      await tx.insert(channelMembers).values(orphanedChannelIds.map((channelId) => ({
+        channelId,
+        userId: workspace.ownerId,
+      })));
+    }
     // Their invitations end with their membership. Using one checks its
     // creator too, but a member who comes back would otherwise revive them.
     const now = new Date();
@@ -301,6 +327,7 @@ export async function removeMember(workspaceId: string, userId: string, actorId:
       allChannelIds: channelIds,
       revokedChannelIds: [...knownChannelIds].sort(),
       revokedInvitationCount: revokedInvitations.length,
+      ownerAddedChannelCount: orphanedChannelIds.length,
       keyedChannelIds,
       roomEffects,
     };
@@ -314,6 +341,7 @@ export async function removeMember(workspaceId: string, userId: string, actorId:
       removedChannelCount: committed.allChannelIds.length,
       revokedChannelCount: committed.revokedChannelIds.length,
       revokedInvitationCount: committed.revokedInvitationCount,
+      ownerAddedChannelCount: committed.ownerAddedChannelCount,
       rekeyChannelCount: committed.keyedChannelIds.length,
     },
   }));

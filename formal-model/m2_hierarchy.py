@@ -188,7 +188,10 @@ def _transitions(state: State, unassign_rank_check: bool = True):
                     layout=tuple((c, None if cat == category else cat, p) for c, cat, p in state.layout),
                     cat=tuple(row for row in state.cat if row[0] != category))
 
-        # kick: KICK_MEMBERS and strictly higher rank (assertMemberRemovalAuthorized)
+        # kick: KICK_MEMBERS and strictly higher rank (assertMemberRemovalAuthorized).
+        # The removed member's private-channel rows are not modelled. The server also
+        # adds the owner to a private channel the member was the last explicit member
+        # of, which only gives the owner access (H3 is about losing it).
         if perms & KICK:
             for user, _ in state.members:
                 if user != actor and user != ws.owner and top > highest_position(ws, user):

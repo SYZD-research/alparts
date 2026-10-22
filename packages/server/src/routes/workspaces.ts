@@ -8,8 +8,8 @@ import { authMiddleware, type AuthRequest } from '../middleware/auth.js';
 import { stepUpRevalidation } from '../middleware/step-up.js';
 import { requireWorkspaceMember, requireWorkspacePermission } from '../middleware/rbac.js';
 import { rateLimit } from '../middleware/rate-limit.js';
-import { leaveUserChannelRooms } from '../websocket/room-membership.js';
-import { emitChannelKeyState } from '../websocket/key-state.js';
+import { joinAuthorizedUserToChannelRoom, leaveUserChannelRooms } from '../websocket/room-membership.js';
+import { emitChannelKeyState, keyStateChannelIds } from '../websocket/key-state.js';
 import { canonicalUuid } from '../security/canonical-id.js';
 
 const router = Router();
@@ -83,7 +83,22 @@ router.delete('/:id/members/:userId', authMiddleware, requireWorkspacePermission
     for (const channelId of result.allChannelIds) {
       if (io) leaveUserChannelRooms(io, req.params.userId, channelId);
     }
-    void emitChannelKeyState(io, result.keyedChannelIds);
+    // A private channel the member was last in went to the owner, who is told
+    // of it like any new viewer.
+    if (io) {
+      for (const effect of result.roomEffects) {
+        for (const gainedUserId of effect.gainedUserIds) {
+          await joinAuthorizedUserToChannelRoom(io, gainedUserId, effect.channelId);
+        }
+        if (effect.gainedUserIds.length > 0) {
+          io.to(`channel:${effect.channelId}`).emit('channel:permissions-updated', {
+            channelId: effect.channelId,
+            workspaceId: req.params.id,
+          });
+        }
+      }
+    }
+    void emitChannelKeyState(io, keyStateChannelIds(result.roomEffects));
     io?.to(`workspace:${req.params.id}`).emit('workspace:member-removed', {
       workspaceId: req.params.id,
       userId: req.params.userId,
