@@ -55,6 +55,7 @@
       "dist/main.js",
       "dist/file-save.js",
       "dist/security-policy.js",
+      "dist/session-cookies.js",
       "dist/transport-pins.js",
       "dist/transport-pins.json",
       "dist/settings.js",
@@ -131,6 +132,7 @@
     },
     "linux": {
       "executableName": "alparts",
+      "executableArgs": [],
       "icon": "build/icon.png",
       "target": [
         {

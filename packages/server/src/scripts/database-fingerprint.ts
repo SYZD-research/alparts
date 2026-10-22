@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { writeFile, readFile } from 'node:fs/promises';
 import pg from 'pg';
-import { loadDatabaseRuntimeConfig } from '../config/database.js';
+import { databaseConnectionOptions, loadDatabaseRuntimeConfig } from '../config/database.js';
 
 interface Fingerprint {
   version: 1;
@@ -19,9 +19,8 @@ if (operation === 'compare' && output && comparison) {
   }
   console.log(`Verified ${left.tables.length} tables: identical columns, row counts and content hashes`);
 } else if (operation === 'capture' && output && !comparison) {
-  const config = loadDatabaseRuntimeConfig(process.env, process.env.NODE_ENV || 'development');
-  const client = new pg.Client({ connectionString: config.url,
-    ssl: config.ssl ? { rejectUnauthorized: true } : undefined,
+  const config = loadDatabaseRuntimeConfig();
+  const client = new pg.Client({ ...databaseConnectionOptions(config),
     connectionTimeoutMillis: config.connectTimeoutMs, statement_timeout: 300_000,
     application_name: 'alparts-migration-verifier' });
   await client.connect();

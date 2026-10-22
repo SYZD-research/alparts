@@ -17,7 +17,18 @@ export function hashSessionToken(token: string): string {
   return createHash('sha256').update(token, 'utf8').digest('hex');
 }
 
-export async function verifySessionToken(token: string): Promise<ActiveSession | null> {
+interface SessionClaims {
+  userId: string;
+  sessionId: string;
+  expiresAtMs: number;
+}
+
+/**
+ * What the token proves on its own: size, signature, issuer, audience, expiry
+ * and the claims a session needs. Whether the session still exists is the
+ * database's answer, not this one.
+ */
+export function verifySessionClaims(token: string): SessionClaims | null {
   if (token.length > 4096) return null;
 
   let payload: jwt.JwtPayload;
@@ -36,6 +47,13 @@ export async function verifySessionToken(token: string): Promise<ActiveSession |
   const userId = payload.sub;
   const sessionId = payload.sid;
   if (typeof userId !== 'string' || typeof sessionId !== 'string' || typeof payload.exp !== 'number') return null;
+  return { userId, sessionId, expiresAtMs: payload.exp * 1000 };
+}
+
+export async function verifySessionToken(token: string): Promise<ActiveSession | null> {
+  const claims = verifySessionClaims(token);
+  if (!claims) return null;
+  const { userId, sessionId } = claims;
 
   const tokenHash = hashSessionToken(token);
   const session = await db.query.sessions.findFirst({
@@ -49,7 +67,7 @@ export async function verifySessionToken(token: string): Promise<ActiveSession |
   if (!session) return null;
   if (!await accountEnabled(userId)) return null;
 
-  const expiresAtMs = Math.min(payload.exp * 1000, session.expiresAt.getTime());
+  const expiresAtMs = Math.min(claims.expiresAtMs, session.expiresAt.getTime());
   if (!Number.isFinite(expiresAtMs) || expiresAtMs <= Date.now()) return null;
   return { userId, sessionId, deviceId: session.deviceId, tokenHash, expiresAtMs };
 }

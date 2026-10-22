@@ -1,11 +1,11 @@
 import { randomBytes } from 'node:crypto';
 import { isIP } from 'node:net';
-import { assertVoiceSfuCanStart, parseBindHost, parseBoundedInteger, parseCorsOrigins, parseTrustedProxies, parseVoiceIceServers } from './validation.js';
+import { assertVoiceSfuCanStart, parseBindHost, parseBoundedInteger, parseCorsOrigins, parseNodeEnvironment, parseTrustedProxies, parseVoiceIceServers } from './validation.js';
 import { loadDatabaseRuntimeConfig } from './database.js';
 import { readConfiguredValue } from './source.js';
 
 const env = process.env;
-const nodeEnv = env.NODE_ENV || 'development';
+const nodeEnv = parseNodeEnvironment(env.NODE_ENV);
 const isProduction = nodeEnv === 'production';
 
 function value(name: string): string | undefined {

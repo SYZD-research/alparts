@@ -1,7 +1,7 @@
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import pg from 'pg';
-import { loadDatabaseRuntimeConfig } from '../config/database.js';
+import { databaseConnectionOptions, loadDatabaseRuntimeConfig } from '../config/database.js';
 import { resolveMigrationsFolder } from '../db/migration-bundle.js';
 import { isProtectedPasswordHash, passwordPepper, previousPasswordPepper, protectPasswordHash, passwordSalt } from '../security/password-pepper.js';
 
@@ -9,8 +9,7 @@ const MIGRATION_LOCK_ID = 1_095_520_323;
 const migrationsFolder = resolveMigrationsFolder();
 const databaseConfig = loadDatabaseRuntimeConfig();
 const client = new pg.Client({
-  connectionString: databaseConfig.url,
-  ssl: databaseConfig.ssl ? { rejectUnauthorized: true } : undefined,
+  ...databaseConnectionOptions(databaseConfig),
   connectionTimeoutMillis: databaseConfig.connectTimeoutMs,
   query_timeout: databaseConfig.statementTimeoutMs + 1_000,
   statement_timeout: databaseConfig.statementTimeoutMs,

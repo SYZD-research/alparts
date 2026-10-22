@@ -11,7 +11,7 @@ process.env.JWT_SECRET = 'session-test-only-jwt-secret-at-least-32-bytes';
 process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
 process.env.AUDIT_INTEGRITY_KEY ||= 'test-audit-integrity-key-at-least-32-bytes';
 
-const { verifySessionToken } = await import('./session.js');
+const { verifySessionClaims, verifySessionToken } = await import('./session.js');
 const { config } = await import('../config/index.js');
 
 const claims = () => ({ sid: randomUUID() });
@@ -39,6 +39,7 @@ describe('session token verification', () => {
     const confused = `${header}.${body}.${createHmac('sha256', publicKey.export({ type: 'spki', format: 'pem' })).update(`${header}.${body}`).digest('base64url')}`;
     for (const token of [unsigned, hs512, rs256, confused]) {
       assert.equal(await verifySessionToken(token), null);
+      assert.equal(verifySessionClaims(token), null);
     }
   });
 
@@ -53,6 +54,21 @@ describe('session token verification', () => {
       jwt.sign({}, config.jwt.secret, { ...options(), algorithm: 'HS256' }),
       'x'.repeat(4097),
     ];
-    for (const token of tokens) assert.equal(await verifySessionToken(token), null);
+    for (const token of tokens) {
+      assert.equal(await verifySessionToken(token), null);
+      assert.equal(verifySessionClaims(token), null);
+    }
+  });
+
+  it('reads the claims of a signed token on its own, without asking the database', () => {
+    const userId = randomUUID();
+    const sessionId = randomUUID();
+    const before = Date.now();
+    const token = jwt.sign({ sid: sessionId }, config.jwt.secret, { ...options({ subject: userId }), algorithm: 'HS256' });
+    const claims = verifySessionClaims(token);
+    assert.equal(claims?.userId, userId);
+    assert.equal(claims?.sessionId, sessionId);
+    // Whole seconds, as the token carries them.
+    assert.ok(claims && claims.expiresAtMs > before + 299_000 && claims.expiresAtMs <= Date.now() + 300_000);
   });
 });

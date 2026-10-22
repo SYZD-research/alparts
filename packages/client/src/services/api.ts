@@ -137,6 +137,7 @@ export interface AuthSession {
   id: string;
   deviceId: string | null;
   deviceInfo: Record<string, unknown> | null;
+  authenticationMethod: string;
   createdAt: string;
   expiresAt: string;
   current: boolean;
@@ -405,7 +406,10 @@ export interface PermissionOverridePreview {
   authorizationRevision: string;
   before: PermissionOverride | null;
   after: PermissionOverridePreviewValue | null;
+  /** Effects on the channels the caller can see. */
   roomEffects: ChannelViewerEffect[];
+  /** How many other channels the change affects. */
+  otherChannelCount: number;
 }
 
 export interface PermissionOverrideWriteInput {
@@ -424,6 +428,7 @@ export interface PermissionOverrideMutationResult {
   override: PermissionOverride;
   authorizationRevision: string;
   roomEffects: ChannelViewerEffect[];
+  otherChannelCount: number;
 }
 
 export interface PermissionOverrideDeleteResult {
@@ -434,6 +439,7 @@ export interface PermissionOverrideDeleteResult {
   deleted: true;
   authorizationRevision: string;
   roomEffects: ChannelViewerEffect[];
+  otherChannelCount: number;
 }
 
 export type ChannelPermissionReason =
@@ -625,7 +631,8 @@ class ApiService {
     if (!response.ok) {
       // An unauthenticated startup probe is normal on a new installation.
       // loadUser handles it; it must not claim a never-created session expired.
-      if (response.status === 401 && path !== '/auth/login' && path !== '/auth/me') {
+      // Signing out of a session the server no longer knows is no expiry either.
+      if (response.status === 401 && path !== '/auth/login' && path !== '/auth/me' && path !== '/auth/logout') {
         queueMicrotask(() => this.unauthorizedHandler?.());
       }
       const raw = await response.json().catch(() => null) as unknown;
@@ -947,7 +954,13 @@ class ApiService {
   }
 
   async deleteCategory(workspaceId: string, categoryId: string) {
-    return this.request<{ categoryId: string; workspaceId: string; movedChannelIds: string[] }>(
+    return this.request<{
+      categoryId: string;
+      workspaceId: string;
+      movedChannelIds: string[];
+      roomEffects: ChannelViewerEffect[];
+      otherChannelCount: number;
+    }>(
       `/workspaces/${workspaceId}/categories/${categoryId}`,
       { method: 'DELETE' },
     );

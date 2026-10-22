@@ -1,5 +1,6 @@
-import { type DirectoryHead, type DirectoryEvent } from '@alparts/shared';
+import { expireDirectoryEvent, type DirectoryHead, type DirectoryEvent } from '@alparts/shared';
 import { appendDirectoryEvent, assertDeviceDecision } from './directory.service.js';
+import { pendingDevicesToRetire } from './device-limit.js';
 import { and, asc, eq, gt, inArray, isNull, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import {
@@ -62,6 +63,12 @@ function assertDeviceProof(
   ) throw new Error('INVALID_DEVICE_PROOF');
 }
 
+/** A device that nobody approved and the server retired, with the sessions that ended with it. */
+export interface ExpiredDevice {
+  deviceId: string;
+  sessionIds: string[];
+}
+
 export async function registerDevice(
   userId: string,
   sessionId: string,
@@ -83,6 +90,7 @@ export async function registerDevice(
     device: typeof devices.$inferSelect;
     created: boolean;
     dirtyWorkspaceIds: string[];
+    expired: ExpiredDevice[];
   }>(async (tx) => {
     await lockKeyProtocol(tx);
     // The client may retry registration after losing a response, and two tabs
@@ -118,7 +126,7 @@ export async function registerDevice(
         .where(and(eq(sessions.id, sessionId), eq(sessions.userId, userId)))
         .returning({ id: sessions.id }) as Array<{ id: string }>;
       if (bound.length !== 1) throw new Error('SESSION_NOT_FOUND');
-      return { device: active, created: false, dirtyWorkspaceIds: [] };
+      return { device: active, created: false, dirtyWorkspaceIds: [], expired: [] };
     }
 
     const [enrollmentSession] = await tx.select().from(sessions).where(and(eq(sessions.id, sessionId), eq(sessions.userId, userId), gt(sessions.expiresAt, new Date()))).for('share');
@@ -129,11 +137,16 @@ export async function registerDevice(
       // An old passkey session (e.g. a stolen cookie) is not a fresh assertion.
       || Date.now() - enrollmentSession.createdAt.getTime() > PASSKEY_DEVICE_ENROLLMENT_WINDOW_MS
     ) throw new Error('DEVICE_STEP_UP_REQUIRED');
-    const activeDevices = await tx.select({ id: devices.id })
+    const activeDevices = await tx.select({ id: devices.id, approvedAt: devices.approvedAt })
       .from(devices)
       .where(and(eq(devices.userId, userId), isNull(devices.revokedAt)))
-      .limit(MAX_ACTIVE_DEVICES_PER_USER + 1) as Array<{ id: string }>;
-    if (activeDevices.length >= MAX_ACTIVE_DEVICES_PER_USER) throw new Error('DEVICE_LIMIT_REACHED');
+      .orderBy(asc(devices.createdAt), asc(devices.id))
+      .limit(MAX_ACTIVE_DEVICES_PER_USER + 1) as Array<{ id: string; approvedAt: Date | null }>;
+    // Devices nobody approved must not fill the account for good, or someone
+    // who knows the password could keep the owner from adding or restoring a
+    // device: at the limit the oldest of them make room, an approved one never.
+    const makingRoom = pendingDevicesToRetire(activeDevices, MAX_ACTIVE_DEVICES_PER_USER);
+    if (!makingRoom) throw new Error('DEVICE_LIMIT_REACHED');
 
     const inserted = await tx.insert(devices).values({ userId, name, identityKey, approvedAt: candidates.length === 0 ? new Date() : null }).returning() as Array<typeof devices.$inferSelect>;
     const bound = await tx.update(sessions)
@@ -141,20 +154,34 @@ export async function registerDevice(
       .where(and(eq(sessions.id, sessionId), eq(sessions.userId, userId)))
       .returning({ id: sessions.id }) as Array<{ id: string }>;
     if (bound.length !== 1) throw new Error('SESSION_NOT_FOUND');
+    // Once this session is bound to the new device, ending the sessions of a
+    // retired device cannot end it, even if it was bound to that device before.
+    const expired: ExpiredDevice[] = [];
+    for (const deviceId of makingRoom) expired.push(await expireUnapprovedDevice(tx, userId, deviceId));
     await appendDirectoryEvent(tx, userId, { kind: candidates.length === 0 ? 'bootstrap' : 'register', deviceId: inserted[0].id, identityKey, actorDeviceId: inserted[0].id, challenge, signature: proof });
     const dirtyWorkspaceIds = inserted[0].approvedAt ? await abortPendingEpochsForNewDevice(tx, userId) : [];
-    return { device: inserted[0], created: true, dirtyWorkspaceIds };
-  }, ({ device, created }) => ({
-    actorId: userId,
-    action: created ? 'device.register' : 'device.bind',
-    targetType: 'device',
-    targetId: device.id,
-    details: created ? { name } : { reason: 'registration-retry' },
-  }));
+    return { device: inserted[0], created: true, dirtyWorkspaceIds, expired };
+  }, ({ device, created, expired }) => [
+    {
+      actorId: userId,
+      action: created ? 'device.register' : 'device.bind',
+      targetType: 'device',
+      targetId: device.id,
+      details: created ? { name } : { reason: 'registration-retry' },
+    },
+    ...expired.map((retired) => ({
+      actorId: userId,
+      action: 'device.expire',
+      targetType: 'device',
+      targetId: retired.deviceId,
+      details: { reason: 'device-limit' },
+    })),
+  ]);
   return {
     device: formatDevice(result.device),
     created: result.created,
     dirtyWorkspaceIds: result.dirtyWorkspaceIds,
+    expired: result.expired,
   };
 }
 
@@ -319,6 +346,42 @@ export async function revokeDevice(
     affectedWorkspaceIds: result.affectedWorkspaceIds,
     affectedChannelIds: result.affectedChannelIds,
   };
+}
+
+/**
+ * Retires a device that was registered but never approved, so that it stops
+ * holding a place among the account's devices. The directory entry is the
+ * server's own and no device signs it: clients accept it only for a device
+ * that is neither approved nor revoked, and this refuses every other, so an
+ * approved device is never retired this way. A device nobody approved is never
+ * a key recipient or a group member, so ending its sessions is all the cleanup
+ * it needs. Caller holds the key-protocol lock.
+ */
+export async function expireUnapprovedDevice(tx: any, userId: string, deviceId: string): Promise<ExpiredDevice> {
+  const [device] = await tx.select()
+    .from(devices)
+    .where(and(
+      eq(devices.id, deviceId),
+      eq(devices.userId, userId),
+      isNull(devices.approvedAt),
+      isNull(devices.revokedAt),
+    ))
+    .for('update') as Array<typeof devices.$inferSelect>;
+  if (!device) throw new Error('DEVICE_NOT_PENDING');
+  const boundSessions = await tx.query.sessions.findMany({
+    columns: { id: true },
+    where: and(
+      eq(sessions.deviceId, deviceId),
+      eq(sessions.userId, userId),
+      gt(sessions.expiresAt, new Date()),
+    ),
+    limit: MAX_ACTIVE_SESSIONS_PER_USER + 1,
+  }) as Array<{ id: string }>;
+  if (boundSessions.length > MAX_ACTIVE_SESSIONS_PER_USER) throw new Error('SESSION_INVARIANT_EXCEEDED');
+  await tx.update(devices).set({ revokedAt: new Date() }).where(eq(devices.id, deviceId));
+  await appendDirectoryEvent(tx, userId, expireDirectoryEvent(device));
+  await tx.delete(sessions).where(eq(sessions.deviceId, deviceId));
+  return { deviceId, sessionIds: boundSessions.map((session) => session.id) };
 }
 
 async function findAffectedKeyState(

@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { describe, it } from 'node:test';
 
@@ -87,6 +88,35 @@ describe('production startup configuration', () => {
     assert.equal(result.status, 0, result.stderr);
   });
 
+  it('refuses a NODE_ENV that is not production, development or test', () => {
+    for (const NODE_ENV of ['prod', 'staging', 'Production', '']) {
+      const result = loadConfiguration(productionEnvironment({ NODE_ENV }));
+      assert.notEqual(result.status, 0, JSON.stringify(NODE_ENV));
+      assert.match(result.stderr, /NODE_ENV must be production, development or test/, JSON.stringify(NODE_ENV));
+    }
+    // Unset is development, and the two other known values start too.
+    for (const NODE_ENV of [undefined, 'development', 'test']) {
+      const result = loadConfiguration(productionEnvironment({ NODE_ENV }));
+      assert.equal(result.status, 0, `${NODE_ENV}: ${result.stderr}`);
+    }
+  });
+
+  it('refuses a DATABASE_URL whose parameters would undo the TLS setting', () => {
+    for (const query of ['?sslmode=disable', '?sslmode=no-verify', '?ssl=false']) {
+      const result = loadConfiguration(productionEnvironment({ DATABASE_URL: `${syntheticDatabaseUrl('db.example.test')}${query}` }));
+      assert.notEqual(result.status, 0, query);
+      assert.match(result.stderr, /DATABASE_URL must not carry the "ssl[a-z]*" query parameter/, query);
+    }
+    // The host that passes the loopback check must be the host the client uses.
+    const moved = loadConfiguration(productionEnvironment({
+      DATABASE_URL: `${syntheticDatabaseUrl('127.0.0.1:5432')}?host=db.example.test`,
+      DB_SSL: 'false',
+      ALLOW_INSECURE_LOOPBACK_DEPENDENCIES: 'true',
+    }));
+    assert.notEqual(moved.status, 0);
+    assert.match(moved.stderr, /DATABASE_URL must not carry the "host" query parameter/);
+  });
+
   it('requires a strong metrics token when metrics are enabled', () => {
     const missing = loadConfiguration(productionEnvironment({ METRICS_ENABLED: 'true' }));
     assert.notEqual(missing.status, 0);
@@ -155,5 +185,19 @@ describe('production startup configuration', () => {
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
+  });
+});
+
+describe('systemd unit', () => {
+  const unit = readFileSync(fileURLToPath(new URL('../../../../deploy/alparts.service', import.meta.url)), 'utf8');
+
+  it('gives NODE_ENV and BIND_HOST to the process where the environment file cannot override them', () => {
+    // A value in EnvironmentFile= overrides one set with Environment=
+    // (systemd.exec(5)), so both are set on the command line instead.
+    assert.match(unit, /^EnvironmentFile=-\/etc\/alparts\/alparts\.env$/m);
+    assert.doesNotMatch(unit, /^Environment=(?:NODE_ENV|BIND_HOST)=/m);
+    const execStart = /^ExecStart=(.*)$/m.exec(unit)?.[1] ?? '';
+    assert.match(execStart, /^\/usr\/bin\/env NODE_ENV=production BIND_HOST=127\.0\.0\.1 \/usr\/bin\/node --permission /);
+    assert.match(execStart, / \/opt\/alparts\/packages\/server\/dist\/index\.js$/);
   });
 });

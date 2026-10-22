@@ -1,13 +1,14 @@
 import { loginWithPasskey } from '../services/passkey.service';
 import { create } from 'zustand';
 import type { User } from '@alparts/shared';
-import { api } from '../services/api';
+import { api, ApiError } from '../services/api';
+import { isSignOutPending, setSignOutPending } from '../services/pending-sign-out';
 import { getDesktopBridge } from '../services/desktop.service';
 import { clearActiveDevice, ensureDeviceSession } from '../services/crypto.service';
 import { connectSocket, disconnectSocket, setSocketUnauthorizedHandler } from '../services/socket';
 import { resetAuthenticatedState } from './reset';
 import { authErrorMessage } from './auth-error';
-import { t } from '../i18n';
+import { msg, t } from '../i18n';
 
 interface AuthState {
   user: User | null;
@@ -28,6 +29,25 @@ function serializeAuthentication<T>(operation: () => Promise<T>): Promise<T> {
   const next = authenticationTransport.then(operation, operation);
   authenticationTransport = next.then(() => undefined, () => undefined);
   return next;
+}
+
+const SIGN_OUT_UNFINISHED = msg('ログアウトを完了できませんでした。次にアプリを開いたときに、もう一度試します。');
+
+/**
+ * Ends the session behind this browser's cookie. The sign-out stays pending
+ * until the server confirms it, so a request that fails (offline, proxy error,
+ * rate limit) is finished at the next start rather than leaving a live session
+ * that resumes quietly. A session the server no longer knows (401) is ended.
+ */
+async function endServerSession(): Promise<boolean> {
+  setSignOutPending(true);
+  try {
+    await serializeAuthentication(() => api.logout());
+  } catch (error) {
+    if (!(error instanceof ApiError && error.status === 401)) return false;
+  }
+  setSignOutPending(false);
+  return true;
 }
 
 async function initializeAuthenticatedClient(user: User, generation: number, stepUpPassword?: string): Promise<void> {
@@ -54,6 +74,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     try {
       const result = await serializeAuthentication(() => api.login(email, password));
       if (generation !== authenticationGeneration) return;
+      // The new session's cookie replaced the one a pending sign-out was for.
+      setSignOutPending(false);
       if (get().user?.id && get().user?.id !== result.user.id) {
         clearActiveDevice();
         resetAuthenticatedState();
@@ -78,6 +100,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     try {
       const result = await serializeAuthentication(loginWithPasskey);
       if (generation !== authenticationGeneration) return;
+      setSignOutPending(false);
       clearActiveDevice(); resetAuthenticatedState();
       await initializeAuthenticatedClient(result.user, generation);
       set({ user: result.user, isLoading: false, isInitialized: true });
@@ -113,18 +136,28 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   logout: async () => {
-    authenticationGeneration += 1;
+    const generation = ++authenticationGeneration;
     disconnectSocket();
     clearActiveDevice();
     resetAuthenticatedState();
     set({ user: null, error: null, isLoading: false, isInitialized: true });
-    await serializeAuthentication(() => api.logout()).catch(() => undefined);
+    const ended = await endServerSession();
+    if (!ended && generation === authenticationGeneration) set({ error: t(SIGN_OUT_UNFINISHED) });
     await getDesktopBridge()?.clearHttpCache().catch(() => undefined);
   },
 
   loadUser: async () => {
     const generation = authenticationGeneration;
     set({ isLoading: true });
+    // The cookie of a sign-out the server never confirmed must not resume the account.
+    if (isSignOutPending() && !(await endServerSession())) {
+      if (generation !== authenticationGeneration) return;
+      disconnectSocket();
+      clearActiveDevice();
+      resetAuthenticatedState();
+      set({ user: null, error: t(SIGN_OUT_UNFINISHED), isLoading: false, isInitialized: true });
+      return;
+    }
     try {
       const user = await api.getMe();
       if (generation !== authenticationGeneration) return;

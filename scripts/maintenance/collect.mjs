@@ -3,10 +3,14 @@
 // agent receives. The workflow writes the files.
 //
 //   node collect.mjs deps
-//   node collect.mjs issue [--number <n>]
+//   node collect.mjs issue --number <n> [--snapshot <file>]
+//
+// --snapshot is a JSON file with the issue's title and body when it was
+// labelled; the issue is skipped if they have changed since.
 //
 // Uses GITHUB_REPOSITORY, GITHUB_API_URL and, when set, GH_TOKEN.
 
+import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 
@@ -16,6 +20,25 @@ export const DEPS_BRANCH_PREFIX = 'ai-maintenance/deps-';
 export const issueBranchPrefix = (number) => `ai-maintenance/issue-${number}-`;
 // Comments from anyone else on a labelled issue are left out of the task.
 const TRUSTED_AUTHORS = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
+
+// Text from GitHub reaches the model, so what GitHub does not show is
+// removed first: HTML comments, and invisible or direction-changing
+// characters. Long text is cut.
+export function cleanText(text, limit = 20_000) {
+  const cleaned = (text ?? '')
+    .replace(/<!--[\s\S]*?(?:-->|$)/g, '')
+    .replace(/\p{Cf}/gu, '')
+    .replace(/\r\n?/g, '\n')
+    .trim();
+  return cleaned.length > limit ? `${cleaned.slice(0, limit)}\n[cut]` : cleaned;
+}
+
+// Fences text so that nothing in it can close the block.
+export function fenced(text) {
+  const longest = Math.max(2, ...[...text.matchAll(/`+/g)].map((match) => match[0].length));
+  const fence = '`'.repeat(longest + 1);
+  return `${fence}text\n${text}\n${fence}`;
+}
 
 async function api(path) {
   const headers = {
@@ -48,11 +71,12 @@ export function renderDepsTask(pulls, eol) {
     lines.push('## Open Dependabot pull requests', '');
     for (const pull of pulls) {
       const failed = pull.failed.length ? ` (failed in CI: ${pull.failed.join('; ')})` : '';
-      lines.push(`- #${pull.number} ${pull.title}${failed}`);
+      lines.push(`- #${pull.number} ${cleanText(pull.title, 300).replace(/\s+/g, ' ')}${failed}`);
     }
     lines.push('');
   }
-  if (eol) lines.push(`## End-of-support list (issue #${eol.number})`, '', eol.body.trim(), '');
+  // The list quotes deprecation messages from the registry.
+  if (eol) lines.push(`## End-of-support list (issue #${eol.number})`, '', fenced(cleanText(eol.body)), '');
   return `${lines.join('\n')}\n`;
 }
 
@@ -65,13 +89,26 @@ export function pickIssue(issues, pulls) {
 }
 
 export function renderIssueTask(issue, comments) {
-  const lines = [`# GitHub issue #${issue.number}: ${issue.title}`, '', `Opened by ${issue.user.login}.`, '', (issue.body ?? '').trim(), ''];
+  const lines = [
+    `# GitHub issue #${issue.number}`, '',
+    `Opened by ${issue.user.login}.`, '',
+    '## Title', '', fenced(cleanText(issue.title, 300)), '',
+    '## Description', '', fenced(cleanText(issue.body)), '',
+  ];
   const trusted = comments.filter((comment) => TRUSTED_AUTHORS.has(comment.author_association));
   if (trusted.length) {
     lines.push('## Comments from maintainers', '');
-    for (const comment of trusted) lines.push(`### ${comment.user.login}, ${comment.created_at.slice(0, 10)}`, '', comment.body.trim(), '');
+    for (const comment of trusted) {
+      lines.push(`### ${comment.user.login}, ${comment.created_at.slice(0, 10)}`, '', fenced(cleanText(comment.body, 5_000)), '');
+    }
   }
   return `${lines.join('\n')}\n`;
+}
+
+// True when the issue's title or body differs from the snapshot taken when
+// it was labelled, so the maintainer has not seen the text the model would get.
+export function changedSince(issue, snapshot) {
+  return issue.title !== snapshot.title || (issue.body ?? '') !== (snapshot.body ?? '');
 }
 
 async function failedChecks(sha) {
@@ -101,13 +138,16 @@ async function collectDeps() {
   };
 }
 
-async function collectIssue(number) {
+async function collectIssue(number, snapshot) {
   const pulls = await api('/pulls?state=open&per_page=100');
-  const candidates = number
-    ? [await api(`/issues/${number}`)]
-    : await api(`/issues?state=open&labels=${FIX_LABEL}&per_page=100`);
-  const issue = pickIssue(candidates, pulls);
+  const issue = pickIssue([await api(`/issues/${number}`)], pulls);
   if (!issue) return { outputs: { work: 'false' } };
+  if (snapshot && changedSince(issue, snapshot)) {
+    return {
+      outputs: { work: 'false' },
+      notice: `Issue #${issue.number} changed after it was labelled. Add the ${FIX_LABEL} label again to use the new text.`,
+    };
+  }
   const comments = await api(`/issues/${issue.number}/comments?per_page=100`);
   return { outputs: { work: 'true', number: issue.number }, task: renderIssueTask(issue, comments) };
 }
@@ -115,13 +155,18 @@ async function collectIssue(number) {
 async function main() {
   const { values, positionals } = parseArgs({
     allowPositionals: true,
-    options: { number: { type: 'string' } },
+    options: { number: { type: 'string' }, snapshot: { type: 'string' } },
   });
   if (!process.env.GITHUB_REPOSITORY) throw new Error('GITHUB_REPOSITORY is required');
   let result;
-  if (positionals[0] === 'deps') result = await collectDeps();
-  else if (positionals[0] === 'issue') result = await collectIssue(values.number || null);
-  else throw new Error('usage: collect.mjs deps | issue [--number <n>]');
+  if (positionals[0] === 'deps') {
+    result = await collectDeps();
+  } else if (positionals[0] === 'issue' && /^[1-9][0-9]*$/.test(values.number ?? '')) {
+    const snapshot = values.snapshot ? JSON.parse(await readFile(values.snapshot, 'utf8')) : null;
+    result = await collectIssue(values.number, snapshot);
+  } else {
+    throw new Error('usage: collect.mjs deps | issue --number <n> [--snapshot <file>]');
+  }
   console.log(JSON.stringify(result));
 }
 

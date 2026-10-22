@@ -16,13 +16,20 @@ import {
   assertNoSuperiorAccessLoss,
   captureChannelAccessFromSnapshot,
   computeAuthorizationRevisionFromStore,
+  getChannelAuthorizationFromSnapshot,
+  getWorkspaceAuthorizationFromSnapshot,
+  limitEffectsToChannels,
   loadWorkspaceAuthorizationSnapshot,
   lockWorkspaceForAuthorization,
+  visibleChannelIdsFromSnapshot,
+  type ChannelRoomEffect,
   type WorkspaceAuthorizationSnapshot,
 } from './authorization.service.js';
 import {
+  MAX_CATEGORIES_PER_WORKSPACE,
   MAX_ROLES_PER_WORKSPACE,
   MAX_ROLE_ASSIGNMENTS_PER_MEMBER,
+  MAX_TOTAL_CHANNELS_PER_WORKSPACE,
 } from '../security/limits.js';
 
 export const ALL_PERMISSION_MASK = Object.values(Permissions).reduce((mask, permission) => mask | permission, 0);
@@ -39,6 +46,12 @@ interface RolePreviewInput {
   roleId: string;
   userId?: string;
   permissions?: number;
+}
+
+/** The category and channel overrides written for one role. */
+export interface RoleOverrides {
+  categories: ReadonlyArray<{ allowMask: number; denyMask: number }>;
+  channels: ReadonlyArray<{ channelId: string; allowMask: number; denyMask: number }>;
 }
 
 export function assertValidPermissionMask(value: number): void {
@@ -151,7 +164,16 @@ export async function updateRole(
     const channelAccessAfter = captureChannelAccessFromSnapshot(snapshotAfter);
     const roomEffects = await applyViewerEffectsAndRotation(transaction, channelAccessBefore, channelAccessAfter);
     const allChannelIds = [...new Set([...channelAccessBefore.viewers.keys(), ...channelAccessAfter.viewers.keys()])].sort();
-    return { existing, updated, affectedBefore, affectedAfter, accessChanges, roomEffects, allChannelIds };
+    return {
+      existing,
+      updated,
+      affectedBefore,
+      affectedAfter,
+      accessChanges,
+      roomEffects,
+      allChannelIds,
+      visibleChannelIds: visibleChannelIdsFromSnapshot(snapshotAfter, actorId, roomEffects.map((effect) => effect.channelId)),
+    };
   }, (committed) => ({
     actorId,
     action: 'role.update',
@@ -166,12 +188,17 @@ export async function updateRole(
     },
   }));
   return {
-    role: formatRole(result.updated),
-    affectedMembers: pairEvaluations(result.affectedBefore, result.affectedAfter),
     ...result.accessChanges,
+    // Every channel of the workspace, for room updates only: the caller sends `response`.
     roomEffects: result.roomEffects,
     allChannelIds: result.allChannelIds,
-    keyedChannelIds: result.roomEffects.filter((effect) => effect.rotationRequired).map((effect) => effect.channelId),
+    keyedChannelIds: keyedChannelIds(result.roomEffects),
+    response: {
+      role: formatRole(result.updated),
+      affectedMembers: pairEvaluations(result.affectedBefore, result.affectedAfter),
+      ...result.accessChanges,
+      ...visibleChannelEffects(result.roomEffects, result.visibleChannelIds),
+    },
   };
 }
 
@@ -228,6 +255,7 @@ export async function changeRoleAssignment(
     if (!member) throw new Error('MEMBER_NOT_FOUND');
     const snapshotBefore = await requireAuthorizationSnapshot(transaction, workspaceId);
     if (action === 'unassign') assertMemberCanBeManaged(actor, actorId, snapshotBefore, userId);
+    assertRoleOverridesHeld(snapshotBefore, actorId, await loadRoleOverrides(transaction, workspaceId, role.id), action);
     const before = evaluateMemberFromSnapshot(snapshotBefore, userId);
     const channelAccessBefore = captureChannelAccessFromSnapshot(snapshotBefore);
     const existing = await transaction.query.memberRoles.findFirst({
@@ -255,7 +283,16 @@ export async function changeRoleAssignment(
     const channelAccessAfter = captureChannelAccessFromSnapshot(snapshotAfter);
     const roomEffects = await applyViewerEffectsAndRotation(transaction, channelAccessBefore, channelAccessAfter);
     const allChannelIds = [...new Set([...channelAccessBefore.viewers.keys(), ...channelAccessAfter.viewers.keys()])].sort();
-    return { role, before, after, changed, accessChanges, roomEffects, allChannelIds };
+    return {
+      role,
+      before,
+      after,
+      changed,
+      accessChanges,
+      roomEffects,
+      allChannelIds,
+      visibleChannelIds: visibleChannelIdsFromSnapshot(snapshotAfter, actorId, roomEffects.map((effect) => effect.channelId)),
+    };
   }, (committed) => ({
     actorId,
     action: `role.${action}`,
@@ -270,17 +307,22 @@ export async function changeRoleAssignment(
     },
   }));
   return {
-    workspaceId,
-    userId,
-    roleId,
-    action,
-    changed: result.changed,
-    before: result.before,
-    after: result.after,
     ...result.accessChanges,
+    // Every channel of the workspace, for room updates only: the caller sends `response`.
     roomEffects: result.roomEffects,
     allChannelIds: result.allChannelIds,
-    keyedChannelIds: result.roomEffects.filter((effect) => effect.rotationRequired).map((effect) => effect.channelId),
+    keyedChannelIds: keyedChannelIds(result.roomEffects),
+    response: {
+      workspaceId,
+      userId,
+      roleId,
+      action,
+      changed: result.changed,
+      before: result.before,
+      after: result.after,
+      ...result.accessChanges,
+      ...visibleChannelEffects(result.roomEffects, result.visibleChannelIds),
+    },
   };
 }
 
@@ -304,6 +346,12 @@ export async function previewRoleChange(workspaceId: string, actorId: string, in
       if (input.operation === 'role.assign') assertCanCreateOrAssign(actor, role.permissions, role.position);
       const snapshot = await requireAuthorizationSnapshot(transaction, workspaceId);
       if (input.operation === 'role.unassign') assertMemberCanBeManaged(actor, actorId, snapshot, input.userId);
+      assertRoleOverridesHeld(
+        snapshot,
+        actorId,
+        await loadRoleOverrides(transaction, workspaceId, role.id),
+        input.operation === 'role.assign' ? 'assign' : 'unassign',
+      );
       assertNoSuperiorAccessLoss(snapshot, snapshot, actorId, {
         roleMutation: { roleId: role.id, included: input.operation === 'role.assign' },
         roleMutationUserIds: [input.userId],
@@ -366,6 +414,55 @@ function assertCanCreateOrAssign(
   if (actor.owner) return;
   if (position >= actor.highestPosition) throw new Error('ROLE_HIERARCHY');
   if ((permissions & ~actor.permissions) !== 0) throw new Error('PERMISSION_ESCALATION');
+}
+
+/**
+ * Holding a role applies the category and channel overrides written for it:
+ * assigning it grants the bits they allow and taking it away lifts the bits
+ * they deny. The override API lets an actor write an override only for bits it
+ * holds (in the workspace for a category, in the channel for a channel), so
+ * giving or taking the role needs the same. The owner may give or take any role.
+ */
+export function assertRoleOverridesHeld(
+  snapshot: WorkspaceAuthorizationSnapshot,
+  actorId: string,
+  overrides: RoleOverrides,
+  action: 'assign' | 'unassign',
+): void {
+  const actor = getWorkspaceAuthorizationFromSnapshot(snapshot, actorId);
+  if (!actor) throw new Error('NOT_AUTHORIZED');
+  if (actor.isOwner) return;
+  const touched = (row: { allowMask: number; denyMask: number }) => (action === 'assign' ? row.allowMask : row.denyMask);
+  for (const row of overrides.categories) {
+    if ((touched(row) & ~actor.permissionMask) !== 0) throw new Error('PERMISSION_ESCALATION');
+  }
+  for (const row of overrides.channels) {
+    const held = actor.permissionMask
+      & (getChannelAuthorizationFromSnapshot(snapshot, actorId, row.channelId, {}, false)?.permissions ?? actor.permissionMask);
+    if ((touched(row) & ~held) !== 0) throw new Error('PERMISSION_ESCALATION');
+  }
+}
+
+export async function loadRoleOverrides(store: any, workspaceId: string, roleId: string): Promise<RoleOverrides> {
+  const categories = await store.query.categoryRolePermissionOverrides.findMany({
+    columns: { allowMask: true, denyMask: true },
+    where: and(
+      eq(categoryRolePermissionOverrides.workspaceId, workspaceId),
+      eq(categoryRolePermissionOverrides.roleId, roleId),
+    ),
+    limit: MAX_CATEGORIES_PER_WORKSPACE + 1,
+  });
+  if (categories.length > MAX_CATEGORIES_PER_WORKSPACE) throw new Error('CATEGORY_OVERRIDE_INVARIANT_EXCEEDED');
+  const channels = await store.query.channelRolePermissionOverrides.findMany({
+    columns: { channelId: true, allowMask: true, denyMask: true },
+    where: and(
+      eq(channelRolePermissionOverrides.workspaceId, workspaceId),
+      eq(channelRolePermissionOverrides.roleId, roleId),
+    ),
+    limit: MAX_TOTAL_CHANNELS_PER_WORKSPACE + 1,
+  });
+  if (channels.length > MAX_TOTAL_CHANNELS_PER_WORKSPACE) throw new Error('CHANNEL_OVERRIDE_INVARIANT_EXCEEDED');
+  return { categories, channels };
 }
 
 /**
@@ -498,6 +595,16 @@ function pairEvaluations(before: any[], after: any[]) {
       lost: permissionNames(previous.permissionMask & ~next.permissionMask),
     };
   });
+}
+
+function keyedChannelIds(effects: ReadonlyArray<{ channelId: string; rotationRequired: boolean }>): string[] {
+  return effects.filter((effect) => effect.rotationRequired).map((effect) => effect.channelId);
+}
+
+/** The channel effects of a role change that its response may name, and how many more there were. */
+function visibleChannelEffects(effects: ChannelRoomEffect[], visibleChannelIds: ReadonlySet<string>) {
+  const { roomEffects, otherChannelCount } = limitEffectsToChannels(effects, visibleChannelIds);
+  return { roomEffects, keyedChannelIds: keyedChannelIds(roomEffects), otherChannelCount };
 }
 
 function previewResponse(workspaceId: string, operation: string, before: any[], after: any[]) {

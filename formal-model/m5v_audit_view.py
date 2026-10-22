@@ -82,7 +82,7 @@ for name in ('account.disable', 'account.enable', 'account.password.reset', 'aud
              'recovery.disable', 'recovery.key.backup', 'security.audit.truncation-control', 'session.revoke',
              'session.revoke_all', 'user.avatar.remove', 'user.avatar.update', 'user.login', 'user.login.failed',
              'user.logout', 'user.password.change', 'user.password_login.disable', 'user.password_login.enable',
-             'user.profile.update', 'user.register'):
+             'user.profile.update', 'user.register', 'user.register.refused'):
     CATALOG[name] = ACCOUNT
 # Names assembled from parts at run time (the parts are listed above).
 TEMPLATES = {'message.reaction.': ('add', 'remove'), 'role.': ('assign', 'unassign'),

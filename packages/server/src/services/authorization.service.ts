@@ -624,6 +624,36 @@ export function captureChannelViewersFromSnapshot(
   return captureChannelUsersFromSnapshot(snapshot, options, isVisibleChannelAuthorization);
 }
 
+/** The channels among `channelIds` that `userId` can see in `snapshot`. */
+export function visibleChannelIdsFromSnapshot(
+  snapshot: WorkspaceAuthorizationSnapshot,
+  userId: string,
+  channelIds: Iterable<string>,
+): Set<string> {
+  const visible = new Set<string>();
+  for (const channelId of channelIds) {
+    if (isVisibleChannelAuthorization(getChannelAuthorizationFromSnapshot(snapshot, userId, channelId, {}, false))) {
+      visible.add(channelId);
+    }
+  }
+  return visible;
+}
+
+/**
+ * What a management response may say about the channels a change affected:
+ * the effects on channels the actor can see, and how many others there were.
+ * The others can be private channels or other members' direct messages, so a
+ * response never names them or the users in them. The server still applies
+ * every effect to rooms and keys.
+ */
+export function limitEffectsToChannels<T extends { channelId: string }>(
+  effects: readonly T[],
+  visibleChannelIds: ReadonlySet<string>,
+): { roomEffects: T[]; otherChannelCount: number } {
+  const roomEffects = effects.filter((effect) => visibleChannelIds.has(effect.channelId));
+  return { roomEffects, otherChannelCount: effects.length - roomEffects.length };
+}
+
 export function captureChannelAccessFromSnapshot(
   snapshot: WorkspaceAuthorizationSnapshot,
   options: AuthorizationEvaluationOptions = {},

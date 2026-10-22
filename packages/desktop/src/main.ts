@@ -26,15 +26,17 @@ import {
   isAllowedExternalUrl,
   isAllowedMediaPermission,
   isBackendPath,
+  isSandboxStartAllowed,
   isTrustedRendererUrl,
   normalizeIdleLockMinutes,
   normalizeServerUrl,
   resolveBundledPath,
   withBackendRequestOrigin,
 } from './security-policy.js';
-import { SettingsStore, type DesktopSettings } from './settings.js';
+import { AppLock, SettingsStore, type DesktopSettings } from './settings.js';
 import { SecretVault, type VaultCrypto } from './vault.js';
 import { NativeFileSaveManager } from './file-save.js';
+import { clearDeploymentCookies } from './session-cookies.js';
 import { desktopLocale, desktopStrings, normalizeDesktopLocale, type DesktopLocale } from './strings.js';
 
 const PARTITION = 'persist:alparts';
@@ -60,10 +62,10 @@ app.setName('alparts');
 let mainWindow: BrowserWindow | null = null;
 let desktopSession: Session;
 let settingsStore: SettingsStore;
+let appLock: AppLock;
 let vault: SecretVault;
 let fileSaves: NativeFileSaveManager;
 let settings: DesktopSettings;
-let lockTriggered = false;
 let idleTimer: NodeJS.Timeout | null = null;
 let quitAfterCleanup = false;
 let runtimeReady = false;
@@ -88,7 +90,7 @@ app.on('window-all-closed', () => {
 app.on('before-quit', (event) => {
   if (!fileSaves || quitAfterCleanup) return;
   event.preventDefault();
-  void fileSaves.abortAll().finally(() => {
+  void Promise.all([fileSaves.abortAll(), appLock.settled()]).finally(() => {
     quitAfterCleanup = true;
     app.quit();
   });
@@ -103,18 +105,29 @@ app.on('activate', () => {
 if (singleInstance) {
   void app.whenReady().then(async () => {
     locale = desktopLocale(app.getPreferredSystemLanguages());
+    // --no-sandbox overrides app.enableSandbox() and sandbox: true, and the AppImage launcher adds
+    // it when the system has no user namespaces. Refuse before anything is loaded.
+    if (!isSandboxStartAllowed(app.isPackaged, (name) => app.commandLine.hasSwitch(name))) {
+      const text = desktopStrings(locale);
+      dialog.showErrorBox(text.sandboxUnavailableTitle, text.sandboxUnavailableMessage);
+      app.exit(1);
+      return;
+    }
     DEVELOPMENT_URL = readDevelopmentUrl();
     transportPins = parseTransportPins(JSON.parse(await readFile(new URL('./transport-pins.json', import.meta.url), 'utf8')), app.isPackaged);
     MANAGED_SERVER_URL = readManagedServerUrl();
     app.setAppUserModelId('org.alparts.desktop');
     if (process.platform === 'darwin') app.dock?.setIcon(applicationIconPath());
     settingsStore = new SettingsStore(app.getPath('userData'));
+    appLock = new AppLock(app.getPath('userData'));
     const persistedSettings = await settingsStore.load();
     settings = MANAGED_SERVER_URL
       ? { ...persistedSettings, serverUrl: MANAGED_SERVER_URL }
       : persistedSettings;
     desktopSession = session.fromPartition(PARTITION);
     vault = new SecretVault(app.getPath('userData'), electronVaultCrypto());
+    // A lock set before the app was closed is still in force, so the app starts locked.
+    await appLock.load();
     if (
       MANAGED_SERVER_URL
       && persistedSettings.serverUrl
@@ -122,6 +135,8 @@ if (singleInstance) {
     ) {
       await desktopSession.clearStorageData({ origin: persistedSettings.serverUrl });
       await vault.deleteNamespace(deploymentNamespace(persistedSettings.serverUrl));
+      // The session and keys the lock protected are gone with the old deployment.
+      await appLock.unlock();
     }
     fileSaves = new NativeFileSaveManager(async (suggestedName) => {
       if (!mainWindow || mainWindow.isDestroyed()) return null;
@@ -360,6 +375,7 @@ function registerIpcHandlers(): void {
     if (previous !== serverUrl && previous) {
       await desktopSession.clearStorageData({ origin: previous });
       await vault.deleteNamespace(deploymentNamespace(previous));
+      await appLock.unlock();
     }
     settings = { ...settings, serverUrl };
     await settingsStore.save(settings);
@@ -378,14 +394,16 @@ function registerIpcHandlers(): void {
     return true;
   }));
   ipcMain.handle('desktop:clear-http-cache', checked(async () => {
-    // Device keys live in IndexedDB and must survive a sign-out; only the
-    // HTTP-level caches are dropped here.
+    // The session cookie is HttpOnly and survives a sign-out the server did not
+    // confirm, so it is dropped here. Device keys live in IndexedDB and must
+    // survive a sign-out; besides the cookies only HTTP-level caches go.
+    await clearDeploymentCookies(desktopSession.cookies, [settings.serverUrl, DEVELOPMENT_URL]);
     await desktopSession.clearCache();
     await desktopSession.clearStorageData({ storages: ['cachestorage', 'serviceworkers', 'shadercache'] });
     return true;
   }));
   ipcMain.handle('desktop:unlock-complete', checked(async () => {
-    lockTriggered = false;
+    await appLock.unlock();
     return true;
   }));
   ipcMain.handle('desktop:set-language', checked(async (_event, value: unknown) => {
@@ -455,7 +473,7 @@ async function desktopInfo() {
     version: app.getVersion(),
     serverUrl: settings.serverUrl,
     idleLockMinutes: settings.idleLockMinutes,
-    locked: lockTriggered,
+    locked: appLock.locked,
     secureStorageReady: await vault.available(),
     serverManaged: Boolean(MANAGED_SERVER_URL),
   } as const;
@@ -483,14 +501,17 @@ function installLockMonitoring(): void {
   powerMonitor.on('lock-screen', lock);
   powerMonitor.on('suspend', lock);
   idleTimer = setInterval(() => {
-    if (!lockTriggered && powerMonitor.getSystemIdleTime() >= settings.idleLockMinutes * 60) triggerLock();
+    if (!appLock.locked && powerMonitor.getSystemIdleTime() >= settings.idleLockMinutes * 60) triggerLock();
   }, 15_000);
   idleTimer.unref();
 }
 
 function triggerLock(): void {
-  if (lockTriggered) return;
-  lockTriggered = true;
+  if (appLock.locked) return;
+  // The lock applies at once; the marker that carries it across a restart is saved behind it.
+  void appLock.lock().catch((error: unknown) => {
+    if (!app.isPackaged) console.error(error);
+  });
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('desktop:lock');
 }
 

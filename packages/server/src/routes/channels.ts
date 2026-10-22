@@ -134,6 +134,10 @@ router.put('/channels/:id', authMiddleware, requireChannelPermission(Permissions
       res.status(404).json({ error: 'NOT_FOUND', message: 'Channel not found', statusCode: 404 });
       return;
     }
+    if (error.message === 'NOT_AUTHORIZED') {
+      res.status(403).json({ error: 'FORBIDDEN', message: 'Insufficient permissions', statusCode: 403 });
+      return;
+    }
     throw error;
   }
 });
@@ -323,7 +327,7 @@ router.delete('/workspaces/:wid/categories/:categoryId', authMiddleware, require
       });
     }
     void emitChannelKeyState(io, keyStateChannelIds(result.roomEffects));
-    res.json(result);
+    res.json(result.response);
   } catch (error: any) {
     if (error.message === 'MEMBER_HIERARCHY') {
       res.status(403).json({ error: 'MEMBER_HIERARCHY', message: 'This change would remove access for a higher-ranked member.', statusCode: 403 });

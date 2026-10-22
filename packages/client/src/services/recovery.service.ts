@@ -1,5 +1,5 @@
 import { channelKeyScopes } from './channel-key-scope';
-import { serializeDeviceDecision } from '@alparts/shared';
+import { serializeDeviceDecision, serializeHistoryKeyBackup } from '@alparts/shared';
 import { api, ApiError } from './api';
 import {
   getActiveDevice,
@@ -37,12 +37,23 @@ interface RecoveryRecord {
   keyCommitment: string;
   ciphertext: string;
 }
+/** A record as uploaded. The archive keeps the record itself, not the signature. */
+interface SignedRecoveryRecord extends RecoveryRecord {
+  signature: string;
+}
 interface Cursor {
   channelId: string;
   version: number;
 }
 import { aad, aes, seal, open, recoveryAccess } from './recovery-crypto';
 const encoder = new TextEncoder();
+/** base64url(SHA-256(bytes)): how records name a key and how a signature names a record. */
+async function sha256Base64Url(bytes: Uint8Array): Promise<string> {
+  return toBase64(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes as Uint8Array<ArrayBuffer>)))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+}
 function assertRecoveryOwner(owner: { userId: string; deviceId: string }) {
   const current = getActiveDevice();
   if (current.userId !== owner.userId || current.deviceId !== owner.deviceId)
@@ -194,14 +205,9 @@ async function encryptedHistoryKey(
   version: number,
   raw: Uint8Array,
   local: LocalRecovery,
-): Promise<RecoveryRecord> {
+): Promise<SignedRecoveryRecord> {
   const owner = getActiveDevice();
-  const commitment = toBase64(
-    new Uint8Array(await crypto.subtle.digest('SHA-256', raw as Uint8Array<ArrayBuffer>)),
-  )
-    .replace(/\+/g, '-')
-    .replace(/\//g, '_')
-    .replace(/=+$/, '');
+  const commitment = await sha256Base64Url(raw);
   const encoded = fromBase64(local.key);
   try {
     const ciphertext = await seal(
@@ -209,16 +215,45 @@ async function encryptedHistoryKey(
       raw,
       aad(owner.userId, `${local.generation}:${channelId}:${version}:${commitment}`),
     );
+    // The server cannot read a record, so it accepts one only if this device signed it.
+    const signature = await signDevicePayload(
+      serializeHistoryKeyBackup({
+        userId: owner.userId,
+        generation: local.generation,
+        channelId,
+        version,
+        keyCommitment: commitment,
+        ciphertextHash: await sha256Base64Url(encoder.encode(ciphertext)),
+      }),
+    );
     return {
       generation: local.generation,
       channelId,
       version,
       keyCommitment: commitment,
       ciphertext,
+      signature,
     };
   } finally {
     encoded.fill(0);
   }
+}
+const backupKey = (channelId: string, version: number) => `${channelId}:${version}`;
+/**
+ * Uploads records and returns the versions the archive holds afterwards:
+ * those it stored now and those it already had a record of.
+ */
+async function uploadHistoryRecords(records: SignedRecoveryRecord[]): Promise<Set<string>> {
+  const response = await recoveryPage<{ results?: Array<{ channelId: string; version: number; status: string }> }>(
+    '/recovery/keys',
+    { keys: records },
+  );
+  const held = new Set<string>();
+  if (!Array.isArray(response?.results)) return held;
+  for (const result of response.results)
+    if (result?.status === 'stored' || result?.status === 'present')
+      held.add(backupKey(result.channelId, result.version));
+  return held;
 }
 export async function backupRawHistoryKey(channelId: string, version: number, raw: Uint8Array) {
   const scope = channelKeyScopes.capture(channelId);
@@ -232,7 +267,8 @@ export async function backupRawHistoryKey(channelId: string, version: number, ra
   }
   const record = await encryptedHistoryKey(channelId, version, raw, local);
   channelKeyScopes.assertCurrent(scope);
-  await recoveryPage('/recovery/keys', record);
+  if (!(await uploadHistoryRecords([record])).has(backupKey(channelId, version)))
+    throw new Error('RECOVERY_BACKUP_UNCONFIRMED');
   await writeSecurityState(owner, name, local.generation, scope);
   await deleteSecurityState(owner, `recovery-backup-pending:${channelId}:${version}`);
 }
@@ -279,7 +315,7 @@ export async function backupAvailableHistory() {
     const result: { candidates: Cursor[]; cursor: Cursor | null } = await recoveryPage(
       `/recovery/candidates${cursor ? `?channelId=${encodeURIComponent(cursor.channelId)}&version=${encodeURIComponent(String(cursor.version))}` : ''}`,
     );
-    const records: RecoveryRecord[] = [];
+    const records: SignedRecoveryRecord[] = [];
     const scopes = [];
     for (const candidate of result.candidates) {
       if (
@@ -300,9 +336,10 @@ export async function backupAvailableHistory() {
       }
     }
     scopes.forEach((scope) => channelKeyScopes.assertCurrent(scope));
-    if (records.length) await recoveryPage('/recovery/keys', { keys: records });
+    const held = records.length ? await uploadHistoryRecords(records) : new Set<string>();
     for (let i = 0; i < records.length; i++) {
       const record = records[i];
+      if (!held.has(backupKey(record.channelId, record.version))) continue;
       await writeSecurityState(
         owner,
         `recovery-sent:${record.channelId}:${record.version}`,
@@ -325,7 +362,34 @@ async function saveRecoveredChannelKeyIfAllowed(channelId: string, version: numb
     throw error;
   }
 }
-export async function restoreHistory(code?: string) {
+/**
+ * The key a downloaded record holds, or null when it is not a genuine backup
+ * of the version it names. The server stores records it cannot read, so a
+ * damaged or foreign record must not stop the others from being restored.
+ */
+async function openHistoryRecord(
+  key: CryptoKey,
+  userId: string,
+  generation: string,
+  record: RecoveryRecord,
+): Promise<Uint8Array | null> {
+  let plain: Uint8Array | undefined;
+  try {
+    if (record.generation !== generation) return null;
+    plain = await open(
+      key,
+      record.ciphertext,
+      aad(userId, `${record.generation}:${record.channelId}:${record.version}:${record.keyCommitment}`),
+    );
+    if (plain.length === 32 && (await sha256Base64Url(plain)) === record.keyCommitment) return plain;
+  } catch {
+    // Falls through: the record counts as one that could not be restored.
+  }
+  plain?.fill(0);
+  return null;
+}
+/** How many keys were restored, and how many records could not be. */
+export async function restoreHistory(code?: string): Promise<{ restored: number; failed: number }> {
   const owner = getActiveDevice();
   const metadata = await api.securityRequest<Pick<
     RecoveryConfig,
@@ -410,7 +474,8 @@ export async function restoreHistory(code?: string) {
       owner.approved = true;
     }
     let cursor: Cursor | null = null;
-    let count = 0;
+    let restored = 0;
+    let failed = 0;
     for (let page = 0; page < 1563; page++) {
       const result: { keys: RecoveryRecord[]; cursor: Cursor | null } = await recoveryPage(
         `/recovery/keys${cursor ? `?channelId=${encodeURIComponent(cursor.channelId)}&version=${encodeURIComponent(String(cursor.version))}` : ''}`,
@@ -418,26 +483,16 @@ export async function restoreHistory(code?: string) {
       if (result.keys.length > 64) throw new Error('RECOVERY_LIMIT');
       assertRecoveryOwner(owner);
       for (const record of result.keys) {
-        if (record.generation !== config.generation) throw new Error('INVALID_RECOVERY');
-        const plain = await open(
-          key,
-          record.ciphertext,
-          aad(
-            owner.userId,
-            `${record.generation}:${record.channelId}:${record.version}:${record.keyCommitment}`,
-          ),
-        );
+        const plain = await openHistoryRecord(key, owner.userId, config.generation, record);
+        if (!plain) {
+          failed++;
+          continue;
+        }
         try {
-          const digest = toBase64(new Uint8Array(await crypto.subtle.digest('SHA-256', plain)))
-            .replace(/\+/g, '-')
-            .replace(/\//g, '_')
-            .replace(/=+$/, '');
-          if (plain.length !== 32 || digest !== record.keyCommitment)
-            throw new Error('INVALID_RECOVERY');
           assertRecoveryOwner(owner);
           // A channel this device may no longer use must not abort the rest
           // of an otherwise valid archive; the archive itself was verified.
-          if (await saveRecoveredChannelKeyIfAllowed(record.channelId, record.version, plain)) count++;
+          if (await saveRecoveredChannelKeyIfAllowed(record.channelId, record.version, plain)) restored++;
         } finally {
           plain.fill(0);
         }
@@ -448,7 +503,7 @@ export async function restoreHistory(code?: string) {
           generation: config.generation,
           key: toBase64(archiveBytes),
         });
-        return count;
+        return { restored, failed };
       }
     }
     throw new Error('RECOVERY_LIMIT');

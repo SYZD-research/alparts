@@ -11,6 +11,14 @@ Per-transition properties (actor a, member u):
   H2 superior safety a member ranked >= a (u != a) keeps membership, workspace
                      bits, channel bits and channel visibility.
   H3 owner safety    the owner never loses anything.
+
+Scope of H1: overrides range over VIEW_CHANNELS and SEND_MESSAGES only, bits that
+every role of the initial state holds, so the model never exercises a grant of a
+channel-scoped bit the actor never held (MENTION_EVERYONE, say). A channel move, a
+category deletion, a role assignment or an invitation that names the role can grant
+such a bit through an override the actor could not write itself. The server refuses that with the override API's
+own authority checks (assertCategoryChangeAuthority, assertRoleOverridesHeld);
+unit and integration tests cover them, this model does not.
 """
 from __future__ import annotations
 
@@ -188,7 +196,10 @@ def _transitions(state: State, unassign_rank_check: bool = True):
                     layout=tuple((c, None if cat == category else cat, p) for c, cat, p in state.layout),
                     cat=tuple(row for row in state.cat if row[0] != category))
 
-        # kick: KICK_MEMBERS and strictly higher rank (assertMemberRemovalAuthorized)
+        # kick: KICK_MEMBERS and strictly higher rank (assertMemberRemovalAuthorized).
+        # The removed member's private-channel rows are not modelled. The server also
+        # adds the owner to a private channel the member was the last explicit member
+        # of, which only gives the owner access (H3 is about losing it).
         if perms & KICK:
             for user, _ in state.members:
                 if user != actor and user != ws.owner and top > highest_position(ws, user):

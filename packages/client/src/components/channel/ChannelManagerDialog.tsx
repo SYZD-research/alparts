@@ -8,7 +8,7 @@ import { useUiStore } from '../../stores/ui.store';
 import { useWorkspaceStore } from '../../stores/workspace.store';
 import { Dialog } from '../ui/Dialog';
 import { PermissionOverrideManager } from './PermissionOverrideManager';
-import { t, useT } from '../../i18n';
+import { msg, t, useT, type MessageKey } from '../../i18n';
 
 type ManagerTab = 'create' | 'edit' | 'categories' | 'permissions';
 type Confirmation =
@@ -34,11 +34,14 @@ const EMPTY_CHANNEL_FORM: ChannelFormState = {
   position: '0',
 };
 
-function mutationError(error: unknown): string {
+function mutationError(
+  error: unknown,
+  forbidden: MessageKey = msg('チャンネル管理権限がありません。状態は変更されていません。'),
+): string {
   if (error instanceof ApiError && error.code === 'MEMBER_HIERARCHY') {
     return t('自分と同じか上の順位のメンバーは、非公開チャンネルから削除できません。');
   }
-  if (error instanceof ApiError && error.status === 403) return t('チャンネル管理権限がありません。状態は変更されていません。');
+  if (error instanceof ApiError && error.status === 403) return t(forbidden);
   if (error instanceof Error && error.message === t('位置は0〜1000000の整数で入力してください')) return error.message;
   return t('変更を保存できませんでした。もう一度お試しください。');
 }
@@ -189,8 +192,9 @@ export function ChannelManagerDialog() {
     event.preventDefault();
     if (!selectedChannel || busy) return;
     prepareMutation();
+    const categoryId = form.categoryId || null;
+    const categoryChanged = categoryId !== (selectedChannel.categoryId ?? null);
     try {
-      const categoryId = form.categoryId || null;
       // Privacy and category changes ask for identity confirmation, so send
       // them only when they actually change.
       const updated = await api.updateChannel(selectedChannel.id, {
@@ -198,14 +202,16 @@ export function ChannelManagerDialog() {
         topic: form.topic.trim(),
         position: parsePosition(form.position),
         ...(form.isPrivate !== selectedChannel.isPrivate ? { isPrivate: form.isPrivate } : {}),
-        ...(categoryId !== (selectedChannel.categoryId ?? null) ? { categoryId } : {}),
+        ...(categoryChanged ? { categoryId } : {}),
       });
       await refreshWorkspace();
       setSelectedChannelId(updated.id);
       setNotice(t('「{name}」を更新しました。', { name: updated.name }));
       await loadPrivateMembers(updated);
     } catch (caught) {
-      setError(mutationError(caught));
+      setError(mutationError(caught, categoryChanged
+        ? msg('チャンネルのカテゴリーを変更する権限がありません。状態は変更されていません。')
+        : undefined));
     } finally {
       setBusy(false);
     }
@@ -282,7 +288,9 @@ export function ChannelManagerDialog() {
       }
       setConfirmation(null);
     } catch (caught) {
-      setError(mutationError(caught));
+      setError(mutationError(caught, confirmation.kind === 'delete-category'
+        ? msg('このカテゴリーを削除する権限がありません。状態は変更されていません。')
+        : undefined));
       setConfirmation(null);
     } finally {
       setBusy(false);

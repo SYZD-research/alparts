@@ -82,6 +82,9 @@ export const sessions = pgTable('sessions', {
   tokenHash: text('token_hash').unique().notNull(),
   deviceInfo: jsonb('device_info'),
   authenticationMethod: text('authentication_method').notNull().default('password'),
+  // The passkey a passkey login was made with; deleting it ends the session.
+  // Empty for password logins and for passkey logins from before this was kept.
+  passkeyId: text('passkey_id'),
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => [
@@ -89,6 +92,7 @@ export const sessions = pgTable('sessions', {
   index('sessions_user_expires_idx').on(t.userId, t.expiresAt),
   index('sessions_device_id_idx').on(t.deviceId),
   index('sessions_expires_at_idx').on(t.expiresAt),
+  index('sessions_passkey_id_idx').on(t.passkeyId).where(sql`${t.passkeyId} is not null`),
 ]);
 
 export const devicesRelations = relations(devices, ({ one }) => ({

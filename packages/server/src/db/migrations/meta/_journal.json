@@ -176,6 +176,13 @@
       "when": 1791500400000,
       "tag": "0024_attachment_removals",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1791586800000,
+      "tag": "0025_passkey_sessions",
+      "breakpoints": true
     }
   ]
 }

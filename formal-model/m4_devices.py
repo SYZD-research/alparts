@@ -1,8 +1,8 @@
 """M4: devices, approval and sessions — attacker capability analysis.
 
-Mirrors device.service.ts (registerDevice, approveDevice, revokeDevice),
-recovery.service.ts (restoreDevice), auth/passkey session creation and
-account disabling:
+Mirrors device.service.ts (registerDevice, approveDevice, revokeDevice,
+expireUnapprovedDevice), recovery.service.ts (restoreDevice), auth/passkey
+session creation and account disabling:
 
   register  needs a valid session and either the current password
             (password sessions always, passkey sessions optionally) or a
@@ -14,6 +14,14 @@ account disabling:
   restore   recovery code + a session bound to the unapproved device.
   revoke    by an approved device; kills sessions bound to the revoked device;
             a revoked identity is never approved again.
+  expire    by the server alone, with no signature (directory entry `expire`):
+            retires a device that nobody approved, and only such a device.
+            registerDevice does it for the oldest pending device when the
+            account is at its limit of 8 devices (pending ones count), and the
+            operator reset (account-state.service.ts) for all of them; the
+            sessions bound to the device end with it. An approved device is
+            never retired this way, and a retired identity is never
+            registered again.
   disable   operator action; every session becomes invalid.
 
 For every combination of attacker capabilities the model computes whether the
@@ -21,6 +29,14 @@ attacker can end up controlling an approved device, and compares that with the
 specification:
     reachable  <=>  can_register and (recovery_code or account_has_no_device)
     can_register = knows_password or fresh_passkey_cookie
+
+Not explored: the limit of 8 devices and its relief by `expire` (each holder
+here registers at most one device, so no account fills up), and the operator
+reset. `expire` only removes devices that are unapproved, so it cannot give an
+attacker an approved device and leaves the specification above unchanged. Its
+rules are checked by the tests of device-limit.ts, device.service.ts and
+account-state.service.ts and by the client's directory-verifier.ts tests, not
+by this model.
 """
 from __future__ import annotations
 

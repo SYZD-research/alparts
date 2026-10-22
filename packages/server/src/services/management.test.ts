@@ -111,6 +111,111 @@ describe('management security invariants', () => {
     assert.throws(() => assertValidInvitationLifetime(1.5), /INVALID_INVITATION_EXPIRY/);
   });
 
+  it('lets an inviter hand out only roles within their own authority', async () => {
+    const { Permissions } = await import('@alparts/shared');
+    const { mayGrantInvitationRole } = await import('./invitation.service.js');
+    const role = (permissions: number, position: number) => ({ permissions, position });
+    const inviter = (permissions: number, highestPosition: number) => ({ isOwner: false, permissions, highestPosition });
+    const member = role(Permissions.VIEW_CHANNELS | Permissions.SEND_MESSAGES, 50);
+    const guest = role(Permissions.VIEW_CHANNELS, 20);
+    const manages = Permissions.MANAGE_MEMBERS | Permissions.VIEW_CHANNELS | Permissions.SEND_MESSAGES;
+
+    // The owner may hand out any role, named or not.
+    assert.equal(mayGrantInvitationRole({ isOwner: true, permissions: 0, highestPosition: -1 }, member, true), true);
+    assert.equal(mayGrantInvitationRole({ isOwner: true, permissions: 0, highestPosition: -1 }, member, false), true);
+
+    // Without naming a role, the inviter needs every permission the role carries.
+    assert.equal(mayGrantInvitationRole(inviter(manages, 50), member, false), true);
+    assert.equal(mayGrantInvitationRole(inviter(manages, 80), role(manages | Permissions.MANAGE_CHANNELS, 50), false), false);
+    assert.equal(mayGrantInvitationRole(inviter(Permissions.MANAGE_MEMBERS | Permissions.VIEW_CHANNELS, 80), member, false), false);
+
+    // Naming a role also needs MANAGE_ROLES and a role below the inviter's highest.
+    assert.equal(mayGrantInvitationRole(inviter(manages, 80), guest, true), false);
+    assert.equal(mayGrantInvitationRole(inviter(manages | Permissions.MANAGE_ROLES, 80), guest, true), true);
+    assert.equal(mayGrantInvitationRole(inviter(manages | Permissions.MANAGE_ROLES, 50), member, true), false);
+    assert.equal(mayGrantInvitationRole(inviter(manages | Permissions.MANAGE_ROLES, 20), member, true), false);
+    assert.equal(mayGrantInvitationRole(inviter(manages | Permissions.MANAGE_ROLES, 80), role(Permissions.VIEW_AUDIT_LOG, 20), true), false);
+  });
+
+  it('holds an invitation for a role to the bits its overrides allow, unless it is the default role or the owner invites', async () => {
+    const { Permissions } = await import('@alparts/shared');
+    const { inviterHoldsRoleOverrides } = await import('./invitation.service.js');
+    const world = authorizationSnapshot({
+      roles: {
+        // The manager may not mention everyone.
+        manager: {
+          permissions: Permissions.VIEW_CHANNELS | Permissions.SEND_MESSAGES | Permissions.MANAGE_MEMBERS | Permissions.MANAGE_ROLES,
+          position: 60,
+        },
+        announcer: { permissions: Permissions.VIEW_CHANNELS, position: 40 },
+        Member: { permissions: Permissions.VIEW_CHANNELS | Permissions.SEND_MESSAGES, position: 50 },
+      },
+      members: { manager: ['manager'] },
+      channels: [],
+    });
+    // Only whether the inviter owns the workspace is read from it.
+    const inviter = { isOwner: false, permissions: 0, highestPosition: 60 };
+    const row = (allowMask: number, denyMask: number) => ({ allowMask, denyMask });
+    const holds = (userId: string, roleName: string, categories: Array<ReturnType<typeof row>>) => inviterHoldsRoleOverrides(
+      channellessStore(world, categories), 'workspace-a', userId, inviter, { id: roleName, name: roleName },
+    );
+
+    // Handing out a role takes the bits that assigning it takes: those its overrides allow.
+    assert.equal(await holds('manager', 'announcer', [row(Permissions.MENTION_EVERYONE, 0)]), false);
+    assert.equal(await holds('manager', 'announcer', [row(Permissions.SEND_MESSAGES | Permissions.MENTION_EVERYONE, 0)]), false);
+    assert.equal(await holds('manager', 'announcer', [row(Permissions.SEND_MESSAGES, 0)]), true);
+    // Restricting people, or having no overrides, takes none.
+    assert.equal(await holds('manager', 'announcer', [row(0, Permissions.MENTION_EVERYONE)]), true);
+    assert.equal(await holds('manager', 'announcer', []), true);
+    // Someone who is not in the workspace holds nothing.
+    assert.equal(await holds('stranger', 'announcer', []), false);
+
+    // The default role is what an invitation without a role hands out, whatever its overrides.
+    assert.equal(await holds('manager', 'Member', [row(Permissions.MENTION_EVERYONE, 0)]), true);
+    // For the default role and for the owner nothing is looked up at all.
+    assert.equal(await inviterHoldsRoleOverrides(
+      untouchedStore, 'workspace-a', 'manager', inviter, { id: 'Member', name: 'Member' },
+    ), true);
+    assert.equal(await inviterHoldsRoleOverrides(
+      untouchedStore, 'workspace-a', 'owner', { isOwner: true, permissions: 0, highestPosition: -1 }, { id: 'announcer', name: 'announcer' },
+    ), true);
+  });
+
+  it('asks whether a workspace has room for one more member, and spends an invitation without adding anyone', async () => {
+    const { MAX_WORKSPACE_MEMBERS } = await import('@alparts/shared');
+    const { assertWorkspaceHasRoom, spendLockedInvitation } = await import('./invitation.service.js');
+    const claim = { invitation: { id: 'invitation-a', workspaceId: 'workspace-a' }, role: { id: 'role-a' }, now: new Date(0) } as any;
+    const limits: number[] = [];
+    const workspaceOfMembers = (count: number) => ({
+      query: {
+        workspaceMembers: {
+          findMany: async ({ limit }: { limit: number }) => {
+            limits.push(limit);
+            return Array.from({ length: Math.min(count, limit) }, () => ({ id: 'member' }));
+          },
+        },
+      },
+    });
+    await assertWorkspaceHasRoom(workspaceOfMembers(MAX_WORKSPACE_MEMBERS - 1), claim);
+    await assert.rejects(assertWorkspaceHasRoom(workspaceOfMembers(MAX_WORKSPACE_MEMBERS), claim), /WORKSPACE_MEMBER_LIMIT/);
+    await assert.rejects(assertWorkspaceHasRoom(workspaceOfMembers(MAX_WORKSPACE_MEMBERS + 100), claim), /WORKSPACE_MEMBER_LIMIT/);
+    assert.deepEqual(limits, [MAX_WORKSPACE_MEMBERS + 1, MAX_WORKSPACE_MEMBERS + 1, MAX_WORKSPACE_MEMBERS + 1], 'the count stays bounded');
+
+    // Spending records when and no user, and only while the invitation is still open.
+    const updates: Array<Record<string, unknown>> = [];
+    const invitationsUpdating = (updated: number) => ({
+      update: () => ({
+        set: (values: Record<string, unknown>) => {
+          updates.push(values);
+          return { where: () => ({ returning: async () => Array.from({ length: updated }, () => ({ id: 'invitation-a' })) }) };
+        },
+      }),
+    });
+    assert.equal(await spendLockedInvitation(invitationsUpdating(1), claim), 'invitation-a');
+    assert.deepEqual(updates, [{ usedAt: claim.now, usedBy: null }]);
+    await assert.rejects(spendLockedInvitation(invitationsUpdating(0), claim), /INVALID_INVITATION/);
+  });
+
   it('applies role union, category, then channel overrides with deny winning within each level', async () => {
     const { Permissions } = await import('@alparts/shared');
     const {
@@ -289,6 +394,161 @@ describe('management security invariants', () => {
       captureChannelAccessFromSnapshot(managerOnly),
     ), [{ channelId: 'voice', lostUserIds: ['auditor'], gainedUserIds: [], lostCallUserIds: [], rotationRequired: false }]);
   });
+
+  it('holds a category change to the authority the override API demands for the overrides it swaps', async () => {
+    const { Permissions } = await import('@alparts/shared');
+    const { assertCategoryChangeAuthority } = await import('./permission-override.service.js');
+    const snapshot = authorizationSnapshot({
+      roles: {
+        staff: { permissions: Permissions.VIEW_CHANNELS, position: 90 },
+        // The manager may not mention everyone.
+        manager: { permissions: Permissions.VIEW_CHANNELS | Permissions.SEND_MESSAGES | Permissions.MANAGE_CHANNELS, position: 60 },
+        announcer: { permissions: Permissions.VIEW_CHANNELS | Permissions.SEND_MESSAGES, position: 40 },
+      },
+      members: { manager: ['manager', 'announcer'] },
+      channels: [],
+    });
+    const row = (roleId: string, allowMask: number, denyMask: number) => ({ roleId, allowMask, denyMask });
+    const change = (from: OverrideValue[], to: OverrideValue[], actor = 'manager') => () => assertCategoryChangeAuthority(snapshot, actor, from, to);
+
+    // Entering a category applies an allow the manager lacks.
+    assert.throws(change([], [row('announcer', Permissions.MENTION_EVERYONE, 0)]), /NOT_AUTHORIZED/);
+    // Leaving one drops a deny on the manager's own role, or on a role above it.
+    assert.throws(change([row('manager', 0, Permissions.SEND_MESSAGES)], []), /NOT_AUTHORIZED/);
+    assert.throws(change([row('staff', 0, Permissions.VIEW_CHANNELS)], []), /NOT_AUTHORIZED/);
+    // Changing a row counts the bits of both versions, and a deny counts like an allow.
+    assert.throws(change(
+      [row('announcer', Permissions.SEND_MESSAGES, 0)],
+      [row('announcer', Permissions.SEND_MESSAGES, Permissions.MENTION_EVERYONE)],
+    ), /NOT_AUTHORIZED/);
+    assert.throws(change([], [row('announcer', 0, Permissions.ATTACH_FILES)]), /NOT_AUTHORIZED/);
+    // A role the snapshot does not know cannot be shown to rank below the manager.
+    assert.throws(change([row('missing', 0, Permissions.SEND_MESSAGES)], []), /NOT_AUTHORIZED/);
+
+    // A lower role and bits the manager holds, either way.
+    assert.doesNotThrow(change([], [row('announcer', 0, Permissions.SEND_MESSAGES)]));
+    assert.doesNotThrow(change([row('announcer', Permissions.SEND_MESSAGES, 0)], []));
+    // The same override on both sides changes nothing, whatever the role.
+    assert.doesNotThrow(change(
+      [row('staff', Permissions.MENTION_EVERYONE, 0), row('announcer', 0, Permissions.SEND_MESSAGES)],
+      [row('announcer', 0, Permissions.SEND_MESSAGES), row('staff', Permissions.MENTION_EVERYONE, 0)],
+    ));
+    assert.doesNotThrow(change([row('staff', 0, 0)], []));
+    assert.doesNotThrow(change([], []));
+
+    // The owner keeps full power; a non-member has none.
+    const ownerSnapshot = authorizationSnapshot({ roles: { announcer: { permissions: 0, position: 1 } }, members: {}, channels: [] });
+    const ownerChange = (from: OverrideValue[], to: OverrideValue[]) => () => assertCategoryChangeAuthority(ownerSnapshot, 'owner', from, to);
+    assert.doesNotThrow(ownerChange([row('announcer', Permissions.MENTION_EVERYONE, Permissions.VIEW_CHANNELS)], []));
+    assert.doesNotThrow(ownerChange([], [row('announcer', Permissions.MENTION_EVERYONE, 0)]));
+    assert.throws(change([row('announcer', 0, Permissions.SEND_MESSAGES)], [], 'stranger'), /NOT_AUTHORIZED/);
+  });
+
+  it('holds assigning or removing a role to the bits its category and channel overrides touch', async () => {
+    const { Permissions } = await import('@alparts/shared');
+    const { assertRoleOverridesHeld } = await import('./role.service.js');
+    const snapshot = authorizationSnapshot({
+      roles: {
+        manager: { permissions: Permissions.VIEW_CHANNELS | Permissions.SEND_MESSAGES | Permissions.MANAGE_ROLES, position: 60 },
+        // The manager holds this role too, and #quiet denies it SEND_MESSAGES.
+        muted: { permissions: 0, position: 20 },
+      },
+      members: { manager: ['manager', 'muted'], other: ['manager'] },
+      channels: [{ id: 'open', type: 'text' }, { id: 'quiet', type: 'text' }],
+      channelOverrides: { quiet: [{ roleId: 'muted', allowMask: 0, denyMask: Permissions.SEND_MESSAGES }] },
+    });
+    const none: Parameters<typeof assertRoleOverridesHeld>[2] = { categories: [], channels: [] };
+    const category = (allowMask: number, denyMask: number) => ({ ...none, categories: [{ allowMask, denyMask }] });
+    const channel = (channelId: string, allowMask: number, denyMask: number) => ({ ...none, channels: [{ channelId, allowMask, denyMask }] });
+    const assign = (overrides: typeof none, actor = 'manager') => () => assertRoleOverridesHeld(snapshot, actor, overrides, 'assign');
+    const unassign = (overrides: typeof none, actor = 'manager') => () => assertRoleOverridesHeld(snapshot, actor, overrides, 'unassign');
+
+    // Assigning grants what the overrides allow: never a bit the manager lacks.
+    assert.throws(assign(category(Permissions.MENTION_EVERYONE, 0)), /PERMISSION_ESCALATION/);
+    assert.throws(assign(channel('open', Permissions.MENTION_EVERYONE, 0)), /PERMISSION_ESCALATION/);
+    // In a channel, the bits the manager holds there, not only in the workspace.
+    assert.throws(assign(channel('quiet', Permissions.SEND_MESSAGES, 0)), /PERMISSION_ESCALATION/);
+    assert.doesNotThrow(assign(channel('open', Permissions.SEND_MESSAGES, 0)));
+    assert.doesNotThrow(assign(category(Permissions.SEND_MESSAGES, 0)));
+    // Restricting someone needs no bit of the manager's.
+    assert.doesNotThrow(assign(category(0, Permissions.MENTION_EVERYONE)));
+    assert.doesNotThrow(assign(channel('open', 0, Permissions.MENTION_EVERYONE)));
+    assert.doesNotThrow(assign(none));
+
+    // Removing lifts what the overrides deny: never one the manager could not write.
+    assert.throws(unassign(category(0, Permissions.MENTION_EVERYONE)), /PERMISSION_ESCALATION/);
+    assert.throws(unassign(channel('open', 0, Permissions.MENTION_EVERYONE)), /PERMISSION_ESCALATION/);
+    // A manager held back in a channel by a role cannot lift that by dropping the role.
+    assert.throws(unassign(channel('quiet', 0, Permissions.SEND_MESSAGES)), /PERMISSION_ESCALATION/);
+    assert.doesNotThrow(unassign(channel('open', 0, Permissions.SEND_MESSAGES)));
+    assert.doesNotThrow(unassign(category(0, Permissions.SEND_MESSAGES)));
+    // Taking away what was allowed grants nothing.
+    assert.doesNotThrow(unassign(category(Permissions.MENTION_EVERYONE, 0)));
+    assert.doesNotThrow(unassign(channel('open', Permissions.MENTION_EVERYONE, 0)));
+
+    // The owner may give or take any role; a stranger may not.
+    assert.doesNotThrow(assign(category(Permissions.MENTION_EVERYONE, 0), 'owner'));
+    assert.doesNotThrow(unassign(channel('quiet', 0, Permissions.SEND_MESSAGES), 'owner'));
+    assert.throws(assign(none, 'stranger'), /NOT_AUTHORIZED/);
+  });
+
+  it('names to an actor only the channels it sees, and only counts the others, direct messages included (GHSA-6q58)', async () => {
+    const { Permissions } = await import('@alparts/shared');
+    const {
+      applyViewerEffectsAndRotation,
+      captureChannelAccessFromSnapshot,
+      limitEffectsToChannels,
+      visibleChannelIdsFromSnapshot,
+    } = await import('./authorization.service.js');
+    const world = (memberPermissions: number, channelOverrides: Record<string, OverrideValue[]> = {}) => authorizationSnapshot({
+      roles: {
+        manager: { permissions: Permissions.VIEW_CHANNELS | Permissions.MANAGE_ROLES, position: 60 },
+        member: { permissions: memberPermissions, position: 50 },
+      },
+      members: { manager: ['manager'], alice: ['member'], bob: ['member'], carol: ['member'] },
+      channels: [
+        { id: 'public', type: 'text' },
+        { id: 'mine', type: 'text', isPrivate: true },
+        { id: 'theirs', type: 'text', isPrivate: true },
+        { id: 'dm', type: 'dm', isPrivate: true },
+      ],
+      privateMembers: { mine: ['manager', 'alice'], theirs: ['bob'], dm: ['alice', 'carol'] },
+      channelOverrides,
+    });
+    const before = world(Permissions.VIEW_CHANNELS);
+    const after = world(0);
+    const effects = await applyViewerEffectsAndRotation(
+      keylessStore,
+      captureChannelAccessFromSnapshot(before),
+      captureChannelAccessFromSnapshot(after),
+    );
+    // The change takes every channel from the members, the other people's private channel and the DM included.
+    assert.deepEqual(
+      effects.map((effect) => [effect.channelId, effect.lostUserIds]),
+      [['dm', ['alice', 'carol']], ['mine', ['alice']], ['public', ['alice', 'bob', 'carol']], ['theirs', ['bob']]],
+    );
+    const shown = limitEffectsToChannels(effects, visibleChannelIdsFromSnapshot(
+      after, 'manager', effects.map((effect) => effect.channelId),
+    ));
+    assert.deepEqual(shown.roomEffects.map((effect) => effect.channelId), ['mine', 'public']);
+    assert.equal(shown.otherChannelCount, 2);
+    assert.equal(JSON.stringify(shown).includes('theirs'), false);
+    assert.equal(JSON.stringify(shown).includes('dm'), false);
+    assert.equal(JSON.stringify(shown).includes('carol'), true, 'carol loses #public, which the manager sees');
+
+    // What counts is the view after the change: a channel the change hides from the actor is not named either.
+    const hidesFromManager = world(Permissions.VIEW_CHANNELS, {
+      public: [{ roleId: 'manager', allowMask: 0, denyMask: Permissions.VIEW_CHANNELS }],
+    });
+    assert.deepEqual([...visibleChannelIdsFromSnapshot(before, 'manager', ['public'])], ['public']);
+    assert.deepEqual([...visibleChannelIdsFromSnapshot(hidesFromManager, 'manager', ['public'])], []);
+    // The owner is in none of the private channels, so it is told of #public only.
+    assert.deepEqual(
+      [...visibleChannelIdsFromSnapshot(after, 'owner', ['dm', 'mine', 'public', 'theirs'])],
+      ['public'],
+    );
+    assert.deepEqual(limitEffectsToChannels([], new Set()), { roomEffects: [], otherChannelCount: 0 });
+  });
 });
 
 type OverrideValue = { roleId: string; allowMask: number; denyMask: number };
@@ -318,6 +578,28 @@ function authorizationSnapshot(input: {
     privateMemberIdsByChannelId: new Map<string, Set<string>>(
       Object.entries(input.privateMembers ?? {}).map(([channelId, userIds]) => [channelId, new Set(userIds)]),
     ),
+  };
+}
+
+/**
+ * The reads behind the authorization snapshot of a workspace without channels
+ * and behind the category overrides written for one role. A table answers with
+ * all its rows whatever the filter, which holds while no channel exists.
+ */
+function channellessStore(world: ReturnType<typeof authorizationSnapshot>, categoryOverrides: Array<{ allowMask: number; denyMask: number }>) {
+  const table = (rows: unknown[]) => ({ findFirst: async () => rows[0], findMany: async () => rows });
+  return {
+    query: {
+      workspaces: table([{ ownerId: world.ownerId }]),
+      channels: table([]),
+      workspaceMembers: table([...world.membersByUserId.values()]),
+      roles: table([...world.rolesById.values()]),
+      memberRoles: table([...world.roleIdsByUserId].flatMap(([userId, roleIds]) => roleIds.map((roleId) => ({
+        memberId: world.membersByUserId.get(userId)!.id, roleId,
+      })))),
+      categoryRolePermissionOverrides: table(categoryOverrides),
+      channelRolePermissionOverrides: table([]),
+    },
   };
 }
 

@@ -18,13 +18,18 @@ import {
   captureChannelViewersFromSnapshot,
   computeAuthorizationRevisionFromStore,
   getChannelAuthorizationFromStore,
+  getWorkspaceAuthorizationFromSnapshot,
   getWorkspaceAuthorizationFromStore,
   isVisibleChannelAuthorization,
+  limitEffectsToChannels,
   loadWorkspaceAuthorizationSnapshot,
   lockChannelAuthorization,
   lockWorkspaceForAuthorization,
+  visibleChannelIdsFromSnapshot,
   type ChannelViewerEffect,
   type OverrideMutation,
+  type RolePermissionOverrideValue,
+  type WorkspaceAuthorizationSnapshot,
 } from './authorization.service.js';
 
 export type OverrideTarget = 'category' | 'channel';
@@ -125,6 +130,13 @@ export async function previewPermissionOverride(
     assertNoSuperiorAccessLoss(snapshot, snapshot, actorId, options);
     const before = captureChannelViewersFromSnapshot(snapshot);
     const after = captureChannelViewersFromSnapshot(snapshot, options);
+    const effects = compareViewerMaps(before, after);
+    // A preview needs no step-up and leaves no audit row, so it says nothing
+    // about a channel the actor cannot see now.
+    const shown = limitEffectsToChannels(
+      effects,
+      visibleChannelIdsFromSnapshot(snapshot, actorId, effects.map((effect) => effect.channelId)),
+    );
     return {
       target,
       workspaceId,
@@ -142,7 +154,7 @@ export async function previewPermissionOverride(
         denyMask: normalized.denyMask,
         revision: (current?.revision ?? 0) + 1,
       },
-      roomEffects: compareViewerMaps(before, after),
+      ...shown,
     };
   });
 }
@@ -226,6 +238,7 @@ export async function upsertPermissionOverride(
       row,
       current,
       roomEffects,
+      visibleChannelIds: visibleChannelIdsFromSnapshot(snapshotAfter, actorId, roomEffects.map((effect) => effect.channelId)),
       authorizationRevision: await computeAuthorizationRevisionFromStore(transaction, workspaceId),
     };
   }, (committed) => ({
@@ -246,9 +259,13 @@ export async function upsertPermissionOverride(
     },
   }));
   return {
-    override: formatOverride(result.row),
-    authorizationRevision: result.authorizationRevision,
+    // Every affected channel, for room updates only: the caller sends `response`.
     roomEffects: result.roomEffects,
+    response: {
+      override: formatOverride(result.row),
+      authorizationRevision: result.authorizationRevision,
+      ...limitEffectsToChannels(result.roomEffects, result.visibleChannelIds),
+    },
   };
 }
 
@@ -296,6 +313,7 @@ export async function deletePermissionOverride(
     return {
       current,
       roomEffects,
+      visibleChannelIds: visibleChannelIdsFromSnapshot(snapshotAfter, actorId, roomEffects.map((effect) => effect.channelId)),
       authorizationRevision: await computeAuthorizationRevisionFromStore(transaction, workspaceId),
     };
   }, (committed) => ({
@@ -315,13 +333,17 @@ export async function deletePermissionOverride(
     },
   }));
   return {
-    workspaceId,
-    target,
-    targetId,
-    roleId,
-    deleted: true,
-    authorizationRevision: result.authorizationRevision,
+    // Every affected channel, for room updates only: the caller sends `response`.
     roomEffects: result.roomEffects,
+    response: {
+      workspaceId,
+      target,
+      targetId,
+      roleId,
+      deleted: true,
+      authorizationRevision: result.authorizationRevision,
+      ...limitEffectsToChannels(result.roomEffects, result.visibleChannelIds),
+    },
   };
 }
 
@@ -401,6 +423,43 @@ async function assertOverrideAuthority(
     role,
     affectedMask,
   );
+}
+
+/**
+ * Moving a channel to another category, or deleting its category, swaps the
+ * category overrides that apply to it: the override API's change, made
+ * without its checks. For every role whose override differs between `from`
+ * and `to`, a non-owner needs the authority the API demands to write that
+ * override: the role ranks below it and the bits of both versions are bits it
+ * holds. The snapshot is the one from before the change.
+ */
+export function assertCategoryChangeAuthority(
+  snapshot: WorkspaceAuthorizationSnapshot,
+  actorId: string,
+  from: readonly RolePermissionOverrideValue[],
+  to: readonly RolePermissionOverrideValue[],
+): void {
+  const actor = getWorkspaceAuthorizationFromSnapshot(snapshot, actorId);
+  if (!actor) throw new Error('NOT_AUTHORIZED');
+  if (actor.isOwner) return;
+  const authority = {
+    isOwner: false,
+    permissionMask: actor.permissionMask,
+    highestPosition: Math.max(-1, ...actor.roles.map((role) => role.position)),
+  };
+  const previous = new Map(from.map((value) => [value.roleId, value]));
+  const next = new Map(to.map((value) => [value.roleId, value]));
+  for (const roleId of new Set([...previous.keys(), ...next.keys()])) {
+    const [old, now] = [previous.get(roleId), next.get(roleId)];
+    if ((old?.allowMask ?? 0) === (now?.allowMask ?? 0) && (old?.denyMask ?? 0) === (now?.denyMask ?? 0)) continue;
+    const role = snapshot.rolesById.get(roleId);
+    if (!role) throw new Error('NOT_AUTHORIZED');
+    assertOverrideRoleAuthority(
+      authority,
+      role,
+      (old?.allowMask ?? 0) | (old?.denyMask ?? 0) | (now?.allowMask ?? 0) | (now?.denyMask ?? 0),
+    );
+  }
 }
 
 async function getAffectedChannelIds(store: any, target: OverrideTarget, workspaceId: string, targetId: string) {

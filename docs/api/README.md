@@ -18,8 +18,8 @@ This is an inventory, not a stable public OpenAPI contract. No formal API versio
 | Paths | Responsibility |
 | --- | --- |
 | `POST /api/auth/register`, `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/auth/me` | invite-gated account creation and session lifecycle |
-| `GET /api/auth/sessions`, `DELETE /api/auth/sessions/:id`, `DELETE /api/auth/sessions` | bounded session inventory (maximum 16 unexpired/user) and scoped/all revocation |
-| `POST /api/devices/challenge`, `POST /api/devices`, `POST /api/devices/:id/bind` | session-bound device enrollment/binding proof; cleanup of protocol-2/3 provisional epochs (none are created since migration 0023) is partitioned by the bounded workspace set; enrollment and approval tell the user's devices to publish group packages for every channel they see |
+| `GET /api/auth/sessions`, `DELETE /api/auth/sessions/:id`, `DELETE /api/auth/sessions` | bounded session inventory (maximum 16 unexpired/user, with how each login was made) and scoped/all revocation |
+| `POST /api/devices/challenge`, `POST /api/devices`, `POST /api/devices/:id/bind` | session-bound device enrollment/binding proof; cleanup of protocol-2/3 provisional epochs (none are created since migration 0023) is partitioned by the bounded workspace set; enrollment and approval tell the user's devices to publish group packages for every channel they see; enrollment at the limit of 8 devices retires the oldest pending device (ends its sessions, emits `device:revoked`) instead of refusing, and answers 409 `DEVICE_LIMIT_REACHED` only when every device is approved |
 | `GET /api/devices`, `DELETE /api/devices/:id` | active/revoked device inventory and idempotent revocation; dirty-key notifications name only current workspaces with an affected recipient or group member, and members of every group that still contains the revoked device are told to remove it |
 
 ## Workspaces, invitations, roles and permissions
@@ -27,9 +27,9 @@ This is an inventory, not a stable public OpenAPI contract. No formal API versio
 | Paths | Responsibility |
 | --- | --- |
 | `POST/GET /api/workspaces`, `GET /api/workspaces/:id` | bounded workspace creation/list/detail |
-| `GET /api/workspaces/:id/members`, `DELETE /api/workspaces/:id/members/:userId` | bounded member view/removal |
-| `POST /api/invitations/accept` | existing-account invitation acceptance |
-| `POST/GET /api/workspaces/:wid/invitations`, `DELETE /api/workspaces/:wid/invitations/:id` | create/list/revoke hashed expiring invitations |
+| `GET /api/workspaces/:id/members`, `DELETE /api/workspaces/:id/members/:userId` | bounded member view/removal; the removal also revokes the invitations the member made that are still active, and gives the owner a private channel (not a direct message) the member was the last explicit member of, so it can still be seen, managed and deleted; the audit entry counts both |
+| `POST /api/invitations/accept` | existing-account invitation acceptance; refused like any invalid invitation once its creator is no longer the owner or a member who may invite that role, the bits that role's overrides allow included |
+| `POST/GET /api/workspaces/:wid/invitations`, `DELETE /api/workspaces/:wid/invitations/:id` | create/list/revoke hashed expiring invitations; a creator other than the owner may name a role other than the default one only if it could assign that role, overrides included (see below) |
 | `GET/POST /api/workspaces/:wid/roles` | role list/create |
 | `PUT/DELETE /api/workspaces/:wid/roles/:roleId` | role update/delete with hierarchy/revision checks |
 | `POST/DELETE /api/workspaces/:wid/members/:userId/roles/:roleId` | role assignment/removal |
@@ -46,6 +46,10 @@ This is an inventory, not a stable public OpenAPI contract. No formal API versio
 | `GET/PUT/DELETE /api/workspaces/:wid/{categories|channels}/:targetId/permission-overrides/:roleId?` | override list/upsert/delete |
 | `POST .../permission-overrides/preview` | stale-safe revisioned impact preview |
 | `GET /api/workspaces/:wid/channels/:targetId/permissions/effective?userId=...` | effective channel permission explanation |
+
+Moving a channel to another category (`PUT /api/channels/:id` with `categoryId`) and deleting a category swap which category overrides apply to a channel. For every role whose override differs, a caller other than the owner needs what writing that override takes: the role ranks below the caller and the bits of the old and new override are bits the caller holds. Deleting a category also needs the caller to see and manage every channel in it. Assigning a role that carries overrides needs the bits its overrides allow, and removing it the bits they deny, in the workspace for a category and in the channel for a channel. An invitation that names a role other than the default `Member` role needs the same bits from its creator, since the invited account holds them like any member with that role: creating it is refused with `403`, and using one whose creator no longer holds them is refused like any invalid invitation. The owner and the default role are exempt. Refusals answer `403`.
+
+Responses that report what a change does to who can view channels name only channels the caller can see: `roomEffects` of override previews, saves and deletions, category deletion and role updates and assignments, and `movedChannelIds` and `keyedChannelIds` where a response has them. A preview is judged by the caller's view now, every other response by its view after the change. `otherChannelCount` says how many other channels the change affects, such as private channels and direct messages of other members; neither they nor the people in them are named, though the server still applies every effect.
 
 ## Profiles
 

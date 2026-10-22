@@ -1,7 +1,7 @@
 import type { NextFunction, Request, Response } from 'express';
 import { config } from '../config/index.js';
 import { readCookie } from '../security/cookies.js';
-import { verifySessionToken } from '../security/session.js';
+import { verifySessionClaims, verifySessionToken } from '../security/session.js';
 import { updateLastActive } from '../services/device.service.js';
 import { setLogActor } from '../security/log-context.js';
 
@@ -28,6 +28,17 @@ function requestToken(req: Request): { token: string; transport: 'cookie' | 'bea
   return null;
 }
 
+/**
+ * The user named by the session token a request presents, when the token
+ * passes the checks that need no database. That the session is still live is
+ * not known here; use this only to decide how much to spend before the real
+ * authentication runs.
+ */
+export function presentedSessionUser(req: Request): string | null {
+  const candidate = requestToken(req);
+  return candidate ? verifySessionClaims(candidate.token)?.userId ?? null : null;
+}
+
 async function authenticate(req: AuthRequest): Promise<boolean> {
   const candidate = requestToken(req);
   if (!candidate) return false;
@@ -44,15 +55,20 @@ async function authenticate(req: AuthRequest): Promise<boolean> {
 }
 
 export async function authMiddleware(req: AuthRequest, res: Response, next: NextFunction) {
+  let authenticated: boolean;
   try {
-    if (!await authenticate(req)) {
-      res.status(401).json({ error: 'UNAUTHORIZED', message: 'Authentication required', statusCode: 401 });
-      return;
-    }
-    next();
-  } catch {
-    res.status(401).json({ error: 'UNAUTHORIZED', message: 'Authentication required', statusCode: 401 });
+    authenticated = await authenticate(req);
+  } catch (error) {
+    // A session that could not be looked up is not a missing one. A 401 would
+    // tell a client that is signing out that its session has already ended.
+    next(error);
+    return;
   }
+  if (!authenticated) {
+    res.status(401).json({ error: 'UNAUTHORIZED', message: 'Authentication required', statusCode: 401 });
+    return;
+  }
+  next();
 }
 
 export async function optionalAuth(req: AuthRequest, _res: Response, next: NextFunction) {

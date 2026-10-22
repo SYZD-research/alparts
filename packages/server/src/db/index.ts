@@ -2,13 +2,13 @@ import { drizzle } from 'drizzle-orm/node-postgres';
 import { sql } from 'drizzle-orm';
 import pg from 'pg';
 import { config } from '../config/index.js';
+import { databaseConnectionOptions } from '../config/database.js';
 import * as schema from './schema.js';
 import { assertAppliedMigrations, expectedMigrations, type MigrationFingerprint } from './migration-bundle.js';
 import { assertSchemaCatalogMatches, loadSchemaCatalogSnapshot } from './schema-catalog.js';
 
 const pool = new pg.Pool({
-  connectionString: config.db.url,
-  ssl: config.db.ssl ? { rejectUnauthorized: true } : undefined,
+  ...databaseConnectionOptions(config.db),
   max: config.db.poolMax,
   connectionTimeoutMillis: config.db.connectTimeoutMs,
   idleTimeoutMillis: 30_000,

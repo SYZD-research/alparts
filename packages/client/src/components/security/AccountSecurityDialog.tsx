@@ -264,6 +264,11 @@ export function AccountSecurityDialog() {
                           sessionDescription(session)}
                       </p>
                       <p className="mt-1 text-xs text-discord-muted">
+                        {session.authenticationMethod === 'passkey'
+                          ? t('パスキーでログイン中')
+                          : t('パスワードでログイン中')}
+                      </p>
+                      <p className="mt-1 text-xs text-discord-muted">
                         {t('ログイン: {start} / 自動ログアウト: {end}', { start: formatDate(session.createdAt), end: formatDate(session.expiresAt) })}
                       </p>
                     </div>
@@ -390,6 +395,11 @@ export function AccountSecurityDialog() {
               </button>
             </div>
           ))}
+          {passkeys.length > 1 && (
+            <p className="text-sm text-discord-muted">
+              {t('パスキーを削除すると、そのパスキーでログインしているほかの端末はログアウトします。')}
+            </p>
+          )}
           <button
             disabled={isMutating || !canUsePasskeys()}
             onClick={() => {

@@ -6,6 +6,8 @@ export interface DesktopStrings {
   saveButton: string;
   startFailedTitle: string;
   startFailedMessage: string;
+  sandboxUnavailableTitle: string;
+  sandboxUnavailableMessage: string;
   appMenu: string;
   lock: string;
   changeServer: string;
@@ -20,6 +22,8 @@ const STRINGS: Record<DesktopLocale, DesktopStrings> = {
     saveButton: '保存',
     startFailedTitle: 'alpartsを開始できません',
     startFailedMessage: 'アプリを開始できませんでした。アプリを終了し、もう一度起動してください。',
+    sandboxUnavailableTitle: 'alpartsを安全に実行できません',
+    sandboxUnavailableMessage: 'このシステムではalpartsを安全に実行できないため、アプリを終了します。AppImage版の代わりに.debパッケージ版をインストールして、もう一度起動してください。',
     appMenu: 'アプリ',
     lock: 'ロック',
     changeServer: '接続先を変更',
@@ -32,6 +36,8 @@ const STRINGS: Record<DesktopLocale, DesktopStrings> = {
     saveButton: 'Save',
     startFailedTitle: 'alparts cannot start',
     startFailedMessage: 'The app could not start. Quit the app and open it again.',
+    sandboxUnavailableTitle: 'alparts cannot run safely',
+    sandboxUnavailableMessage: 'alparts cannot run safely on this system, so it will close. Install the .deb package instead of the AppImage, then open the app again.',
     appMenu: 'App',
     lock: 'Lock',
     changeServer: 'Change server',

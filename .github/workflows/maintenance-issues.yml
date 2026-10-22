@@ -2,15 +2,21 @@ name: AI issue maintenance
 
 # When a maintainer adds the ai-fix label to an issue, a model on OpenRouter
 # tries to resolve it and proposes the change as a draft PR that closes the
-# issue. If it cannot, it says why on the issue and removes the label. A weekly
-# run picks up labelled issues that were missed. The model sees the issue and
-# only the comments written by maintainers.
+# issue. If it cannot, it says why on the issue and removes the label. The
+# model sees the issue as it was when the label was added, and only the
+# comments written by maintainers. If the issue was edited after that, nothing
+# runs until the label is added again. A manual run takes an issue number and
+# uses the issue as it is then.
 #
 # Trust: plan and agent have read-only repository access, and only the agent
 # step holds the OpenRouter key. Checks in the agent job run code the model
-# wrote, so they only catch honest mistakes. publish, which can write,
-# enforces protected paths with the checker from the base commit and never
-# runs code from the change.
+# wrote, so they only catch honest mistakes, and every command the agent runs
+# is sandboxed (scripts/maintenance/sandbox.mjs): it cannot reach the key,
+# other processes or the files later steps run, and only the audit check
+# reaches the network. The agent job keeps no dependency cache, so nothing
+# from the change reaches the caches other workflows restore. publish, which
+# can write, enforces the writable paths with the checker from the base
+# commit and never runs code from the change.
 #
 # Setup: the same OPENROUTER_API_KEY secret and settings as
 # maintenance-deps.yml.
@@ -18,20 +24,18 @@ name: AI issue maintenance
 on:
   issues:
     types: [labeled]
-  schedule:
-    - cron: "47 1 * * 3"
   workflow_dispatch:
     inputs:
       issue:
-        description: Issue number (optional)
-        required: false
+        description: Issue number
+        required: true
         type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: ai-maintenance-issue-${{ github.event.issue.number || inputs.issue || 'scheduled' }}
+  group: ai-maintenance-issue-${{ github.event.issue.number || inputs.issue }}
   cancel-in-progress: false
 
 env:
@@ -73,7 +77,15 @@ jobs:
           fi
           gh label create "$FIX_LABEL" --color 1D76DB --description "AI に修正を任せる Issue" --force >/dev/null
           mkdir -p "$RUNNER_TEMP/task"
-          node scripts/maintenance/collect.mjs issue --number "${NUMBER:-}" >"$RUNNER_TEMP/collect.json"
+          snapshot=()
+          if [ "$GITHUB_EVENT_NAME" = issues ]; then
+            # The issue as the maintainer saw it when adding the label.
+            jq '.issue | {title, body}' "$GITHUB_EVENT_PATH" >"$RUNNER_TEMP/snapshot.json"
+            snapshot=(--snapshot "$RUNNER_TEMP/snapshot.json")
+          fi
+          node scripts/maintenance/collect.mjs issue --number "$NUMBER" "${snapshot[@]}" >"$RUNNER_TEMP/collect.json"
+          notice=$(jq -r '.notice // empty' "$RUNNER_TEMP/collect.json")
+          if [ -n "$notice" ]; then echo "::notice::$notice"; fi
           # The task carries issue text from GitHub, which the agent treats
           # as data.
           jq -r '.task // empty' "$RUNNER_TEMP/collect.json" >"$RUNNER_TEMP/task/task.md"
@@ -101,8 +113,20 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24.8.0"
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
+      - name: Set up the command sandbox
+        run: |
+          set -euo pipefail
+          # Ubuntu 24.04 lets only programs with an AppArmor profile use the
+          # user namespaces the sandbox is built on.
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -q -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends bubblewrap >/dev/null
+          # The agent's commands can rewrite the repository, so the steps
+          # after it use this copy.
+          cp -R scripts/maintenance "$RUNNER_TEMP/tools"
+      - run: pnpm install --frozen-lockfile --ignore-scripts
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: maintenance-task
@@ -132,11 +156,11 @@ jobs:
         if: steps.result.outputs.changed == 'true'
         run: |
           set -euo pipefail
-          git diff --cached --name-only --no-renames -z | node scripts/maintenance/check-paths.mjs
-          pnpm lint
-          pnpm typecheck
-          pnpm test
-          pnpm security:secrets
+          tools="$RUNNER_TEMP/tools"
+          node "$tools/check-paths.mjs"
+          for check in lint typecheck test security:secrets; do
+            node "$tools/sandbox.mjs" -- pnpm "$check"
+          done
           git diff --cached --check
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: steps.result.outputs.changed == 'true'
@@ -186,10 +210,9 @@ jobs:
           set -euo pipefail
           dir="$RUNNER_TEMP/maintenance"
           # Use the path check from the base commit: the patch may replace it.
-          # Without renames, a moved file lists both its old and new path.
           cp -R scripts/maintenance "$RUNNER_TEMP/path-check"
           git apply --index "$dir/change.patch"
-          git diff --cached --name-only --no-renames -z | node "$RUNNER_TEMP/path-check/check-paths.mjs"
+          node "$RUNNER_TEMP/path-check/check-paths.mjs"
 
           branch="ai-maintenance/issue-${ISSUE}-${GITHUB_RUN_ID}"
           git config user.name "github-actions[bot]"

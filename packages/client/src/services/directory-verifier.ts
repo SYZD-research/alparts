@@ -147,6 +147,21 @@ export async function verifyDirectoryEntries(
           throw new Error('DIRECTORY_INVALID');
         target.approved = true;
         target.approvedSequence ??= entry.sequence;
+      } else if (e.kind === 'expire') {
+        // The server's own entry, signed by no device: it retires only a
+        // device nobody approved, never one that is or was approved.
+        if (
+          !target ||
+          target.approved ||
+          target.approvedSequence !== null ||
+          target.revoked ||
+          target.identityKey !== e.identityKey ||
+          e.actorDeviceId !== e.deviceId ||
+          e.signature !== ''
+        )
+          throw new Error('DIRECTORY_INVALID');
+        target.revoked = true;
+        target.revokedSequence = entry.sequence;
       } else {
         if (
           !actor?.approved ||

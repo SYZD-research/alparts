@@ -6,6 +6,8 @@ import { config } from '../config/index.js';
 import { db } from '../db/index.js';
 import { memberRoles, roles, users, workspaceInvitations, workspaceMembers, workspaces } from '../db/schema.js';
 import { auditedTransaction } from '../middleware/audit.js';
+import { loadWorkspaceAuthorizationSnapshot } from './authorization.service.js';
+import { assertRoleOverridesHeld, loadRoleOverrides } from './role.service.js';
 import {
   INVITATION_RETENTION_DAYS,
   MAX_ACTIVE_INVITATIONS_PER_WORKSPACE,
@@ -299,15 +301,32 @@ export async function lockInvitationForConsumption(
     where: and(eq(roles.id, invitation.roleId), eq(roles.workspaceId, invitation.workspaceId)),
   });
   if (!role || role.name === 'Owner') throw new Error('INVALID_INVITATION');
+  await assertCreatorMayStillInvite(transaction, invitation, role);
   return { invitation, role, now };
+}
+
+type InvitationClaim = Awaited<ReturnType<typeof lockInvitationForConsumption>>;
+
+/**
+ * Refuses a locked invitation whose workspace has no room for another member.
+ * Registration asks this before it looks at the address, so that a full
+ * workspace answers every address the same way.
+ */
+export async function assertWorkspaceHasRoom(transaction: any, claim: InvitationClaim): Promise<void> {
+  const currentMembers = await transaction.query.workspaceMembers.findMany({
+    columns: { id: true },
+    where: eq(workspaceMembers.workspaceId, claim.invitation.workspaceId),
+    limit: MAX_WORKSPACE_MEMBERS + 1,
+  });
+  if (currentMembers.length >= MAX_WORKSPACE_MEMBERS) throw new Error('WORKSPACE_MEMBER_LIMIT');
 }
 
 export async function consumeLockedInvitation(
   transaction: any,
-  claim: Awaited<ReturnType<typeof lockInvitationForConsumption>>,
+  claim: InvitationClaim,
   userId: string,
 ) {
-  const { invitation, role, now } = claim;
+  const { invitation, role } = claim;
   // Canonical admission order is workspace row -> account membership lock.
   // Invitations for separate workspaces therefore serialize only when they
   // would change the same account's bounded membership set.
@@ -322,17 +341,27 @@ export async function consumeLockedInvitation(
   if (userMemberships.length >= MAX_WORKSPACE_MEMBERSHIPS_PER_USER) {
     throw new Error('WORKSPACE_MEMBERSHIP_LIMIT_REACHED');
   }
-  const currentMembers = await transaction.query.workspaceMembers.findMany({
-    columns: { id: true },
-    where: eq(workspaceMembers.workspaceId, invitation.workspaceId),
-    limit: MAX_WORKSPACE_MEMBERS + 1,
-  });
-  if (currentMembers.length >= MAX_WORKSPACE_MEMBERS) throw new Error('WORKSPACE_MEMBER_LIMIT');
+  await assertWorkspaceHasRoom(transaction, claim);
   const [member] = await transaction.insert(workspaceMembers).values({
     workspaceId: invitation.workspaceId,
     userId,
   }).returning();
   await transaction.insert(memberRoles).values({ memberId: member.id, roleId: role.id });
+  await markInvitationUsed(transaction, claim, userId);
+  return { invitationId: invitation.id, workspaceId: invitation.workspaceId, roleId: role.id };
+}
+
+/**
+ * Spends a locked invitation without adding anyone, for a registration that
+ * created no account but must cost what one would. No account is recorded as
+ * its user.
+ */
+export async function spendLockedInvitation(transaction: any, claim: InvitationClaim): Promise<string> {
+  await markInvitationUsed(transaction, claim, null);
+  return claim.invitation.id;
+}
+
+async function markInvitationUsed(transaction: any, { invitation, now }: InvitationClaim, userId: string | null) {
   const consumed = await transaction.update(workspaceInvitations)
     .set({ usedAt: now, usedBy: userId })
     .where(and(
@@ -343,50 +372,131 @@ export async function consumeLockedInvitation(
     ))
     .returning({ id: workspaceInvitations.id });
   if (consumed.length !== 1) throw new Error('INVALID_INVITATION');
-  return { invitationId: invitation.id, workspaceId: invitation.workspaceId, roleId: role.id };
 }
 
 async function getInvitationRole(store: any, workspaceId: string, actorId: string, requestedRoleId?: string) {
+  const actor = await loadInviter(store, workspaceId, actorId);
+  if (!actor || (actor.permissions & Permissions.MANAGE_MEMBERS) !== Permissions.MANAGE_MEMBERS) {
+    throw new Error('NOT_AUTHORIZED');
+  }
+
+  const role = requestedRoleId
+    ? await store.query.roles.findFirst({ where: and(eq(roles.id, requestedRoleId), eq(roles.workspaceId, workspaceId)) })
+    : await store.query.roles.findFirst({ where: and(eq(roles.workspaceId, workspaceId), eq(roles.name, 'Member')) });
+  if (
+    !role
+    || role.name === 'Owner'
+    || !mayGrantInvitationRole(actor, role, Boolean(requestedRoleId))
+    || !(await inviterHoldsRoleOverrides(store, workspaceId, actorId, actor, role))
+  ) {
+    throw new Error('INVALID_INVITATION_ROLE');
+  }
+  return role;
+}
+
+/**
+ * Creation checks the creator's authority once, but an invitation outlives it.
+ * It is checked again when the invitation is used, so a member who was removed
+ * or lost the right to invite does not keep admitting people. The owner
+ * always may. An invitation for the default role is one its creator could
+ * still make without naming a role; for any other role the creator must also
+ * still hold the bits its overrides allow.
+ */
+async function assertCreatorMayStillInvite(
+  store: any,
+  invitation: { workspaceId: string; createdBy: string },
+  role: { id: string; name: string; permissions: number; position: number },
+) {
+  const creator = await loadInviter(store, invitation.workspaceId, invitation.createdBy);
+  if (!creator) throw new Error('INVALID_INVITATION');
+  if (creator.isOwner) return;
+  if (
+    (creator.permissions & Permissions.MANAGE_MEMBERS) !== Permissions.MANAGE_MEMBERS
+    || !mayGrantInvitationRole(creator, role, role.name !== 'Member')
+    || !(await inviterHoldsRoleOverrides(store, invitation.workspaceId, invitation.createdBy, creator, role))
+  ) throw new Error('INVALID_INVITATION');
+}
+
+export interface Inviter {
+  isOwner: boolean;
+  /** Union of the permissions of the roles held. */
+  permissions: number;
+  /** Highest position among the roles held, -1 for none. */
+  highestPosition: number;
+}
+
+/** The member's authority in the workspace, or null when they are not a member. */
+async function loadInviter(store: any, workspaceId: string, userId: string): Promise<Inviter | null> {
   const workspace = await store.query.workspaces.findFirst({
     columns: { ownerId: true },
     where: eq(workspaces.id, workspaceId),
   });
   if (!workspace) throw new Error('WORKSPACE_NOT_FOUND');
-  const actorMember = await store.query.workspaceMembers.findFirst({
-    where: and(eq(workspaceMembers.workspaceId, workspaceId), eq(workspaceMembers.userId, actorId)),
+  const member = await store.query.workspaceMembers.findFirst({
+    where: and(eq(workspaceMembers.workspaceId, workspaceId), eq(workspaceMembers.userId, userId)),
   });
-  if (!actorMember) throw new Error('NOT_AUTHORIZED');
-  const actorAssignments = await store.query.memberRoles.findMany({
-    where: eq(memberRoles.memberId, actorMember.id),
+  if (!member) return null;
+  const assignments = await store.query.memberRoles.findMany({
+    where: eq(memberRoles.memberId, member.id),
     with: { role: true },
     limit: MAX_ROLE_ASSIGNMENTS_PER_MEMBER + 1,
   });
-  if (actorAssignments.length > MAX_ROLE_ASSIGNMENTS_PER_MEMBER) {
+  if (assignments.length > MAX_ROLE_ASSIGNMENTS_PER_MEMBER) {
     throw new Error('ROLE_ASSIGNMENT_INVARIANT_EXCEEDED');
   }
-  const actorRoles = actorAssignments
+  const heldRoles = assignments
     .map((assignment: any) => assignment.role)
     .filter((role: any) => role?.workspaceId === workspaceId);
-  const actorPermissions = actorRoles.reduce((mask: number, role: any) => mask | role.permissions, 0);
-  if ((actorPermissions & Permissions.MANAGE_MEMBERS) !== Permissions.MANAGE_MEMBERS) throw new Error('NOT_AUTHORIZED');
+  return {
+    isOwner: workspace.ownerId === userId,
+    permissions: heldRoles.reduce((mask: number, role: any) => mask | role.permissions, 0),
+    highestPosition: Math.max(-1, ...heldRoles.map((role: any) => role.position)),
+  };
+}
 
-  const role = requestedRoleId
-    ? await store.query.roles.findFirst({ where: and(eq(roles.id, requestedRoleId), eq(roles.workspaceId, workspaceId)) })
-    : await store.query.roles.findFirst({ where: and(eq(roles.workspaceId, workspaceId), eq(roles.name, 'Member')) });
-  if (!role || role.name === 'Owner') throw new Error('INVALID_INVITATION_ROLE');
-  if (workspace.ownerId !== actorId) {
-    const highestPosition = Math.max(-1, ...actorRoles.map((assigned: any) => assigned.position));
-    if ((role.permissions & ~actorPermissions) !== 0) {
-      throw new Error('INVALID_INVITATION_ROLE');
-    }
-    if (requestedRoleId && (
-      role.position >= highestPosition
-      || (actorPermissions & Permissions.MANAGE_ROLES) !== Permissions.MANAGE_ROLES
-    )) {
-      throw new Error('INVALID_INVITATION_ROLE');
-    }
+/**
+ * Whether a member who may invite can hand out this role: the owner any, others
+ * only roles whose permissions they all hold. Naming a role also needs
+ * MANAGE_ROLES and a role below their highest.
+ */
+export function mayGrantInvitationRole(
+  inviter: Inviter,
+  role: { permissions: number; position: number },
+  roleNamed: boolean,
+): boolean {
+  if (inviter.isOwner) return true;
+  if ((role.permissions & ~inviter.permissions) !== 0) return false;
+  return !roleNamed || (
+    role.position < inviter.highestPosition
+    && (inviter.permissions & Permissions.MANAGE_ROLES) === Permissions.MANAGE_ROLES
+  );
+}
+
+/**
+ * Whoever holds a role gets the bits that the category and channel overrides
+ * written for it allow, so handing out a role other than the default one takes
+ * the bits that assigning it to a member takes. The default role is what an
+ * invitation without a role hands out, so a manager who may only add members
+ * still can, and the owner holds every bit.
+ */
+export async function inviterHoldsRoleOverrides(
+  store: any,
+  workspaceId: string,
+  userId: string,
+  inviter: Inviter,
+  role: { id: string; name: string },
+): Promise<boolean> {
+  if (inviter.isOwner || role.name === 'Member') return true;
+  const snapshot = await loadWorkspaceAuthorizationSnapshot(store, workspaceId);
+  if (!snapshot) throw new Error('WORKSPACE_NOT_FOUND');
+  const overrides = await loadRoleOverrides(store, workspaceId, role.id);
+  try {
+    assertRoleOverridesHeld(snapshot, userId, overrides, 'assign');
+    return true;
+  } catch (error: any) {
+    if (error?.message === 'PERMISSION_ESCALATION' || error?.message === 'NOT_AUTHORIZED') return false;
+    throw error;
   }
-  return role;
 }
 
 async function lockWorkspace(store: any, workspaceId: string) {

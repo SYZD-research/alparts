@@ -2,10 +2,10 @@ import { useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { WorkspaceMember } from '@alparts/shared';
-import { safeMarkdownHref } from '../../services/url-policy';
 import { createMarkdownMentionPlugin, type MentionMember } from '../../services/mention-model';
 import { userFacingMessageText } from '../../services/message-display';
 import { useT } from '../../i18n';
+import { MessageLink } from './MessageLink';
 
 interface Props {
   content: string;
@@ -40,25 +40,8 @@ export function MessageContent({
             {alt ? t('[画像: {alt}]', { alt }) : t('[画像]')}
           </span>
         ),
-        a: ({ href, children }) => {
-          const safeHref = safeMarkdownHref(href);
-          return safeHref ? (
-            <a
-              href={safeHref}
-              target="_blank"
-              rel="noopener noreferrer"
-              referrerPolicy="no-referrer"
-              title={t('新しいタブでリンクを開く')}
-              className="font-medium text-sky-400 underline decoration-sky-400/70 underline-offset-2 hover:text-sky-300 hover:decoration-sky-300"
-            >
-              {children}<span aria-hidden="true" className="ml-0.5 text-[0.75em]">↗</span>
-            </a>
-          ) : (
-            <span className="border-b border-dotted border-discord-muted" title={t('このリンクは開けません')}>
-              {children}
-            </span>
-          );
-        },
+        // A component of its own, so a link keeps an open confirmation while the message re-renders.
+        a: MessageLink,
       }}
     >
       {userFacingMessageText(content)}

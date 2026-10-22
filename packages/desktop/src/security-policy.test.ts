@@ -8,6 +8,7 @@ import {
   isAllowedBackendRequestDestination,
   isBackendPath,
   isAllowedExternalUrl,
+  isSandboxStartAllowed,
   isTrustedRendererUrl,
   normalizeIdleLockMinutes,
   normalizeServerUrl,
@@ -111,6 +112,17 @@ describe('desktop security policy', () => {
     assert.equal(deploymentNamespace('https://chat.example.test/'), deploymentNamespace('https://chat.example.test'));
     assert.notEqual(deploymentNamespace('https://a.example.test'), deploymentNamespace('https://b.example.test'));
     assert.match(deploymentNamespace('https://chat.example.test'), /^[A-Za-z0-9_-]{43}$/);
+  });
+
+  it('refuses to start a packaged app with the sandbox switched off', () => {
+    const switches = (...names: string[]) => (name: string) => names.includes(name);
+    assert.equal(isSandboxStartAllowed(true, switches()), true);
+    assert.equal(isSandboxStartAllowed(true, switches('disable-gpu')), true);
+    assert.equal(isSandboxStartAllowed(true, switches('no-sandbox')), false);
+    assert.equal(isSandboxStartAllowed(true, switches('disable-gpu', 'no-sandbox')), false);
+    // A run from node_modules has no sandbox helper next to the binary and may need the switch.
+    assert.equal(isSandboxStartAllowed(false, switches('no-sandbox')), true);
+    assert.equal(isSandboxStartAllowed(false, switches()), true);
   });
 });
 

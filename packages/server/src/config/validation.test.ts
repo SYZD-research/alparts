@@ -1,8 +1,19 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { assertVoiceSfuCanStart, parseBindHost, parseBoundedInteger, parseCorsOrigins, parseTrustedProxies, parseVoiceIceServers } from './validation.js';
+import { assertVoiceSfuCanStart, parseBindHost, parseBoundedInteger, parseCorsOrigins, parseNodeEnvironment, parseTrustedProxies, parseVoiceIceServers } from './validation.js';
 
 describe('configuration validation', () => {
+  it('accepts only the three known NODE_ENV values and treats unset as development', () => {
+    assert.equal(parseNodeEnvironment(undefined), 'development');
+    for (const valid of ['production', 'development', 'test'] as const) {
+      assert.equal(parseNodeEnvironment(valid), valid);
+    }
+    // A typo or another spelling must not quietly select the development settings.
+    for (const invalid of ['prod', 'staging', 'Production', 'PRODUCTION', 'dev', 'testing', 'production ', ' production', '', ' ']) {
+      assert.throws(() => parseNodeEnvironment(invalid), /NODE_ENV must be production, development or test/, JSON.stringify(invalid));
+    }
+  });
+
   it('accepts only literal trusted proxies and bounded ranges', () => {
     assert.deepEqual(parseTrustedProxies(undefined, true), []);
     assert.deepEqual(parseTrustedProxies(' 10.0.0.5 , loopback,fd00::/64,172.16.0.0/12 ', true), ['10.0.0.5', 'loopback', 'fd00::/64', '172.16.0.0/12']);

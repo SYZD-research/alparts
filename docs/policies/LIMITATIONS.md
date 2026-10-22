@@ -16,11 +16,11 @@
 - Webおよびdesktopクライアントでworkspace/category/channel、private channel、基本的な暗号化text message、返信、編集、削除、reaction、pin、bookmarkを利用できる。
 - 1対1 DM/group DMのAPI、鍵受信者となるmember model、一覧・作成UIがある。
 - message eventはREST/Socketの耐久化後経路から取り込まれ（message/edit/delete以外の種別は捨てる）、client projectorが`(createdAt, id)`順序、重複排除、edit/delete stateを決定的に投影し、reaction/pinはserverが返すsnapshotを反映する。
-- workspace作成・一覧・member removal、category/channel管理、private member管理、role CRUD/割当/変更preview/有効権限理由、session/device一覧と失効UIがある。
+- workspace作成・一覧・member removal（最後の明示memberだった非DMのprivate channelはownerに引き継ぐ）、category/channel管理、private member管理、role CRUD/割当/変更preview/有効権限理由、session/device一覧と失効UIがある。
 - Category/channel role permission overrideはallow/deny/inherit、適用前preview、override・認可の両revision、実効権限理由、失権時のroom退出とrekey、公式clientの局所消去に対応する。
 - Attachmentはfile別key、暗号化filename、5 MiB chunk AEAD、中断再開、取消、短命予約、opaque download復号、危険形式警告に対応する。Desktop保存では平文をbounded native streamへ渡し、危険形式にWindows/macOSの隔離属性またはLinuxの非実行権限を付ける。Protocol-levelの複数chunk中断再開からdownload SHA一致を隔離PostgreSQL/MinIOで確認している。
 - 音声はchannelに紐づく最大8人のP2P WebRTC meshとして、参加・退出、ミュート、音声検出／プッシュトゥトーク、入出力device切替、発言者・接続品質表示に対応する。Signalingの参加認可・中継・失権退出を隔離integrationで確認している。
-- 招待は一回限り、期限付き、個別失効、任意email bindingに対応し、管理UIで作成・一覧・失効できる。tokenの配送はoperatorによる安全なout-of-band共有であり、email配送機能はない。
+- 招待は一回限り、期限付き、個別失効、任意email bindingに対応し、管理UIで作成・一覧・失効できる。利用時には作成者の権限（ownerであるか、現在も招待できるmemberであること。既定のMember以外のroleでは、roleの割当と同じく、そのroleのcategory/channel overrideが許可するbitも作成者が持つこと）を再確認し、作成時にも同じ規則で拒否する。member removalは対象が作った有効な招待を失効させる。tokenの配送はoperatorによる安全なout-of-band共有であり、email配送機能はない。`EMAIL_VERIFICATION=disabled`の配備では、有効な招待を持つ人は登録を試すことでアドレスにアカウントがあるかを知れる。アカウントのあるアドレスでの登録は招待を使い切り、無効な招待と同じ応答を返すので、試すアドレスごとに招待が1つ必要になる。
 - channel別draftと未送信outboxは暗号化してIndexedDBへ保存される。同じidempotency keyと同一署名済みrequestで、上限付きexponential backoff+jitterによりonline復帰時に再送し、queued/sending/failedを区別する。Outboxはactive deviceごとに100件を上限とする。
 - 検索UIは、このbrowser tabがすでに読み込み、復号してmemoryへ保持しているmessageだけを検索する。検索語はHTTP/WebSocketへ送信しない。
 - auditはcanonical HMAC chain、state変更と同一transactionのappend、起動時検証、監査閲覧の自己監査、HMAC付きcheckpointを備える。Required modeの初期checkpointは明示operator commandでのみprovisionする。通常append/checkpoint更新は外部anchorからDB tailまでの連続性を同じlock内で検証し、欠落・rollback・tail切断時は起動/readiness/writeをfail closedにする。
@@ -40,7 +40,7 @@
 
 ### 認証、端末、承認
 
-- 招待制のpassword認証に加えて、Web版のPasskeyと重要操作のstep-upを実装した。Passkey登録後のpassword fallbackは禁止する。Passwordはstep-up付きで変更でき、変更時は他のsessionを終了する。Passkeyを登録した利用者はpasswordでのloginを無効にでき、運用者はCLIでpasswordを再設定できる（再設定はpassword loginを有効に戻し、全passkeyを削除し、全sessionを終了する。端末は残るので、本人が見覚えのない端末を失効させる）。Step-upはsessionごとに15分あたり120操作まで、本人確認の失敗はこれとは別に15分あたり10回までに制限する（盗まれたsessionが上限を使い切っても、本人の別sessionからの確認と失効は妨げられない）。OIDC、組織による認証器数の強制、nativeアプリのWebAuthn連携は未実装。
+- 招待制のpassword認証に加えて、Web版のPasskeyと重要操作のstep-upを実装した。Passkey登録後のpassword fallbackは禁止する。Passwordはstep-up付きで変更でき、変更時は他のsessionを終了する。Passkeyを削除すると、そのpasskeyで開始した他のsessionも終了する（操作したsessionは残る。記録が始まる前（移行0025より前）に開始したpasskeyのsessionは区別できず、通常どおり期限で終了する）。Passkeyを登録した利用者はpasswordでのloginを無効にでき、運用者はCLIでpasswordを再設定できる（再設定はpassword loginを有効に戻し、全passkeyを削除し、全sessionを終了し、誰も承認していない端末をすべて登録解除する。承認済みの端末は残るので、本人が見覚えのない端末を失効させる）。Step-upはsessionごとに15分あたり120操作まで、本人確認の失敗はこれとは別に15分あたり10回までに制限する（盗まれたsessionが上限を使い切っても、本人の別sessionからの確認と失効は妨げられない）。OIDC、組織による認証器数の強制、nativeアプリのWebAuthn連携は未実装。
 - bcryptは固定2本のWorker threadで実行し、active 2 / pending 16 / 待機5秒を超えると503でrejectする。保存hashの形式/costを処理前に検証し、実行が30秒を超えたWorkerは失敗として終了する。新端末step-upのKDFはaudit/key/DB row lockより前に完了させる。これはsingle-processのCPU隔離であり、複数replicaを合算したrate limitや外部DDoS防御ではない。
 - Sessionは1つの端末にbindingされ、追加端末は既存端末の承認または復旧コードによる確認が必要。端末attestationと組織支援型・閾値型recoveryは未実装。
 - 新端末登録時のpending epoch cleanup（group protocol 4以降は新しいpending epochを作らず、migration 0023で残りを中止済み）は最大50 workspace membershipを安定順にlockし、各workspaceの最大300 channel内でset-basedに実施する。他tenantがaccount-globalな小さい上限を消費して端末回復を恒久妨害する設計ではないが、上限全体を処理する登録は通常より高latencyになり得てstatement timeout内に完了しなければ安全にrollbackする。
@@ -73,6 +73,7 @@
 - Web版ではdevice private keyとdraft/outbox用AES-GCM keyをnon-extractable WebCrypto `CryptoKey`としてsame-origin IndexedDBへstructured clone保存する。Desktop版ではprivate JWK、channel key、draft/outbox keyをOS保護領域でwrapし、IndexedDBにはpublic identityまたはopaque pointerだけを置く。Linuxで保護されたsecret serviceを利用できない場合、desktopはfail closedで開始しない。
 - Web版ではdraft/outboxのciphertextとその復号keyが同じoriginのIndexedDBにある。Desktop版を含め、compromised client codeはkeyをexportできなくても正規process内で暗号操作へ利用できるため、client code侵害をOS保護領域だけで防ぐものではない。
 - Logout/user切替は復号済みmemory stateとkey cacheを消すが、同じ有効deviceで再開できるよう暗号化recordは残る。browser profile喪失後は保存済み復旧コードと暗号化済み履歴に限り復元できる。複数端末draft同期とService Workerによるfull offline history cacheはない。
+- Logout要求がserverに確認されない場合（offline、proxy error、rate limit、audit admission不可）、server側のsessionは再試行が成功するか最長7日の期限が来るまで有効なまま残る。公式clientはlogout保留の印を残し、次の起動で再試行して、その間は同じcookieのsessionを再開せずlogin画面を表示する。再試行は起動時だけで、その前に同じ端末で新たにloginすると新しいcookieが古いものを置き換え、古いsessionは期限まで残る（「ログイン中の端末」から終了できる）。Desktop版はlogout時にcookieも自身のsession storageから削除するが、cookieがHttpOnlyのWeb版とAndroid版では再試行が成功するまでcookie自体が残り、同じbrowser profileを使える人は手作業でAPIを呼べる。
 - Outboxの非同期保存・送信・削除は開始時のuser/device/generationへ固定し、principal切替後のcallbackを破棄する。同じ有効device向けの暗号化recordを保持する設計であり、logoutだけでbrowser disk上のrecordを物理消去する保証ではない。
 - Message projectorの「検証済み」はnetwork JSONのbooleanではなくprocess-localな到達不能markerで伝播する。同じevent IDへ異なる署名済みenvelopeが届いた場合はlast-write-winsにせずsticky conflictとしてquarantineする。Reload/reconciliationが必要になり得る一方、依存するdirectory/keyを取得不能なeventを検証済みとして昇格しない。
 - Browser APIはresponse bodyを含む総時間を60秒に制限し、scope取消をnetwork requestへ伝播する。Outboxはdeviceごと100件で新規受付を停止し、overflowを暗黙削除しない。Draft永続化はchannelごとに実行中1件と最新待機1件へcoalesceする。Message検証はchannelごとに実行中1件＋coalesced待機1件、cancel-awareな30秒、暗号処理64件/batchで、取消後も実処理が終了するまでは容量slotを保持する。常駐eventは1,000/channel・5,000/global・32 channelまでである。未ロードchannelのrealtime eventは保持せずRESTで再同期し、履歴window到達時は暗黙に無制限保持せずUI errorで停止する。Realtime認可処理、voice signaling/ICE、attachment runtime、channel-key scope履歴にも有限上限があり、上限時はfail-closed、明示error、または再接続reconciliationへ縮退する。
@@ -90,9 +91,10 @@
 ### 添付と外部content
 
 - Serverはobjectをinline表示せず、authorization確認後にopaque attachmentとして返す。Web clientはMarkdown imageを自動取得しない。署名・AEAD検証済みの添付については、SVGを除く許可済みraster MIMEを25 MiBまで端末内の短命Blob URLでプレビューする。
+- 表示文字とアドレスが異なるMarkdownのリンクは、開くホスト名を文字の横に表示し（IDNは実際に開かれる形で表示する）、アドレス全体をtooltipに入れる。表示文字そのものが別のWebアドレスやメールアドレスに見える場合は、開く前に実際のホスト名を示して確認する。この確認は表示文字の見た目だけで判定する簡易な規則であり、リンク先サイトの安全性は判定しない。素のホスト名はよく使われる末尾（.com、.jpなど）のときだけ数えるため、README.mdのようなファイル名は誤認しないが、それ以外の末尾の名前や、ホスト名を含まない紛らわしい文字（「銀行のログイン」など）では確認が出ない（ホスト名は常に表示する）。表示文字とアドレスが同じ自動リンクには追加の表示も確認もないため、URLに認証情報を含む形（user@host）はそのまま表示される。
 - Client attachment flowは上記Prototype境界で利用できる。OS quarantine属性、sandboxed malware/PoC viewer、archive bomb/image parser防御、endpoint malware analysisはない。
 - File System Access API非対応browserでは100 MiBを超えるdownloadを保存できず、それ以下はmemory上のBlob fallbackを使う。対応browserは逐次書き込みを使う。
-- ServerはJSON/chunk bodyをparser前のContent-Length、aggregate byte、source/user、concurrency budgetへ通し、download/object-storage leaseをstream終端まで保持する。これはsingle-process内のresource boundであり、distributed edge protectionや無制限に遅い正規downloadを保証するものではない。
+- ServerはJSON/chunk bodyをparser前のContent-Length、aggregate byte、source/user、concurrency budgetへ通し、download/object-storage leaseをstream終端まで保持する。これはsingle-process内のresource boundであり、distributed edge protectionや無制限に遅い正規downloadを保証するものではない。JSON bodyの受信には申告サイズに応じた期限があり、session tokenを示さないrequestは小さい別枠で数えてログイン済みのuserの枠から分けるが、多数のaddressから同時に遅いbodyを送られれば、その別枠（ログインを含む）は使い切られ得る。リクエストの本文を全部受け取ってから転送するreverse proxyを前段に置くこと。
 - Server-side malware scanはE2EE plaintextを持たないため実施できない。安全性を保証する表示をしてはならない。
 
 ### 音声通話

@@ -15,12 +15,14 @@ import { cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
+  MAX_WORKSPACE_MEMBERS,
   canonicalActionBody,
   mlsGroupId,
   serializeChannelKeyFreshStart,
   serializeDeviceChallengeProof,
   serializeDeviceDecision,
   serializeChannelKeyWrap,
+  serializeHistoryKeyBackup,
   serializeMessageEnvelope,
   serializeMessageAad,
   serializeMlsGroupCommit,
@@ -51,6 +53,18 @@ const signedBy = (identityKey: string, value: string, signed: string) =>
   );
 /** base64url(SHA-256(key)): how envelopes and recovery records name a key. */
 const keyCommitmentOf = (raw: Uint8Array) => hash(raw).toString('base64url');
+/** A history backup record, signed the way the uploading device signs it. */
+const signedBackup = (
+  signer: KeyObject,
+  accountId: string,
+  record: { generation: string; channelId: string; version: number; keyCommitment: string; ciphertext: string },
+) => ({
+  ...record,
+  signature: signature(
+    signer,
+    serializeHistoryKeyBackup({ userId: accountId, ...record, ciphertextHash: hash(record.ciphertext).toString('base64url') }),
+  ),
+});
 /** The transcript that names an accepted group version. */
 const groupTranscript = (envelope: Omit<MlsGroupCommit, 'signature'>) =>
   hash(serializeMlsGroupCommit(envelope)).toString('hex');
@@ -350,6 +364,27 @@ describe('account security end to end', { skip: !enabled }, () => {
     assert.ok(code, `no code was mailed to ${email}`);
     return code;
   }
+  /** A workspace of its own for a registration check, and a way to issue single-use invitations to it. */
+  async function inviter(name: string) {
+    const workspaces = await import('../services/workspace.service.js');
+    const invitations = await import('../services/invitation.service.js');
+    const workspace = await workspaces.createWorkspace(name, userId);
+    return { workspace, invite: () => invitations.createInvitation(workspace.id, userId, { expiresInSeconds: 3600 }) };
+  }
+  const registerWith = (email: string, inviteToken: string, extra: { emailCode?: string } = {}) =>
+    request('/api/auth/register', { email, password, displayName: 'Registration', inviteToken, ...extra }, '');
+  /** Runs `work` as a deployment with EMAIL_VERIFICATION=disabled would. */
+  async function withoutEmailVerification<T>(work: () => Promise<T>): Promise<T> {
+    const { config } = await import('../config/index.js');
+    const email = config.email as { verification: 'disabled' | 'required' };
+    const before = email.verification;
+    email.verification = 'disabled';
+    try {
+      return await work();
+    } finally {
+      email.verification = before;
+    }
+  }
   async function head() {
     return (await json(await request(`/api/directory/${userId}?after=0`))).head;
   }
@@ -369,6 +404,75 @@ describe('account security end to end', { skip: !enabled }, () => {
       ),
       201,
     );
+  }
+  /**
+   * An account of its own, driven through the services and logins made
+   * directly: HTTP logins and registrations share small per-account budgets,
+   * and its directory keeps every retirement for good.
+   */
+  async function ownAccount(label: string) {
+    const { db } = await import('../db/index.js');
+    const { and, eq, isNull } = await import('drizzle-orm');
+    const { devices, sessions, users } = await import('../db/schema.js');
+    const auth = await import('../services/auth.service.js');
+    const deviceService = await import('../services/device.service.js');
+    const directory = await import('../services/directory.service.js');
+    const verifier = await import('../../../client/src/services/' + 'directory-verifier.ts');
+    const [user] = await db.insert(users).values({
+      email: `${label}-${randomUUID()}@example.test`,
+      passwordHash: await auth.hashNewPassword(password),
+      displayName: label,
+    }).returning();
+    const login = async () => {
+      const [row] = await db.insert(sessions).values({
+        userId: user.id,
+        tokenHash: randomUUID(),
+        authenticationMethod: 'password',
+        expiresAt: new Date(Date.now() + 3_600_000),
+      }).returning();
+      return row.id;
+    };
+    const register = async (sessionId: string, keys: ReturnType<typeof deviceKeys>, name: string, secret = password) => {
+      const challenge = deviceService.issueDeviceChallenge(user.id, sessionId);
+      return deviceService.registerDevice(
+        user.id,
+        sessionId,
+        name,
+        keys.identityKey,
+        challenge,
+        signature(keys.privateKey, serializeDeviceChallengeProof(user.id, challenge)),
+        secret,
+      );
+    };
+    const approve = async (
+      actor: { id: string; keys: ReturnType<typeof deviceKeys> },
+      target: { id: string; identityKey: string },
+    ) => {
+      const current = await directory.directoryHead(db, user.id);
+      const decision = { kind: 'approve' as const, deviceId: target.id, identityKey: target.identityKey, actorDeviceId: actor.id };
+      return deviceService.approveDevice(
+        user.id,
+        actor.id,
+        target.id,
+        current,
+        signature(actor.keys.privateKey, serializeDeviceDecision(current, decision)),
+      );
+    };
+    return {
+      userId: user.id,
+      login,
+      register,
+      approve,
+      active: () => db.select().from(devices).where(and(eq(devices.userId, user.id), isNull(devices.revokedAt))),
+      device: async (id: string) => (await db.query.devices.findFirst({ where: eq(devices.id, id) }))!,
+      hasSession: async (id: string) => Boolean(await db.query.sessions.findFirst({ where: eq(sessions.id, id) })),
+      boundDevice: async (id: string) => (await db.query.sessions.findFirst({ where: eq(sessions.id, id) }))?.deviceId,
+      /** What a client makes of the account's directory. */
+      verified: async () => {
+        const { entries } = await directory.readDirectory(user.id, 0);
+        return { entries, state: await verifier.verifyDirectoryEntries(verifier.emptyDirectory(user.id), entries) };
+      },
+    };
   }
   /** A message from `device` (the first device by default) under the active version's key unless told otherwise. */
   async function encryptedMessage(
@@ -820,7 +924,7 @@ process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
     process.env.AUDIT_HEAD_OBJECT_KEY = `test-${randomUUID()}`;
     const database = await import('../db/index.js');
     closeDb = database.closeDb;
-    assert.equal(await database.checkDatabaseSchema(), 25);
+    assert.equal(await database.checkDatabaseSchema(), 26);
     const audit = await import('../middleware/audit.js');
     await audit.provisionAuditCheckpoint();
     const app = await import('../app.js');
@@ -1140,6 +1244,166 @@ process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
     const messageService = await import('../services/message.service.js');
     await assert.rejects(messageService.getChannelMessages(channelId, legacyUser), /CHANNEL_NOT_FOUND/);
     await messageService.getChannelMessages(channelId, userId);
+  });
+  it('retires the oldest pending device at the device limit, never an approved one, so the owner can still restore a device', { timeout: 60_000 }, async () => {
+    const { db } = await import('../db/index.js');
+    const { sql } = await import('drizzle-orm');
+    const directory = await import('../services/directory.service.js');
+    const deviceService = await import('../services/device.service.js');
+    const recoveryService = await import('../services/recovery.service.js');
+    const owner = await ownAccount('limit');
+    // The owner's phone, and a recovery code set up while it was at hand.
+    const phoneKeys = deviceKeys();
+    const phoneLogin = await owner.login();
+    const phone = (await owner.register(phoneLogin, phoneKeys, 'Phone')).device;
+    assert.ok(phone.approvedAt);
+    const recovery = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+    const signingKey = JSON.stringify(recovery.publicKey.export({ format: 'jwk' }));
+    const recoveryGeneration = randomUUID();
+    const configureHead = await directory.directoryHead(db, owner.userId);
+    await recoveryService.configureRecovery(owner.userId, phoneLogin, {
+      generation: recoveryGeneration,
+      signingKey,
+      encryptedSecret: JSON.stringify({ version: 2, codeSecret: randomBytes(256).toString('base64') }),
+      accessTokenHash: randomBytes(32).toString('hex'),
+      head: configureHead,
+      signature: signature(phoneKeys.privateKey, serializeDeviceDecision(configureHead, {
+        kind: 'recovery-config', deviceId: recoveryGeneration, identityKey: signingKey, actorDeviceId: phone.id,
+      })),
+    });
+    // Someone who knows the password registers seven more devices, each on a login of its own.
+    const pendingLogins: string[] = [];
+    const pending: Array<{ id: string }> = [];
+    const pendingKeys: Array<ReturnType<typeof deviceKeys>> = [];
+    for (let index = 0; index < 7; index++) {
+      const sessionId = await owner.login();
+      pendingKeys.push(deviceKeys());
+      pendingLogins.push(sessionId);
+      pending.push((await owner.register(sessionId, pendingKeys[index], `Pending ${index}`)).device);
+    }
+    assert.equal((await owner.active()).length, 8, 'the account is at its limit');
+
+    // The phone is lost. A new computer registers; the oldest pending device makes room for it.
+    const laptopKeys = deviceKeys();
+    const laptopLogin = await owner.login();
+    const laptop = await owner.register(laptopLogin, laptopKeys, 'Laptop');
+    assert.equal(laptop.created, true);
+    assert.equal(laptop.device.approvedAt, null);
+    assert.deepEqual(laptop.expired, [{ deviceId: pending[0].id, sessionIds: [pendingLogins[0]] }]);
+    assert.ok((await owner.device(pending[0].id)).revokedAt, 'retired');
+    assert.equal(await owner.hasSession(pendingLogins[0]), false, 'its login ended');
+    assert.equal(await owner.hasSession(pendingLogins[1]), true);
+    assert.equal((await owner.device(phone.id)).revokedAt, null);
+    assert.equal((await owner.active()).length, 8);
+    assert.equal(await owner.boundDevice(laptopLogin), laptop.device.id);
+    // The helper itself takes only a device of the account that nobody approved or retired.
+    await db.transaction(async (tx) => {
+      await assert.rejects(deviceService.expireUnapprovedDevice(tx, owner.userId, phone.id), /DEVICE_NOT_PENDING/);
+      await assert.rejects(deviceService.expireUnapprovedDevice(tx, owner.userId, pending[0].id), /DEVICE_NOT_PENDING/);
+      await assert.rejects(deviceService.expireUnapprovedDevice(tx, randomUUID(), pending[1].id), /DEVICE_NOT_PENDING/);
+    });
+    assert.equal((await owner.device(pending[1].id)).revokedAt, null);
+    // A resent registration changes nothing, and a retired identity never comes back.
+    const resent = await owner.register(laptopLogin, laptopKeys, 'Laptop');
+    assert.deepEqual([resent.created, resent.expired], [false, []]);
+    await assert.rejects(owner.register(await owner.login(), pendingKeys[0], 'Pending 0 again'), /IDENTITY_REVOKED/);
+
+    // The recovery code restores the laptop: the lockout of the audit's scenario is gone.
+    const restoreHead = await directory.directoryHead(db, owner.userId);
+    const restored = await recoveryService.restoreDevice(owner.userId, laptopLogin, {
+      generation: recoveryGeneration,
+      head: restoreHead,
+      signature: signature(recovery.privateKey, serializeDeviceDecision(restoreHead, {
+        kind: 'recovery', deviceId: laptop.device.id, identityKey: laptop.device.identityKey, actorDeviceId: recoveryGeneration,
+      })),
+    });
+    assert.equal(restored.alreadyApproved, false);
+    assert.ok((await owner.device(laptop.device.id)).approvedAt);
+
+    // The next registration retires the next pending device, not the phone or the laptop.
+    const next = await owner.register(await owner.login(), deviceKeys(), 'Pending 7');
+    assert.deepEqual(next.expired.map((retired) => retired.deviceId), [pending[1].id]);
+    assert.equal((await owner.device(phone.id)).revokedAt, null);
+    assert.equal((await owner.device(laptop.device.id)).revokedAt, null);
+
+    // Once every device is approved the limit holds: an approved device is never retired.
+    for (const candidate of (await owner.active()).filter((device) => !device.approvedAt)) {
+      await owner.approve({ id: laptop.device.id, keys: laptopKeys }, candidate);
+    }
+    const approvedDevices = (await owner.active()).map((device) => device.id).sort();
+    assert.equal(approvedDevices.length, 8);
+    await assert.rejects(owner.register(await owner.login(), deviceKeys(), 'One too many'), /DEVICE_LIMIT_REACHED/);
+    assert.deepEqual((await owner.active()).map((device) => device.id).sort(), approvedDevices);
+
+    // A client verifies the chain, and the retired devices were never approved.
+    const { entries, state } = await owner.verified();
+    const retirements = entries.filter((entry) => entry.event.kind === 'expire');
+    assert.deepEqual(retirements.map((entry) => entry.event.deviceId), [pending[0].id, pending[1].id]);
+    for (const entry of retirements) {
+      assert.equal(entry.event.actorDeviceId, entry.event.deviceId);
+      assert.equal(entry.event.signature, '');
+      assert.deepEqual(
+        [state.devices[entry.event.deviceId].approved, state.devices[entry.event.deviceId].revoked],
+        [false, true],
+      );
+    }
+    for (const id of [phone.id, laptop.device.id]) {
+      assert.deepEqual([state.devices[id].approved, state.devices[id].revoked], [true, false]);
+    }
+    const audited = (await db.execute(sql`select target_id, details from audit_logs
+      where action = 'device.expire' and actor_id = ${owner.userId} order by created_at, id`)).rows;
+    assert.deepEqual(
+      audited.map((row) => [row.target_id, (row.details as { reason: string }).reason]),
+      [[pending[0].id, 'device-limit'], [pending[1].id, 'device-limit']],
+    );
+    assert.equal((await (await import('../middleware/audit.js')).verifyAuditChain()).valid, true);
+  });
+  it('retires every pending device in an operator reset and keeps the approved ones', { timeout: 60_000 }, async () => {
+    const { db } = await import('../db/index.js');
+    const { sql } = await import('drizzle-orm');
+    const { spawn } = await import('node:child_process');
+    const { fileURLToPath } = await import('node:url');
+    const owner = await ownAccount('reset');
+    const phone = (await owner.register(await owner.login(), deviceKeys(), 'Phone')).device;
+    const pendingLogins: string[] = [];
+    const pendingIds: string[] = [];
+    for (let index = 0; index < 7; index++) {
+      const sessionId = await owner.login();
+      pendingLogins.push(sessionId);
+      pendingIds.push((await owner.register(sessionId, deviceKeys(), `Pending ${index}`)).device.id);
+    }
+    assert.equal((await owner.active()).length, 8, 'the account is at its limit');
+
+    // The operator resets the password with the command.
+    const operatorPassword = 'Operator-Reset-Pending-Devices!';
+    const reset = await new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve, reject) => {
+      const child = spawn(process.execPath, ['--import', 'tsx',
+        fileURLToPath(new URL('../scripts/reset-password.ts', import.meta.url)), owner.userId],
+      { stdio: ['pipe', 'pipe', 'pipe'], timeout: 20_000 });
+      let stdout = '';
+      let stderr = '';
+      child.stdout.on('data', (chunk) => { stdout += chunk; });
+      child.stderr.on('data', (chunk) => { stderr += chunk; });
+      child.once('error', reject);
+      child.once('close', (code) => resolve({ code, stdout, stderr }));
+      child.stdin.end(`${operatorPassword}\n`);
+    });
+    assert.equal(reset.code, 0, reset.stderr);
+    assert.match(reset.stdout, /7 device\(s\) nobody had approved were retired/);
+    assert.deepEqual((await owner.active()).map((device) => device.id), [phone.id], 'the approved device stays');
+    for (const sessionId of pendingLogins) assert.equal(await owner.hasSession(sessionId), false);
+    const audited = (await db.execute(sql`select target_id from audit_logs
+      where action = 'device.expire' and details->>'reason' = 'password-reset'`)).rows.map((row) => row.target_id);
+    assert.deepEqual(pendingIds.filter((id) => audited.includes(id)), pendingIds);
+
+    // The owner signs in with the new password and adds a device.
+    const laptop = await owner.register(await owner.login(), deviceKeys(), 'Laptop', operatorPassword);
+    assert.equal(laptop.created, true);
+    assert.deepEqual(laptop.expired, []);
+    const { state } = await owner.verified();
+    assert.deepEqual([state.devices[phone.id].approved, state.devices[phone.id].revoked], [true, false]);
+    for (const id of pendingIds) assert.deepEqual([state.devices[id].approved, state.devices[id].revoked], [false, true]);
+    assert.equal((await (await import('../middleware/audit.js')).verifyAuditChain()).valid, true);
   });
   it('rechecks the current password and receipt scope inside the sensitive transaction', async () => {
     const service = await import('../services/passkey.service.js');
@@ -1489,6 +1753,74 @@ process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
       /AUTHENTICATION_FAILED/,
     );
   });
+  it('ends the other logins made with a deleted passkey and keeps the rest', { timeout: 20_000 }, async () => {
+    const { db } = await import('../db/index.js');
+    const { sql } = await import('drizzle-orm');
+    const { io } = await import('socket.io-client');
+    const { config } = await import('../config/index.js');
+    const auth = await import('../services/auth.service.js');
+    const service = await import('../services/passkey.service.js');
+    const { hashSessionToken } = await import('./session.js');
+    const user = await db.query.users.findFirst({ where: (u, { eq }) => eq(u.id, userId) });
+    assert.ok(user);
+    const cookieOf = (token: string) => `${config.auth.cookieName}=${token}`;
+    const sessionOf = async (token: string) => (await db.query.sessions.findFirst({
+      columns: { id: true },
+      where: (s, { eq }) => eq(s.tokenHash, hashSessionToken(token)),
+    }))?.id;
+    const signIn = async (key: ReturnType<typeof authenticator>) => {
+      const ceremony = await service.authenticationOptions('login', null, null);
+      return (await service.passkeyLogin(ceremony.id, key.assertion(ceremony.options.challenge) as any)).token;
+    };
+    const passkeyIds = async () => (await db.query.passkeys.findMany({ where: (p, { eq }) => eq(p.userId, userId) })).map((p) => p.id);
+
+    // A second passkey, and logins with each passkey and with the password.
+    const spare = authenticator(userId);
+    const registration = await json(await sensitive('/api/auth/passkeys/register/options', {}));
+    await json(await request('/api/auth/passkeys/register/verify', {
+      id: registration.id, name: 'Spare authenticator', response: spare.registration(registration.options.challenge),
+    }));
+    const asking = await signIn(spare);
+    const connected = await signIn(spare);
+    const keptPasskey = await signIn(passkey);
+    const keptPassword = (await auth.login(user.email, password)).token;
+    // A passkey login from before the passkey was kept on sessions cannot be matched.
+    const keptUnmatched = (await auth.establishSession(user, undefined, 'passkey')).token;
+    // A socket and a confirmation need the approved device.
+    await db.execute(sql`UPDATE sessions SET device_id = ${first.id}
+      WHERE id IN (${await sessionOf(asking)}, ${await sessionOf(connected)})`);
+
+    const socket = io(base, { transports: ['websocket'], extraHeaders: { Cookie: cookieOf(connected), Origin: origin } });
+    try {
+      await new Promise<void>((resolve, reject) => { socket.once('connect', resolve); socket.once('connect_error', reject); });
+      const disconnected = new Promise<void>((resolve) => socket.once('disconnect', () => resolve()));
+      // The login that deletes the passkey stays, though it was made with it.
+      const deleted = await json(await sensitive(`/api/auth/passkeys/${spare.id}`, undefined, 'DELETE', cookieOf(asking)));
+      assert.equal(deleted.revoked, 1);
+      await disconnected;
+    } finally { socket.disconnect(); }
+    assert.equal(await sessionOf(connected), undefined);
+    assert.equal((await request('/api/auth/me', undefined, cookieOf(connected))).status, 401);
+    for (const token of [asking, keptPasskey, keptPassword, keptUnmatched]) assert.ok(await sessionOf(token));
+    assert.deepEqual(await passkeyIds(), [passkey.id]);
+    const audited = (await db.execute(sql`SELECT details FROM audit_logs
+      WHERE action = 'passkey.delete' AND actor_id = ${userId} ORDER BY created_at DESC, id DESC LIMIT 1`)).rows[0]?.details as
+      { revokedSessions?: number } | undefined;
+    assert.equal(audited?.revokedSessions, 1);
+
+    // The list says how each login was made.
+    const listed = await json(await request('/api/auth/sessions', undefined, cookieOf(asking)));
+    assert.equal(listed.find((entry: { current: boolean }) => entry.current)?.authenticationMethod, 'passkey');
+    assert.ok(listed.some((entry: { authenticationMethod: string }) => entry.authenticationMethod === 'password'));
+
+    // The last passkey stays, and nothing ends.
+    const last = await sensitive(`/api/auth/passkeys/${passkey.id}`, undefined, 'DELETE');
+    assert.equal(last.status, 409);
+    assert.equal(((await last.json()) as { error: string }).error, 'LAST_PASSKEY');
+    assert.deepEqual(await passkeyIds(), [passkey.id]);
+    assert.ok(await sessionOf(keptPasskey));
+    for (const token of [asking, keptPasskey, keptPassword, keptUnmatched]) await auth.logout((await sessionOf(token))!, userId);
+  });
   it('backs up opaque history and requires the recovery signing key to approve a replacement', async () => {
     generation = randomUUID();
     recoveryPair = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
@@ -1544,14 +1876,31 @@ process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
       cipher.aad(userId, `${generation}:${channelId}:${version}:${commitment}`),
     );
     const originalMessage = await encryptedMessage();
-    await json(
-      await request('/api/recovery/keys', {
-        generation,
-        channelId,
-        version,
-        keyCommitment: commitment,
-        ciphertext: encryptedHistory,
-      }),
+    const backup = { generation, channelId, version, keyCommitment: commitment, ciphertext: encryptedHistory };
+    // A session alone cannot write to the archive: the record needs the signature of the device it is bound to.
+    assert.equal(
+      (await json(await request('/api/recovery/keys', backup), 410)).error,
+      'UPDATE_REQUIRED',
+      'an unsigned record',
+    );
+    assert.equal(
+      (await request('/api/recovery/keys', signedBackup(secondKeys.privateKey, userId, backup))).status,
+      403,
+      'a signature of another device',
+    );
+    assert.equal(
+      (
+        await request('/api/recovery/keys', {
+          ...signedBackup(firstKeys.privateKey, userId, backup),
+          ciphertext: randomBytes(80).toString('base64'),
+        })
+      ).status,
+      403,
+      'a signature over another record',
+    );
+    assert.deepEqual(
+      (await json(await request('/api/recovery/keys', signedBackup(firstKeys.privateKey, userId, backup)))).results,
+      [{ channelId, version, status: 'stored' }],
     );
     assert.equal(
       (await json(await request('/api/recovery/keys'))).keys[0].ciphertext,
@@ -1675,31 +2024,37 @@ process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
       (
         await request(
           '/api/recovery/keys',
-          {
-            generation,
-            channelId,
-            version,
+          signedBackup(replacementKeys.privateKey, userId, {
+            ...backup,
             keyCommitment: keyCommitmentOf(earlierKey),
-            ciphertext: encryptedHistory,
-          },
+          }),
           replacementCookie,
         )
       ).status,
       403,
       'the commitment must name the key of that version',
     );
-    await json(
-      await request(
-        '/api/recovery/keys',
-        {
-          generation,
-          channelId,
-          version,
-          keyCommitment: commitment,
-          ciphertext: encryptedHistory,
-        },
-        replacementCookie,
-      ),
+    // The archive already holds the version, which the answer says; the record it holds stays.
+    const secondRecord = await cipher.seal(
+      archive,
+      key,
+      cipher.aad(userId, `${generation}:${channelId}:${version}:${commitment}`),
+    );
+    assert.deepEqual(
+      (
+        await json(
+          await request(
+            '/api/recovery/keys',
+            signedBackup(replacementKeys.privateKey, userId, { ...backup, ciphertext: secondRecord }),
+            replacementCookie,
+          ),
+        )
+      ).results,
+      [{ channelId, version, status: 'present' }],
+    );
+    assert.equal(
+      (await json(await request('/api/recovery/keys', undefined, replacementCookie))).keys[0].ciphertext,
+      encryptedHistory,
     );
     const recovered = await cipher.open(
       await cipher.aes(code),
@@ -1957,6 +2312,96 @@ process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
     const verified = await verifier.verifyDirectoryEntries(verifier.emptyDirectory(account.id), directory.entries);
     assert.equal(verified.recovery?.generation, capitalGeneration);
     assert.equal(verified.devices[replacement.id].approved, false);
+  });
+  it('spends the invitation on an existing address and answers like an invalid invitation while email verification is off', async () => {
+    const { db } = await import('../db/index.js');
+    const { sql } = await import('drizzle-orm');
+    const auditLogs = await import('../services/audit-log.service.js');
+    const { workspace, invite } = await inviter('Registration answers');
+    const invitationRow = async (id: string) =>
+      (await db.execute(sql`SELECT used_at, used_by FROM workspace_invitations WHERE id = ${id}`)).rows[0];
+    const accountsWith = async (email: string) =>
+      (await db.execute(sql`SELECT count(*)::int AS count FROM users WHERE email = ${email}`)).rows[0].count;
+    const existing = String((await db.execute(sql`SELECT email FROM users WHERE id = ${userId}`)).rows[0].email);
+    const free = () => `free-${randomUUID()}@example.test`;
+    await withoutEmailVerification(async () => {
+      const invalid = await json(await registerWith(free(), randomBytes(32).toString('base64url')), 403);
+      assert.equal(invalid.error, 'INVITE_REQUIRED');
+
+      // An address that has an account gets the same answer, and costs the invitation.
+      const probe = await invite();
+      assert.deepEqual(await json(await registerWith(existing, probe.token), 403), invalid);
+      const spent = await invitationRow(probe.id);
+      assert.ok(spent.used_at);
+      assert.equal(spent.used_by, null);
+      const retry = free();
+      assert.equal((await registerWith(retry, probe.token)).status, 403, 'a spent invitation admits no one');
+      assert.equal(await accountsWith(retry), 0);
+      assert.equal(await accountsWith(existing), 1);
+      const refused = await db.execute(sql`SELECT actor_id, details FROM audit_logs
+        WHERE action = 'user.register.refused' AND target_id = ${probe.id}`);
+      assert.deepEqual(
+        refused.rows.map((row) => [row.actor_id, (row.details as { reason?: string }).reason]),
+        [[null, 'email-exists']],
+      );
+
+      // A free address still registers with a fresh invitation and joins the workspace.
+      const welcome = await invite();
+      const email = free();
+      const account = await json(await registerWith(email, welcome.token), 201);
+      assert.equal(account.email, email);
+      assert.equal((await invitationRow(welcome.id)).used_by, account.id);
+      assert.equal((await db.execute(sql`SELECT 1 FROM workspace_members
+        WHERE workspace_id = ${workspace.id} AND user_id = ${account.id}`)).rows.length, 1);
+
+      // The workspace's audit view shows the registration, not the refusal.
+      const actions = (await auditLogs.listWorkspaceAuditLogs(workspace.id, userId, { limit: 100 })).data.map((entry) => entry.action);
+      assert.ok(actions.includes('workspace.invitation.use'));
+      assert.ok(!actions.includes('user.register.refused'));
+    });
+  });
+  it('answers a full workspace the same for every address while email verification is off', async () => {
+    const { db } = await import('../db/index.js');
+    const { users, workspaceMembers } = await import('../db/schema.js');
+    const { sql } = await import('drizzle-orm');
+    const { workspace, invite } = await inviter('Full registration');
+    // The owner and the others fill the workspace to its limit.
+    const others = await db.insert(users).values(Array.from({ length: MAX_WORKSPACE_MEMBERS - 1 }, (_, index) => ({
+      email: `member-${index}-${randomUUID()}@example.test`, passwordHash: 'test-fixture', displayName: `Member ${index}`,
+    }))).returning({ id: users.id });
+    await db.insert(workspaceMembers).values(others.map(({ id }) => ({ workspaceId: workspace.id, userId: id })));
+    const probe = await invite();
+    const existing = String((await db.execute(sql`SELECT email FROM users WHERE id = ${userId}`)).rows[0].email);
+    const answer = async (email: string) => {
+      const response = await registerWith(email, probe.token);
+      return { status: response.status, body: await response.json() };
+    };
+    await withoutEmailVerification(async () => {
+      const taken = await answer(existing);
+      assert.deepEqual(taken, await answer(`free-${randomUUID()}@example.test`));
+      assert.deepEqual(taken, {
+        status: 409,
+        body: { error: 'WORKSPACE_MEMBER_LIMIT', message: 'Workspace member limit reached', statusCode: 409 },
+      });
+    });
+    const left = await db.execute(sql`SELECT used_at FROM workspace_invitations WHERE id = ${probe.id}`);
+    assert.equal(left.rows[0].used_at, null, 'a refusal for a full workspace spends nothing');
+  });
+  it('keeps an address that got an account after its code was sent from registering, without spending the invitation, while email verification is on', async () => {
+    const { db } = await import('../db/index.js');
+    const { users } = await import('../db/schema.js');
+    const { sql } = await import('drizzle-orm');
+    const { invite } = await inviter('Late account');
+    const probe = await invite();
+    const late = `late-${randomUUID()}@example.test`;
+    const code = await emailCode(late, probe.token);
+    await db.insert(users).values({ email: late, passwordHash: 'test-fixture', displayName: 'Late' });
+    assert.deepEqual(await json(await registerWith(late, probe.token, { emailCode: code }), 403), {
+      error: 'INVITE_REQUIRED', message: 'A valid invitation is required', statusCode: 403,
+    });
+    assert.equal((await db.execute(sql`SELECT used_at FROM workspace_invitations WHERE id = ${probe.id}`)).rows[0].used_at, null);
+    const free = `free-${randomUUID()}@example.test`;
+    await json(await registerWith(free, probe.token, { emailCode: await emailCode(free, probe.token) }), 201);
   });
   it('asks members to add a visible member’s first device and starts over only when confirmed and needed', async () => {
     const { db } = await import('../db/index.js');

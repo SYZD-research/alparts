@@ -8,13 +8,12 @@ import {
 } from '@alparts/shared';
 import pg from 'pg';
 import { drizzle } from 'drizzle-orm/node-postgres';
-import { loadDatabaseRuntimeConfig } from '../config/database.js';
+import { databaseConnectionOptions, loadDatabaseRuntimeConfig } from '../config/database.js';
 import { deviceDirectoryEvents } from '../db/schema.js';
 
 const config = loadDatabaseRuntimeConfig();
 const client = new pg.Client({
-  connectionString: config.url,
-  ssl: config.ssl ? { rejectUnauthorized: true } : undefined,
+  ...databaseConnectionOptions(config),
   connectionTimeoutMillis: config.connectTimeoutMs,
   statement_timeout: config.statementTimeoutMs,
 });

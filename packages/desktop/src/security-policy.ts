@@ -143,3 +143,13 @@ export function isAllowedMediaPermission(permission: string, mediaTypes?: readon
   return permission === 'speaker-selection' || (permission === 'media'
     && !!mediaTypes?.length && mediaTypes.every((type) => type === 'audio'));
 }
+
+/**
+ * --no-sandbox turns the Chromium sandbox off for every process, whatever `sandbox: true` and
+ * app.enableSandbox() ask for. The AppImage launcher adds it on systems without user namespaces,
+ * so a packaged app checks for it before it loads anything. Development runs have no sandbox
+ * helper next to the binary and may need the switch.
+ */
+export function isSandboxStartAllowed(packaged: boolean, hasSwitch: (name: string) => boolean): boolean {
+  return !packaged || !hasSwitch('no-sandbox');
+}

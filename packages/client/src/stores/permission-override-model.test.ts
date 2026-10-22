@@ -46,9 +46,25 @@ describe('permission override model', () => {
     ];
     expect(summarizeOverridePreview(preview)).toEqual({
       affectedChannels: 2,
+      otherChannels: 0,
       losingUsers: 2,
       gainingUsers: 1,
       rotationChannels: 2,
+    });
+  });
+
+  it('counts the channels a preview does not list among the affected ones', () => {
+    const preview = previewFixture();
+    preview.roomEffects = [
+      { channelId: 'channel-1', lostUserIds: ['a'], gainedUserIds: [], rotationRequired: false },
+    ];
+    preview.otherChannelCount = 2;
+    expect(summarizeOverridePreview(preview)).toEqual({
+      affectedChannels: 3,
+      otherChannels: 2,
+      losingUsers: 1,
+      gainingUsers: 0,
+      rotationChannels: 0,
     });
   });
 
@@ -100,5 +116,6 @@ function previewFixture(): PermissionOverridePreview {
     before: null,
     after: null,
     roomEffects: [],
+    otherChannelCount: 0,
   };
 }

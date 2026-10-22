@@ -95,7 +95,10 @@ export function overrideDeleteInputFromPreview(
 }
 
 export interface OverridePreviewSummary {
+  /** Every affected channel, those listed in the preview and the others. */
   affectedChannels: number;
+  /** Affected channels the preview does not list. */
+  otherChannels: number;
   losingUsers: number;
   gainingUsers: number;
   rotationChannels: number;
@@ -103,7 +106,8 @@ export interface OverridePreviewSummary {
 
 export function summarizeOverridePreview(preview: PermissionOverridePreview): OverridePreviewSummary {
   return {
-    affectedChannels: new Set(preview.roomEffects.map((effect) => effect.channelId)).size,
+    affectedChannels: new Set(preview.roomEffects.map((effect) => effect.channelId)).size + preview.otherChannelCount,
+    otherChannels: preview.otherChannelCount,
     losingUsers: new Set(preview.roomEffects.flatMap((effect) => effect.lostUserIds)).size,
     gainingUsers: new Set(preview.roomEffects.flatMap((effect) => effect.gainedUserIds)).size,
     rotationChannels: new Set(preview.roomEffects

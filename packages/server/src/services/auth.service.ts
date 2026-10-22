@@ -12,9 +12,11 @@ import { matchesSecret } from '../security/cookies.js';
 import { hashPassword, verifyPassword, verifyPasswordForUpgrade, runPublicAuthentication } from '../security/password-work.js';
 import { MAX_ACTIVE_SESSIONS_PER_USER } from '../security/limits.js';
 import {
+  assertWorkspaceHasRoom,
   consumeLockedInvitation,
   lockInvitationForConsumption,
   preflightRegistrationInvitation,
+  spendLockedInvitation,
 } from './invitation.service.js';
 import { consumeRegistrationCode, emailVerificationRequired, sendRegistrationCode } from './email-verification.service.js';
 import type { EmailLocale } from './email-messages.js';
@@ -46,6 +48,11 @@ export async function requestRegistrationCode(email: string, inviteToken: string
   return true;
 }
 
+/** What a registration commits: the new account, or the invitation an attempt on an existing address spent. */
+type Registration =
+  | { user: typeof users.$inferSelect; invitation: Awaited<ReturnType<typeof consumeLockedInvitation>> | null }
+  | { user: null; spentInvitationId: string };
+
 export async function register(
   email: string,
   password: string,
@@ -64,7 +71,7 @@ export async function register(
     const passwordHash = await hashPassword(password, SALT_ROUNDS);
     let result;
     try {
-      result = await auditedTransaction(
+      result = await auditedTransaction<Registration>(
         async (transaction) => {
           if (bootstrap) {
             // The deployment secret exists only to create the first account. Normal
@@ -76,11 +83,21 @@ export async function register(
           const invitationClaim = bootstrap
             ? null
             : await lockInvitationForConsumption(transaction, inviteToken, normalizedEmail);
+          // A full workspace refuses every address alike, so it never tells
+          // which of them have an account.
+          if (invitationClaim) await assertWorkspaceHasRoom(transaction, invitationClaim);
           const existing = await transaction.query.users.findFirst({
             columns: { id: true },
             where: eq(users.email, normalizedEmail),
           });
-          if (existing) throw new Error('EMAIL_EXISTS');
+          if (existing) {
+            if (!invitationClaim || emailVerificationRequired()) throw new Error('EMAIL_EXISTS');
+            // No mailed code proves the address is the caller's, so a refusal
+            // that leaves the invitation unused would test any address for
+            // free. Spending it makes each attempt cost what a registration
+            // does; the answer is the one for an invalid invitation.
+            return { user: null, spentInvitationId: await spendLockedInvitation(transaction, invitationClaim) };
+          }
 
           const [user] = await transaction
             .insert(users)
@@ -96,6 +113,16 @@ export async function register(
           return { user, invitation };
         },
         (committed) => {
+          // Not shown in a workspace's audit view, which would tell its
+          // managers that an address has an account.
+          if (!committed.user) {
+            return {
+              action: 'user.register.refused',
+              targetType: 'workspace_invitation',
+              targetId: committed.spentInvitationId,
+              details: { reason: 'email-exists' },
+            };
+          }
           const entries: AuditEntry[] = [
             {
               actorId: committed.user.id,
@@ -124,6 +151,7 @@ export async function register(
       if (error?.code === '23505') throw new Error('EMAIL_EXISTS');
       throw error;
     }
+    if (!result.user) throw new Error('INVALID_INVITATION');
     return publicUser(result.user);
   });
 }
@@ -154,12 +182,14 @@ export async function login(email: string, password: string, deviceInfo?: Record
   });
 }
 
+/** `passkeyId` is the credential a passkey login was made with, so deleting that passkey can end the session. */
 export async function establishSession(
   user: typeof users.$inferSelect,
   deviceInfo?: Record<string, unknown>,
   method = 'password',
   beforeCreate?: (transaction: any) => Promise<void>,
   upgradedPasswordHash?: string,
+  passkeyId?: string,
 ) {
   const sessionId = randomUUID();
   const expiresAt = new Date(Date.now() + config.jwt.expiresInSeconds * 1000);
@@ -201,6 +231,7 @@ export async function establishSession(
       tokenHash: hashSessionToken(token),
       deviceInfo: deviceInfo || null,
       authenticationMethod: method,
+      passkeyId: passkeyId ?? null,
       expiresAt,
     });
     // A pepper rotation rewraps each credential the first time its password is proven.
@@ -244,6 +275,7 @@ export async function listSessions(userId: string, currentSessionId: string) {
     id: session.id,
     deviceId: session.deviceId,
     deviceInfo: session.deviceInfo,
+    authenticationMethod: session.authenticationMethod,
     createdAt: session.createdAt.toISOString(),
     expiresAt: session.expiresAt.toISOString(),
     current: session.id === currentSessionId,

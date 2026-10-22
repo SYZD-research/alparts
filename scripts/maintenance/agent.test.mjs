@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  cleanTitle, isProtectedPath, normalisePath, setDependencySpec, systemPrompt, toolsFor, truncate, CHECKS,
+  cleanTitle, isWritablePath, normalisePath, setDependencySpec, systemPrompt, toolsFor, truncate, CHECKS,
 } from './agent.mjs';
 
 test('normalisePath keeps paths inside the repository', () => {
@@ -15,22 +15,30 @@ test('normalisePath keeps paths inside the repository', () => {
   assert.equal(normalisePath(undefined), null);
 });
 
-test('isProtectedPath refuses CI, scripts, manifests, generated files and secrets', () => {
+test('isWritablePath accepts only source code and documentation', () => {
   for (const path of [
-    '.github/workflows/ci.yml', '.git/config', '.github', 'package.json', 'packages/server/package.json',
-    'pnpm-lock.yaml', 'pnpm-workspace.yaml', '.pnpmfile.cjs', 'packages/server/.npmrc', 'deploy/caddy/Caddyfile',
-    'scripts/maintenance/agent.mjs', 'scripts/release/third-party-notices.mjs', 'scripts/backup.sh',
-    'packages/client/public/THIRD_PARTY_NOTICES.txt', 'packages/android/runtime-components.json', '.env',
-    'packages/server/.env.production', 'packages/android/gradle/wrapper/gradle-wrapper.jar',
-    'packages/android/release.jks', 'AGENTS.md', 'patches/foo.patch',
+    'packages/server/src/index.ts', 'packages/client/src/scripts/helper.ts', 'packages/desktop/src/main.ts',
+    'packages/shared/src/index.ts', 'packages/server/src/db/migrations/0001_x.sql', 'docs/setup.md',
+    'docs/adr/0001-x.md', 'README.md', 'README.ja.md',
   ]) {
-    assert.equal(isProtectedPath(path), true, path);
+    assert.equal(isWritablePath(path), true, path);
   }
   for (const path of [
-    'packages/server/src/index.ts', 'docs/setup.md', 'README.md', '.githubusercontent/x', 'src/environment.ts',
-    'packages/client/src/scripts/helper.ts',
+    // CI, scripts, deployment and the files that steer pnpm.
+    '.github/workflows/ci.yml', '.git/config', 'scripts/maintenance/agent.mjs', 'deploy/caddy/Caddyfile',
+    'package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', '.npmrc', '.pnpmfile.cjs', '.pnpmfile.mjs',
+    'packages/server/package.json', 'packages/x/package.yaml', 'packages/x/package.json5',
+    // Build settings and other packages.
+    'packages/client/vite.config.ts', 'packages/server/tsconfig.json', 'packages/desktop/scripts/after-pack.cjs',
+    'packages/desktop/transport-pins.json', 'packages/android/gradle/verification-metadata.xml',
+    'packages/android/app/build.gradle', 'packages/client/public/THIRD_PARTY_NOTICES.txt',
+    'packages/client/e2e/login.spec.ts', 'packages/other/src/index.ts', '.oxlintrc.json', '.dockerignore',
+    '.gitattributes', 'SECURITY.md', 'AGENTS.md', 'Dockerfile', 'formal-model/m4_devices.py',
+    // Dot files, node_modules and manifests inside the writable areas.
+    'packages/server/src/.npmrc', 'packages/server/src/.env', 'docs/.github/x.yml',
+    'packages/server/src/node_modules/x/index.js', 'packages/server/src/package.json', 'docs/package.yaml',
   ]) {
-    assert.equal(isProtectedPath(path), false, path);
+    assert.equal(isWritablePath(path), false, path);
   }
 });
 
@@ -81,6 +89,11 @@ test('only deps mode offers the dependency tools', () => {
   assert.ok(!names('issue').includes('view_package'));
   const runCheck = toolsFor('issue').find((tool) => tool.name === 'run_check');
   assert.deepEqual(runCheck.parameters.properties.name.enum, Object.keys(CHECKS));
+});
+
+test('only the audit check reaches the network', () => {
+  const online = Object.entries(CHECKS).filter(([, [, , options]]) => options?.network).map(([name]) => name);
+  assert.deepEqual(online, ['audit']);
 });
 
 test('systemPrompt states the task for each mode and treats outside text as data', () => {

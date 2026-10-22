@@ -25,9 +25,13 @@ The implementation has two sources, in this order:
 
 There is no general config file, external secret-provider API, or runtime override layer. Docker secrets and systemd credentials are adapters into `NAME_FILE`. Supplying both `NAME` and `NAME_FILE` is an error. Invalid types/ranges, weak required secrets, unsafe bind/origins, missing production audit witness, or insecure non-loopback dependencies abort startup.
 
+`NODE_ENV` must be `production`, `development` or `test`, and unset means development. Any other value, such as `prod`, `staging` or `Production`, stops startup, because it would otherwise select the development settings: plaintext dependencies, a cookie without `Secure`, localhost origins and no audit checkpoint requirement.
+
+`DATABASE_URL` carries the user, password, host, port and database, and `DB_SSL` alone decides TLS (verified TLS is the production default). A URL with a query parameter that sets TLS or the server (`ssl`, `sslmode`, `sslcert`, `sslkey`, `sslrootcert`, `sslpassword` or any other `ssl…`, `uselibpqcompat`, `hostaddr`, `host`, `port`) stops startup, because the PostgreSQL client lets such a parameter override the validated settings, for example `sslmode=disable` on a remote host. The one exception is the directory of a Unix socket, named once as `?host=/var/run/postgresql` (with `port` if the socket file needs it) in a URL without a host name. Connection strings copied from a database provider usually carry `sslmode`; remove it and leave `DB_SSL` at its default.
+
 `S3_ENDPOINT` is a bare host name or IP address (no scheme, port or path; use `S3_PORT` and `S3_USE_SSL`), and `S3_REGION`, `S3_BUCKET` and `AUDIT_HEAD_BUCKET` must be valid region and DNS-safe bucket names; anything else stops startup. Plaintext object storage is allowed only for a literal loopback address. The S3 client ignores the ambient `AWS_USE_FIPS_ENDPOINT` and `AWS_USE_DUALSTACK_ENDPOINT` switches.
 
-Registration mails a code to the address being registered. Configure `SMTP_HOST`, `SMTP_FROM`, optionally `SMTP_USER` with `SMTP_PASSWORD_FILE`, and `SMTP_SECURE=true` for TLS from the first byte; otherwise production requires STARTTLS. Without SMTP, production keeps serving existing accounts but refuses new registrations, logging `registration.unavailable` at startup, unless `EMAIL_VERIFICATION=disabled` explicitly turns the check off. The emails are written in English or Japanese, following the language the user chose in the app; no setting is needed.
+Registration mails a code to the address being registered. Configure `SMTP_HOST`, `SMTP_FROM`, optionally `SMTP_USER` with `SMTP_PASSWORD_FILE`, and `SMTP_SECURE=true` for TLS from the first byte; otherwise production requires STARTTLS. Without SMTP, production keeps serving existing accounts but refuses new registrations, logging `registration.unavailable` at startup, unless `EMAIL_VERIFICATION=disabled` explicitly turns the check off. With the check off no code proves the address, so a registration can show whether an address already has an account to anyone who holds a valid invitation. To keep that from being free, an attempt with an address that has an account spends the invitation, as a registration would, and is answered like an invalid invitation: each address tested costs one invitation. Accept that before turning the check off. The emails are written in English or Japanese, following the language the user chose in the app; no setting is needed.
 
 The service does not silently auto-detect capabilities. Operators select an explicit reviewed mode; absence of Kubernetes/KMS/HA never disables authentication, authorization, TLS requirements, or audit integrity.
 
@@ -94,7 +98,7 @@ Development authentication and TLS settings must never be copied into production
 Requirements:
 
 - Linux host, Node.js 24+, built repository at `/opt/alparts`;
-- reverse proxy that exposes only HTTPS and forwards to `127.0.0.1:3000`;
+- reverse proxy that exposes only HTTPS, forwards to `127.0.0.1:3000` and buffers whole request bodies (see [Reverse proxy](#reverse-proxy));
 - durable PostgreSQL and S3-compatible object store, private to the service;
 - protected credentials under `/etc/alparts/credentials` and non-secret policy in `/etc/alparts/alparts.env`;
 - durable `/var/lib/alparts-audit`, ideally on an authority-separated mount;
@@ -113,6 +117,8 @@ sudo systemctl daemon-reload
 ```
 
 The example app uses a dynamic nonroot UID, read-only filesystem protections, no capabilities, finite memory/tasks/fds, restart backoff, and loopback bind. Its explicit insecure-dependency acknowledgement is valid only when PostgreSQL/object-store endpoints are truly loopback or unix-socket local; remote endpoints must use verified TLS and remove that acknowledgement.
+
+The unit sets `NODE_ENV=production` and `BIND_HOST=127.0.0.1` on the `ExecStart` command line through `env`, because a value in `EnvironmentFile=` overrides an `Environment=` line of the unit (systemd.exec(5)) and `/etc/alparts/alparts.env` must not be able to change them. If Node.js is installed elsewhere, change only the `/usr/bin/node` after them; to listen on another address, change the unit itself.
 
 Provision the initial audit checkpoint while the app is stopped and with production credentials:
 
@@ -155,6 +161,12 @@ Set `AUDIT_HEAD_BUCKET` to a separate object-store bucket and `AUDIT_HEAD_OBJECT
 The image contains the exact ordered migration bundle used to build it. Its database-only runtime migrator receives only the separate migration URL and bounded DB settings, uses a non-waiting PostgreSQL advisory lock, honors connection/statement deadlines, and exits if another migrator is active. The server then compares every applied migration timestamp and SHA-256 plus the bounded PostgreSQL 16 `public` catalog fingerprint with the image contract at startup and readiness; an empty, stale, modified, reordered, newer unknown, or persistently altered schema fails closed. This requires a dedicated Alparts `public` schema and deliberately rejects another PostgreSQL major until a reviewed compatibility migration updates the fingerprint. Existing deployments must complete the quiesced backup/isolated-restore gate before this command. Skip the checkpoint initializer after the first deployment; an existing checkpoint is never overwritten.
 
 Pin and deploy the resulting image by digest in a real release system. The repository currently pins base image tags and CI actions but does not publish signed releases or attestations.
+
+## Reverse proxy
+
+Terminate public TLS at a reverse proxy that reads each request body completely before it forwards the request, so a client that sends its headers and then trickles or stalls its body never reaches the application. nginx does this by default (`proxy_request_buffering on`); with Caddy, set `request_buffers` in `reverse_proxy` to at least 2 MiB, the largest JSON body.
+
+The application bounds the wait itself as well. A JSON body that is not fully received within 10 seconds plus the time its declared size needs at 32 KiB per second is answered with 408 and gives its share of the body budget back at once. Only a request that presents a session token with a valid signature, audience and expiry may send a body above 512 KiB (up to the 2 MiB of a group commit); every other request is limited to 512 KiB and counted in a smaller budget of its own, so unauthenticated traffic such as sign-in cannot use up what signed-in users need. That smaller budget can still be filled by many addresses at once, which is why the proxy's buffering matters.
 
 ## Rolling, canary, and rollback policy
 
