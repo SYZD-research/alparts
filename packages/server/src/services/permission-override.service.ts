@@ -21,9 +21,11 @@ import {
   getWorkspaceAuthorizationFromSnapshot,
   getWorkspaceAuthorizationFromStore,
   isVisibleChannelAuthorization,
+  limitEffectsToChannels,
   loadWorkspaceAuthorizationSnapshot,
   lockChannelAuthorization,
   lockWorkspaceForAuthorization,
+  visibleChannelIdsFromSnapshot,
   type ChannelViewerEffect,
   type OverrideMutation,
   type RolePermissionOverrideValue,
@@ -128,6 +130,13 @@ export async function previewPermissionOverride(
     assertNoSuperiorAccessLoss(snapshot, snapshot, actorId, options);
     const before = captureChannelViewersFromSnapshot(snapshot);
     const after = captureChannelViewersFromSnapshot(snapshot, options);
+    const effects = compareViewerMaps(before, after);
+    // A preview needs no step-up and leaves no audit row, so it says nothing
+    // about a channel the actor cannot see now.
+    const shown = limitEffectsToChannels(
+      effects,
+      visibleChannelIdsFromSnapshot(snapshot, actorId, effects.map((effect) => effect.channelId)),
+    );
     return {
       target,
       workspaceId,
@@ -145,7 +154,7 @@ export async function previewPermissionOverride(
         denyMask: normalized.denyMask,
         revision: (current?.revision ?? 0) + 1,
       },
-      roomEffects: compareViewerMaps(before, after),
+      ...shown,
     };
   });
 }
@@ -229,6 +238,7 @@ export async function upsertPermissionOverride(
       row,
       current,
       roomEffects,
+      visibleChannelIds: visibleChannelIdsFromSnapshot(snapshotAfter, actorId, roomEffects.map((effect) => effect.channelId)),
       authorizationRevision: await computeAuthorizationRevisionFromStore(transaction, workspaceId),
     };
   }, (committed) => ({
@@ -249,9 +259,13 @@ export async function upsertPermissionOverride(
     },
   }));
   return {
-    override: formatOverride(result.row),
-    authorizationRevision: result.authorizationRevision,
+    // Every affected channel, for room updates only: the caller sends `response`.
     roomEffects: result.roomEffects,
+    response: {
+      override: formatOverride(result.row),
+      authorizationRevision: result.authorizationRevision,
+      ...limitEffectsToChannels(result.roomEffects, result.visibleChannelIds),
+    },
   };
 }
 
@@ -299,6 +313,7 @@ export async function deletePermissionOverride(
     return {
       current,
       roomEffects,
+      visibleChannelIds: visibleChannelIdsFromSnapshot(snapshotAfter, actorId, roomEffects.map((effect) => effect.channelId)),
       authorizationRevision: await computeAuthorizationRevisionFromStore(transaction, workspaceId),
     };
   }, (committed) => ({
@@ -318,13 +333,17 @@ export async function deletePermissionOverride(
     },
   }));
   return {
-    workspaceId,
-    target,
-    targetId,
-    roleId,
-    deleted: true,
-    authorizationRevision: result.authorizationRevision,
+    // Every affected channel, for room updates only: the caller sends `response`.
     roomEffects: result.roomEffects,
+    response: {
+      workspaceId,
+      target,
+      targetId,
+      roleId,
+      deleted: true,
+      authorizationRevision: result.authorizationRevision,
+      ...limitEffectsToChannels(result.roomEffects, result.visibleChannelIds),
+    },
   };
 }
 

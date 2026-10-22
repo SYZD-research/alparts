@@ -405,7 +405,10 @@ export interface PermissionOverridePreview {
   authorizationRevision: string;
   before: PermissionOverride | null;
   after: PermissionOverridePreviewValue | null;
+  /** Effects on the channels the caller can see. */
   roomEffects: ChannelViewerEffect[];
+  /** How many other channels the change affects. */
+  otherChannelCount: number;
 }
 
 export interface PermissionOverrideWriteInput {
@@ -424,6 +427,7 @@ export interface PermissionOverrideMutationResult {
   override: PermissionOverride;
   authorizationRevision: string;
   roomEffects: ChannelViewerEffect[];
+  otherChannelCount: number;
 }
 
 export interface PermissionOverrideDeleteResult {
@@ -434,6 +438,7 @@ export interface PermissionOverrideDeleteResult {
   deleted: true;
   authorizationRevision: string;
   roomEffects: ChannelViewerEffect[];
+  otherChannelCount: number;
 }
 
 export type ChannelPermissionReason =
@@ -947,7 +952,13 @@ class ApiService {
   }
 
   async deleteCategory(workspaceId: string, categoryId: string) {
-    return this.request<{ categoryId: string; workspaceId: string; movedChannelIds: string[] }>(
+    return this.request<{
+      categoryId: string;
+      workspaceId: string;
+      movedChannelIds: string[];
+      roomEffects: ChannelViewerEffect[];
+      otherChannelCount: number;
+    }>(
       `/workspaces/${workspaceId}/categories/${categoryId}`,
       { method: 'DELETE' },
     );

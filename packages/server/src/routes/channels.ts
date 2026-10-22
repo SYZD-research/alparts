@@ -327,7 +327,7 @@ router.delete('/workspaces/:wid/categories/:categoryId', authMiddleware, require
       });
     }
     void emitChannelKeyState(io, keyStateChannelIds(result.roomEffects));
-    res.json(result);
+    res.json(result.response);
   } catch (error: any) {
     if (error.message === 'MEMBER_HIERARCHY') {
       res.status(403).json({ error: 'MEMBER_HIERARCHY', message: 'This change would remove access for a higher-ranked member.', statusCode: 403 });

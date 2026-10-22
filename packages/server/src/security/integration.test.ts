@@ -4435,6 +4435,133 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     assert.equal((await verifyAuditChain()).valid, true);
   });
 
+  it('keeps private channels and direct messages the caller cannot see out of management responses (GHSA-6q58)', async () => {
+    const { db } = await import('../db/index.js');
+    const {
+      categories, categoryRolePermissionOverrides, channelMembers, channels, memberRoles, roles, users, workspaceMembers,
+    } = await import('../db/schema.js');
+    const { computeAuthorizationRevisionFromStore } = await import('../services/authorization.service.js');
+    const { createDm } = await import('../services/dm.service.js');
+    const ownerLogin = await request('/api/auth/login', {
+      method: 'POST', body: { email: 'unbound@example.test', password: 'Correct-Horse-Battery-9!' },
+    });
+    assert.equal(ownerLogin.status, 200);
+    const owner = {
+      cookie: ownerLogin.headers.get('set-cookie')!.split(';', 1)[0],
+      user: (await json<{ user: { id: string } }>(ownerLogin)).user,
+      password: 'Correct-Horse-Battery-9!',
+    };
+    const workspace = await json<{ id: string }>(await request('/api/workspaces', {
+      method: 'POST', cookie: owner.cookie, body: { name: 'Response names' },
+    }));
+    // Override changes and category deletion ask for identity confirmation,
+    // which needs a session bound to a device.
+    await registerDevice(owner, deviceFixture(), 'Response owner device');
+    const invitation = await createWorkspaceInvitation(workspace.id, owner.cookie, 'response-manager@example.test');
+    const manager = await createAccount('response-manager@example.test', 'Correct-Horse-Battery-72!', 'Response Manager', invitation.token);
+    await registerDevice(manager, deviceFixture(), 'Response manager device');
+
+    // The manager may manage channels and roles. Alice, Bob and Carol are
+    // members; Alice and Bob also hold a role that categories can restrict.
+    const [moderator, contributor] = await db.insert(roles).values([
+      {
+        workspaceId: workspace.id, name: 'Moderator', position: 60,
+        permissions: Permissions.VIEW_CHANNELS | Permissions.SEND_MESSAGES | Permissions.MANAGE_CHANNELS | Permissions.MANAGE_ROLES,
+      },
+      { workspaceId: workspace.id, name: 'Contributor', position: 20, permissions: 0 },
+    ]).returning({ id: roles.id });
+    const memberRole = await db.query.roles.findFirst({ where: and(eq(roles.workspaceId, workspace.id), eq(roles.name, 'Member')) });
+    assert.ok(memberRole);
+    const managerMembership = await db.query.workspaceMembers.findFirst({
+      where: and(eq(workspaceMembers.workspaceId, workspace.id), eq(workspaceMembers.userId, manager.user.id)),
+    });
+    assert.ok(managerMembership);
+    await db.insert(memberRoles).values({ memberId: managerMembership.id, roleId: moderator.id });
+    const addMember = async (name: string, roleIds: string[]) => {
+      const [created] = await db.insert(users).values({
+        email: `${name}-${randomUUID()}@example.test`, passwordHash: 'disabled', displayName: name,
+      }).returning({ id: users.id });
+      const [joined] = await db.insert(workspaceMembers).values({ workspaceId: workspace.id, userId: created.id })
+        .returning({ id: workspaceMembers.id });
+      await db.insert(memberRoles).values(roleIds.map((roleId) => ({ memberId: joined.id, roleId })));
+      return created.id;
+    };
+    const alice = await addMember('Alice', [memberRole.id, contributor.id]);
+    const bob = await addMember('Bob', [memberRole.id, contributor.id]);
+    const carol = await addMember('Carol', [memberRole.id]);
+
+    // Projects holds two private channels: the manager is in the first and not in the second.
+    // Carol is in a private channel of her own and in a direct message with Alice.
+    const [projects] = await db.insert(categories).values({ workspaceId: workspace.id, name: 'Projects' }).returning({ id: categories.id });
+    const newChannel = async (name: string, categoryId: string | null, members: string[]) => {
+      const [created] = await db.insert(channels).values({ workspaceId: workspace.id, name, categoryId, isPrivate: true })
+        .returning({ id: channels.id });
+      await db.insert(channelMembers).values(members.map((userId) => ({ channelId: created.id, userId })));
+      return created.id;
+    };
+    const shared = await newChannel('shared', projects.id, [manager.user.id, alice]);
+    const hidden = await newChannel('acquisition', projects.id, [bob]);
+    const warRoom = await newChannel('war-room', null, [alice, carol]);
+    const { dm } = await createDm(workspace.id, alice, [carol]);
+    const general = await db.query.channels.findFirst({
+      where: and(eq(channels.workspaceId, workspace.id), eq(channels.name, 'general')),
+    });
+    assert.ok(general);
+    const names = (text: string, ids: string[]) => ids.filter((id) => text.includes(id));
+    const hiddenFromManager = [hidden, bob, warRoom, dm.channelId];
+
+    const overridePath = `/api/workspaces/${workspace.id}/categories/${projects.id}/permission-overrides`;
+    const denyView = { allowMask: 0, denyMask: Permissions.VIEW_CHANNELS };
+    const revision = () => computeAuthorizationRevisionFromStore(db, workspace.id);
+    const preview = await request(`${overridePath}/preview`, {
+      method: 'POST', cookie: manager.cookie, body: { operation: 'upsert', roleId: contributor.id, ...denyView },
+    });
+    assert.equal(preview.status, 200);
+    const previewText = JSON.stringify(await json<unknown>(preview));
+    assert.deepEqual(names(previewText, [shared, alice]), [shared, alice]);
+    assert.deepEqual(names(previewText, hiddenFromManager), []);
+    assert.equal(JSON.parse(previewText).otherChannelCount, 1, 'the channel it cannot see is only counted');
+
+    const upsert = await request(`${overridePath}/${contributor.id}`, {
+      method: 'PUT', cookie: manager.cookie, body: { ...denyView, expectedRevision: 0, expectedAuthorizationRevision: await revision() },
+    });
+    assert.equal(upsert.status, 200);
+    const upsertText = JSON.stringify(await json<unknown>(upsert));
+    assert.deepEqual(names(upsertText, [shared, alice]), [shared, alice]);
+    assert.deepEqual(names(upsertText, hiddenFromManager), []);
+    const removal = await request(`${overridePath}/${contributor.id}`, {
+      method: 'DELETE', cookie: manager.cookie, body: { expectedRevision: 1, expectedAuthorizationRevision: await revision() },
+    });
+    assert.equal(removal.status, 200);
+    const removalText = JSON.stringify(await json<unknown>(removal));
+    assert.deepEqual(names(removalText, [shared, alice]), [shared, alice]);
+    assert.deepEqual(names(removalText, hiddenFromManager), []);
+
+    // Taking Carol's role removes her from the private channel and the direct message, which the manager cannot see.
+    const roleRemoval = await request(`/api/workspaces/${workspace.id}/members/${carol}/roles/${memberRole.id}`, {
+      method: 'DELETE', cookie: manager.cookie, body: { expectedAuthorizationRevision: await revision() },
+    });
+    assert.equal(roleRemoval.status, 200);
+    const roleText = JSON.stringify(await json<unknown>(roleRemoval));
+    assert.deepEqual(names(roleText, [carol, general.id]), [carol, general.id]);
+    assert.deepEqual(names(roleText, [warRoom, dm.channelId, alice]), []);
+    assert.equal(JSON.parse(roleText).otherChannelCount, 2);
+
+    // The owner is in neither private channel of Projects, so deleting the category names neither.
+    await db.insert(categoryRolePermissionOverrides).values({
+      workspaceId: workspace.id, categoryId: projects.id, roleId: contributor.id, ...denyView, revision: 1,
+    });
+    const categoryRemoval = await request(`/api/workspaces/${workspace.id}/categories/${projects.id}`, {
+      method: 'DELETE', cookie: owner.cookie,
+    });
+    assert.equal(categoryRemoval.status, 200);
+    const categoryRemovalText = JSON.stringify(await json<unknown>(categoryRemoval));
+    assert.deepEqual(names(categoryRemovalText, [projects.id]), [projects.id]);
+    assert.deepEqual(names(categoryRemovalText, [shared, hidden, alice, bob]), []);
+    assert.equal(JSON.parse(categoryRemovalText).otherChannelCount, 2);
+    assert.equal((await verifyAuditChain()).valid, true);
+  });
+
   describe('continuous channel groups', () => {
     type Account = { cookie: string; user: { id: string }; password: string };
     interface GroupPackage { id: string; pub: KeyPackage; priv: PrivateKeyPackage; encoded: string; signature: string }

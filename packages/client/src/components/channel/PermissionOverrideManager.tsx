@@ -502,6 +502,9 @@ function OverrideConfirmation({ pending, members, channels, busy, notice, onConf
           ))}
         </ul>
       )}
+      {summary.otherChannels > 0 && (
+        <p className="text-xs text-discord-muted">{t('ほかに{count}件のチャンネルにも影響します。', { count: summary.otherChannels })}</p>
+      )}
       <div className="flex justify-end gap-2">
         <button autoFocus type="button" onClick={onCancel} disabled={busy} className="rounded-sm px-4 py-2 text-sm text-discord-muted hover:bg-discord-hover disabled:opacity-50">{t('キャンセル')}</button>
         <button type="button" onClick={onConfirm} disabled={busy} className={`rounded-sm px-4 py-2 text-sm text-white disabled:opacity-50 ${pending.input.operation === 'delete' || summary.losingUsers > 0 ? 'bg-discord-red' : 'bg-discord-accent'}`}>

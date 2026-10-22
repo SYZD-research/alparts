@@ -1044,6 +1044,7 @@ export const en = {
   'この設定を削除し、上位の設定を引き継ぎます。': 'This removes the setting so the higher-level setting applies.',
   'チャンネルごとの閲覧者への影響': 'Effect on who can view each channel',
   '表示できないチャンネル': 'Hidden channel',
+  'ほかに{count}件のチャンネルにも影響します。': (p) => `This also affects ${count(p)} other ${plural(count(p), 'channel', 'channels')}.`,
   '閲覧できなくなる人: {members}': 'Losing view access: {members}',
   '閲覧できるようになる人: {members}': 'Gaining view access: {members}',
   '変更後、しばらくメッセージを送信できない場合があります。': 'Messages may not send for a short time after the change.',

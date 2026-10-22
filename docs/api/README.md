@@ -49,6 +49,8 @@ This is an inventory, not a stable public OpenAPI contract. No formal API versio
 
 Moving a channel to another category (`PUT /api/channels/:id` with `categoryId`) and deleting a category swap which category overrides apply to a channel. For every role whose override differs, a caller other than the owner needs what writing that override takes: the role ranks below the caller and the bits of the old and new override are bits the caller holds. Deleting a category also needs the caller to see and manage every channel in it. Assigning a role that carries overrides needs the bits its overrides allow, and removing it the bits they deny, in the workspace for a category and in the channel for a channel. Refusals answer `403`.
 
+Responses that report what a change does to who can view channels name only channels the caller can see: `roomEffects` of override previews, saves and deletions, category deletion and role updates and assignments, and `movedChannelIds` and `keyedChannelIds` where a response has them. A preview is judged by the caller's view now, every other response by its view after the change. `otherChannelCount` says how many other channels the change affects, such as private channels and direct messages of other members; neither they nor the people in them are named, though the server still applies every effect.
+
 ## Profiles
 
 | Paths | Responsibility |

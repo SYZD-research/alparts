@@ -154,7 +154,7 @@ function upsertHandler(target: overrideService.OverrideTarget) {
         stepUpRevalidation(req),
       );
       await applyRealtimeEffects(req, result.roomEffects);
-      res.json(result);
+      res.json(result.response);
     } catch (error: any) {
       if (!sendOverrideError(res, error)) throw error;
     }
@@ -179,7 +179,7 @@ function deleteHandler(target: overrideService.OverrideTarget) {
         stepUpRevalidation(req),
       );
       await applyRealtimeEffects(req, result.roomEffects);
-      res.json(result);
+      res.json(result.response);
     } catch (error: any) {
       if (!sendOverrideError(res, error)) throw error;
     }

@@ -18,8 +18,11 @@ import {
   computeAuthorizationRevisionFromStore,
   getChannelAuthorizationFromSnapshot,
   getWorkspaceAuthorizationFromSnapshot,
+  limitEffectsToChannels,
   loadWorkspaceAuthorizationSnapshot,
   lockWorkspaceForAuthorization,
+  visibleChannelIdsFromSnapshot,
+  type ChannelRoomEffect,
   type WorkspaceAuthorizationSnapshot,
 } from './authorization.service.js';
 import {
@@ -161,7 +164,16 @@ export async function updateRole(
     const channelAccessAfter = captureChannelAccessFromSnapshot(snapshotAfter);
     const roomEffects = await applyViewerEffectsAndRotation(transaction, channelAccessBefore, channelAccessAfter);
     const allChannelIds = [...new Set([...channelAccessBefore.viewers.keys(), ...channelAccessAfter.viewers.keys()])].sort();
-    return { existing, updated, affectedBefore, affectedAfter, accessChanges, roomEffects, allChannelIds };
+    return {
+      existing,
+      updated,
+      affectedBefore,
+      affectedAfter,
+      accessChanges,
+      roomEffects,
+      allChannelIds,
+      visibleChannelIds: visibleChannelIdsFromSnapshot(snapshotAfter, actorId, roomEffects.map((effect) => effect.channelId)),
+    };
   }, (committed) => ({
     actorId,
     action: 'role.update',
@@ -176,12 +188,17 @@ export async function updateRole(
     },
   }));
   return {
-    role: formatRole(result.updated),
-    affectedMembers: pairEvaluations(result.affectedBefore, result.affectedAfter),
     ...result.accessChanges,
+    // Every channel of the workspace, for room updates only: the caller sends `response`.
     roomEffects: result.roomEffects,
     allChannelIds: result.allChannelIds,
-    keyedChannelIds: result.roomEffects.filter((effect) => effect.rotationRequired).map((effect) => effect.channelId),
+    keyedChannelIds: keyedChannelIds(result.roomEffects),
+    response: {
+      role: formatRole(result.updated),
+      affectedMembers: pairEvaluations(result.affectedBefore, result.affectedAfter),
+      ...result.accessChanges,
+      ...visibleChannelEffects(result.roomEffects, result.visibleChannelIds),
+    },
   };
 }
 
@@ -266,7 +283,16 @@ export async function changeRoleAssignment(
     const channelAccessAfter = captureChannelAccessFromSnapshot(snapshotAfter);
     const roomEffects = await applyViewerEffectsAndRotation(transaction, channelAccessBefore, channelAccessAfter);
     const allChannelIds = [...new Set([...channelAccessBefore.viewers.keys(), ...channelAccessAfter.viewers.keys()])].sort();
-    return { role, before, after, changed, accessChanges, roomEffects, allChannelIds };
+    return {
+      role,
+      before,
+      after,
+      changed,
+      accessChanges,
+      roomEffects,
+      allChannelIds,
+      visibleChannelIds: visibleChannelIdsFromSnapshot(snapshotAfter, actorId, roomEffects.map((effect) => effect.channelId)),
+    };
   }, (committed) => ({
     actorId,
     action: `role.${action}`,
@@ -281,17 +307,22 @@ export async function changeRoleAssignment(
     },
   }));
   return {
-    workspaceId,
-    userId,
-    roleId,
-    action,
-    changed: result.changed,
-    before: result.before,
-    after: result.after,
     ...result.accessChanges,
+    // Every channel of the workspace, for room updates only: the caller sends `response`.
     roomEffects: result.roomEffects,
     allChannelIds: result.allChannelIds,
-    keyedChannelIds: result.roomEffects.filter((effect) => effect.rotationRequired).map((effect) => effect.channelId),
+    keyedChannelIds: keyedChannelIds(result.roomEffects),
+    response: {
+      workspaceId,
+      userId,
+      roleId,
+      action,
+      changed: result.changed,
+      before: result.before,
+      after: result.after,
+      ...result.accessChanges,
+      ...visibleChannelEffects(result.roomEffects, result.visibleChannelIds),
+    },
   };
 }
 
@@ -564,6 +595,16 @@ function pairEvaluations(before: any[], after: any[]) {
       lost: permissionNames(previous.permissionMask & ~next.permissionMask),
     };
   });
+}
+
+function keyedChannelIds(effects: ReadonlyArray<{ channelId: string; rotationRequired: boolean }>): string[] {
+  return effects.filter((effect) => effect.rotationRequired).map((effect) => effect.channelId);
+}
+
+/** The channel effects of a role change that its response may name, and how many more there were. */
+function visibleChannelEffects(effects: ChannelRoomEffect[], visibleChannelIds: ReadonlySet<string>) {
+  const { roomEffects, otherChannelCount } = limitEffectsToChannels(effects, visibleChannelIds);
+  return { roomEffects, keyedChannelIds: keyedChannelIds(roomEffects), otherChannelCount };
 }
 
 function previewResponse(workspaceId: string, operation: string, before: any[], after: any[]) {

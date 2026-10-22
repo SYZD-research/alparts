@@ -41,8 +41,10 @@ import {
   getWorkspaceAuthorizationFromSnapshot,
   getWorkspaceAuthorizationFromStore,
   isVisibleChannelAuthorization,
+  limitEffectsToChannels,
   loadWorkspaceAuthorizationSnapshot,
   lockWorkspaceForAuthorization,
+  visibleChannelIdsFromSnapshot,
   type WorkspaceAuthorizationSnapshot,
 } from './authorization.service.js';
 import { deleteEpochRecipients } from './key-epoch-state.js';
@@ -412,7 +414,12 @@ export async function deleteCategory(workspaceId: string, categoryId: string, ac
     assertCategoryChangeAuthority(snapshotBefore, actorId, overrides, []);
     const after = captureChannelAccessFromSnapshot(snapshotAfter);
     const roomEffects = await applyViewerEffectsAndRotation(transaction, before, after);
-    return { existing, movedChannelIds: affectedChannelIds, roomEffects };
+    return {
+      existing,
+      movedChannelIds: affectedChannelIds,
+      roomEffects,
+      visibleChannelIds: visibleChannelIdsFromSnapshot(snapshotAfter, actorId, affectedChannelIds),
+    };
   }, (committed) => ({
     actorId,
     action: 'category.delete',
@@ -425,7 +432,19 @@ export async function deleteCategory(workspaceId: string, categoryId: string, ac
       movedChannelIds: committed.movedChannelIds,
     },
   }));
-  return { categoryId, workspaceId, movedChannelIds: result.movedChannelIds, roomEffects: result.roomEffects };
+  const movedChannelIds = result.movedChannelIds.filter((channelId: string) => result.visibleChannelIds.has(channelId));
+  return {
+    workspaceId,
+    // Every moved channel, for room updates only: the caller sends `response`.
+    roomEffects: result.roomEffects,
+    response: {
+      categoryId,
+      workspaceId,
+      movedChannelIds,
+      roomEffects: limitEffectsToChannels(result.roomEffects, result.visibleChannelIds).roomEffects,
+      otherChannelCount: result.movedChannelIds.length - movedChannelIds.length,
+    },
+  };
 }
 
 export async function isChannelMember(channelId: string, userId: string): Promise<boolean> {

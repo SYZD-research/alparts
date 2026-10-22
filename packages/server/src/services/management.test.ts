@@ -412,6 +412,64 @@ describe('management security invariants', () => {
     assert.doesNotThrow(unassign(channel('quiet', 0, Permissions.SEND_MESSAGES), 'owner'));
     assert.throws(assign(none, 'stranger'), /NOT_AUTHORIZED/);
   });
+
+  it('names to an actor only the channels it sees, and only counts the others, direct messages included (GHSA-6q58)', async () => {
+    const { Permissions } = await import('@alparts/shared');
+    const {
+      applyViewerEffectsAndRotation,
+      captureChannelAccessFromSnapshot,
+      limitEffectsToChannels,
+      visibleChannelIdsFromSnapshot,
+    } = await import('./authorization.service.js');
+    const world = (memberPermissions: number, channelOverrides: Record<string, OverrideValue[]> = {}) => authorizationSnapshot({
+      roles: {
+        manager: { permissions: Permissions.VIEW_CHANNELS | Permissions.MANAGE_ROLES, position: 60 },
+        member: { permissions: memberPermissions, position: 50 },
+      },
+      members: { manager: ['manager'], alice: ['member'], bob: ['member'], carol: ['member'] },
+      channels: [
+        { id: 'public', type: 'text' },
+        { id: 'mine', type: 'text', isPrivate: true },
+        { id: 'theirs', type: 'text', isPrivate: true },
+        { id: 'dm', type: 'dm', isPrivate: true },
+      ],
+      privateMembers: { mine: ['manager', 'alice'], theirs: ['bob'], dm: ['alice', 'carol'] },
+      channelOverrides,
+    });
+    const before = world(Permissions.VIEW_CHANNELS);
+    const after = world(0);
+    const effects = await applyViewerEffectsAndRotation(
+      keylessStore,
+      captureChannelAccessFromSnapshot(before),
+      captureChannelAccessFromSnapshot(after),
+    );
+    // The change takes every channel from the members, the other people's private channel and the DM included.
+    assert.deepEqual(
+      effects.map((effect) => [effect.channelId, effect.lostUserIds]),
+      [['dm', ['alice', 'carol']], ['mine', ['alice']], ['public', ['alice', 'bob', 'carol']], ['theirs', ['bob']]],
+    );
+    const shown = limitEffectsToChannels(effects, visibleChannelIdsFromSnapshot(
+      after, 'manager', effects.map((effect) => effect.channelId),
+    ));
+    assert.deepEqual(shown.roomEffects.map((effect) => effect.channelId), ['mine', 'public']);
+    assert.equal(shown.otherChannelCount, 2);
+    assert.equal(JSON.stringify(shown).includes('theirs'), false);
+    assert.equal(JSON.stringify(shown).includes('dm'), false);
+    assert.equal(JSON.stringify(shown).includes('carol'), true, 'carol loses #public, which the manager sees');
+
+    // What counts is the view after the change: a channel the change hides from the actor is not named either.
+    const hidesFromManager = world(Permissions.VIEW_CHANNELS, {
+      public: [{ roleId: 'manager', allowMask: 0, denyMask: Permissions.VIEW_CHANNELS }],
+    });
+    assert.deepEqual([...visibleChannelIdsFromSnapshot(before, 'manager', ['public'])], ['public']);
+    assert.deepEqual([...visibleChannelIdsFromSnapshot(hidesFromManager, 'manager', ['public'])], []);
+    // The owner is in none of the private channels, so it is told of #public only.
+    assert.deepEqual(
+      [...visibleChannelIdsFromSnapshot(after, 'owner', ['dm', 'mine', 'public', 'theirs'])],
+      ['public'],
+    );
+    assert.deepEqual(limitEffectsToChannels([], new Set()), { roomEffects: [], otherChannelCount: 0 });
+  });
 });
 
 type OverrideValue = { roleId: string; allowMask: number; denyMask: number };
