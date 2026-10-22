@@ -78,7 +78,6 @@ export function MessageItem({ message, isFirst, onJumpToMessage, canPin = true }
 
   const isOwn = message.authorId === user?.id;
   const isDeleted = message.type === 'delete';
-  const isReaction = message.type === 'reaction';
 
   const selectMessageAction = (action: 'reply' | 'edit') => {
     if (action === 'edit') setEditTarget(message.channelId, message);
@@ -113,7 +112,6 @@ export function MessageItem({ message, isFirst, onJumpToMessage, canPin = true }
     }
   };
 
-  if (isReaction) return null;
   if (isDeleted) {
     return (
       <div id={`message-${message.id}`} tabIndex={-1} className="px-4 py-1 text-sm italic text-discord-muted">

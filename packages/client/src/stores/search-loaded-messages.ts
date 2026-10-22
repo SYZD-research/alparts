@@ -46,7 +46,7 @@ export function searchLoadedMessages(
     if (!channelName) continue;
     for (const message of messages) {
       if (
-        (message.type !== 'message' && message.type !== 'edit' && message.type !== 'system')
+        (message.type !== 'message' && message.type !== 'edit')
         || !message.content
         || NON_CONTENT_MARKERS.has(message.content)
       ) continue;

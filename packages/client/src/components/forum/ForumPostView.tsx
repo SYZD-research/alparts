@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { MAX_FORUM_POST_TITLE_LENGTH, type Message } from '@alparts/shared';
 import { useForumStore } from '../../stores/forum.store';
 import { useMessageStore } from '../../stores/message.store';
-import { belongsToPost } from '../../stores/message-projector';
+import { belongsToPost, getMessageCryptoVerificationState } from '../../stores/message-projector';
 import { useWorkspaceStore } from '../../stores/workspace.store';
 import { useAuthStore } from '../../stores/auth.store';
 import { useUiStore } from '../../stores/ui.store';
@@ -64,8 +64,13 @@ export function ForumPostView({ channelId, postId, sendDisabled }: Props) {
   // names the post's first message as its author signed it, so a server that
   // serves another post under this id cannot show the reply under it.
   const replies = useMemo(
-    () => (root ? messages.filter((message) => message.type !== 'reaction' && belongsToPost(message, root)) : []),
+    () => (root ? messages.filter((message) => belongsToPost(message, root)) : []),
     [messages, root],
+  );
+  // A reply is listed once it verifies, so the post is not empty before that.
+  const repliesPending = useMemo(
+    () => messages.some((message) => message.postId === postId && getMessageCryptoVerificationState(message) === undefined),
+    [messages, postId],
   );
   const state = view?.states[postId];
   const display = forumPostDisplay(root);
@@ -300,7 +305,7 @@ export function ForumPostView({ channelId, postId, sendDisabled }: Props) {
             </button>
           </div>
         )}
-        {replies.length === 0 && !view?.postLoading[postId] && (
+        {replies.length === 0 && !view?.postLoading[postId] && !repliesPending && (
           <p className="px-4 py-3 text-sm text-discord-muted">{t('まだ返信はありません。')}</p>
         )}
         {replies.map((message, index) => {

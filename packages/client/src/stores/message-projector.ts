@@ -2,7 +2,6 @@ import {
   serializeMessageEnvelope,
   type Attachment,
   type Message,
-  type Reaction,
   type SignedEventReference,
 } from '@alparts/shared';
 
@@ -72,18 +71,26 @@ function namesEvent(
 
 /**
  * The message a quote shows: undefined while the message under its id is not
- * loaded, null when the message under that id is not the one quoted.
+ * loaded, null when the quote cannot be trusted: the message carrying it did
+ * not verify, so its refMessageId is whatever the server served, or the
+ * message under that id is not the one quoted.
  */
 export function quotedMessage(message: Message, messages: readonly ProjectedMessage[]): ProjectedMessage | null | undefined {
   if (!message.refMessageId) return undefined;
+  if (getMessageCryptoVerificationState(message) !== true) return null;
   const target = messages.find((candidate) => candidate.id === message.refMessageId);
   if (!target) return undefined;
   return namesEvent(message, target, message.refBinding) ? target : null;
 }
 
-/** Whether a forum message belongs under this post's first message. */
+/**
+ * Whether a forum message belongs under this post's first message. Only a
+ * message that verified names its post: otherwise postId is the server's.
+ */
 export function belongsToPost(message: Message, root: ProjectedMessage): boolean {
-  return message.postId === root.id && namesEvent(message, root, message.postBinding);
+  return getMessageCryptoVerificationState(message) === true
+    && message.postId === root.id
+    && namesEvent(message, root, message.postBinding);
 }
 
 export function markMessageKeyUnavailable(message: Message): Message {
@@ -134,80 +141,72 @@ export function compareBinaryIds(left: string, right: string): number {
 function mergeDuplicateEvent(current: Message, incoming: Message): Message {
   const currentEvent = withoutLegacyVerificationProperty(current);
   const incomingEvent = withoutLegacyVerificationProperty(incoming);
-  if (isAuthenticatedMessageEvent(currentEvent) || isAuthenticatedMessageEvent(incomingEvent)) {
-    const currentEnvelope = authenticatedEnvelope(currentEvent);
-    const incomingEnvelope = authenticatedEnvelope(incomingEvent);
-    if (
-      hasAuthenticatedEnvelopeConflict(currentEvent)
-      || hasAuthenticatedEnvelopeConflict(incomingEvent)
-      || currentEnvelope === null
-      || incomingEnvelope === null
-      || currentEnvelope !== incomingEnvelope
-    ) {
-      // One immutable event id must never identify two signed envelopes. Keep
-      // the first projection stable, discard all plaintext, and make the
-      // equivocation sticky until the channel is explicitly reloaded.
-      return {
-        ...currentEvent,
-        content: '',
-        [localVerificationState]: false,
-        [authenticatedEnvelopeConflict]: true,
-      } as Message;
-    }
-
-    const currentVerification = getMessageCryptoVerificationState(currentEvent);
-    const incomingVerification = getMessageCryptoVerificationState(incomingEvent);
-    const bound = (currentVerification === true && hasBoundReferences(currentEvent))
-      || (incomingVerification === true && hasBoundReferences(incomingEvent));
-    const verified = currentVerification === true || incomingVerification === true
-      ? true
-      : currentVerification === false || incomingVerification === false
-        ? false
-        : undefined;
-    const trustedContent = incomingVerification === true
-      ? incomingEvent.content
-      : currentVerification === true
-        ? currentEvent.content
-        : '';
-    const trustedAuthor = incomingVerification === true
-      ? incomingEvent.author
-      : currentVerification === true
-        ? currentEvent.author
-        : incomingEvent.author || currentEvent.author;
-    const merged = {
+  const currentEnvelope = authenticatedEnvelope(currentEvent);
+  const incomingEnvelope = authenticatedEnvelope(incomingEvent);
+  if (
+    hasAuthenticatedEnvelopeConflict(currentEvent)
+    || hasAuthenticatedEnvelopeConflict(incomingEvent)
+    || currentEnvelope === null
+    || incomingEnvelope === null
+    || currentEnvelope !== incomingEnvelope
+  ) {
+    // One immutable event id must never identify two signed envelopes. Keep
+    // the first projection stable, discard all plaintext, and make the
+    // equivocation sticky until the channel is explicitly reloaded.
+    return {
       ...currentEvent,
-      ...incomingEvent,
-      // Plaintext and the verified author binding are local results. A wire
-      // duplicate may update server-owned aggregates, but can never provide or
-      // replace either value merely by copying the signed ciphertext.
-      content: trustedContent,
-      author: trustedAuthor,
-      // The server time of an event never changes. A copy with another time
-      // must not move an event already held, which would let a server put an
-      // old edit back on top.
-      createdAt: currentEvent.createdAt,
-      reactions: incomingEvent.reactions || currentEvent.reactions,
-      attachments: mergeAttachments(currentEvent.attachments, incomingEvent.attachments),
-      isPinned: incomingEvent.isPinned,
-    } as LocallyVerifiedEvent;
-    if (verified !== undefined) merged[localVerificationState] = verified;
-    if (bound) merged[boundReferences] = true;
-    else delete merged[boundReferences];
-    return merged;
+      content: '',
+      [localVerificationState]: false,
+      [authenticatedEnvelopeConflict]: true,
+    } as Message;
   }
 
-  return {
+  const currentVerification = getMessageCryptoVerificationState(currentEvent);
+  const incomingVerification = getMessageCryptoVerificationState(incomingEvent);
+  const bound = (currentVerification === true && hasBoundReferences(currentEvent))
+    || (incomingVerification === true && hasBoundReferences(incomingEvent));
+  const verified = currentVerification === true || incomingVerification === true
+    ? true
+    : currentVerification === false || incomingVerification === false
+      ? false
+      : undefined;
+  const trustedContent = incomingVerification === true
+    ? incomingEvent.content
+    : currentVerification === true
+      ? currentEvent.content
+      : '';
+  const trustedAuthor = incomingVerification === true
+    ? incomingEvent.author
+    : currentVerification === true
+      ? currentEvent.author
+      : incomingEvent.author || currentEvent.author;
+  const merged = {
     ...currentEvent,
     ...incomingEvent,
-    content: incomingEvent.content || currentEvent.content,
-    author: incomingEvent.author || currentEvent.author,
+    // Plaintext and the verified author binding are local results. A wire
+    // duplicate may update server-owned aggregates, but can never provide or
+    // replace either value merely by copying the signed ciphertext.
+    content: trustedContent,
+    author: trustedAuthor,
+    // The server time of an event never changes. A copy with another time
+    // must not move an event already held, which would let a server put an
+    // old edit back on top.
+    createdAt: currentEvent.createdAt,
     reactions: incomingEvent.reactions || currentEvent.reactions,
     attachments: mergeAttachments(currentEvent.attachments, incomingEvent.attachments),
     isPinned: incomingEvent.isPinned,
-  };
+  } as LocallyVerifiedEvent;
+  if (verified !== undefined) merged[localVerificationState] = verified;
+  if (bound) merged[boundReferences] = true;
+  else delete merged[boundReferences];
+  return merged;
 }
 
-function isAuthenticatedMessageEvent(message: Message): boolean {
+/**
+ * Whether the event is of a type its author signs. The server stores nothing
+ * else, so any other type in a response or a socket event was made up.
+ */
+export function isAuthenticatedMessageEvent(message: { type: string }): boolean {
   return message.type === 'message' || message.type === 'edit' || message.type === 'delete';
 }
 
@@ -251,6 +250,7 @@ export function mergeMessageEvents(...batches: Message[][]): Message[] {
   for (const batch of batches) {
     const canonical = canonicalBatches.has(batch);
     for (const event of batch) {
+      if (!isAuthenticatedMessageEvent(event)) continue;
       const existing = events.get(event.id);
       events.set(event.id, existing ? mergeDuplicateEvent(existing, event) : canonical ? event : withoutLegacyVerificationProperty(event));
     }
@@ -289,15 +289,6 @@ function quarantineReplayedEvents(ordered: Message[]): Message[] {
   return changed ? result : ordered;
 }
 
-function addReaction(reactions: Reaction[], emoji: string, userId: string): Reaction[] {
-  const existing = reactions.find((reaction) => reaction.emoji === emoji);
-  if (!existing) return [...reactions, { emoji, count: 1, userIds: [userId] }];
-  if (existing.userIds.includes(userId)) return reactions;
-  return reactions.map((reaction) => reaction.emoji === emoji
-    ? { ...reaction, count: reaction.userIds.length + 1, userIds: [...reaction.userIds, userId] }
-    : reaction);
-}
-
 /** Fold immutable wire events into the logical messages rendered by the UI. */
 export function projectMessageEvents(rawEvents: Message[]): ProjectedMessage[] {
   return projectOrderedMessageEvents(mergeMessageEvents(rawEvents));
@@ -308,14 +299,14 @@ export function projectOrderedMessageEvents(orderedEvents: Message[]): Projected
   const projected = new Map<string, ProjectedMessage>();
 
   for (const event of orderedEvents) {
-    if (event.type === 'message' || event.type === 'system') {
+    // A window handed in directly is held to the store's rule: only signed events.
+    if (!isAuthenticatedMessageEvent(event)) continue;
+    if (event.type === 'message') {
       projected.set(event.id, {
         ...event,
         // Network payloads never get to supply display plaintext. A base
         // message becomes visible only after its signature and AEAD verify.
-        content: event.type === 'message' && getMessageCryptoVerificationState(event) !== true
-          ? ''
-          : event.content,
+        content: getMessageCryptoVerificationState(event) !== true ? '' : event.content,
         reactions: [...(event.reactions || [])],
         originIdempotencyKey: event.idempotencyKey,
       });
@@ -330,6 +321,9 @@ export function projectOrderedMessageEvents(orderedEvents: Message[]): Projected
     if (event.type === 'edit') {
       if (getMessageCryptoVerificationState(event) !== true) continue;
       if (target.type === 'delete' || event.authorId !== target.authorId) continue;
+      // The edited message keeps its base's references, which are the
+      // author's only if the base verified.
+      if (getMessageCryptoVerificationState(target) !== true) continue;
       // A v5 edit applies only to the message it was signed for.
       if (!namesEvent(event, target, event.refBinding)) continue;
       projected.set(targetId, {
@@ -358,16 +352,6 @@ export function projectOrderedMessageEvents(orderedEvents: Message[]): Projected
         content: '',
         deletedByUserId: event.authorId,
         deletedByDisplayName: event.author?.displayName,
-      });
-      continue;
-    }
-
-    if (event.type === 'reaction') {
-      const emoji = event.content || event.encryptedContent;
-      if (!emoji) continue;
-      projected.set(targetId, {
-        ...target,
-        reactions: addReaction(target.reactions || [], emoji, event.authorId),
       });
     }
   }

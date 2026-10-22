@@ -15,7 +15,7 @@
 
 - Webおよびdesktopクライアントでworkspace/category/channel、private channel、基本的な暗号化text message、返信、編集、削除、reaction、pin、bookmarkを利用できる。
 - 1対1 DM/group DMのAPI、鍵受信者となるmember model、一覧・作成UIがある。
-- message eventはREST/Socketの耐久化後経路から取り込まれ、client projectorが`(createdAt, id)`順序、重複排除、edit/delete/reaction/pin stateを決定的に投影する。
+- message eventはREST/Socketの耐久化後経路から取り込まれ（message/edit/delete以外の種別は捨てる）、client projectorが`(createdAt, id)`順序、重複排除、edit/delete stateを決定的に投影し、reaction/pinはserverが返すsnapshotを反映する。
 - workspace作成・一覧・member removal、category/channel管理、private member管理、role CRUD/割当/変更preview/有効権限理由、session/device一覧と失効UIがある。
 - Category/channel role permission overrideはallow/deny/inherit、適用前preview、override・認可の両revision、実効権限理由、失権時のroom退出とrekey、公式clientの局所消去に対応する。
 - Attachmentはfile別key、暗号化filename、5 MiB chunk AEAD、中断再開、取消、短命予約、opaque download復号、危険形式警告に対応する。Desktop保存では平文をbounded native streamへ渡し、危険形式にWindows/macOSの隔離属性またはLinuxの非実行権限を付ける。Protocol-levelの複数chunk中断再開からdownload SHA一致を隔離PostgreSQL/MinIOで確認している。
@@ -50,7 +50,7 @@
 ### E2EEと鍵管理
 
 - Message/attachmentはbrowserでAES-256-GCM暗号化し、message protocol v3では認証user ID、mutation target、broadcast-mention flagを含むcontext付きenvelopeへP-256 device keyで署名する。Server/clientはuser-device bindingを再確認し、channel keyがない場合はplaintextへfallbackせず停止する。旧protocol v1 ciphertextは互換復号せずfail closedになり、protocol v2 messageはlegacy互換としてbroadcast mention権限を持たない。
-- Message protocol v5は、編集・削除・引用・forum返信の対象を作者と署名済みidempotency keyでも指し、参照を持つeventはこの形式でだけ受理する。Server IDだけで対象を指す旧形式（v3/v4）の参照と、message IDだけに束縛した旧v2のfile署名は、serverもclientも拒否する（形式モデルM9、RISK_REGISTER R-051）。署名済みidempotency keyのないmessageは編集・削除・引用・返信できない。v5より前のclientは編集・削除・引用・返信ができず、そうしたeventを反映もできない（正式リリース前に決めたため、互換性は保たない）。
+- Message protocol v5は、編集・削除・引用・forum返信の対象を作者と署名済みidempotency keyでも指し、参照を持つeventはこの形式でだけ受理する。Server IDだけで対象を指す旧形式（v3/v4）の参照と、message IDだけに束縛した旧v2のfile署名は、serverもclientも拒否する（形式モデルM9、RISK_REGISTER R-051）。署名済みidempotency keyのないmessageは編集・削除・引用・返信できない。検証できなかったmessageには、本文も引用もforum投稿への所属も表示せず、その編集も反映しない。v5より前のclientは編集・削除・引用・返信ができず、そうしたeventを反映もできない（正式リリース前に決めたため、互換性は保たない）。
 - Channel keyはMLSライブラリのgroup/commit/Welcome/exporterで作る。Channelごとに一つのMLS groupを継続し、端末の追加・削除と定期更新をcommitで反映する（group protocol 4、[ADR 0012](../adr/0012-continuous-mls-groups.md)）。長期の履歴鍵を別途保存するため、message単位の完全なforward secrecyは主張しない。他のMLS実装との相互運用、external commit/join、MLS application messageによるmessage単位のratchetは提供しない。独立reviewは未実施。
 - Serverはchannelごとにcommitを順序付け、1 versionに1 commitだけを、直前versionとそのtranscriptのcompare-and-swapで受理する。受理したcommitはその場で`active`になり、pending、全員の受領確認、abortはない。Serverはcommit envelopeの署名、roster、Add/Removeとpackageの一致、Welcomeの宛先、UpdatePathのleaf credentialを検証するが、MLSの秘密値（path secret、exporter）は検証できない。同じbyte列の再送には同じ結果を返す。端末directoryの追記型chainとclient checkpoint照合を実装したが、独立witnessはない。
 - Offline端末は書き込みを止めない（例外は、移行直後のchannelで最初のgroupを待つ間。次項）。戻った端末は保存されたcommit logを順に処理して追いつく。書き込みが止まるのは、groupに資格を失った端末（失効・未承認・channel閲覧権の喪失）が残っている間と、group更新（genesis、Remove付きcommit、空commit）が24時間受理されていない間だけで、onlineの利用可能なmember 1台がRemoveまたは更新のcommitを出せば再開する。送信する端末自身が利用可能なmemberなら、公式clientは送信前にそのcommitを出す。追加待ちの端末は書き込みを止めない。

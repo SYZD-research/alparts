@@ -63,8 +63,6 @@ export const MessageType = {
   MESSAGE: 'message',
   EDIT: 'edit',
   DELETE: 'delete',
-  REACTION: 'reaction',
-  SYSTEM: 'system',
 } as const;
 
 export const UserStatus = {

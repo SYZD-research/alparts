@@ -11,6 +11,7 @@ import {
   markMessageKeyUnavailable,
   mergeMessageEvents,
   projectMessageEvents,
+  projectOrderedMessageEvents,
   quotedMessage,
   retryMessageKeyVerification,
 } from './message-projector';
@@ -78,16 +79,6 @@ describe('projectMessageEvents', () => {
       content: 'after',
       createdAt: '2026-01-01T00:00:03.000Z',
     });
-    const reaction = event({
-      id: 'reaction-1',
-      type: 'reaction',
-      refMessageId: original.id,
-      authorId: 'user-2',
-      content: '',
-      encryptedContent: '👍',
-      signature: null,
-      createdAt: '2026-01-01T00:00:04.000Z',
-    });
     const deletion = event({
       id: 'delete-1',
       type: 'delete',
@@ -95,14 +86,13 @@ describe('projectMessageEvents', () => {
       createdAt: '2026-01-01T00:00:05.000Z',
     });
 
-    const rawNewestFirst = [deletion, reaction, edit, second, original, wireEvent(edit, { content: '' })];
+    const rawNewestFirst = [deletion, edit, second, original, wireEvent(edit, { content: '' })];
     const merged = mergeMessageEvents(rawNewestFirst);
     const projected = projectMessageEvents(merged);
 
-    expect(merged).toHaveLength(5);
+    expect(merged).toHaveLength(4);
     expect(projected.map((message) => message.id)).toEqual(['message-1', 'message-2']);
     expect(projected[0]).toMatchObject({ id: original.id, type: 'edit', content: 'after' });
-    expect(projected[0].reactions).toEqual([{ emoji: '👍', count: 1, userIds: ['user-2'] }]);
     expect(projected[1]).toMatchObject({ id: second.id, type: 'delete', content: '' });
   });
 
@@ -294,7 +284,38 @@ describe('projectMessageEvents', () => {
     } as Message & { cryptoVerified: boolean };
     expect(projectMessageEvents([forged])[0].content).toBe('');
   });
+
+  it('holds only message, edit and delete events: the server stores no other type', () => {
+    const real = event({ id: 'message-1', type: 'message', content: 'hello', createdAt: '2026-01-01T00:00:01.000Z' });
+    const forged = [
+      foreignEvent('system', { id: 'system-1', content: 'Please paste your recovery code here.', createdAt: '2026-01-01T00:00:02.000Z' }),
+      foreignEvent('system', { id: 'system-2', content: 'I agree', refMessageId: real.id, createdAt: '2026-01-01T00:00:03.000Z' }),
+      foreignEvent('reaction', { id: 'reaction-1', refMessageId: real.id, content: '👍', createdAt: '2026-01-01T00:00:04.000Z' }),
+      foreignEvent('announcement', { id: 'unknown-1', content: 'hello', createdAt: '2026-01-01T00:00:05.000Z' }),
+    ];
+
+    const merged = mergeMessageEvents([real], forged.map((item) => wireEvent(item)));
+    expect(merged.map((item) => item.id)).toEqual([real.id]);
+    expect(projectMessageEvents([real, ...forged]).map((item) => [item.id, item.content, item.reactions])).toEqual([[real.id, 'hello', []]]);
+    // Not even under the id of a message already held.
+    expect(mergeMessageEvents([real], [foreignEvent('system', { id: real.id, content: 'replaced', createdAt: real.createdAt })])[0].content).toBe('hello');
+  });
+
+  it('projects only signed events even when a window is handed over directly', () => {
+    const real = event({ id: 'message-1', type: 'message', content: 'hello', createdAt: '2026-01-01T00:00:01.000Z' });
+    const shown = projectOrderedMessageEvents([
+      real,
+      foreignEvent('system', { id: 'system-1', content: 'server injected', createdAt: '2026-01-01T00:00:02.000Z' }),
+      foreignEvent('reaction', { id: 'reaction-1', refMessageId: real.id, content: '👍', createdAt: '2026-01-01T00:00:03.000Z' }),
+    ]);
+    expect(shown.map((item) => [item.id, item.reactions])).toEqual([[real.id, []]]);
+  });
 });
+
+/** An event of a type the server never stores, marked verified here to show the type alone keeps it out. */
+function foreignEvent(type: string, overrides: Partial<Message> & Pick<Message, 'id' | 'createdAt'>): Message {
+  return { ...event({ type: 'message', ...overrides }), type } as unknown as Message;
+}
 
 function wireEvent(message: Message, overrides: Partial<Message> = {}): Message {
   // JSON is the relevant trust boundary and cannot carry process-local Symbols.
@@ -456,6 +477,93 @@ describe('v5 references (formal model M9)', () => {
     const { edit } = swapped(true);
     const [merged] = mergeMessageEvents([edit], [{ ...edit, refBinding: { authorId: author.id, idempotencyKey: 'k-m2' } }]);
     expect(hasAuthenticatedEnvelopeConflict(merged)).toBe(true);
+  });
+});
+
+describe('messages that did not verify (formal model M9)', () => {
+  const binding = (key: string) => ({ authorId: author.id, idempotencyKey: key });
+  const verifiedBound = (message: Message) => markMessageCryptoVerification(message, true, true);
+  // The author's verified message, and a verified edit of the message with key k-m2.
+  const quoted = verifiedBound(event({ id: 'id-1', type: 'message', content: 'meet at 10', idempotencyKey: 'k-m1', createdAt: '2026-01-01T00:00:01.000Z' }));
+  const base = (overrides: Partial<Message> = {}) => event({
+    id: 'id-2', type: 'message', content: 'server injected', idempotencyKey: 'k-m2',
+    refMessageId: quoted.id, refBinding: binding('k-m1'), createdAt: '2026-01-01T00:00:02.000Z', ...overrides,
+  });
+  const edit = verifiedBound(event({
+    id: 'id-3', type: 'edit', content: 'edited', refMessageId: 'id-2', refBinding: binding('k-m2'),
+    idempotencyKey: 'k-edit', createdAt: '2026-01-01T00:00:03.000Z',
+  }));
+  const shownBase = (held: Message) => projectMessageEvents([quoted, held, edit]).find((message) => message.id === 'id-2')!;
+
+  it('applies a verified edit to a verified message, which keeps the quote it was signed with', () => {
+    const shown = projectMessageEvents([quoted, verifiedBound(base()), edit]);
+    const edited = shown.find((message) => message.id === 'id-2')!;
+    expect(edited).toMatchObject({ type: 'edit', content: 'edited' });
+    expect(quotedMessage(edited, shown)?.id).toBe(quoted.id);
+  });
+
+  it('does not apply a verified edit to a message whose own signature failed', () => {
+    const failed = markMessageCryptoVerification(base(), false);
+    const shown = shownBase(failed);
+    // The author's words do not reach a quote the server chose.
+    expect(shown).toMatchObject({ type: 'message', content: '' });
+    expect(getMessageCryptoVerificationState(shown)).toBe(false);
+    expect(quotedMessage(shown, projectMessageEvents([quoted, failed, edit]))).toBeNull();
+  });
+
+  it('does not apply an edit to a message that could not be read or is not verified yet', () => {
+    expect(shownBase(markMessageKeyUnavailable(base()))).toMatchObject({ type: 'message', content: '' });
+    expect(shownBase(retryMessageKeyVerification(base()))).toMatchObject({ type: 'message', content: '' });
+  });
+
+  it('does not apply a second edit to a message whose first edit was refused', () => {
+    const failed = markMessageCryptoVerification(base(), false);
+    const second = verifiedBound(event({
+      id: 'id-4', type: 'edit', content: 'edited again', refMessageId: 'id-2', refBinding: binding('k-m2'),
+      idempotencyKey: 'k-edit-2', createdAt: '2026-01-01T00:00:04.000Z',
+    }));
+    expect(projectMessageEvents([quoted, failed, edit, second]).find((message) => message.id === 'id-2')).toMatchObject({ type: 'message', content: '' });
+  });
+
+  it('still lets a verified deletion remove a message that did not verify', () => {
+    const failed = markMessageCryptoVerification(base(), false);
+    const removal = verifiedBound(event({
+      id: 'id-5', type: 'delete', refMessageId: 'id-2', refBinding: binding('k-m2'), idempotencyKey: 'k-delete',
+      createdAt: '2026-01-01T00:00:05.000Z',
+    }));
+    expect(projectMessageEvents([quoted, failed, removal]).find((message) => message.id === 'id-2')).toMatchObject({ type: 'delete', content: '' });
+  });
+
+  it('shows a quote only on a message that verified', () => {
+    const verifiedQuote = verifiedBound(base());
+    expect(quotedMessage(verifiedQuote, [quoted])?.id).toBe(quoted.id);
+    // Loaded or not, the quote of any other message names whatever the server served.
+    for (const held of [markMessageCryptoVerification(base(), false), markMessageKeyUnavailable(base()), retryMessageKeyVerification(base()), wireEvent(base())]) {
+      expect(quotedMessage(held, [quoted])).toBeNull();
+      expect(quotedMessage(held, [])).toBeNull();
+    }
+    expect(quotedMessage(event({ id: 'id-6', type: 'message', createdAt: '2026-01-01T00:00:06.000Z' }), [quoted])).toBeUndefined();
+  });
+
+  it('lists a forum reply only when it verified', () => {
+    const root = projectMessageEvents([verifiedBound(event({
+      id: 'post-1', type: 'message', idempotencyKey: 'k-p1', postId: null, createdAt: '2026-01-01T00:00:01.000Z',
+    }))])[0];
+    const reply = (overrides: Partial<Message> = {}) => event({
+      id: 'reply', type: 'message', authorId: 'user-2', idempotencyKey: 'k-x1', postId: 'post-1', postBinding: binding('k-p1'),
+      createdAt: '2026-01-01T00:00:02.000Z', ...overrides,
+    });
+    expect(belongsToPost(verifiedBound(reply()), root)).toBe(true);
+    for (const held of [markMessageCryptoVerification(reply(), false), markMessageKeyUnavailable(reply()), retryMessageKeyVerification(reply()), wireEvent(reply())]) {
+      expect(belongsToPost(held, root)).toBe(false);
+    }
+  });
+
+  it('keeps naming older verified events by id, as documented', () => {
+    const older = markMessageCryptoVerification(base(), true);
+    expect(quotedMessage(older, [quoted])?.id).toBe(quoted.id);
+    const root = projectMessageEvents([markMessageCryptoVerification(event({ id: 'post-1', type: 'message', postId: null, createdAt: '2026-01-01T00:00:01.000Z' }), true)])[0];
+    expect(belongsToPost(markMessageCryptoVerification(event({ id: 'reply', type: 'message', postId: 'post-1', createdAt: '2026-01-01T00:00:02.000Z' }), true), root)).toBe(true);
   });
 });
 

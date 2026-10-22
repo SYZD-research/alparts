@@ -17,6 +17,23 @@ describe('MessageItem reply presentation', () => {
   });
 });
 
+describe('MessageItem quotes', () => {
+  it('says the original cannot be shown when the message carrying the quote did not verify', () => {
+    for (const held of [markMessageCryptoVerification(replyMessage(), false), markMessageKeyUnavailable(replyMessage()), replyMessage()]) {
+      const html = renderToStaticMarkup(<MessageItem message={held} isFirst onJumpToMessage={() => undefined} />);
+      expect(html).toContain('元のメッセージを表示できません');
+    }
+  });
+
+  it('offers the original of a quote that verified', () => {
+    const html = renderToStaticMarkup(
+      <MessageItem message={markMessageCryptoVerification(replyMessage(), true, true)} isFirst onJumpToMessage={() => undefined} />,
+    );
+    expect(html).toContain('元のメッセージを表示');
+    expect(html).not.toContain('元のメッセージを表示できません');
+  });
+});
+
 describe('message swipe actions', () => {
   it('replies at 64 pixels and edits an own message at 136 pixels', () => {
     expect(messageSwipeAction(-63, true)).toBeNull();
@@ -33,12 +50,11 @@ describe('message swipe actions', () => {
     expect(messageSwipeAction(-20, true)).toBeNull();
   });
 
-  it('excludes deleted, reaction, unavailable, and verification-failed messages', () => {
+  it('excludes deleted, unavailable, and verification-failed messages', () => {
     const message = replyMessage();
     expect(canSwipeMessage(message)).toBe(true);
     expect(canSwipeMessage({ ...message, type: 'edit' })).toBe(true);
     expect(canSwipeMessage({ ...message, type: 'delete' })).toBe(false);
-    expect(canSwipeMessage({ ...message, type: 'reaction' })).toBe(false);
     expect(canSwipeMessage({ ...message, content: '[表示できないメッセージ]' })).toBe(false);
     expect(canSwipeMessage(markMessageCryptoVerification(message, false))).toBe(false);
     expect(canSwipeMessage(markMessageKeyUnavailable(message))).toBe(false);

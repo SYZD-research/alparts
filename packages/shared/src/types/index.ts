@@ -152,7 +152,8 @@ export interface Message {
   signature: string | null;
   /** Authenticated for protocol v3; null identifies legacy v2 envelopes. */
   broadcastMention?: boolean | null;
-  type: 'message' | 'edit' | 'delete' | 'reaction' | 'system';
+  /** Every event is signed by its author; clients hold no other type. */
+  type: 'message' | 'edit' | 'delete';
   refMessageId: string | null;
   /**
    * Forum channels only: the post this event belongs to, authenticated by the
@@ -184,7 +185,7 @@ export interface MessageCreateRequest {
   broadcastMention: boolean;
   refMessageId?: string;
   idempotencyKey: string;
-  type?: 'message' | 'edit' | 'delete' | 'reaction' | 'system';
+  type?: 'message' | 'edit' | 'delete';
 }
 
 export interface MessageUpdateRequest {

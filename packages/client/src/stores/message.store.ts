@@ -950,7 +950,6 @@ export const useMessageStore = create<MessageState>((set, get) => ({
   applyReactionUpdate: (channelId, messageId, reactions) => {
     set((state) => {
       const events = (state.eventsByChannel[channelId] || [])
-        .filter((event) => !(event.type === 'reaction' && event.refMessageId === messageId))
         .map((event) => event.id === messageId ? { ...event, reactions } : event);
       return channelUpdate(state, channelId, events);
     });
