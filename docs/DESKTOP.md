@@ -54,9 +54,9 @@ The repository can create unsigned development artifacts. A public release must 
 - API and real-time routes are data-only: they cannot be loaded as a script, style, frame, or top-level page, and redirects cannot bypass the protocol boundary.
 - CSP blocks remote scripts, frames, objects, workers, and cross-origin network requests. External web links are opened by the operating system.
 - Electron fuses disable `ELECTRON_RUN_AS_NODE`, Node options, CLI inspection, file-protocol privileges, and loading application code outside ASAR. Cookie encryption is enabled.
-- A deployment change clears that origin’s cookies/storage and its protected desktop vault namespace before loading the new deployment.
+- A deployment change clears that origin’s cookies/storage, its protected desktop vault namespace and the saved lock state before loading the new deployment.
 - Device private keys and local-state keys are wrapped by Electron `safeStorage`: DPAPI on Windows, Keychain on macOS, and a Secret Service implementation on Linux. The app refuses to start when only unprotected Linux fallback storage is available.
-- OS lock, suspend, the configured idle interval, or **Lock now** clears decrypted client state and requires the account password before reopening it. The main process keeps the lock state across renderer reloads.
+- OS lock, suspend, the configured idle interval, or **Lock now** clears decrypted client state and requires the account password before reopening it. The main process keeps the lock state across renderer reloads and also saves it on disk next to the settings, so closing and reopening the app does not skip the password: an app that was locked starts on the lock screen until it is unlocked. A saved lock that cannot be read counts as locked.
 - Attachments are decrypted in 5 MiB chunks into an opaque native save handle. Partial files are removed on failure or cancellation. Every saved file receives Windows zone information or macOS quarantine metadata, whatever its type, as browsers do; Linux files are saved without execute permission. Risky types additionally need a confirmation in the UI.
 
 The desktop client does not expose diagnostic details in normal UI messages. Development logs and tests hold implementation-level failure information.
@@ -76,4 +76,4 @@ packages/desktop/node_modules/.bin/electron-fuses read \
   --app packages/desktop/release/linux-unpacked/alparts
 ```
 
-Desktop unit tests cover URL/origin restrictions, bundle path traversal, vault persistence/rotation/deletion, settings validation, attachment streaming, size bounds, cancellation cleanup, marking of every saved file, and switching the display language. Native installer execution, signing, and OS key-store behavior must additionally be checked on each target operating system.
+Desktop unit tests cover URL/origin restrictions, bundle path traversal, vault persistence/rotation/deletion, settings validation, the lock state kept across restarts, attachment streaming, size bounds, cancellation cleanup, marking of every saved file, and switching the display language. Native installer execution, signing, and OS key-store behavior must additionally be checked on each target operating system.
