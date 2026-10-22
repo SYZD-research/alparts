@@ -91,6 +91,7 @@
 ### 添付と外部content
 
 - Serverはobjectをinline表示せず、authorization確認後にopaque attachmentとして返す。Web clientはMarkdown imageを自動取得しない。署名・AEAD検証済みの添付については、SVGを除く許可済みraster MIMEを25 MiBまで端末内の短命Blob URLでプレビューする。
+- 表示文字とアドレスが異なるMarkdownのリンクは、開くホスト名を文字の横に表示し（IDNは実際に開かれる形で表示する）、アドレス全体をtooltipに入れる。表示文字そのものが別のWebアドレスやメールアドレスに見える場合は、開く前に実際のホスト名を示して確認する。この確認は表示文字の見た目だけで判定する簡易な規則であり、リンク先サイトの安全性は判定しない。素のホスト名はよく使われる末尾（.com、.jpなど）のときだけ数えるため、README.mdのようなファイル名は誤認しないが、それ以外の末尾の名前や、ホスト名を含まない紛らわしい文字（「銀行のログイン」など）では確認が出ない（ホスト名は常に表示する）。表示文字とアドレスが同じ自動リンクには追加の表示も確認もないため、URLに認証情報を含む形（user@host）はそのまま表示される。
 - Client attachment flowは上記Prototype境界で利用できる。OS quarantine属性、sandboxed malware/PoC viewer、archive bomb/image parser防御、endpoint malware analysisはない。
 - File System Access API非対応browserでは100 MiBを超えるdownloadを保存できず、それ以下はmemory上のBlob fallbackを使う。対応browserは逐次書き込みを使う。
 - ServerはJSON/chunk bodyをparser前のContent-Length、aggregate byte、source/user、concurrency budgetへ通し、download/object-storage leaseをstream終端まで保持する。これはsingle-process内のresource boundであり、distributed edge protectionや無制限に遅い正規downloadを保証するものではない。

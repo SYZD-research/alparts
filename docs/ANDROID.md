@@ -85,6 +85,9 @@ are in `gradle/verification-metadata.xml`; review that file when updating depend
 
 - Only APK assets supply HTML/JavaScript. API responses are data; navigation cannot
   load a remote document into the privileged WebView. External links use the browser.
+  Because the WebView shows no address on hover, a link in a message whose text differs
+  from its address shows the host it opens beside the text, and the app asks first when
+  the text itself reads like a different web or mail address.
 - The message bridge checks the exact origin **and main-frame flag**. There is no
   unrestricted `addJavascriptInterface` bridge. Frames, remote scripts and workers
   are prohibited by the local response CSP.

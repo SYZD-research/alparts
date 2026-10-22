@@ -310,6 +310,11 @@ export const en = {
   '[画像]': '[Image]',
   '新しいタブでリンクを開く': 'Open link in a new tab',
   'このリンクは開けません': 'This link cannot be opened',
+  'リンク先: {address}': 'Destination: {address}',
+  'リンク先を確認してください': 'Check where this link goes',
+  'このリンクは「{text}」と表示されていますが、実際には {place} を開きます。': 'This link says "{text}", but it opens {place}.',
+  '信頼できる場合だけ開いてください。': 'Open it only if you trust it.',
+  '開く': 'Open',
   // Signed-in devices and security
   '不明': 'Unknown',
   '・': ' · ',

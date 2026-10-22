@@ -54,7 +54,7 @@ The repository can create unsigned development artifacts. A public release must 
 - The preload exposes only bounded settings, lock, protected-secret, and streamed-save operations, plus a notice of the display language. Every call is restricted to the main top-level bundled frame.
 - Production pages keep the configured deployment’s origin for secure cookies and Socket.IO, while the response body for UI routes comes from the packaged renderer assets.
 - API and real-time routes are data-only: they cannot be loaded as a script, style, frame, or top-level page, and redirects cannot bypass the protocol boundary.
-- CSP blocks remote scripts, frames, objects, workers, and cross-origin network requests. External web links are opened by the operating system.
+- CSP blocks remote scripts, frames, objects, workers, and cross-origin network requests. External web links are opened by the operating system. Because the desktop shows no address on hover, a link in a message whose text differs from its address shows the host it opens beside the text, and the app asks first when the text itself reads like a different web or mail address.
 - Electron fuses disable `ELECTRON_RUN_AS_NODE`, Node options, CLI inspection, file-protocol privileges, and loading application code outside ASAR. Cookie encryption is enabled.
 - A deployment change clears that origin’s cookies/storage, its protected desktop vault namespace and the saved lock state before loading the new deployment.
 - Device private keys and local-state keys are wrapped by Electron `safeStorage`: DPAPI on Windows, Keychain on macOS, and a Secret Service implementation on Linux. The app refuses to start when only unprotected Linux fallback storage is available.
