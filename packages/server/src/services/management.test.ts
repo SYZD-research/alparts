@@ -111,6 +111,32 @@ describe('management security invariants', () => {
     assert.throws(() => assertValidInvitationLifetime(1.5), /INVALID_INVITATION_EXPIRY/);
   });
 
+  it('lets an inviter hand out only roles within their own authority', async () => {
+    const { Permissions } = await import('@alparts/shared');
+    const { mayGrantInvitationRole } = await import('./invitation.service.js');
+    const role = (permissions: number, position: number) => ({ permissions, position });
+    const inviter = (permissions: number, highestPosition: number) => ({ isOwner: false, permissions, highestPosition });
+    const member = role(Permissions.VIEW_CHANNELS | Permissions.SEND_MESSAGES, 50);
+    const guest = role(Permissions.VIEW_CHANNELS, 20);
+    const manages = Permissions.MANAGE_MEMBERS | Permissions.VIEW_CHANNELS | Permissions.SEND_MESSAGES;
+
+    // The owner may hand out any role, named or not.
+    assert.equal(mayGrantInvitationRole({ isOwner: true, permissions: 0, highestPosition: -1 }, member, true), true);
+    assert.equal(mayGrantInvitationRole({ isOwner: true, permissions: 0, highestPosition: -1 }, member, false), true);
+
+    // Without naming a role, the inviter needs every permission the role carries.
+    assert.equal(mayGrantInvitationRole(inviter(manages, 50), member, false), true);
+    assert.equal(mayGrantInvitationRole(inviter(manages, 80), role(manages | Permissions.MANAGE_CHANNELS, 50), false), false);
+    assert.equal(mayGrantInvitationRole(inviter(Permissions.MANAGE_MEMBERS | Permissions.VIEW_CHANNELS, 80), member, false), false);
+
+    // Naming a role also needs MANAGE_ROLES and a role below the inviter's highest.
+    assert.equal(mayGrantInvitationRole(inviter(manages, 80), guest, true), false);
+    assert.equal(mayGrantInvitationRole(inviter(manages | Permissions.MANAGE_ROLES, 80), guest, true), true);
+    assert.equal(mayGrantInvitationRole(inviter(manages | Permissions.MANAGE_ROLES, 50), member, true), false);
+    assert.equal(mayGrantInvitationRole(inviter(manages | Permissions.MANAGE_ROLES, 20), member, true), false);
+    assert.equal(mayGrantInvitationRole(inviter(manages | Permissions.MANAGE_ROLES, 80), role(Permissions.VIEW_AUDIT_LOG, 20), true), false);
+  });
+
   it('applies role union, category, then channel overrides with deny winning within each level', async () => {
     const { Permissions } = await import('@alparts/shared');
     const {

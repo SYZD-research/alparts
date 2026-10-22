@@ -15,8 +15,9 @@ import {
   devices,
   mlsGroupMembers,
   profileFlags,
+  workspaceInvitations,
 } from '../db/schema.js';
-import { eq, and, inArray } from 'drizzle-orm';
+import { eq, and, gt, inArray, isNull } from 'drizzle-orm';
 import { sql } from 'drizzle-orm';
 import { DefaultRoles, Permissions } from '@alparts/shared';
 import { auditedTransaction } from '../middleware/audit.js';
@@ -278,6 +279,19 @@ export async function removeMember(workspaceId: string, userId: string, actorId:
         inArray(channelMembers.channelId, channelIds),
       ));
     }
+    // Their invitations end with their membership. Using one checks its
+    // creator too, but a member who comes back would otherwise revive them.
+    const now = new Date();
+    const revokedInvitations = await tx.update(workspaceInvitations)
+      .set({ revokedAt: now, revokedBy: actorId })
+      .where(and(
+        eq(workspaceInvitations.workspaceId, workspaceId),
+        eq(workspaceInvitations.createdBy, userId),
+        isNull(workspaceInvitations.usedAt),
+        isNull(workspaceInvitations.revokedAt),
+        gt(workspaceInvitations.expiresAt, now),
+      ))
+      .returning({ id: workspaceInvitations.id });
     await tx.delete(memberRoles).where(eq(memberRoles.memberId, member.id));
     await tx.delete(workspaceMembers).where(eq(workspaceMembers.id, member.id));
     const after = await captureChannelAccessFromStore(tx, workspaceId, channelIds);
@@ -286,6 +300,7 @@ export async function removeMember(workspaceId: string, userId: string, actorId:
     return {
       allChannelIds: channelIds,
       revokedChannelIds: [...knownChannelIds].sort(),
+      revokedInvitationCount: revokedInvitations.length,
       keyedChannelIds,
       roomEffects,
     };
@@ -298,6 +313,7 @@ export async function removeMember(workspaceId: string, userId: string, actorId:
       removedUserId: userId,
       removedChannelCount: committed.allChannelIds.length,
       revokedChannelCount: committed.revokedChannelIds.length,
+      revokedInvitationCount: committed.revokedInvitationCount,
       rekeyChannelCount: committed.keyedChannelIds.length,
     },
   }));

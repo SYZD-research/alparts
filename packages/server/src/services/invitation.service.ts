@@ -299,6 +299,7 @@ export async function lockInvitationForConsumption(
     where: and(eq(roles.id, invitation.roleId), eq(roles.workspaceId, invitation.workspaceId)),
   });
   if (!role || role.name === 'Owner') throw new Error('INVALID_INVITATION');
+  await assertCreatorMayStillInvite(transaction, invitation, role);
   return { invitation, role, now };
 }
 
@@ -347,46 +348,94 @@ export async function consumeLockedInvitation(
 }
 
 async function getInvitationRole(store: any, workspaceId: string, actorId: string, requestedRoleId?: string) {
+  const actor = await loadInviter(store, workspaceId, actorId);
+  if (!actor || (actor.permissions & Permissions.MANAGE_MEMBERS) !== Permissions.MANAGE_MEMBERS) {
+    throw new Error('NOT_AUTHORIZED');
+  }
+
+  const role = requestedRoleId
+    ? await store.query.roles.findFirst({ where: and(eq(roles.id, requestedRoleId), eq(roles.workspaceId, workspaceId)) })
+    : await store.query.roles.findFirst({ where: and(eq(roles.workspaceId, workspaceId), eq(roles.name, 'Member')) });
+  if (!role || role.name === 'Owner' || !mayGrantInvitationRole(actor, role, Boolean(requestedRoleId))) {
+    throw new Error('INVALID_INVITATION_ROLE');
+  }
+  return role;
+}
+
+/**
+ * Creation checks the creator's authority once, but an invitation outlives it.
+ * It is checked again when the invitation is used, so a member who was removed
+ * or lost the right to invite does not keep admitting people. The owner
+ * always may. An invitation for the default role is one its creator could
+ * still make without naming a role.
+ */
+async function assertCreatorMayStillInvite(
+  store: any,
+  invitation: { workspaceId: string; createdBy: string },
+  role: { name: string; permissions: number; position: number },
+) {
+  const creator = await loadInviter(store, invitation.workspaceId, invitation.createdBy);
+  if (!creator) throw new Error('INVALID_INVITATION');
+  if (creator.isOwner) return;
+  if (
+    (creator.permissions & Permissions.MANAGE_MEMBERS) !== Permissions.MANAGE_MEMBERS
+    || !mayGrantInvitationRole(creator, role, role.name !== 'Member')
+  ) throw new Error('INVALID_INVITATION');
+}
+
+export interface Inviter {
+  isOwner: boolean;
+  /** Union of the permissions of the roles held. */
+  permissions: number;
+  /** Highest position among the roles held, -1 for none. */
+  highestPosition: number;
+}
+
+/** The member's authority in the workspace, or null when they are not a member. */
+async function loadInviter(store: any, workspaceId: string, userId: string): Promise<Inviter | null> {
   const workspace = await store.query.workspaces.findFirst({
     columns: { ownerId: true },
     where: eq(workspaces.id, workspaceId),
   });
   if (!workspace) throw new Error('WORKSPACE_NOT_FOUND');
-  const actorMember = await store.query.workspaceMembers.findFirst({
-    where: and(eq(workspaceMembers.workspaceId, workspaceId), eq(workspaceMembers.userId, actorId)),
+  const member = await store.query.workspaceMembers.findFirst({
+    where: and(eq(workspaceMembers.workspaceId, workspaceId), eq(workspaceMembers.userId, userId)),
   });
-  if (!actorMember) throw new Error('NOT_AUTHORIZED');
-  const actorAssignments = await store.query.memberRoles.findMany({
-    where: eq(memberRoles.memberId, actorMember.id),
+  if (!member) return null;
+  const assignments = await store.query.memberRoles.findMany({
+    where: eq(memberRoles.memberId, member.id),
     with: { role: true },
     limit: MAX_ROLE_ASSIGNMENTS_PER_MEMBER + 1,
   });
-  if (actorAssignments.length > MAX_ROLE_ASSIGNMENTS_PER_MEMBER) {
+  if (assignments.length > MAX_ROLE_ASSIGNMENTS_PER_MEMBER) {
     throw new Error('ROLE_ASSIGNMENT_INVARIANT_EXCEEDED');
   }
-  const actorRoles = actorAssignments
+  const heldRoles = assignments
     .map((assignment: any) => assignment.role)
     .filter((role: any) => role?.workspaceId === workspaceId);
-  const actorPermissions = actorRoles.reduce((mask: number, role: any) => mask | role.permissions, 0);
-  if ((actorPermissions & Permissions.MANAGE_MEMBERS) !== Permissions.MANAGE_MEMBERS) throw new Error('NOT_AUTHORIZED');
+  return {
+    isOwner: workspace.ownerId === userId,
+    permissions: heldRoles.reduce((mask: number, role: any) => mask | role.permissions, 0),
+    highestPosition: Math.max(-1, ...heldRoles.map((role: any) => role.position)),
+  };
+}
 
-  const role = requestedRoleId
-    ? await store.query.roles.findFirst({ where: and(eq(roles.id, requestedRoleId), eq(roles.workspaceId, workspaceId)) })
-    : await store.query.roles.findFirst({ where: and(eq(roles.workspaceId, workspaceId), eq(roles.name, 'Member')) });
-  if (!role || role.name === 'Owner') throw new Error('INVALID_INVITATION_ROLE');
-  if (workspace.ownerId !== actorId) {
-    const highestPosition = Math.max(-1, ...actorRoles.map((assigned: any) => assigned.position));
-    if ((role.permissions & ~actorPermissions) !== 0) {
-      throw new Error('INVALID_INVITATION_ROLE');
-    }
-    if (requestedRoleId && (
-      role.position >= highestPosition
-      || (actorPermissions & Permissions.MANAGE_ROLES) !== Permissions.MANAGE_ROLES
-    )) {
-      throw new Error('INVALID_INVITATION_ROLE');
-    }
-  }
-  return role;
+/**
+ * Whether a member who may invite can hand out this role: the owner any, others
+ * only roles whose permissions they all hold. Naming a role also needs
+ * MANAGE_ROLES and a role below their highest.
+ */
+export function mayGrantInvitationRole(
+  inviter: Inviter,
+  role: { permissions: number; position: number },
+  roleNamed: boolean,
+): boolean {
+  if (inviter.isOwner) return true;
+  if ((role.permissions & ~inviter.permissions) !== 0) return false;
+  return !roleNamed || (
+    role.position < inviter.highestPosition
+    && (inviter.permissions & Permissions.MANAGE_ROLES) === Permissions.MANAGE_ROLES
+  );
 }
 
 async function lockWorkspace(store: any, workspaceId: string) {

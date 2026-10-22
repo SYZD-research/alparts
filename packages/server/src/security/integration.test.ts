@@ -3749,6 +3749,131 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     assert.equal((await verifyAuditChain()).valid, true);
   });
 
+  it('stops honouring the invitations of a manager who was removed or may no longer invite', async () => {
+    const { db } = await import('../db/index.js');
+    const { auditLogs, users } = await import('../db/schema.js');
+    const { computeAuthorizationRevisionFromStore } = await import('../services/authorization.service.js');
+    const { acceptInvitation, createInvitation } = await import('../services/invitation.service.js');
+    const { changeRoleAssignment } = await import('../services/role.service.js');
+    const { removeMember } = await import('../services/workspace.service.js');
+    const ownerLogin = await request('/api/auth/login', {
+      method: 'POST', body: { email: 'unbound@example.test', password: 'Correct-Horse-Battery-9!' },
+    });
+    assert.equal(ownerLogin.status, 200);
+    const owner = {
+      cookie: ownerLogin.headers.get('set-cookie')!.split(';', 1)[0],
+      user: (await json<{ user: { id: string } }>(ownerLogin)).user,
+    };
+    const workspace = await json<{ id: string }>(await request('/api/workspaces', {
+      method: 'POST', cookie: owner.cookie, body: { name: 'Invitation authority' },
+    }));
+    const workspaceRoles = await json<Array<{ id: string; name: string }>>(
+      await request(`/api/workspaces/${workspace.id}/roles`, { cookie: owner.cookie }),
+    );
+    const roleId = (name: string) => {
+      const role = workspaceRoles.find((candidate) => candidate.name === name);
+      assert.ok(role, name);
+      return role.id;
+    };
+    // Made directly, with removal and demotion through the services: sign-ups
+    // from this one source are limited per hour and sensitive routes need a
+    // device to confirm with, and neither is what is tested here.
+    const person = async (name: string) => {
+      const [created] = await db.insert(users).values({
+        email: `${name}-${randomUUID()}@example.test`, passwordHash: 'disabled-test-fixture', displayName: name,
+      }).returning();
+      return created;
+    };
+    const isMember = async (userId: string) => Boolean(await db.query.workspaceMembers.findFirst({
+      where: (member, operators) => operators.and(
+        operators.eq(member.workspaceId, workspace.id),
+        operators.eq(member.userId, userId),
+      ),
+    }));
+    const invite = (creatorId: string, roleName?: string) => createInvitation(workspace.id, creatorId, {
+      ...(roleName ? { roleId: roleId(roleName) } : {}), expiresInSeconds: 3_600,
+    });
+    const changeRole = async (userId: string, roleName: string, action: 'assign' | 'unassign') => {
+      await changeRoleAssignment(
+        workspace.id, userId, roleId(roleName), owner.user.id, action,
+        await computeAuthorizationRevisionFromStore(db, workspace.id),
+      );
+    };
+
+    const removedManager = await person('removed-manager');
+    const demotedManager = await person('demoted-manager');
+    const currentManager = await person('current-manager');
+    for (const manager of [removedManager, demotedManager, currentManager]) {
+      await acceptInvitation(manager.id, (await invite(owner.user.id, 'Administrator')).token);
+    }
+    const ownerInvitation = await invite(owner.user.id);
+    const removedFirst = await invite(removedManager.id);
+    const removedSecond = await invite(removedManager.id);
+    const demotedDefault = await invite(demotedManager.id);
+    const demotedNamed = await invite(demotedManager.id, 'Guest');
+    const currentDefault = await invite(currentManager.id);
+    const currentNamed = await invite(currentManager.id, 'Guest');
+
+    // Removing a manager ends what they invited with: they cannot come back
+    // with their own invitation, and nobody gets in with the others.
+    await removeMember(workspace.id, removedManager.id, owner.user.id);
+    const outsider = await person('outsider');
+    await assert.rejects(acceptInvitation(removedManager.id, removedFirst.token), /INVALID_INVITATION/);
+    await assert.rejects(acceptInvitation(outsider.id, removedSecond.token), /INVALID_INVITATION/);
+    assert.equal(await isMember(removedManager.id), false);
+    assert.equal(await isMember(outsider.id), false);
+    const listed = await json<Array<{ id: string; status: string; revokedBy: string | null }>>(
+      await request(`/api/workspaces/${workspace.id}/invitations`, { cookie: owner.cookie }),
+    );
+    const listedInvitation = (id: string) => listed.find((invitation) => invitation.id === id);
+    assert.deepEqual([removedFirst.id, removedSecond.id].map((id) => listedInvitation(id)?.status), ['revoked', 'revoked']);
+    assert.deepEqual([removedFirst.id, removedSecond.id].map((id) => listedInvitation(id)?.revokedBy), [owner.user.id, owner.user.id]);
+    assert.deepEqual(
+      [ownerInvitation.id, demotedDefault.id, currentDefault.id].map((id) => listedInvitation(id)?.status),
+      ['active', 'active', 'active'],
+    );
+    const removalAudit = (await db.select({ details: auditLogs.details }).from(auditLogs)
+      .where(sql`${auditLogs.action} = 'workspace.member.remove' and ${auditLogs.targetId} = ${workspace.id}`))
+      .map((row) => row.details as { removedUserId?: string; revokedInvitationCount?: number });
+    assert.deepEqual(
+      removalAudit.filter((details) => details.removedUserId === removedManager.id).map((details) => details.revokedInvitationCount),
+      [2],
+    );
+
+    // A demotion revokes nothing; the invitations stop working when used.
+    await changeRole(demotedManager.id, 'Member', 'assign');
+    await changeRole(demotedManager.id, 'Administrator', 'unassign');
+    const latecomer = await person('latecomer');
+    await assert.rejects(acceptInvitation(latecomer.id, demotedDefault.token), /INVALID_INVITATION/);
+    await assert.rejects(acceptInvitation(latecomer.id, demotedNamed.token), /INVALID_INVITATION/);
+    assert.equal(await isMember(latecomer.id), false);
+    const demotedRow = await db.query.workspaceInvitations.findFirst({
+      where: (invitation, operators) => operators.eq(invitation.id, demotedDefault.id),
+    });
+    assert.equal(demotedRow?.revokedAt, null);
+    // Signing up with such an invitation is refused the same way.
+    const newcomer = `demoted-invitee-${randomUUID()}@example.test`;
+    const refusedRegistration = await request('/api/auth/register', {
+      method: 'POST',
+      body: {
+        email: newcomer,
+        password: 'Correct-Horse-Battery-41!',
+        displayName: 'Refused',
+        inviteToken: demotedDefault.token,
+        emailCode: await emailCode(newcomer, demotedDefault.token),
+      },
+    });
+    assert.equal(refusedRegistration.status, 403);
+
+    // The owner's invitations and those of a manager who still may invite work as before.
+    for (const invitation of [ownerInvitation, currentDefault, currentNamed]) {
+      const invitee = await person('invitee');
+      await acceptInvitation(invitee.id, invitation.token);
+      assert.equal(await isMember(invitee.id), true);
+    }
+    assert.equal((await verifyAuditChain()).valid, true);
+  });
+
   it('binds edits, deletions, quotes and replies to the messages their authors signed (formal model M9)', async () => {
     const messageService = await import('../services/message.service.js');
     const ownerLogin = await request('/api/auth/login', {

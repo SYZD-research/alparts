@@ -27,8 +27,8 @@ This is an inventory, not a stable public OpenAPI contract. No formal API versio
 | Paths | Responsibility |
 | --- | --- |
 | `POST/GET /api/workspaces`, `GET /api/workspaces/:id` | bounded workspace creation/list/detail |
-| `GET /api/workspaces/:id/members`, `DELETE /api/workspaces/:id/members/:userId` | bounded member view/removal |
-| `POST /api/invitations/accept` | existing-account invitation acceptance |
+| `GET /api/workspaces/:id/members`, `DELETE /api/workspaces/:id/members/:userId` | bounded member view/removal; the removal also revokes the invitations the member made that are still active |
+| `POST /api/invitations/accept` | existing-account invitation acceptance; refused like any invalid invitation once its creator is no longer the owner or a member who may invite that role |
 | `POST/GET /api/workspaces/:wid/invitations`, `DELETE /api/workspaces/:wid/invitations/:id` | create/list/revoke hashed expiring invitations |
 | `GET/POST /api/workspaces/:wid/roles` | role list/create |
 | `PUT/DELETE /api/workspaces/:wid/roles/:roleId` | role update/delete with hierarchy/revision checks |
