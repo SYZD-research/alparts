@@ -1060,6 +1060,8 @@ export const en = {
   // Channel management
   '自分と同じか上の順位のメンバーは、非公開チャンネルから削除できません。': 'You cannot remove members ranked the same as or above you from a private channel.',
   'チャンネル管理権限がありません。状態は変更されていません。': 'You do not have permission to manage channels. Nothing was changed.',
+  'チャンネルのカテゴリーを変更する権限がありません。状態は変更されていません。': 'You do not have permission to change the channel’s category. Nothing was changed.',
+  'このカテゴリーを削除する権限がありません。状態は変更されていません。': 'You do not have permission to delete this category. Nothing was changed.',
   '位置は0〜1000000の整数で入力してください': 'Enter a whole number from 0 to 1,000,000 for the position',
   '変更を保存できませんでした。もう一度お試しください。': 'Could not save the changes. Please try again.',
   '「{name}」を作成しました。': 'Created “{name}”.',

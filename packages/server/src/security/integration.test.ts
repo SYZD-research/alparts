@@ -17,7 +17,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { crc32, deflateSync } from 'node:zlib';
-import { eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import pg from 'pg';
 import {
   acceptAll,
@@ -4319,6 +4319,120 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
       pruned.map((row) => pick(row.details as Record<string, unknown>, ['workspaceId', 'resultCount'])),
       [{ workspaceId: workspace.id, resultCount: MAX_BOOKMARKS_PER_USER - 1 }],
     );
+  });
+
+  it('holds category moves, category deletion and role assignment to the rules for writing overrides', async () => {
+    const { db } = await import('../db/index.js');
+    const {
+      categories, categoryRolePermissionOverrides, channels, memberRoles, roles, workspaceMembers,
+    } = await import('../db/schema.js');
+    const { computeAuthorizationRevisionFromStore } = await import('../services/authorization.service.js');
+    const ownerLogin = await request('/api/auth/login', {
+      method: 'POST', body: { email: 'unbound@example.test', password: 'Correct-Horse-Battery-9!' },
+    });
+    assert.equal(ownerLogin.status, 200);
+    const owner = {
+      cookie: ownerLogin.headers.get('set-cookie')!.split(';', 1)[0],
+      user: (await json<{ user: { id: string } }>(ownerLogin)).user,
+      password: 'Correct-Horse-Battery-9!',
+    };
+    const workspace = await json<{ id: string }>(await request('/api/workspaces', {
+      method: 'POST', cookie: owner.cookie, body: { name: 'Override rules' },
+    }));
+    // Moves, deletions and assignments ask for identity confirmation, which
+    // needs a session bound to a device.
+    await registerDevice(owner, deviceFixture(), 'Override owner device');
+    const invitation = await createWorkspaceInvitation(workspace.id, owner.cookie, 'override-manager@example.test');
+    const manager = await createAccount('override-manager@example.test', 'Correct-Horse-Battery-71!', 'Override Manager', invitation.token);
+    await registerDevice(manager, deviceFixture(), 'Override manager device');
+
+    // A manager who may manage channels and roles but not mention everyone,
+    // and a lower role that may, in News only. Fixtures go in directly: the
+    // override API would not let the manager write most of them.
+    const [moderator, announcer] = await db.insert(roles).values([
+      {
+        workspaceId: workspace.id, name: 'Moderator', position: 60,
+        permissions: Permissions.VIEW_CHANNELS | Permissions.SEND_MESSAGES | Permissions.MANAGE_CHANNELS | Permissions.MANAGE_ROLES,
+      },
+      { workspaceId: workspace.id, name: 'Announcer', position: 40, permissions: Permissions.VIEW_CHANNELS | Permissions.SEND_MESSAGES },
+    ]).returning({ id: roles.id });
+    const membership = await db.query.workspaceMembers.findFirst({
+      where: and(eq(workspaceMembers.workspaceId, workspace.id), eq(workspaceMembers.userId, manager.user.id)),
+    });
+    assert.ok(membership);
+    await db.insert(memberRoles).values({ memberId: membership.id, roleId: moderator.id });
+    const newCategory = async (name: string, overrides: Array<[string, number, number]> = []) => {
+      const [created] = await db.insert(categories).values({ workspaceId: workspace.id, name }).returning({ id: categories.id });
+      for (const [roleId, allowMask, denyMask] of overrides) {
+        await db.insert(categoryRolePermissionOverrides).values({
+          workspaceId: workspace.id, categoryId: created.id, roleId, allowMask, denyMask, revision: 1,
+        });
+      }
+      return created.id;
+    };
+    const newChannel = async (name: string, categoryId: string | null) => (
+      await db.insert(channels).values({ workspaceId: workspace.id, name, categoryId }).returning({ id: channels.id })
+    )[0].id;
+    const news = await newCategory('News', [[announcer.id, Permissions.MENTION_EVERYONE, 0]]);
+    const announcements = await newCategory('Announcements', [[moderator.id, 0, Permissions.SEND_MESSAGES]]);
+    const leadership = await newCategory('Leadership', [[moderator.id, 0, Permissions.VIEW_CHANNELS]]);
+    const quiet = await newCategory('Quiet', [[announcer.id, 0, Permissions.ATTACH_FILES]]);
+    const lounge = await newChannel('lounge', null);
+    const rules = await newChannel('rules', announcements);
+    const board = await newChannel('board', leadership);
+    const categoryOf = async (channelId: string) => (
+      await db.query.channels.findFirst({ where: eq(channels.id, channelId) })
+    )?.categoryId ?? null;
+    const categoryExists = async (categoryId: string) => Boolean(
+      await db.query.categories.findFirst({ where: eq(categories.id, categoryId) }),
+    );
+    const moveChannel = (cookie: string, channelId: string, categoryId: string | null) => request(`/api/channels/${channelId}`, {
+      method: 'PUT', cookie, body: { categoryId },
+    });
+    const deleteCategory = (cookie: string, categoryId: string) => request(
+      `/api/workspaces/${workspace.id}/categories/${categoryId}`,
+      { method: 'DELETE', cookie },
+    );
+    const assignRole = async (cookie: string, userId: string, roleId: string) => request(
+      `/api/workspaces/${workspace.id}/members/${userId}/roles/${roleId}`,
+      { method: 'POST', cookie, body: { expectedAuthorizationRevision: await computeAuthorizationRevisionFromStore(db, workspace.id) } },
+    );
+
+    // The override API refuses each of these changes to the manager; a move or
+    // deletion with the same effect is refused the same way, and changes nothing.
+    assert.equal((await moveChannel(manager.cookie, lounge, news)).status, 403, 'applies an allow the manager lacks');
+    assert.equal((await moveChannel(manager.cookie, rules, null)).status, 403, 'drops a deny on the manager\'s own role');
+    assert.equal(await categoryOf(lounge), null);
+    assert.equal(await categoryOf(rules), announcements);
+    assert.equal((await deleteCategory(manager.cookie, announcements)).status, 403, 'drops a deny on the manager\'s own role');
+    // The manager sees Leadership as empty; its channel is hidden by a deny on the manager's role.
+    assert.equal((await deleteCategory(manager.cookie, leadership)).status, 403, 'would expose a channel the manager cannot see');
+    assert.equal(await categoryExists(announcements), true);
+    assert.equal(await categoryExists(leadership), true);
+    assert.equal(await categoryOf(board), leadership);
+    assert.equal((await request(`/api/channels/${board}`, { cookie: manager.cookie })).status, 404);
+    // Assigning a role carries the category's allow too.
+    const announcerAssignmentPreview = await request(`/api/workspaces/${workspace.id}/roles/preview`, {
+      method: 'POST', cookie: manager.cookie, body: { operation: 'role.assign', roleId: announcer.id, userId: manager.user.id },
+    });
+    assert.equal(announcerAssignmentPreview.status, 403);
+    assert.equal((await assignRole(manager.cookie, manager.user.id, announcer.id)).status, 403);
+
+    // The manager's ordinary work still goes through: rows on a role below it, for bits it holds.
+    assert.equal((await moveChannel(manager.cookie, lounge, quiet)).status, 200);
+    assert.equal(await categoryOf(lounge), quiet);
+    assert.equal((await deleteCategory(manager.cookie, quiet)).status, 200);
+    assert.equal(await categoryOf(lounge), null);
+
+    // The owner keeps full power over all of it.
+    assert.equal((await moveChannel(owner.cookie, lounge, news)).status, 200);
+    assert.equal(await categoryOf(lounge), news);
+    assert.equal((await moveChannel(owner.cookie, rules, null)).status, 200);
+    assert.equal(await categoryOf(rules), null);
+    assert.equal((await deleteCategory(owner.cookie, leadership)).status, 200);
+    assert.equal(await categoryOf(board), null);
+    assert.equal((await assignRole(owner.cookie, manager.user.id, announcer.id)).status, 200);
+    assert.equal((await verifyAuditChain()).valid, true);
   });
 
   describe('continuous channel groups', () => {

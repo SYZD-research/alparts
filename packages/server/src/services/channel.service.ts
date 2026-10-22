@@ -6,6 +6,7 @@ import {
   channelMembers,
   channelPreferences,
   categories,
+  categoryRolePermissionOverrides,
   historyRecoveryKeys,
   messages,
   mlsEpochs,
@@ -25,6 +26,7 @@ import { auditedTransaction } from '../middleware/audit.js';
 import {
   MAX_CATEGORIES_PER_WORKSPACE,
   MAX_CHANNELS_PER_WORKSPACE,
+  MAX_ROLES_PER_WORKSPACE,
   MAX_TOTAL_CHANNELS_PER_WORKSPACE,
   MAX_WORKSPACE_MEMBERS,
 } from '../security/limits.js';
@@ -41,8 +43,10 @@ import {
   isVisibleChannelAuthorization,
   loadWorkspaceAuthorizationSnapshot,
   lockWorkspaceForAuthorization,
+  type WorkspaceAuthorizationSnapshot,
 } from './authorization.service.js';
 import { deleteEpochRecipients } from './key-epoch-state.js';
+import { assertCategoryChangeAuthority } from './permission-override.service.js';
 
 export async function getWorkspaceChannels(workspaceId: string, userId: string) {
   return db.transaction(async (transaction) => {
@@ -174,6 +178,14 @@ export async function updateChannel(channelId: string, updates: { name?: string;
     const snapshotAfter = await loadWorkspaceAuthorizationSnapshot(transaction, existing.workspaceId, [channelId]);
     if (!snapshotAfter) throw new Error('CHANNEL_NOT_FOUND');
     assertNoSuperiorAccessLoss(snapshotBefore, snapshotAfter, actorId);
+    if (updated.categoryId !== existing.categoryId) {
+      assertCategoryChangeAuthority(
+        snapshotBefore,
+        actorId,
+        categoryOverrides(snapshotBefore, existing.categoryId),
+        categoryOverrides(snapshotAfter, updated.categoryId),
+      );
+    }
     const after = captureChannelAccessFromSnapshot(snapshotAfter);
     const roomEffects = await applyViewerEffectsAndRotation(transaction, before, after);
     const effect = roomEffects[0];
@@ -378,6 +390,16 @@ export async function deleteCategory(workspaceId: string, categoryId: string, ac
     const affectedChannelIds = affectedChannels.map((channel: { id: string }) => channel.id);
     const snapshotBefore = await loadWorkspaceAuthorizationSnapshot(transaction, workspaceId, affectedChannelIds);
     if (!snapshotBefore) throw new Error('CATEGORY_NOT_FOUND');
+    assertCategoryChannelsManageable(snapshotBefore, actorId);
+    // Read before the delete, which removes them with the category.
+    const overrides = await transaction.query.categoryRolePermissionOverrides.findMany({
+      where: and(
+        eq(categoryRolePermissionOverrides.workspaceId, workspaceId),
+        eq(categoryRolePermissionOverrides.categoryId, categoryId),
+      ),
+      limit: MAX_ROLES_PER_WORKSPACE + 1,
+    });
+    if (overrides.length > MAX_ROLES_PER_WORKSPACE) throw new Error('CATEGORY_OVERRIDE_INVARIANT_EXCEEDED');
     const before = captureChannelAccessFromSnapshot(snapshotBefore);
     await transaction.update(channels)
       .set({ categoryId: null })
@@ -387,6 +409,7 @@ export async function deleteCategory(workspaceId: string, categoryId: string, ac
     const snapshotAfter = await loadWorkspaceAuthorizationSnapshot(transaction, workspaceId, affectedChannelIds);
     if (!snapshotAfter) throw new Error('CATEGORY_NOT_FOUND');
     assertNoSuperiorAccessLoss(snapshotBefore, snapshotAfter, actorId);
+    assertCategoryChangeAuthority(snapshotBefore, actorId, overrides, []);
     const after = captureChannelAccessFromSnapshot(snapshotAfter);
     const roomEffects = await applyViewerEffectsAndRotation(transaction, before, after);
     return { existing, movedChannelIds: affectedChannelIds, roomEffects };
@@ -567,6 +590,27 @@ async function assertChannelManager(
   if ((authorization.permissions & Permissions.MANAGE_CHANNELS) !== Permissions.MANAGE_CHANNELS) {
     throw new Error('CHANNEL_NOT_FOUND');
   }
+}
+
+/**
+ * Deleting a category moves every channel in it, however few of them the actor
+ * can see, and drops the category's overrides, which may be what hides them.
+ * A non-owner needs the gate of a channel change on each: it sees the channel
+ * and holds MANAGE_CHANNELS there.
+ */
+function assertCategoryChannelsManageable(snapshot: WorkspaceAuthorizationSnapshot, actorId: string): void {
+  if (snapshot.ownerId === actorId) return;
+  for (const channel of snapshot.channels) {
+    const authorization = getChannelAuthorizationFromSnapshot(snapshot, actorId, channel, {}, false);
+    if (
+      !isVisibleChannelAuthorization(authorization)
+      || (authorization.permissions & Permissions.MANAGE_CHANNELS) !== Permissions.MANAGE_CHANNELS
+    ) throw new Error('NOT_AUTHORIZED');
+  }
+}
+
+function categoryOverrides(snapshot: WorkspaceAuthorizationSnapshot, categoryId: string | null) {
+  return (categoryId ? snapshot.categoryOverridesById.get(categoryId) : undefined) ?? [];
 }
 
 function assertGenericChannel(channel: { type: string }): void {

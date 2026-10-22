@@ -315,6 +315,103 @@ describe('management security invariants', () => {
       captureChannelAccessFromSnapshot(managerOnly),
     ), [{ channelId: 'voice', lostUserIds: ['auditor'], gainedUserIds: [], lostCallUserIds: [], rotationRequired: false }]);
   });
+
+  it('holds a category change to the authority the override API demands for the overrides it swaps', async () => {
+    const { Permissions } = await import('@alparts/shared');
+    const { assertCategoryChangeAuthority } = await import('./permission-override.service.js');
+    const snapshot = authorizationSnapshot({
+      roles: {
+        staff: { permissions: Permissions.VIEW_CHANNELS, position: 90 },
+        // The manager may not mention everyone.
+        manager: { permissions: Permissions.VIEW_CHANNELS | Permissions.SEND_MESSAGES | Permissions.MANAGE_CHANNELS, position: 60 },
+        announcer: { permissions: Permissions.VIEW_CHANNELS | Permissions.SEND_MESSAGES, position: 40 },
+      },
+      members: { manager: ['manager', 'announcer'] },
+      channels: [],
+    });
+    const row = (roleId: string, allowMask: number, denyMask: number) => ({ roleId, allowMask, denyMask });
+    const change = (from: OverrideValue[], to: OverrideValue[], actor = 'manager') => () => assertCategoryChangeAuthority(snapshot, actor, from, to);
+
+    // Entering a category applies an allow the manager lacks.
+    assert.throws(change([], [row('announcer', Permissions.MENTION_EVERYONE, 0)]), /NOT_AUTHORIZED/);
+    // Leaving one drops a deny on the manager's own role, or on a role above it.
+    assert.throws(change([row('manager', 0, Permissions.SEND_MESSAGES)], []), /NOT_AUTHORIZED/);
+    assert.throws(change([row('staff', 0, Permissions.VIEW_CHANNELS)], []), /NOT_AUTHORIZED/);
+    // Changing a row counts the bits of both versions, and a deny counts like an allow.
+    assert.throws(change(
+      [row('announcer', Permissions.SEND_MESSAGES, 0)],
+      [row('announcer', Permissions.SEND_MESSAGES, Permissions.MENTION_EVERYONE)],
+    ), /NOT_AUTHORIZED/);
+    assert.throws(change([], [row('announcer', 0, Permissions.ATTACH_FILES)]), /NOT_AUTHORIZED/);
+    // A role the snapshot does not know cannot be shown to rank below the manager.
+    assert.throws(change([row('missing', 0, Permissions.SEND_MESSAGES)], []), /NOT_AUTHORIZED/);
+
+    // A lower role and bits the manager holds, either way.
+    assert.doesNotThrow(change([], [row('announcer', 0, Permissions.SEND_MESSAGES)]));
+    assert.doesNotThrow(change([row('announcer', Permissions.SEND_MESSAGES, 0)], []));
+    // The same override on both sides changes nothing, whatever the role.
+    assert.doesNotThrow(change(
+      [row('staff', Permissions.MENTION_EVERYONE, 0), row('announcer', 0, Permissions.SEND_MESSAGES)],
+      [row('announcer', 0, Permissions.SEND_MESSAGES), row('staff', Permissions.MENTION_EVERYONE, 0)],
+    ));
+    assert.doesNotThrow(change([row('staff', 0, 0)], []));
+    assert.doesNotThrow(change([], []));
+
+    // The owner keeps full power; a non-member has none.
+    const ownerSnapshot = authorizationSnapshot({ roles: { announcer: { permissions: 0, position: 1 } }, members: {}, channels: [] });
+    const ownerChange = (from: OverrideValue[], to: OverrideValue[]) => () => assertCategoryChangeAuthority(ownerSnapshot, 'owner', from, to);
+    assert.doesNotThrow(ownerChange([row('announcer', Permissions.MENTION_EVERYONE, Permissions.VIEW_CHANNELS)], []));
+    assert.doesNotThrow(ownerChange([], [row('announcer', Permissions.MENTION_EVERYONE, 0)]));
+    assert.throws(change([row('announcer', 0, Permissions.SEND_MESSAGES)], [], 'stranger'), /NOT_AUTHORIZED/);
+  });
+
+  it('holds assigning or removing a role to the bits its category and channel overrides touch', async () => {
+    const { Permissions } = await import('@alparts/shared');
+    const { assertRoleOverridesHeld } = await import('./role.service.js');
+    const snapshot = authorizationSnapshot({
+      roles: {
+        manager: { permissions: Permissions.VIEW_CHANNELS | Permissions.SEND_MESSAGES | Permissions.MANAGE_ROLES, position: 60 },
+        // The manager holds this role too, and #quiet denies it SEND_MESSAGES.
+        muted: { permissions: 0, position: 20 },
+      },
+      members: { manager: ['manager', 'muted'], other: ['manager'] },
+      channels: [{ id: 'open', type: 'text' }, { id: 'quiet', type: 'text' }],
+      channelOverrides: { quiet: [{ roleId: 'muted', allowMask: 0, denyMask: Permissions.SEND_MESSAGES }] },
+    });
+    const none: Parameters<typeof assertRoleOverridesHeld>[2] = { categories: [], channels: [] };
+    const category = (allowMask: number, denyMask: number) => ({ ...none, categories: [{ allowMask, denyMask }] });
+    const channel = (channelId: string, allowMask: number, denyMask: number) => ({ ...none, channels: [{ channelId, allowMask, denyMask }] });
+    const assign = (overrides: typeof none, actor = 'manager') => () => assertRoleOverridesHeld(snapshot, actor, overrides, 'assign');
+    const unassign = (overrides: typeof none, actor = 'manager') => () => assertRoleOverridesHeld(snapshot, actor, overrides, 'unassign');
+
+    // Assigning grants what the overrides allow: never a bit the manager lacks.
+    assert.throws(assign(category(Permissions.MENTION_EVERYONE, 0)), /PERMISSION_ESCALATION/);
+    assert.throws(assign(channel('open', Permissions.MENTION_EVERYONE, 0)), /PERMISSION_ESCALATION/);
+    // In a channel, the bits the manager holds there, not only in the workspace.
+    assert.throws(assign(channel('quiet', Permissions.SEND_MESSAGES, 0)), /PERMISSION_ESCALATION/);
+    assert.doesNotThrow(assign(channel('open', Permissions.SEND_MESSAGES, 0)));
+    assert.doesNotThrow(assign(category(Permissions.SEND_MESSAGES, 0)));
+    // Restricting someone needs no bit of the manager's.
+    assert.doesNotThrow(assign(category(0, Permissions.MENTION_EVERYONE)));
+    assert.doesNotThrow(assign(channel('open', 0, Permissions.MENTION_EVERYONE)));
+    assert.doesNotThrow(assign(none));
+
+    // Removing lifts what the overrides deny: never one the manager could not write.
+    assert.throws(unassign(category(0, Permissions.MENTION_EVERYONE)), /PERMISSION_ESCALATION/);
+    assert.throws(unassign(channel('open', 0, Permissions.MENTION_EVERYONE)), /PERMISSION_ESCALATION/);
+    // A manager held back in a channel by a role cannot lift that by dropping the role.
+    assert.throws(unassign(channel('quiet', 0, Permissions.SEND_MESSAGES)), /PERMISSION_ESCALATION/);
+    assert.doesNotThrow(unassign(channel('open', 0, Permissions.SEND_MESSAGES)));
+    assert.doesNotThrow(unassign(category(0, Permissions.SEND_MESSAGES)));
+    // Taking away what was allowed grants nothing.
+    assert.doesNotThrow(unassign(category(Permissions.MENTION_EVERYONE, 0)));
+    assert.doesNotThrow(unassign(channel('open', Permissions.MENTION_EVERYONE, 0)));
+
+    // The owner may give or take any role; a stranger may not.
+    assert.doesNotThrow(assign(category(Permissions.MENTION_EVERYONE, 0), 'owner'));
+    assert.doesNotThrow(unassign(channel('quiet', 0, Permissions.SEND_MESSAGES), 'owner'));
+    assert.throws(assign(none, 'stranger'), /NOT_AUTHORIZED/);
+  });
 });
 
 type OverrideValue = { roleId: string; allowMask: number; denyMask: number };

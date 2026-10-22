@@ -134,6 +134,10 @@ router.put('/channels/:id', authMiddleware, requireChannelPermission(Permissions
       res.status(404).json({ error: 'NOT_FOUND', message: 'Channel not found', statusCode: 404 });
       return;
     }
+    if (error.message === 'NOT_AUTHORIZED') {
+      res.status(403).json({ error: 'FORBIDDEN', message: 'Insufficient permissions', statusCode: 403 });
+      return;
+    }
     throw error;
   }
 });

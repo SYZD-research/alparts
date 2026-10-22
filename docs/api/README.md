@@ -47,6 +47,8 @@ This is an inventory, not a stable public OpenAPI contract. No formal API versio
 | `POST .../permission-overrides/preview` | stale-safe revisioned impact preview |
 | `GET /api/workspaces/:wid/channels/:targetId/permissions/effective?userId=...` | effective channel permission explanation |
 
+Moving a channel to another category (`PUT /api/channels/:id` with `categoryId`) and deleting a category swap which category overrides apply to a channel. For every role whose override differs, a caller other than the owner needs what writing that override takes: the role ranks below the caller and the bits of the old and new override are bits the caller holds. Deleting a category also needs the caller to see and manage every channel in it. Assigning a role that carries overrides needs the bits its overrides allow, and removing it the bits they deny, in the workspace for a category and in the channel for a channel. Refusals answer `403`.
+
 ## Profiles
 
 | Paths | Responsibility |
