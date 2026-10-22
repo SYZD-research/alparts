@@ -1783,7 +1783,8 @@ process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
     const asking = await signIn(spare);
     const connected = await signIn(spare);
     const keptPasskey = await signIn(passkey);
-    const keptPassword = (await auth.login(user.email, password)).token;
+    // A login with the account's password stays too.
+    const keptTyped = (await auth.login(user.email, password)).token;
     // A passkey login from before the passkey was kept on sessions cannot be matched.
     const keptUnmatched = (await auth.establishSession(user, undefined, 'passkey')).token;
     // A socket and a confirmation need the approved device.
@@ -1801,7 +1802,7 @@ process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
     } finally { socket.disconnect(); }
     assert.equal(await sessionOf(connected), undefined);
     assert.equal((await request('/api/auth/me', undefined, cookieOf(connected))).status, 401);
-    for (const token of [asking, keptPasskey, keptPassword, keptUnmatched]) assert.ok(await sessionOf(token));
+    for (const token of [asking, keptPasskey, keptTyped, keptUnmatched]) assert.ok(await sessionOf(token));
     assert.deepEqual(await passkeyIds(), [passkey.id]);
     const audited = (await db.execute(sql`SELECT details FROM audit_logs
       WHERE action = 'passkey.delete' AND actor_id = ${userId} ORDER BY created_at DESC, id DESC LIMIT 1`)).rows[0]?.details as
@@ -1819,7 +1820,7 @@ process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
     assert.equal(((await last.json()) as { error: string }).error, 'LAST_PASSKEY');
     assert.deepEqual(await passkeyIds(), [passkey.id]);
     assert.ok(await sessionOf(keptPasskey));
-    for (const token of [asking, keptPasskey, keptPassword, keptUnmatched]) await auth.logout((await sessionOf(token))!, userId);
+    for (const token of [asking, keptPasskey, keptTyped, keptUnmatched]) await auth.logout((await sessionOf(token))!, userId);
   });
   it('backs up opaque history and requires the recovery signing key to approve a replacement', async () => {
     generation = randomUUID();
