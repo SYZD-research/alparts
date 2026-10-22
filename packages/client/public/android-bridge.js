@@ -30,6 +30,8 @@
     configureServer: () => Promise.reject(new Error(text('接続先はアプリの設定から変更してください。', 'Change the server in the app settings.'))),
     setIdleLockMinutes: (minutes) => call('idle', { minutes }),
     lockNow: () => call('lock'),
+    // The WebView keeps no HTTP cache of the app's own pages to clear.
+    clearHttpCache: () => Promise.resolve(false),
     unlockComplete: () => call('unlock'),
     showConnectionSettings: () => Promise.resolve(false),
     secrets: Object.freeze({
