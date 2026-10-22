@@ -9,8 +9,10 @@ Written from the implementation at commit ce09b19:
                      route's own work (new-password KDF, audit queue).
   operator reset     scripts/reset-password.ts -> account-state.service.ts:
                      new password, password login on, every session and
-                     every passkey deleted (since 2026-10-09; devices are
-                     kept: revoking one needs a device-signed entry).
+                     every passkey deleted (since 2026-10-09); devices
+                     nobody approved are retired by the server, approved
+                     ones are kept: revoking one needs a device-signed
+                     entry.
                      Exclusive DRAIN lock: it runs between audited
                      transactions, never inside one.
   socket handshake   websocket/index.ts: io.use reads the session, then the

@@ -50,7 +50,7 @@ router.post('/challenge', authMiddleware, challengeLimit, (req: AuthRequest, res
 router.post('/', authMiddleware, enrollmentLimit, async (req: AuthRequest, res) => {
   try {
     const body = registerSchema.parse(req.body);
-    const { device, created, dirtyWorkspaceIds } = await deviceService.registerDevice(
+    const { device, created, dirtyWorkspaceIds, expired } = await deviceService.registerDevice(
       req.userId!,
       req.sessionId!,
       body.name,
@@ -60,6 +60,11 @@ router.post('/', authMiddleware, enrollmentLimit, async (req: AuthRequest, res) 
       body.currentPassword,
     );
     const io = req.app.get('io') as SocketServer | undefined;
+    // Pending devices that made room for this one.
+    for (const { deviceId, sessionIds } of expired) {
+      for (const sessionId of sessionIds) io?.in(`session:${sessionId}`).disconnectSockets(true);
+      io?.to(`user:${req.userId}`).emit('device:revoked', { deviceId });
+    }
     if (created) io?.to(`user:${req.userId}`).emit('device:registered', device);
     for (const workspaceId of dirtyWorkspaceIds) {
       io?.to(`workspace:${workspaceId}`).emit('workspace:key-state-dirty', { workspaceId });

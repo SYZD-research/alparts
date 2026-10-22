@@ -4,6 +4,12 @@ export interface DirectoryHead {
   sequence: number;
   hash: string;
 }
+/**
+ * `expire` retires a device that was registered but never approved. Only the
+ * server writes it and no device signs it: `actorDeviceId` repeats `deviceId`
+ * and `signature` is empty. Clients accept it only while that device is
+ * neither approved nor revoked, so it cannot retire an approved device.
+ */
 export interface DirectoryEvent {
   kind:
     | 'legacy'
@@ -11,6 +17,7 @@ export interface DirectoryEvent {
     | 'register'
     | 'approve'
     | 'revoke'
+    | 'expire'
     | 'recovery'
     | 'recovery-config'
     | 'recovery-disable';
@@ -20,6 +27,15 @@ export interface DirectoryEvent {
   signature: string;
   challenge?: string;
   recoveryKey?: string;
+}
+export function expireDirectoryEvent(device: { id: string; identityKey: string }): DirectoryEvent {
+  return {
+    kind: 'expire',
+    deviceId: device.id,
+    identityKey: device.identityKey,
+    actorDeviceId: device.id,
+    signature: '',
+  };
 }
 export interface DirectoryEntry extends DirectoryHead {
   previousHash: string;

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  expireDirectoryEvent,
   serializeDeviceChallengeProof,
   serializeDeviceDecision,
   serializeDirectoryEntry,
@@ -253,5 +254,138 @@ describe('which devices may sign (SEC-01)', () => {
     expect(deviceMeetsPolicy(revoked, 'active')).toBe(false);
     // Devices from before the transparency log carry their approval sequence.
     expect(deviceMeetsPolicy({ approved: false, revoked: false, approvedSequence: 3 }, 'approved')).toBe(true);
+  });
+});
+
+describe('retiring a device nobody approved', () => {
+  const challenge = 'expire-test-challenge';
+  type Directory = ReturnType<typeof emptyDirectory>;
+  const proof = async (keys: Awaited<ReturnType<typeof identity>>) =>
+    sign(keys.key.privateKey, serializeDeviceChallengeProof(userId, challenge));
+  /** An account whose first device, `owner`, is approved. */
+  async function account() {
+    const owner = await identity();
+    const start = emptyDirectory(userId);
+    const bootstrap = await append(start, {
+      kind: 'bootstrap', deviceId: 'owner', actorDeviceId: 'owner', identityKey: owner.identityKey, challenge,
+      signature: await proof(owner),
+    });
+    return { owner, entries: [bootstrap], state: await verifyDirectoryEntries(start, [bootstrap]) };
+  }
+  /** The device registers itself and stays pending: nobody approves it. */
+  async function register(state: Directory, deviceId: string) {
+    const keys = await identity();
+    const entry = await append(state, {
+      kind: 'register', deviceId, actorDeviceId: deviceId, identityKey: keys.identityKey, challenge,
+      signature: await proof(keys),
+    });
+    return { keys, entry, state: await verifyDirectoryEntries(state, [entry]) };
+  }
+  const expiry = (state: Directory, deviceId: string, event: Partial<DirectoryEvent> = {}) =>
+    append(state, { ...expireDirectoryEvent({ id: deviceId, identityKey: state.devices[deviceId].identityKey }), ...event });
+
+  it('accepts the server retiring a pending device, and the entries after it', async () => {
+    const { entries, state: opened } = await account();
+    const pending = await register(opened, 'pending');
+    const retire = await expiry(pending.state, 'pending');
+    const retired = await verifyDirectoryEntries(pending.state, [retire]);
+    expect(retired.devices.pending).toMatchObject({
+      approved: false, revoked: true, approvedSequence: null, revokedSequence: retire.sequence,
+    });
+    expect(deviceMeetsPolicy(retired.devices.pending!, 'approved')).toBe(false);
+    expect(deviceMeetsPolicy(retired.devices.pending!, 'active')).toBe(false);
+    expect(retired.devices.owner).toMatchObject({ approved: true, revoked: false });
+    expect(retired.head).toEqual({ userId, sequence: retire.sequence, hash: retire.hash });
+    expect(retired.checkpoints[retire.sequence]).toBe(retire.hash);
+    // Later entries chain from it, and one pass over everything gives the same state as several.
+    const later = await register(retired, 'later');
+    const all = [...entries, pending.entry, retire, later.entry];
+    expect(await verifyDirectoryEntries(emptyDirectory(userId), all)).toEqual(later.state);
+    expect(later.state.devices.later).toMatchObject({ approved: false, revoked: false });
+  });
+
+  it('refuses to retire a device that is or was approved', async () => {
+    const { owner, state: opened } = await account();
+    // The device the account started with.
+    await expect(verifyDirectoryEntries(opened, [await expiry(opened, 'owner')])).rejects.toThrow('DIRECTORY_INVALID');
+
+    // A device an approved device approved.
+    const second = await register(opened, 'second');
+    const decision = { kind: 'approve' as const, deviceId: 'second', identityKey: second.keys.identityKey, actorDeviceId: 'owner' };
+    const approved = await verifyDirectoryEntries(second.state, [await append(second.state, {
+      ...decision, signature: await sign(owner.key.privateKey, serializeDeviceDecision(second.state.head, decision)),
+    })]);
+    expect(approved.devices.second!.approved).toBe(true);
+    await expect(verifyDirectoryEntries(approved, [await expiry(approved, 'second')])).rejects.toThrow('DIRECTORY_INVALID');
+
+    // A device the recovery code approved.
+    const recoveryKeys = await identity();
+    const recoveryKey = JSON.stringify(await crypto.subtle.exportKey('jwk', recoveryKeys.key.publicKey));
+    const generation = 'a7d4d6c0-0000-4000-8000-000000000001';
+    const configuration = { kind: 'recovery-config' as const, deviceId: generation, identityKey: recoveryKey, actorDeviceId: 'owner' };
+    const configured = await verifyDirectoryEntries(approved, [await append(approved, {
+      ...configuration, signature: await sign(owner.key.privateKey, serializeDeviceDecision(approved.head, configuration)),
+    })]);
+    const third = await register(configured, 'third');
+    const restore = { kind: 'recovery' as const, deviceId: 'third', identityKey: third.keys.identityKey, actorDeviceId: generation };
+    const restored = await verifyDirectoryEntries(third.state, [await append(third.state, {
+      ...restore, signature: await sign(recoveryKeys.key.privateKey, serializeDeviceDecision(third.state.head, restore)),
+    })]);
+    expect(restored.devices.third!.approved).toBe(true);
+    await expect(verifyDirectoryEntries(restored, [await expiry(restored, 'third')])).rejects.toThrow('DIRECTORY_INVALID');
+
+    // A device migrated from before the directory, once its pinned prefix is verified.
+    const legacyKeys = await identity();
+    const legacy = await append(emptyDirectory(userId), {
+      kind: 'legacy', deviceId: 'old', actorDeviceId: 'old', identityKey: legacyKeys.identityKey, signature: '', challenge: 'active',
+    });
+    const anchor = { userId, sequence: legacy.sequence, hash: legacy.hash };
+    const migrated = await verifyDirectoryEntries(emptyDirectory(userId), [legacy], anchor);
+    await expect(verifyDirectoryEntries(migrated, [await expiry(migrated, 'old')], anchor)).rejects.toThrow('DIRECTORY_INVALID');
+  });
+
+  it('refuses to retire a device twice, and a retired device never comes back', async () => {
+    const { owner, state: opened } = await account();
+    const pending = await register(opened, 'pending');
+    const retired = await verifyDirectoryEntries(pending.state, [await expiry(pending.state, 'pending')]);
+    await expect(verifyDirectoryEntries(retired, [await expiry(retired, 'pending')])).rejects.toThrow('DIRECTORY_INVALID');
+    const decision = { kind: 'approve' as const, deviceId: 'pending', identityKey: pending.keys.identityKey, actorDeviceId: 'owner' };
+    await expect(verifyDirectoryEntries(retired, [await append(retired, {
+      ...decision, signature: await sign(owner.key.privateKey, serializeDeviceDecision(retired.head, decision)),
+    })])).rejects.toThrow('DIRECTORY_INVALID');
+    await expect(verifyDirectoryEntries(retired, [await append(retired, {
+      kind: 'register', deviceId: 'pending', actorDeviceId: 'pending', identityKey: pending.keys.identityKey, challenge,
+      signature: await proof(pending.keys),
+    })])).rejects.toThrow('DIRECTORY_INVALID');
+  });
+
+  it('takes the entry only as the server writes it', async () => {
+    const { owner, state: opened } = await account();
+    const pending = await register(opened, 'pending');
+    const other = await identity();
+    const refused = async (event: Partial<DirectoryEvent>) =>
+      expect(verifyDirectoryEntries(pending.state, [await expiry(pending.state, 'pending', event)])).rejects.toThrow('DIRECTORY_INVALID');
+    await refused({ deviceId: 'unknown', actorDeviceId: 'unknown', identityKey: other.identityKey });
+    await refused({ identityKey: other.identityKey });
+    await refused({ actorDeviceId: 'owner' });
+    await refused({ signature: await sign(owner.key.privateKey, 'anything') });
+    // Not even a device the account approved may retire it this way: it would have to revoke it.
+    const byOwner = { kind: 'expire' as const, deviceId: 'pending', identityKey: pending.keys.identityKey, actorDeviceId: 'owner' };
+    await refused({ actorDeviceId: 'owner', signature: await sign(owner.key.privateKey, serializeDeviceDecision(pending.state.head, byOwner)) });
+    expect((await verifyDirectoryEntries(pending.state, [await expiry(pending.state, 'pending')])).devices.pending!.revoked).toBe(true);
+  });
+
+  it('keeps the hash chain rules for the entry', async () => {
+    const { state: opened } = await account();
+    const pending = await register(opened, 'pending');
+    const retire = await expiry(pending.state, 'pending');
+    await expect(verifyDirectoryEntries(pending.state, [{ ...retire, previousHash: '0'.repeat(64) }])).rejects.toThrow('DIRECTORY_INVALID');
+    await expect(verifyDirectoryEntries(pending.state, [{ ...retire, sequence: retire.sequence + 1 }])).rejects.toThrow('DIRECTORY_INVALID');
+    await expect(verifyDirectoryEntries(pending.state, [{ ...retire, userId: 'someone-else' }])).rejects.toThrow('DIRECTORY_INVALID');
+    // Hashed as another device's entry, or as a different kind: the content must match the hash.
+    await expect(verifyDirectoryEntries(pending.state, [{ ...retire, event: { ...retire.event, deviceId: 'owner', actorDeviceId: 'owner' } }])).rejects.toThrow('DIRECTORY_INVALID');
+    await expect(verifyDirectoryEntries(pending.state, [{ ...retire, event: { ...retire.event, kind: 'revoke' } }])).rejects.toThrow('DIRECTORY_INVALID');
+    // An entry between the registration and its retirement cannot be skipped or reordered.
+    await expect(verifyDirectoryEntries(opened, [retire])).rejects.toThrow('DIRECTORY_INVALID');
   });
 });

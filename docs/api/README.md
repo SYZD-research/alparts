@@ -19,7 +19,7 @@ This is an inventory, not a stable public OpenAPI contract. No formal API versio
 | --- | --- |
 | `POST /api/auth/register`, `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/auth/me` | invite-gated account creation and session lifecycle |
 | `GET /api/auth/sessions`, `DELETE /api/auth/sessions/:id`, `DELETE /api/auth/sessions` | bounded session inventory (maximum 16 unexpired/user, with how each login was made) and scoped/all revocation |
-| `POST /api/devices/challenge`, `POST /api/devices`, `POST /api/devices/:id/bind` | session-bound device enrollment/binding proof; cleanup of protocol-2/3 provisional epochs (none are created since migration 0023) is partitioned by the bounded workspace set; enrollment and approval tell the user's devices to publish group packages for every channel they see |
+| `POST /api/devices/challenge`, `POST /api/devices`, `POST /api/devices/:id/bind` | session-bound device enrollment/binding proof; cleanup of protocol-2/3 provisional epochs (none are created since migration 0023) is partitioned by the bounded workspace set; enrollment and approval tell the user's devices to publish group packages for every channel they see; enrollment at the limit of 8 devices retires the oldest pending device (ends its sessions, emits `device:revoked`) instead of refusing, and answers 409 `DEVICE_LIMIT_REACHED` only when every device is approved |
 | `GET /api/devices`, `DELETE /api/devices/:id` | active/revoked device inventory and idempotent revocation; dirty-key notifications name only current workspaces with an affected recipient or group member, and members of every group that still contains the revoked device are told to remove it |
 
 ## Workspaces, invitations, roles and permissions

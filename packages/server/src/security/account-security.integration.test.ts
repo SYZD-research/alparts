@@ -392,6 +392,75 @@ describe('account security end to end', { skip: !enabled }, () => {
       201,
     );
   }
+  /**
+   * An account of its own, driven through the services and logins made
+   * directly: HTTP logins and registrations share small per-account budgets,
+   * and its directory keeps every retirement for good.
+   */
+  async function ownAccount(label: string) {
+    const { db } = await import('../db/index.js');
+    const { and, eq, isNull } = await import('drizzle-orm');
+    const { devices, sessions, users } = await import('../db/schema.js');
+    const auth = await import('../services/auth.service.js');
+    const deviceService = await import('../services/device.service.js');
+    const directory = await import('../services/directory.service.js');
+    const verifier = await import('../../../client/src/services/' + 'directory-verifier.ts');
+    const [user] = await db.insert(users).values({
+      email: `${label}-${randomUUID()}@example.test`,
+      passwordHash: await auth.hashNewPassword(password),
+      displayName: label,
+    }).returning();
+    const login = async () => {
+      const [row] = await db.insert(sessions).values({
+        userId: user.id,
+        tokenHash: randomUUID(),
+        authenticationMethod: 'password',
+        expiresAt: new Date(Date.now() + 3_600_000),
+      }).returning();
+      return row.id;
+    };
+    const register = async (sessionId: string, keys: ReturnType<typeof deviceKeys>, name: string, secret = password) => {
+      const challenge = deviceService.issueDeviceChallenge(user.id, sessionId);
+      return deviceService.registerDevice(
+        user.id,
+        sessionId,
+        name,
+        keys.identityKey,
+        challenge,
+        signature(keys.privateKey, serializeDeviceChallengeProof(user.id, challenge)),
+        secret,
+      );
+    };
+    const approve = async (
+      actor: { id: string; keys: ReturnType<typeof deviceKeys> },
+      target: { id: string; identityKey: string },
+    ) => {
+      const current = await directory.directoryHead(db, user.id);
+      const decision = { kind: 'approve' as const, deviceId: target.id, identityKey: target.identityKey, actorDeviceId: actor.id };
+      return deviceService.approveDevice(
+        user.id,
+        actor.id,
+        target.id,
+        current,
+        signature(actor.keys.privateKey, serializeDeviceDecision(current, decision)),
+      );
+    };
+    return {
+      userId: user.id,
+      login,
+      register,
+      approve,
+      active: () => db.select().from(devices).where(and(eq(devices.userId, user.id), isNull(devices.revokedAt))),
+      device: async (id: string) => (await db.query.devices.findFirst({ where: eq(devices.id, id) }))!,
+      hasSession: async (id: string) => Boolean(await db.query.sessions.findFirst({ where: eq(sessions.id, id) })),
+      boundDevice: async (id: string) => (await db.query.sessions.findFirst({ where: eq(sessions.id, id) }))?.deviceId,
+      /** What a client makes of the account's directory. */
+      verified: async () => {
+        const { entries } = await directory.readDirectory(user.id, 0);
+        return { entries, state: await verifier.verifyDirectoryEntries(verifier.emptyDirectory(user.id), entries) };
+      },
+    };
+  }
   /** A message from `device` (the first device by default) under the active version's key unless told otherwise. */
   async function encryptedMessage(
     options: { device?: GroupDevice; keyVersion?: number; rawKey?: Uint8Array } = {},
@@ -1162,6 +1231,166 @@ process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
     const messageService = await import('../services/message.service.js');
     await assert.rejects(messageService.getChannelMessages(channelId, legacyUser), /CHANNEL_NOT_FOUND/);
     await messageService.getChannelMessages(channelId, userId);
+  });
+  it('retires the oldest pending device at the device limit, never an approved one, so the owner can still restore a device', { timeout: 60_000 }, async () => {
+    const { db } = await import('../db/index.js');
+    const { sql } = await import('drizzle-orm');
+    const directory = await import('../services/directory.service.js');
+    const deviceService = await import('../services/device.service.js');
+    const recoveryService = await import('../services/recovery.service.js');
+    const owner = await ownAccount('limit');
+    // The owner's phone, and a recovery code set up while it was at hand.
+    const phoneKeys = deviceKeys();
+    const phoneLogin = await owner.login();
+    const phone = (await owner.register(phoneLogin, phoneKeys, 'Phone')).device;
+    assert.ok(phone.approvedAt);
+    const recovery = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+    const signingKey = JSON.stringify(recovery.publicKey.export({ format: 'jwk' }));
+    const recoveryGeneration = randomUUID();
+    const configureHead = await directory.directoryHead(db, owner.userId);
+    await recoveryService.configureRecovery(owner.userId, phoneLogin, {
+      generation: recoveryGeneration,
+      signingKey,
+      encryptedSecret: JSON.stringify({ version: 2, codeSecret: randomBytes(256).toString('base64') }),
+      accessTokenHash: randomBytes(32).toString('hex'),
+      head: configureHead,
+      signature: signature(phoneKeys.privateKey, serializeDeviceDecision(configureHead, {
+        kind: 'recovery-config', deviceId: recoveryGeneration, identityKey: signingKey, actorDeviceId: phone.id,
+      })),
+    });
+    // Someone who knows the password registers seven more devices, each on a login of its own.
+    const pendingLogins: string[] = [];
+    const pending: Array<{ id: string }> = [];
+    const pendingKeys: Array<ReturnType<typeof deviceKeys>> = [];
+    for (let index = 0; index < 7; index++) {
+      const sessionId = await owner.login();
+      pendingKeys.push(deviceKeys());
+      pendingLogins.push(sessionId);
+      pending.push((await owner.register(sessionId, pendingKeys[index], `Pending ${index}`)).device);
+    }
+    assert.equal((await owner.active()).length, 8, 'the account is at its limit');
+
+    // The phone is lost. A new computer registers; the oldest pending device makes room for it.
+    const laptopKeys = deviceKeys();
+    const laptopLogin = await owner.login();
+    const laptop = await owner.register(laptopLogin, laptopKeys, 'Laptop');
+    assert.equal(laptop.created, true);
+    assert.equal(laptop.device.approvedAt, null);
+    assert.deepEqual(laptop.expired, [{ deviceId: pending[0].id, sessionIds: [pendingLogins[0]] }]);
+    assert.ok((await owner.device(pending[0].id)).revokedAt, 'retired');
+    assert.equal(await owner.hasSession(pendingLogins[0]), false, 'its login ended');
+    assert.equal(await owner.hasSession(pendingLogins[1]), true);
+    assert.equal((await owner.device(phone.id)).revokedAt, null);
+    assert.equal((await owner.active()).length, 8);
+    assert.equal(await owner.boundDevice(laptopLogin), laptop.device.id);
+    // The helper itself takes only a device of the account that nobody approved or retired.
+    await db.transaction(async (tx) => {
+      await assert.rejects(deviceService.expireUnapprovedDevice(tx, owner.userId, phone.id), /DEVICE_NOT_PENDING/);
+      await assert.rejects(deviceService.expireUnapprovedDevice(tx, owner.userId, pending[0].id), /DEVICE_NOT_PENDING/);
+      await assert.rejects(deviceService.expireUnapprovedDevice(tx, randomUUID(), pending[1].id), /DEVICE_NOT_PENDING/);
+    });
+    assert.equal((await owner.device(pending[1].id)).revokedAt, null);
+    // A resent registration changes nothing, and a retired identity never comes back.
+    const resent = await owner.register(laptopLogin, laptopKeys, 'Laptop');
+    assert.deepEqual([resent.created, resent.expired], [false, []]);
+    await assert.rejects(owner.register(await owner.login(), pendingKeys[0], 'Pending 0 again'), /IDENTITY_REVOKED/);
+
+    // The recovery code restores the laptop: the lockout of the audit's scenario is gone.
+    const restoreHead = await directory.directoryHead(db, owner.userId);
+    const restored = await recoveryService.restoreDevice(owner.userId, laptopLogin, {
+      generation: recoveryGeneration,
+      head: restoreHead,
+      signature: signature(recovery.privateKey, serializeDeviceDecision(restoreHead, {
+        kind: 'recovery', deviceId: laptop.device.id, identityKey: laptop.device.identityKey, actorDeviceId: recoveryGeneration,
+      })),
+    });
+    assert.equal(restored.alreadyApproved, false);
+    assert.ok((await owner.device(laptop.device.id)).approvedAt);
+
+    // The next registration retires the next pending device, not the phone or the laptop.
+    const next = await owner.register(await owner.login(), deviceKeys(), 'Pending 7');
+    assert.deepEqual(next.expired.map((retired) => retired.deviceId), [pending[1].id]);
+    assert.equal((await owner.device(phone.id)).revokedAt, null);
+    assert.equal((await owner.device(laptop.device.id)).revokedAt, null);
+
+    // Once every device is approved the limit holds: an approved device is never retired.
+    for (const candidate of (await owner.active()).filter((device) => !device.approvedAt)) {
+      await owner.approve({ id: laptop.device.id, keys: laptopKeys }, candidate);
+    }
+    const approvedDevices = (await owner.active()).map((device) => device.id).sort();
+    assert.equal(approvedDevices.length, 8);
+    await assert.rejects(owner.register(await owner.login(), deviceKeys(), 'One too many'), /DEVICE_LIMIT_REACHED/);
+    assert.deepEqual((await owner.active()).map((device) => device.id).sort(), approvedDevices);
+
+    // A client verifies the chain, and the retired devices were never approved.
+    const { entries, state } = await owner.verified();
+    const retirements = entries.filter((entry) => entry.event.kind === 'expire');
+    assert.deepEqual(retirements.map((entry) => entry.event.deviceId), [pending[0].id, pending[1].id]);
+    for (const entry of retirements) {
+      assert.equal(entry.event.actorDeviceId, entry.event.deviceId);
+      assert.equal(entry.event.signature, '');
+      assert.deepEqual(
+        [state.devices[entry.event.deviceId].approved, state.devices[entry.event.deviceId].revoked],
+        [false, true],
+      );
+    }
+    for (const id of [phone.id, laptop.device.id]) {
+      assert.deepEqual([state.devices[id].approved, state.devices[id].revoked], [true, false]);
+    }
+    const audited = (await db.execute(sql`select target_id, details from audit_logs
+      where action = 'device.expire' and actor_id = ${owner.userId} order by created_at, id`)).rows;
+    assert.deepEqual(
+      audited.map((row) => [row.target_id, (row.details as { reason: string }).reason]),
+      [[pending[0].id, 'device-limit'], [pending[1].id, 'device-limit']],
+    );
+    assert.equal((await (await import('../middleware/audit.js')).verifyAuditChain()).valid, true);
+  });
+  it('retires every pending device in an operator reset and keeps the approved ones', { timeout: 60_000 }, async () => {
+    const { db } = await import('../db/index.js');
+    const { sql } = await import('drizzle-orm');
+    const { spawn } = await import('node:child_process');
+    const { fileURLToPath } = await import('node:url');
+    const owner = await ownAccount('reset');
+    const phone = (await owner.register(await owner.login(), deviceKeys(), 'Phone')).device;
+    const pendingLogins: string[] = [];
+    const pendingIds: string[] = [];
+    for (let index = 0; index < 7; index++) {
+      const sessionId = await owner.login();
+      pendingLogins.push(sessionId);
+      pendingIds.push((await owner.register(sessionId, deviceKeys(), `Pending ${index}`)).device.id);
+    }
+    assert.equal((await owner.active()).length, 8, 'the account is at its limit');
+
+    // The operator resets the password with the command.
+    const operatorPassword = 'Operator-Reset-Pending-Devices!';
+    const reset = await new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve, reject) => {
+      const child = spawn(process.execPath, ['--import', 'tsx',
+        fileURLToPath(new URL('../scripts/reset-password.ts', import.meta.url)), owner.userId],
+      { stdio: ['pipe', 'pipe', 'pipe'], timeout: 20_000 });
+      let stdout = '';
+      let stderr = '';
+      child.stdout.on('data', (chunk) => { stdout += chunk; });
+      child.stderr.on('data', (chunk) => { stderr += chunk; });
+      child.once('error', reject);
+      child.once('close', (code) => resolve({ code, stdout, stderr }));
+      child.stdin.end(`${operatorPassword}\n`);
+    });
+    assert.equal(reset.code, 0, reset.stderr);
+    assert.match(reset.stdout, /7 device\(s\) nobody had approved were retired/);
+    assert.deepEqual((await owner.active()).map((device) => device.id), [phone.id], 'the approved device stays');
+    for (const sessionId of pendingLogins) assert.equal(await owner.hasSession(sessionId), false);
+    const audited = (await db.execute(sql`select target_id from audit_logs
+      where action = 'device.expire' and details->>'reason' = 'password-reset'`)).rows.map((row) => row.target_id);
+    assert.deepEqual(pendingIds.filter((id) => audited.includes(id)), pendingIds);
+
+    // The owner signs in with the new password and adds a device.
+    const laptop = await owner.register(await owner.login(), deviceKeys(), 'Laptop', operatorPassword);
+    assert.equal(laptop.created, true);
+    assert.deepEqual(laptop.expired, []);
+    const { state } = await owner.verified();
+    assert.deepEqual([state.devices[phone.id].approved, state.devices[phone.id].revoked], [true, false]);
+    for (const id of pendingIds) assert.deepEqual([state.devices[id].approved, state.devices[id].revoked], [false, true]);
+    assert.equal((await (await import('../middleware/audit.js')).verifyAuditChain()).valid, true);
   });
   it('rechecks the current password and receipt scope inside the sensitive transaction', async () => {
     const service = await import('../services/passkey.service.js');
