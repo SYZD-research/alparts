@@ -50,4 +50,5 @@ RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 UMask=0077
 StateDirectory=alparts-backups
 StateDirectoryMode=0700
-ReadWritePaths=/var/lib/alparts-backups
+# The wrapper takes its lock under /run/lock before anything else.
+ReadWritePaths=/var/lib/alparts-backups /run/lock
