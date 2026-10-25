@@ -4,6 +4,7 @@ import type { AlpartsDesktopInfo } from '../../types/desktop';
 import { getDesktopBridge } from '../../services/desktop.service';
 import { lockAuthenticatedClient, unlockAuthenticatedClient, useAuthStore } from '../../stores/auth.store';
 import { useLocale, useT } from '../../i18n';
+import { BrandMark } from '../ui/BrandMark';
 import { LanguageSelect } from '../settings/LanguageSelect';
 
 type BoundaryState =
@@ -112,12 +113,13 @@ function ConnectionSetup({ info, onCancel }: { info: AlpartsDesktopInfo; onCance
   };
 
   return (
-    <main className="flex h-screen items-center justify-center bg-discord-bg p-6">
-      <section aria-labelledby="desktop-setup-title" className="w-full max-w-lg rounded-lg bg-discord-sidebar p-8 shadow-2xl">
-        <h1 id="desktop-setup-title" className="text-2xl font-bold text-white">{t('接続先を設定')}</h1>
-        <p className="mt-2 text-sm text-discord-muted">{t('管理者から案内されたアドレスを入力してください。')}</p>
+    <main className="flex h-screen items-center justify-center bg-canvas p-6">
+      <section aria-labelledby="desktop-setup-title" className="w-full max-w-lg rounded-2xl border border-line bg-panel p-8 shadow-2xl shadow-black/30">
+        <BrandMark size={44} className="mb-5 text-accent" />
+        <h1 id="desktop-setup-title" className="text-2xl font-semibold text-ink-strong">{t('接続先を設定')}</h1>
+        <p className="mt-2 text-sm text-muted">{t('管理者から案内されたアドレスを入力してください。')}</p>
         <form onSubmit={submit} className="mt-6 space-y-4">
-          <label className="block text-sm text-discord-text">
+          <label className="block text-sm text-ink">
             {t('接続先')}
             <input
               autoFocus
@@ -131,19 +133,19 @@ function ConnectionSetup({ info, onCancel }: { info: AlpartsDesktopInfo; onCance
               value={serverUrl}
               onChange={(event) => { setServerUrl(event.target.value); setConfirmed(false); }}
               disabled={saving || info.serverManaged}
-              className="mt-2 w-full rounded-sm bg-discord-input px-3 py-2.5 text-discord-text outline-hidden focus:ring-2 focus:ring-discord-accent disabled:opacity-60"
+              className="mt-2 w-full rounded-lg bg-field px-3 py-2.5 text-ink outline-hidden focus:ring-2 focus:ring-accent disabled:opacity-60"
             />
           </label>
           {changed && (
-            <label className="flex gap-3 rounded-sm border border-discord-red/60 bg-discord-red/10 p-3 text-sm text-discord-text">
+            <label className="flex gap-3 rounded-lg border border-danger/60 bg-danger/10 p-3 text-sm text-ink">
               <input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} className="mt-0.5" />
               <span>{t('接続先を変更すると、現在の接続先についてこの端末に保存した下書きなどが削除されます。')}</span>
             </label>
           )}
-          {error && <p role="alert" className="text-sm text-discord-red">{error}</p>}
+          {error && <p role="alert" className="text-sm text-danger">{error}</p>}
           <div className="flex justify-end gap-2">
-            {onCancel && <button type="button" onClick={onCancel} disabled={saving} className="rounded-sm px-4 py-2 text-sm text-discord-muted hover:bg-discord-hover">{t('キャンセル')}</button>}
-            <button type="submit" disabled={saving || !serverUrl.trim() || (changed && !confirmed) || info.serverManaged} className="rounded-sm bg-discord-accent px-4 py-2 text-sm font-medium text-white disabled:opacity-40">
+            {onCancel && <button type="button" onClick={onCancel} disabled={saving} className="rounded-lg px-4 py-2 text-sm text-muted hover:bg-hover">{t('キャンセル')}</button>}
+            <button type="submit" disabled={saving || !serverUrl.trim() || (changed && !confirmed) || info.serverManaged} className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-on-accent disabled:opacity-40">
               {saving ? t('接続しています…') : t('接続する')}
             </button>
           </div>
@@ -194,14 +196,15 @@ function AppUnlock({ user, onUnlocked }: { user: User | null; onUnlocked: () => 
   };
 
   return (
-    <main className="flex h-screen items-center justify-center bg-discord-bg p-6">
-      <section aria-labelledby="desktop-unlock-title" className="w-full max-w-md rounded-lg bg-discord-sidebar p-8 shadow-2xl">
-        <h1 id="desktop-unlock-title" className="text-2xl font-bold text-white">{t('アプリはロックされています')}</h1>
-        <p className="mt-2 text-sm text-discord-muted">
+    <main className="flex h-screen items-center justify-center bg-canvas p-6">
+      <section aria-labelledby="desktop-unlock-title" className="w-full max-w-md rounded-2xl border border-line bg-panel p-8 shadow-2xl shadow-black/30">
+        <BrandMark size={44} className="mb-5 text-accent" />
+        <h1 id="desktop-unlock-title" className="text-2xl font-semibold text-ink-strong">{t('アプリはロックされています')}</h1>
+        <p className="mt-2 text-sm text-muted">
           {user ? t('{name} として続けるにはパスワードを入力してください。', { name: user.displayName }) : t('続けるにはパスワードを入力してください。')}
         </p>
         <form onSubmit={submit} className="mt-6 space-y-4">
-          <label className="block text-sm text-discord-text">
+          <label className="block text-sm text-ink">
             {t('パスワード')}
             <input
               autoFocus
@@ -212,14 +215,14 @@ function AppUnlock({ user, onUnlocked }: { user: User | null; onUnlocked: () => 
               autoComplete="current-password"
               value={password}
               onChange={(event) => setPassword(event.target.value)}
-              className="mt-2 w-full rounded-sm bg-discord-input px-3 py-2.5 text-discord-text outline-hidden focus:ring-2 focus:ring-discord-accent"
+              className="mt-2 w-full rounded-lg bg-field px-3 py-2.5 text-ink outline-hidden focus:ring-2 focus:ring-accent"
             />
           </label>
-          {error && <p role="alert" className="text-sm text-discord-red">{error}</p>}
-          <button type="submit" disabled={submitting} className="w-full rounded-sm bg-discord-accent px-4 py-2.5 font-medium text-white disabled:opacity-40">
+          {error && <p role="alert" className="text-sm text-danger">{error}</p>}
+          <button type="submit" disabled={submitting} className="w-full rounded-xl bg-accent px-4 py-2.5 font-medium text-on-accent transition-colors hover:bg-accent-strong disabled:opacity-40">
             {submitting ? t('確認しています…') : t('ロックを解除')}
           </button>
-          <button type="button" disabled={submitting} onClick={() => { void returnToLogin(); }} className="w-full rounded-sm px-4 py-2 text-sm text-discord-muted hover:bg-discord-hover disabled:opacity-40">
+          <button type="button" disabled={submitting} onClick={() => { void returnToLogin(); }} className="w-full rounded-lg px-4 py-2 text-sm text-muted hover:bg-hover disabled:opacity-40">
             {t('ログイン画面に戻る')}
           </button>
         </form>
@@ -235,10 +238,10 @@ function FullPageStatus({ message, actionLabel, onAction, alert = false }: {
   alert?: boolean;
 }) {
   return (
-    <main className="flex h-screen items-center justify-center bg-discord-bg p-6">
-      <div role={alert ? 'alert' : 'status'} className="max-w-lg rounded-lg bg-discord-sidebar p-8 text-center text-discord-text shadow-2xl">
+    <main className="flex h-screen items-center justify-center bg-canvas p-6">
+      <div role={alert ? 'alert' : 'status'} className="max-w-lg rounded-2xl border border-line bg-panel p-8 text-center text-ink shadow-2xl shadow-black/30">
         <p>{message}</p>
-        {actionLabel && onAction && <button type="button" onClick={onAction} className="mt-5 rounded-sm bg-discord-accent px-4 py-2 text-sm font-medium text-white">{actionLabel}</button>}
+        {actionLabel && onAction && <button type="button" onClick={onAction} className="mt-5 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-on-accent">{actionLabel}</button>}
       </div>
     </main>
   );

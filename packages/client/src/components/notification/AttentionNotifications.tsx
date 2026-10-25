@@ -4,6 +4,7 @@ import { useChannelStore } from '../../stores/channel.store';
 import { useForumStore } from '../../stores/forum.store';
 import { useWorkspaceStore } from '../../stores/workspace.store';
 import { useUiStore } from '../../stores/ui.store';
+import { Icon } from '../ui/Icon';
 import { useT } from '../../i18n';
 
 export function AttentionNotifications() {
@@ -41,7 +42,7 @@ export function AttentionNotifications() {
   return (
     <aside aria-label={t('新着通知')} aria-live="polite" className="fixed right-4 top-4 z-50 w-72 space-y-2">
       {groups.map(({ kind, items: groupedItems }) => (
-        <div key={kind} role="status" className="rounded-lg border border-discord-hover bg-discord-sidebar p-3 text-sm text-discord-text shadow-2xl">
+        <div key={kind} role="status" className="rounded-xl border border-line bg-raised p-3 text-sm text-ink shadow-2xl shadow-black/40">
           <div className="flex items-start gap-2">
             <button type="button" onClick={() => { void openLatest(kind); }} className="min-w-0 flex-1 text-left font-medium hover:underline">
               {kind === 'profile-appeal'
@@ -52,7 +53,7 @@ export function AttentionNotifications() {
                     ? t('{count}件の返信があります', { count: groupedItems.length })
                     : t('{count}件のメンションがあります', { count: groupedItems.length })}
             </button>
-            <button type="button" onClick={() => dismissKind(kind)} aria-label={t('通知を閉じる')} className="rounded-sm px-1 text-discord-muted hover:bg-discord-hover hover:text-white">×</button>
+            <button type="button" onClick={() => dismissKind(kind)} aria-label={t('通知を閉じる')} className="-m-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-muted hover:bg-hover hover:text-ink-strong"><Icon name="close" size={16} /></button>
           </div>
         </div>
       ))}

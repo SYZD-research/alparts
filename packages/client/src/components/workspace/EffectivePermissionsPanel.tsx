@@ -53,38 +53,38 @@ export function EffectivePermissionsPanel({
   return (
     <section className="space-y-4" aria-labelledby="effective-permissions-title">
       <div>
-        <h3 id="effective-permissions-title" className="font-semibold text-white">{t('権限と付与理由')}</h3>
-        <p className="mt-1 text-sm text-discord-muted">{t('複数のロールを持つ場合の権限をまとめ、どのロールが各権限を許可しているかを表示します。')}</p>
+        <h3 id="effective-permissions-title" className="font-semibold text-ink-strong">{t('権限と付与理由')}</h3>
+        <p className="mt-1 text-sm text-muted">{t('複数のロールを持つ場合の権限をまとめ、どのロールが各権限を許可しているかを表示します。')}</p>
       </div>
-      <label className="block max-w-md text-sm text-discord-text">
+      <label className="block max-w-md text-sm text-ink">
         {t('対象メンバー')}
         <select
           value={selectedUserId}
           onChange={(event) => setSelectedUserId(event.target.value)}
           disabled={!canInspectOthers}
-          className="mt-1 w-full rounded-sm bg-discord-bg px-3 py-2 text-white disabled:opacity-70"
+          className="mt-1 w-full rounded-lg bg-canvas px-3 py-2 text-ink-strong disabled:opacity-70"
         >
           {visibleMembers.map((member) => (
             <option key={member.userId} value={member.userId}>{member.user.displayName}{member.userId === currentUserId ? t('（自分）') : ''}</option>
           ))}
         </select>
       </label>
-      {!canInspectOthers && <p className="text-xs text-discord-muted">{t('他メンバーの権限理由を閲覧するには「ロールを管理」権限が必要です。')}</p>}
-      {loading && <p role="status" className="text-sm text-discord-muted">{t('権限を評価中…')}</p>}
-      {error && <p role="alert" className="text-sm text-discord-red">{error}</p>}
+      {!canInspectOthers && <p className="text-xs text-muted">{t('他メンバーの権限理由を閲覧するには「ロールを管理」権限が必要です。')}</p>}
+      {loading && <p role="status" className="text-sm text-muted">{t('権限を評価中…')}</p>}
+      {error && <p role="alert" className="text-sm text-danger">{error}</p>}
       {evaluation && !loading && (
         <div className="space-y-4">
-          <div className="rounded-sm bg-discord-bg/50 p-3">
-            <p className="text-xs font-bold uppercase tracking-wide text-discord-muted">{t('割当ロール')}</p>
-            <p className="mt-1 text-sm text-white">{evaluation.roles.map((role) => role.name).join(t('、')) || t('なし')}</p>
+          <div className="rounded-lg bg-canvas/50 p-3">
+            <p className="text-xs font-semibold text-muted">{t('割当ロール')}</p>
+            <p className="mt-1 text-sm text-ink-strong">{evaluation.roles.map((role) => role.name).join(t('、')) || t('なし')}</p>
           </div>
           <ul className="grid gap-2 md:grid-cols-2">
             {evaluation.permissionDetails.map((detail) => (
-              <li key={detail.permission} className={`rounded-sm border p-3 text-sm ${detail.allowed ? 'border-green-500/30 bg-green-500/5' : 'border-discord-hover bg-discord-bg/30'}`}>
-                <p className={detail.allowed ? 'font-medium text-green-300' : 'text-discord-muted'}>
+              <li key={detail.permission} className={`rounded-lg border p-3 text-sm ${detail.allowed ? 'border-green-500/30 bg-green-500/5' : 'border-line bg-canvas/30'}`}>
+                <p className={detail.allowed ? 'font-medium text-green-300' : 'text-muted'}>
                   <span aria-hidden="true">{detail.allowed ? '✓' : '—'} </span>{permissionLabel(detail.permission)}
                 </p>
-                <p className="mt-1 text-xs text-discord-muted">
+                <p className="mt-1 text-xs text-muted">
                   {detail.allowed
                     ? t('理由: {roles}', { roles: detail.reasons.map((reason) => reason.roleName).join(t('、')) || t('不明') })
                     : t('この権限を付与するロールはありません。')}

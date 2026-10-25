@@ -36,7 +36,7 @@ export function MessageContent({
       remarkPlugins={[remarkGfm, mentionPlugin]}
       components={{
         img: ({ alt }) => (
-          <span role="img" aria-label={alt || t('外部画像')} className="text-discord-muted italic">
+          <span role="img" aria-label={alt || t('外部画像')} className="text-muted italic">
             {alt ? t('[画像: {alt}]', { alt }) : t('[画像]')}
           </span>
         ),

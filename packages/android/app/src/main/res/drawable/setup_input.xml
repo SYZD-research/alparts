@@ -2,14 +2,14 @@
     <item android:state_focused="true">
         <shape>
             <solid android:color="@color/alparts_input" />
-            <corners android:radius="4dp" />
+            <corners android:radius="8dp" />
             <stroke android:width="2dp" android:color="@color/alparts_accent" />
         </shape>
     </item>
     <item>
         <shape>
             <solid android:color="@color/alparts_input" />
-            <corners android:radius="4dp" />
+            <corners android:radius="8dp" />
         </shape>
     </item>
 </selector>

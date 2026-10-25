@@ -31,23 +31,23 @@ export function ProfileFlagsPanel({ workspaceId }: { workspaceId: string }) {
 
   useEffect(() => { void load(); }, [load]);
 
-  if (error) return <p role="alert" className="text-sm text-discord-red">{error}</p>;
-  if (!flags) return <p className="text-sm text-discord-muted">{t('読み込み中…')}</p>;
-  if (flags.length === 0) return <p className="text-sm text-discord-muted">{t('警告を付けたプロフィールはありません。')}</p>;
+  if (error) return <p role="alert" className="text-sm text-danger">{error}</p>;
+  if (!flags) return <p className="text-sm text-muted">{t('読み込み中…')}</p>;
+  if (flags.length === 0) return <p className="text-sm text-muted">{t('警告を付けたプロフィールはありません。')}</p>;
   return (
     <ul className="space-y-2">
       {flags.map((flag) => (
-        <li key={flag.userId} className="flex items-center justify-between gap-3 rounded-sm bg-discord-bg/50 p-3 text-sm">
+        <li key={flag.userId} className="flex items-center justify-between gap-3 rounded-lg bg-canvas/50 p-3 text-sm">
           <div className="min-w-0">
-            <p className="truncate font-medium text-white">{flag.displayName}</p>
-            <p className={flag.appealStatus === 'pending' ? 'text-discord-yellow' : 'text-discord-muted'}>
+            <p className="truncate font-medium text-ink-strong">{flag.displayName}</p>
+            <p className={flag.appealStatus === 'pending' ? 'text-warning' : 'text-muted'}>
               {t(STATUS_LABELS[flag.appealStatus])} · {formatDateTime(flag.appealRequestedAt ?? flag.flaggedAt)}
             </p>
           </div>
           <button
             type="button"
             onClick={() => { closeWorkspaceManager(); openMemberProfile(workspaceId, flag.userId); }}
-            className="shrink-0 rounded-sm bg-discord-hover px-3 py-1.5 text-white"
+            className="shrink-0 rounded-lg bg-hover px-3 py-1.5 text-ink-strong"
           >
             {t('確認する')}
           </button>

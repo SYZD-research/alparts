@@ -80,7 +80,7 @@ export function StepUpDialog() {
       description={t('この操作を続けるため、本人確認を行ってください。')}
     >
       {error && (
-        <p role="alert" className="text-discord-red">
+        <p role="alert" className="text-danger">
           {t('本人確認を完了できませんでした。閉じてからもう一度お試しください。')}
         </p>
       )}
@@ -103,20 +103,20 @@ export function StepUpDialog() {
         }}
       >
         {options?.passwordAllowed && (
-          <label className="block text-sm text-discord-text">
+          <label className="block text-sm text-ink">
             {t('現在のパスワード')}
             <input
               type="password"
               autoComplete="current-password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="mt-2 block w-full rounded-sm bg-discord-bg p-3"
+              className="mt-2 block w-full rounded-lg bg-canvas p-3"
               required
             />
           </label>
         )}
         {options && !options.passwordAllowed && !canUsePasskeys() && (
-          <p role="status" className="text-sm text-discord-text">
+          <p role="status" className="text-sm text-ink">
             {t('この操作は、対応するブラウザーでWeb版を開いて行ってください。パスキーでの本人確認が必要です。')}
           </p>
         )}
@@ -127,7 +127,7 @@ export function StepUpDialog() {
           <button
             type="submit"
             disabled={!options || busy || (!options.passwordAllowed && !canUsePasskeys())}
-            className="rounded-sm bg-discord-accent px-4 py-2 text-white disabled:opacity-50"
+            className="rounded-lg bg-accent px-4 py-2 text-on-accent disabled:opacity-50"
           >
             {busy ? t('確認中…') : options?.passwordAllowed ? t('確認する') : t('パスキーで確認')}
           </button>

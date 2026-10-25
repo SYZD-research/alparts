@@ -174,7 +174,7 @@ async function createWindow(): Promise<void> {
     maxWidth: MAX_WINDOW_DIMENSION,
     maxHeight: MAX_WINDOW_DIMENSION,
     show: false,
-    backgroundColor: '#313338',
+    backgroundColor: '#1f1e1c',
     title: 'alparts',
     icon: applicationIconPath(),
     autoHideMenuBar: process.platform !== 'darwin',

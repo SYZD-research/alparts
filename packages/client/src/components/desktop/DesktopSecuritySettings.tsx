@@ -32,23 +32,23 @@ export function DesktopSecuritySettings() {
 
   return (
     <section aria-labelledby="desktop-security-heading">
-      <h3 id="desktop-security-heading" className="mb-3 font-bold text-white">{t('アプリのロック')}</h3>
-      <div className="rounded-sm bg-discord-bg p-3">
-        <label className="block text-sm text-discord-text">
+      <h3 id="desktop-security-heading" className="mb-3 font-semibold text-ink-strong">{t('アプリのロック')}</h3>
+      <div className="rounded-lg bg-canvas p-3">
+        <label className="block text-sm text-ink">
           {t('操作がないときに自動でロック')}
           <select
             value={minutes ?? 5}
             disabled={minutes === null || saving}
             onChange={(event) => { void update(Number(event.target.value)); }}
-            className="mt-2 block w-full rounded-sm bg-discord-input px-3 py-2 text-discord-text disabled:opacity-50"
+            className="mt-2 block w-full rounded-lg bg-field px-3 py-2 text-ink disabled:opacity-50"
           >
             {DESKTOP_IDLE_LOCK_MINUTES.map((value) => <option key={value} value={value}>{t('{count}分後', { count: value })}</option>)}
           </select>
         </label>
-        <button type="button" onClick={() => { void bridge.lockNow(); }} className="mt-3 rounded-sm border border-discord-hover px-3 py-2 text-sm text-discord-text hover:bg-discord-hover">
+        <button type="button" onClick={() => { void bridge.lockNow(); }} className="mt-3 rounded-lg border border-line px-3 py-2 text-sm text-ink hover:bg-hover">
           {t('今すぐロック')}
         </button>
-        {error && <p role="alert" className="mt-2 text-xs text-discord-red">{error}</p>}
+        {error && <p role="alert" className="mt-2 text-xs text-danger">{error}</p>}
       </div>
     </section>
   );

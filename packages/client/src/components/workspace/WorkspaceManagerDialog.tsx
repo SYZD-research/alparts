@@ -114,7 +114,7 @@ export function WorkspaceManagerDialog() {
     >
       {open && activeWorkspaceId && (
         <div>
-          <div role="tablist" aria-label={t('ワークスペース管理')} className="mb-5 flex flex-wrap gap-1 border-b border-discord-hover">
+          <div role="tablist" aria-label={t('ワークスペース管理')} className="mb-5 flex flex-wrap gap-1 border-b border-line">
             {tabs.map((tab, index) => (
               <button
                 key={tab.id}
@@ -126,7 +126,7 @@ export function WorkspaceManagerDialog() {
                 tabIndex={activeTab === tab.id ? 0 : -1}
                 onClick={() => setActiveTab(tab.id)}
                 onKeyDown={(event) => onTabKeyDown(event, index)}
-                className={`border-b-2 px-3 py-2 text-sm ${activeTab === tab.id ? 'border-discord-accent text-white' : 'border-transparent text-discord-muted hover:text-white'}`}
+                className={`border-b-2 px-3 py-2 text-sm ${activeTab === tab.id ? 'border-accent text-ink-strong' : 'border-transparent text-muted hover:text-ink-strong'}`}
               >
                 {tab.label}
               </button>

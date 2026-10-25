@@ -269,15 +269,15 @@ export function RoleManager({
     );
   }
 
-  if (loading) return <p role="status" className="text-sm text-discord-muted">{t('ロールを読み込み中…')}</p>;
-  if (loadError) return <p role="alert" className="text-sm text-discord-red">{loadError}</p>;
+  if (loading) return <p role="status" className="text-sm text-muted">{t('ロールを読み込み中…')}</p>;
+  if (loadError) return <p role="alert" className="text-sm text-danger">{loadError}</p>;
 
   if (!canManage) {
     return (
       <section className="space-y-3">
         <div>
-          <h3 className="font-semibold text-white">{t('ロール一覧')}</h3>
-          <p className="mt-1 text-sm text-discord-muted">{t('変更するには「ロールを管理」権限が必要です。')}</p>
+          <h3 className="font-semibold text-ink-strong">{t('ロール一覧')}</h3>
+          <p className="mt-1 text-sm text-muted">{t('変更するには「ロールを管理」権限が必要です。')}</p>
         </div>
         <RoleList roles={roles} selectedRoleId="" onSelect={() => undefined} readOnly />
       </section>
@@ -289,64 +289,64 @@ export function RoleManager({
 
   return (
     <div className="space-y-7">
-      {error && <p role="alert" className="rounded-sm bg-discord-red/10 p-3 text-sm text-discord-red">{error}</p>}
-      {status && <p role="status" className="rounded-sm bg-green-500/10 p-3 text-sm text-green-300">{status}</p>}
+      {error && <p role="alert" className="rounded-lg bg-danger/10 p-3 text-sm text-danger">{error}</p>}
+      {status && <p role="status" className="rounded-lg bg-green-500/10 p-3 text-sm text-green-300">{status}</p>}
       <div className="grid gap-5 lg:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)]">
         <section aria-labelledby="role-list-title">
-          <h3 id="role-list-title" className="mb-2 font-semibold text-white">{t('ロール一覧')}</h3>
+          <h3 id="role-list-title" className="mb-2 font-semibold text-ink-strong">{t('ロール一覧')}</h3>
           <RoleList roles={roles} selectedRoleId={selectedRoleId} onSelect={setSelectedRoleId} />
         </section>
 
         <section aria-labelledby="role-edit-title">
-          <h3 id="role-edit-title" className="mb-2 font-semibold text-white">{t('ロールを変更')}</h3>
+          <h3 id="role-edit-title" className="mb-2 font-semibold text-ink-strong">{t('ロールを変更')}</h3>
           {selectedRole ? (
-            <form onSubmit={previewUpdate} className="space-y-3 rounded-sm bg-discord-bg/40 p-4">
+            <form onSubmit={previewUpdate} className="space-y-3 rounded-lg bg-canvas/40 p-4">
               {selectedProtection && (
-                <p className="rounded-sm bg-yellow-500/10 p-2 text-xs text-yellow-200">
+                <p className="rounded-lg bg-yellow-500/10 p-2 text-xs text-yellow-200">
                   {selectedProtection === 'owner'
                     ? t('所有者ロールは変更、削除、割り当てができません。')
                     : t('標準ロールは名前変更と削除から保護されています。権限・位置の変更は影響を確認してから保存します。')}
                 </p>
               )}
-              <label className="block text-sm text-discord-text">
+              <label className="block text-sm text-ink">
                 {t('名前')}
-                <input value={editName} onChange={(event) => setEditName(event.target.value)} disabled={Boolean(selectedProtection)} maxLength={100} className="mt-1 w-full rounded-sm bg-discord-bg px-3 py-2 text-white disabled:opacity-60" />
+                <input value={editName} onChange={(event) => setEditName(event.target.value)} disabled={Boolean(selectedProtection)} maxLength={100} className="mt-1 w-full rounded-lg bg-canvas px-3 py-2 text-ink-strong disabled:opacity-60" />
               </label>
-              <label className="block text-sm text-discord-text">
+              <label className="block text-sm text-ink">
                 {t('階層位置')}
-                <input type="number" min={0} max={1_000_000} value={editPosition} onChange={(event) => setEditPosition(Number(event.target.value))} disabled={selectedProtection === 'owner'} className="mt-1 w-full rounded-sm bg-discord-bg px-3 py-2 text-white disabled:opacity-60" />
+                <input type="number" min={0} max={1_000_000} value={editPosition} onChange={(event) => setEditPosition(Number(event.target.value))} disabled={selectedProtection === 'owner'} className="mt-1 w-full rounded-lg bg-canvas px-3 py-2 text-ink-strong disabled:opacity-60" />
               </label>
               <PermissionChecklist selected={editPermissions} onChange={setEditPermissions} disabled={selectedProtection === 'owner'} legend={t('ロールの権限')} />
               <div className="flex flex-wrap gap-2">
-                <button type="submit" disabled={busy || selectedProtection === 'owner'} className="rounded-sm bg-discord-accent px-4 py-2 text-sm text-white disabled:opacity-50">{t('影響を確認')}</button>
-                <button type="button" onClick={() => void previewDelete()} disabled={busy || Boolean(selectedProtection)} className="rounded-sm px-4 py-2 text-sm text-discord-red hover:bg-discord-red/10 disabled:opacity-40">{t('削除の影響を確認')}</button>
+                <button type="submit" disabled={busy || selectedProtection === 'owner'} className="rounded-lg bg-accent px-4 py-2 text-sm text-on-accent disabled:opacity-50">{t('影響を確認')}</button>
+                <button type="button" onClick={() => void previewDelete()} disabled={busy || Boolean(selectedProtection)} className="rounded-lg px-4 py-2 text-sm text-danger hover:bg-danger/10 disabled:opacity-40">{t('削除の影響を確認')}</button>
               </div>
             </form>
-          ) : <p className="text-sm text-discord-muted">{t('ロールを選択してください。')}</p>}
+          ) : <p className="text-sm text-muted">{t('ロールを選択してください。')}</p>}
         </section>
       </div>
 
-      <section aria-labelledby="role-create-title" className="rounded-sm border border-discord-hover p-4">
-        <h3 id="role-create-title" className="font-semibold text-white">{t('カスタムロールを作成')}</h3>
-        <p className="mt-1 text-xs text-discord-muted">{t('「Owner」「Member」などの標準名は使用できません。自分より上の位置や、持っていない権限も指定できません。')}</p>
+      <section aria-labelledby="role-create-title" className="rounded-lg border border-line p-4">
+        <h3 id="role-create-title" className="font-semibold text-ink-strong">{t('カスタムロールを作成')}</h3>
+        <p className="mt-1 text-xs text-muted">{t('「Owner」「Member」などの標準名は使用できません。自分より上の位置や、持っていない権限も指定できません。')}</p>
         <form onSubmit={createRole} className="mt-3 space-y-3">
           <div className="grid gap-3 md:grid-cols-2">
-            <label className="text-sm text-discord-text">{t('名前')}<input value={createName} onChange={(event) => setCreateName(event.target.value)} maxLength={100} required className="mt-1 w-full rounded-sm bg-discord-bg px-3 py-2 text-white" /></label>
-            <label className="text-sm text-discord-text">{t('階層位置')}<input type="number" min={0} max={1_000_000} value={createPosition} onChange={(event) => setCreatePosition(Number(event.target.value))} required className="mt-1 w-full rounded-sm bg-discord-bg px-3 py-2 text-white" /></label>
+            <label className="text-sm text-ink">{t('名前')}<input value={createName} onChange={(event) => setCreateName(event.target.value)} maxLength={100} required className="mt-1 w-full rounded-lg bg-canvas px-3 py-2 text-ink-strong" /></label>
+            <label className="text-sm text-ink">{t('階層位置')}<input type="number" min={0} max={1_000_000} value={createPosition} onChange={(event) => setCreatePosition(Number(event.target.value))} required className="mt-1 w-full rounded-lg bg-canvas px-3 py-2 text-ink-strong" /></label>
           </div>
           <PermissionChecklist selected={createPermissions} onChange={setCreatePermissions} legend={t('新しいロールの権限')} />
-          <button type="submit" disabled={busy} className="rounded-sm bg-discord-accent px-4 py-2 text-sm text-white disabled:opacity-50">{t('作成')}</button>
+          <button type="submit" disabled={busy} className="rounded-lg bg-accent px-4 py-2 text-sm text-on-accent disabled:opacity-50">{t('作成')}</button>
         </form>
       </section>
 
-      <section aria-labelledby="role-assignment-title" className="rounded-sm border border-discord-hover p-4">
-        <h3 id="role-assignment-title" className="font-semibold text-white">{t('メンバーへの割当・解除')}</h3>
-        <p className="mt-1 text-xs text-discord-muted">{t('操作前に、影響を受ける人の権限やアクセス範囲の変化を確認します。')}</p>
+      <section aria-labelledby="role-assignment-title" className="rounded-lg border border-line p-4">
+        <h3 id="role-assignment-title" className="font-semibold text-ink-strong">{t('メンバーへの割当・解除')}</h3>
+        <p className="mt-1 text-xs text-muted">{t('操作前に、影響を受ける人の権限やアクセス範囲の変化を確認します。')}</p>
         <div className="mt-3 grid gap-3 md:grid-cols-2">
-          <label className="text-sm text-discord-text">{t('メンバー|single')}<select value={assignmentUserId} onChange={(event) => setAssignmentUserId(event.target.value)} className="mt-1 w-full rounded-sm bg-discord-bg px-3 py-2 text-white">{members.map((member) => <option key={member.userId} value={member.userId}>{member.user.displayName}</option>)}</select></label>
-          <label className="text-sm text-discord-text">{t('ロール|single')}<select value={assignmentRoleId} onChange={(event) => setAssignmentRoleId(event.target.value)} className="mt-1 w-full rounded-sm bg-discord-bg px-3 py-2 text-white">{assignableRoles.map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}</select></label>
+          <label className="text-sm text-ink">{t('メンバー|single')}<select value={assignmentUserId} onChange={(event) => setAssignmentUserId(event.target.value)} className="mt-1 w-full rounded-lg bg-canvas px-3 py-2 text-ink-strong">{members.map((member) => <option key={member.userId} value={member.userId}>{member.user.displayName}</option>)}</select></label>
+          <label className="text-sm text-ink">{t('ロール|single')}<select value={assignmentRoleId} onChange={(event) => setAssignmentRoleId(event.target.value)} className="mt-1 w-full rounded-lg bg-canvas px-3 py-2 text-ink-strong">{assignableRoles.map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}</select></label>
         </div>
-        <button type="button" onClick={() => void previewAssignment()} disabled={busy || !assignmentMember || !assignmentRole} className={`mt-3 rounded-sm px-4 py-2 text-sm text-white disabled:opacity-50 ${assignmentExists ? 'bg-discord-red' : 'bg-discord-accent'}`}>
+        <button type="button" onClick={() => void previewAssignment()} disabled={busy || !assignmentMember || !assignmentRole} className={`mt-3 rounded-lg px-4 py-2 text-sm disabled:opacity-50 ${assignmentExists ? 'bg-danger text-white' : 'bg-accent text-on-accent'}`}>
           {assignmentExists ? t('解除の影響を確認') : t('割当の影響を確認')}
         </button>
       </section>
@@ -366,7 +366,7 @@ function RoleList({
   readOnly?: boolean;
 }) {
   const t = useT();
-  if (roles.length === 0) return <p className="text-sm text-discord-muted">{t('ロールはありません。')}</p>;
+  if (roles.length === 0) return <p className="text-sm text-muted">{t('ロールはありません。')}</p>;
   return (
     <ul className="space-y-1">
       {roles.map((role) => (
@@ -375,10 +375,10 @@ function RoleList({
             type="button"
             disabled={readOnly}
             onClick={() => onSelect(role.id)}
-            className={`flex w-full items-center justify-between gap-2 rounded-sm px-3 py-2 text-left text-sm ${selectedRoleId === role.id ? 'bg-discord-active text-white' : 'bg-discord-bg/40 text-discord-text hover:bg-discord-hover'} disabled:cursor-default`}
+            className={`flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2 text-left text-sm ${selectedRoleId === role.id ? 'bg-selected text-ink-strong' : 'bg-canvas/40 text-ink hover:bg-hover'} disabled:cursor-default`}
           >
             <span className="truncate">{role.name}</span>
-            <span className="flex shrink-0 gap-1 text-xs text-discord-muted"><span>{t('位置 {position}', { position: role.position })}</span>{role.standard && <span className="rounded-sm bg-yellow-500/10 px-1 text-yellow-200">{t('標準')}</span>}</span>
+            <span className="flex shrink-0 gap-1 text-xs text-muted"><span>{t('位置 {position}', { position: role.position })}</span>{role.standard && <span className="rounded-lg bg-yellow-500/10 px-1 text-yellow-200">{t('標準')}</span>}</span>
           </button>
         </li>
       ))}
@@ -399,11 +399,11 @@ function PermissionChecklist({
 }) {
   const selectedSet = useMemo(() => new Set(selected), [selected]);
   return (
-    <fieldset disabled={disabled} className="rounded-sm border border-discord-hover p-3 disabled:opacity-60">
-      <legend className="px-1 text-sm text-discord-text">{legend}</legend>
+    <fieldset disabled={disabled} className="rounded-lg border border-line p-3 disabled:opacity-60">
+      <legend className="px-1 text-sm text-ink">{legend}</legend>
       <div className="grid gap-2 sm:grid-cols-2">
         {permissionOptions.map((permission) => (
-          <label key={permission.name} className="flex items-start gap-2 text-xs text-discord-text">
+          <label key={permission.name} className="flex items-start gap-2 text-xs text-ink">
             <input
               type="checkbox"
               checked={selectedSet.has(permission.name)}
@@ -459,14 +459,14 @@ function RolePreviewConfirmation({
       aria-labelledby="role-preview-title"
       aria-describedby="role-preview-description"
       onKeyDown={onKeyDown}
-      className="space-y-4 rounded-sm border border-yellow-500/50 bg-discord-bg/50 p-5"
+      className="space-y-4 rounded-lg border border-yellow-500/50 bg-canvas/50 p-5"
     >
       <div>
-        <p className="text-xs font-bold uppercase tracking-wide text-yellow-300">{t(actionTitles[pending.kind])}</p>
-        <h3 id="role-preview-title" className="mt-1 text-lg font-semibold text-white">{title}</h3>
-        <p id="role-preview-description" className="mt-1 text-sm text-discord-muted">{t('この変更の影響を確認してください。')}</p>
+        <p className="text-xs font-semibold text-warning">{t(actionTitles[pending.kind])}</p>
+        <h3 id="role-preview-title" className="mt-1 text-lg font-semibold text-ink-strong">{title}</h3>
+        <p id="role-preview-description" className="mt-1 text-sm text-muted">{t('この変更の影響を確認してください。')}</p>
       </div>
-      {notice && <p role="alert" className="rounded-sm bg-yellow-500/10 p-3 text-sm text-yellow-200">{notice}</p>}
+      {notice && <p role="alert" className="rounded-lg bg-yellow-500/10 p-3 text-sm text-yellow-200">{notice}</p>}
       <dl className="grid gap-2 text-sm sm:grid-cols-3">
         <PreviewMetric label={t('影響を受けるユーザー')} value={summary.affectedUsers} />
         <PreviewMetric label={t('失う権限（延べ）')} value={summary.lostPermissions} danger={summary.lostPermissions > 0} />
@@ -480,19 +480,19 @@ function RolePreviewConfirmation({
           {pending.preview.affectedMembers.map((affected) => {
             const memberName = members.find((member) => member.userId === affected.userId)?.user.displayName || t('不明なメンバー');
             return (
-              <li key={affected.userId} className="rounded-sm bg-discord-sidebar p-3 text-sm">
-                <p className="font-medium text-white">{memberName}</p>
+              <li key={affected.userId} className="rounded-lg bg-panel p-3 text-sm">
+                <p className="font-medium text-ink-strong">{memberName}</p>
                 <p className="mt-1 text-xs text-green-300">{t('追加される権限: {permissions}', { permissions: affected.gained.map(permissionLabel).join(t('、')) || t('なし') })}</p>
-                <p className="mt-1 text-xs text-discord-red">{t('失う権限: {permissions}', { permissions: affected.lost.map(permissionLabel).join(t('、')) || t('なし') })}</p>
+                <p className="mt-1 text-xs text-danger">{t('失う権限: {permissions}', { permissions: affected.lost.map(permissionLabel).join(t('、')) || t('なし') })}</p>
               </li>
             );
           })}
         </ul>
       )}
-      {summary.requiresKeyRotation && <p role="alert" className="rounded-sm bg-discord-red/10 p-3 text-sm text-discord-red">{t('影響するチャンネルでは、変更後しばらくメッセージを送信できない場合があります。')}</p>}
+      {summary.requiresKeyRotation && <p role="alert" className="rounded-lg bg-danger/10 p-3 text-sm text-danger">{t('影響するチャンネルでは、変更後しばらくメッセージを送信できない場合があります。')}</p>}
       <div className="flex flex-wrap justify-end gap-2">
-        <button autoFocus type="button" onClick={onCancel} disabled={busy} className="rounded-sm px-4 py-2 text-sm text-discord-muted hover:bg-discord-hover hover:text-white disabled:opacity-50">{t('キャンセル')}</button>
-        <button type="button" onClick={onConfirm} disabled={busy} className={`rounded-sm px-4 py-2 text-sm font-medium text-white disabled:opacity-50 ${pending.kind === 'delete' || pending.kind === 'assignment' && pending.action === 'unassign' ? 'bg-discord-red' : 'bg-discord-accent'}`}>
+        <button autoFocus type="button" onClick={onCancel} disabled={busy} className="rounded-lg px-4 py-2 text-sm text-muted hover:bg-hover hover:text-ink-strong disabled:opacity-50">{t('キャンセル')}</button>
+        <button type="button" onClick={onConfirm} disabled={busy} className={`rounded-lg px-4 py-2 text-sm font-medium disabled:opacity-50 ${pending.kind === 'delete' || pending.kind === 'assignment' && pending.action === 'unassign' ? 'bg-danger text-white' : 'bg-accent text-on-accent'}`}>
           {busy ? t('実行中…') : t('この内容で保存')}
         </button>
       </div>
@@ -502,9 +502,9 @@ function RolePreviewConfirmation({
 
 function PreviewMetric({ label, value, danger = false }: { label: string; value: number | string; danger?: boolean }) {
   return (
-    <div className="rounded-sm bg-discord-sidebar p-3">
-      <dt className="text-xs text-discord-muted">{label}</dt>
-      <dd className={`mt-1 font-semibold ${danger ? 'text-discord-red' : 'text-white'}`}>{value}</dd>
+    <div className="rounded-lg bg-panel p-3">
+      <dt className="text-xs text-muted">{label}</dt>
+      <dd className={`mt-1 font-semibold ${danger ? 'text-danger' : 'text-ink-strong'}`}>{value}</dd>
     </div>
   );
 }

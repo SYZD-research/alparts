@@ -69,39 +69,39 @@ export function SavedMessagesDialog() {
     <Dialog open={open} onClose={close} title={t('保存済みメッセージ')} description={t('保存済みメッセージから、元のチャンネルのメッセージへ移動できます。')} size="md">
       <div className="space-y-4">
         <div className="flex items-center justify-between gap-3">
-          <p className="text-sm text-discord-muted">{t('最大100件を新しい順に表示します。')}</p>
-          <button type="button" onClick={() => void loadBookmarks()} disabled={loading} className="rounded-sm px-3 py-1 text-sm text-discord-muted hover:bg-discord-hover hover:text-white disabled:opacity-50">{t('再読み込み')}</button>
+          <p className="text-sm text-muted">{t('最大100件を新しい順に表示します。')}</p>
+          <button type="button" onClick={() => void loadBookmarks()} disabled={loading} className="rounded-lg px-3 py-1 text-sm text-muted hover:bg-hover hover:text-ink-strong disabled:opacity-50">{t('再読み込み')}</button>
         </div>
         {error && (
-          <div role="alert" className="flex items-center justify-between gap-3 rounded-sm bg-discord-red/10 p-3 text-sm text-discord-red">
+          <div role="alert" className="flex items-center justify-between gap-3 rounded-lg bg-danger/10 p-3 text-sm text-danger">
             <span>{t('保存済みメッセージを読み込めませんでした')}</span>
             <button type="button" onClick={clearBookmarkError} className="underline">{t('閉じる')}</button>
           </div>
         )}
         {navigationError && (
-          <div role="alert" className="rounded-sm bg-yellow-500/10 p-3 text-sm text-yellow-200">
+          <div role="alert" className="rounded-lg bg-yellow-500/10 p-3 text-sm text-yellow-200">
             <p>{navigationError}</p>
             <button type="button" onClick={close} className="mt-2 underline">{t('閉じてチャンネルを表示')}</button>
           </div>
         )}
-        {loading && <p role="status" className="py-6 text-center text-sm text-discord-muted">{t('保存済みメッセージを読み込み中…')}</p>}
-        {!loading && bookmarks.length === 0 && <p className="py-6 text-center text-sm text-discord-muted">{t('保存済みメッセージはありません。')}</p>}
+        {loading && <p role="status" className="py-6 text-center text-sm text-muted">{t('保存済みメッセージを読み込み中…')}</p>}
+        {!loading && bookmarks.length === 0 && <p className="py-6 text-center text-sm text-muted">{t('保存済みメッセージはありません。')}</p>}
         <ul className="space-y-2">
           {bookmarks.map((bookmark) => {
             const channel = channels.find((candidate) => candidate.id === bookmark.channelId);
             const message = messagesByChannel[bookmark.channelId]?.find((candidate) => candidate.id === bookmark.messageId);
             const navigating = navigatingMessageId === bookmark.messageId;
             return (
-              <li key={bookmark.messageId} className="flex items-start gap-2 rounded-sm bg-discord-bg/50 p-3">
+              <li key={bookmark.messageId} className="flex items-start gap-2 rounded-lg bg-canvas/50 p-3">
                 <button
                   type="button"
                   onClick={() => void navigateToBookmark(bookmark.messageId, bookmark.channelId)}
                   disabled={Boolean(navigatingMessageId)}
-                  className="min-w-0 flex-1 rounded-sm text-left disabled:opacity-60"
+                  className="min-w-0 flex-1 rounded-lg text-left disabled:opacity-60"
                   aria-label={t('{name}の保存済みメッセージへ移動', { name: channel?.name || t('保存先チャンネル') })}
                 >
-                  <span className="block text-xs text-discord-muted">#{channel?.name || t('保存先チャンネル')} · {formatDateTime(bookmark.createdAt)}</span>
-                  <span className="mt-1 line-clamp-2 block wrap-break-word text-sm text-discord-text">
+                  <span className="block text-xs text-muted">#{channel?.name || t('保存先チャンネル')} · {formatDateTime(bookmark.createdAt)}</span>
+                  <span className="mt-1 line-clamp-2 block wrap-break-word text-sm text-ink">
                     {navigating
                       ? t('履歴を読み込み中…')
                       : message?.type === 'delete'
@@ -115,7 +115,7 @@ export function SavedMessagesDialog() {
                   type="button"
                   onClick={() => void toggleBookmark(bookmark.messageId).catch(() => undefined)}
                   disabled={Boolean(savingByMessage[bookmark.messageId]) || Boolean(navigatingMessageId)}
-                  className="rounded-sm px-2 py-1 text-sm text-discord-red hover:bg-discord-red/10 disabled:opacity-50"
+                  className="rounded-lg px-2 py-1 text-sm text-danger hover:bg-danger/10 disabled:opacity-50"
                   aria-label={t('保存済みから削除')}
                 >
                   {t('削除')}

@@ -63,7 +63,7 @@
                 android:layout_marginTop="24dp" android:minHeight="48dp"
                 android:background="@drawable/setup_button" android:backgroundTint="@null"
                 android:padding="12dp" android:text="@string/connect"
-                android:textAllCaps="false" android:textColor="@android:color/white" android:textSize="16sp" />
+                android:textAllCaps="false" android:textColor="@color/alparts_on_accent" android:textSize="16sp" />
         </LinearLayout>
     </FrameLayout>
 </ScrollView>
