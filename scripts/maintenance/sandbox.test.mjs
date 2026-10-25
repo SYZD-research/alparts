@@ -66,4 +66,10 @@ test('readableDirs reopens the tools found in the hidden areas and the git direc
     join(home, 'setup-pnpm'), join(home, 'main/.git/worktrees/repo'), join(home, 'main/.git'),
   ]);
   assert.throws(() => readableDirs(repo, { ...options, env: { PATH: '' } }), /pnpm is not on PATH/);
+
+  // dirdoc is reopened too when it is installed there.
+  mkdirSync(join(home, 'go/bin'), { recursive: true });
+  writeFileSync(join(home, 'go/bin/dirdoc'), '');
+  const withDirdoc = { ...options, env: { PATH: [join(home, 'setup-pnpm/node_modules/.bin'), join(home, 'go/bin')].join(':') } };
+  assert.ok(readableDirs(repo, withDirdoc).includes(join(home, 'go')));
 });

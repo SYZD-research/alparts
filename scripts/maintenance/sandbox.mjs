@@ -31,12 +31,19 @@ export function commandEnv(env = process.env) {
   return result;
 }
 
-function onPath(name, env) {
+// Null when the command is not on PATH.
+function findOnPath(name, env) {
   for (const dir of (env.PATH ?? '').split(delimiter)) {
     const file = join(dir, name);
     if (dir && existsSync(file)) return file;
   }
-  throw new Error(`${name} is not on PATH`);
+  return null;
+}
+
+function onPath(name, env) {
+  const file = findOnPath(name, env);
+  if (!file) throw new Error(`${name} is not on PATH`);
+  return file;
 }
 
 // Null when there is no such file or it is a directory.
@@ -50,11 +57,13 @@ function readTextFile(path) {
 }
 
 // The directories outside the repository that the command reads from the
-// hidden areas: the top directory there of node and pnpm (both the
-// command and its real path), and the git directory of a worktree.
+// hidden areas: the top directory there of node, pnpm and, when installed,
+// dirdoc (both the command and its real path), and the git directory of a
+// worktree.
 export function readableDirs(root, { env = process.env, home = homedir(), areas = [home, '/tmp'] } = {}) {
   const dirs = new Set();
-  for (const file of [process.execPath, onPath('pnpm', env)]) {
+  const dirdoc = findOnPath('dirdoc', env);
+  for (const file of [process.execPath, onPath('pnpm', env), ...(dirdoc ? [dirdoc] : [])]) {
     for (const path of [file, realpathSync(file)]) {
       for (const area of areas) {
         const rel = relative(area, path);

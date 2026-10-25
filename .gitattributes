@@ -14,3 +14,6 @@ scripts/release/license-texts/*.txt -whitespace
 .secretlintignore export-ignore
 .secretlintrc.json export-ignore
 .oxlintrc.json export-ignore
+# dirdoc: show .dirdoc_* files as TOML in git diff, and never merge them as text
+.dirdoc_dsd   -text -merge diff=dirdoc
+*.dirdoc_pfd  -text -merge diff=dirdoc

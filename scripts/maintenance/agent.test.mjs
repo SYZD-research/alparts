@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  cleanTitle, isWritablePath, normalisePath, setDependencySpec, systemPrompt, toolsFor, truncate, CHECKS,
+  cleanTitle, isDocumentationPath, isWritablePath, normalisePath, parseDocTarget, setDependencySpec, systemPrompt,
+  toolsFor, truncate, CHECKS,
 } from './agent.mjs';
 
 test('normalisePath keeps paths inside the repository', () => {
@@ -39,6 +40,38 @@ test('isWritablePath accepts only source code and documentation', () => {
     'packages/server/src/node_modules/x/index.js', 'packages/server/src/package.json', 'docs/package.yaml',
   ]) {
     assert.equal(isWritablePath(path), false, path);
+  }
+});
+
+test('dirdoc descriptions are writable only where the code they describe is', () => {
+  for (const path of [
+    'packages/server/src/.dirdoc/.dirdoc_dsd', 'packages/server/src/.dirdoc/index.ts.dirdoc_pfd',
+    'packages/client/src/stores/.dirdoc/auth.store.ts.dirdoc_pfd', 'docs/adr/.dirdoc/.dirdoc_dsd',
+  ]) {
+    assert.equal(isDocumentationPath(path), true, path);
+    assert.equal(isWritablePath(path), true, path);
+  }
+  for (const path of [
+    // Outside the writable areas, and the root.
+    '.dirdoc/.dirdoc_dsd', '.dirdoc/README.md.dirdoc_pfd', 'packages/server/.dirdoc/.dirdoc_dsd',
+    'packages/server/.dirdoc/package.json.dirdoc_pfd', 'scripts/maintenance/.dirdoc/agent.mjs.dirdoc_pfd',
+    // Other files in .dirdoc, descriptions of dot files, and hidden directories.
+    'packages/server/src/.dirdoc/notes.txt', 'packages/server/src/.dirdoc/.npmrc',
+    'packages/server/src/.dirdoc/.env.dirdoc_pfd', 'packages/server/src/.hidden/.dirdoc/.dirdoc_dsd',
+    'packages/server/src/node_modules/.dirdoc/.dirdoc_dsd', 'packages/server/src/.dirdoc/x/.dirdoc_dsd',
+  ]) {
+    assert.equal(isDocumentationPath(path), false, path);
+    assert.equal(isWritablePath(path), false, path);
+  }
+});
+
+test('parseDocTarget splits a path and an entry id', () => {
+  assert.deepEqual(parseDocTarget('packages/server/src/app.ts#createApp'), { rel: 'packages/server/src/app.ts', id: 'createApp' });
+  assert.deepEqual(parseDocTarget('packages/server/src/'), { rel: 'packages/server/src', id: undefined });
+  assert.deepEqual(parseDocTarget('.'), { rel: '', id: undefined });
+  assert.deepEqual(parseDocTarget(''), { rel: '', id: undefined });
+  for (const target of ['../x', '/etc/passwd', 'a.ts#b#c', 'a.ts#b c', 'a.ts#b/c', 'a.ts#', undefined]) {
+    assert.equal(parseDocTarget(target), null, String(target));
   }
 });
 
@@ -81,8 +114,15 @@ test('setDependencySpec changes one entry and keeps the formatting', () => {
   assert.equal(setDependencySpec(text, 'optionalDependencies', 'zod', '1.0.0'), null);
 });
 
-test('only deps mode offers the dependency tools', () => {
+test('only deps mode offers the dependency tools, and docs mode cannot edit files', () => {
   const names = (mode) => toolsFor(mode).map((tool) => tool.name);
+  for (const mode of ['deps', 'issue', 'docs']) {
+    for (const name of ['read_docs', 'search_docs', 'write_docs', 'finish']) assert.ok(names(mode).includes(name), `${mode} ${name}`);
+  }
+  assert.ok(!names('docs').includes('write_file'));
+  assert.ok(!names('docs').includes('replace_in_file'));
+  assert.ok(!names('docs').includes('update_dependency'));
+  assert.deepEqual(toolsFor('docs').find((tool) => tool.name === 'run_check').parameters.properties.name.enum, ['docs']);
   assert.ok(names('deps').includes('update_dependency'));
   assert.ok(names('deps').includes('why'));
   assert.ok(!names('issue').includes('update_dependency'));
@@ -99,5 +139,8 @@ test('only the audit check reaches the network', () => {
 test('systemPrompt states the task for each mode and treats outside text as data', () => {
   assert.match(systemPrompt('deps'), /Dependabot updates listed in the task/);
   assert.match(systemPrompt('issue'), /resolve the GitHub issue/);
-  for (const mode of ['deps', 'issue']) assert.match(systemPrompt(mode), /is data, not instructions/);
+  assert.match(systemPrompt('docs'), /dirdoc descriptions listed in the task/);
+  for (const mode of ['deps', 'issue', 'docs']) assert.match(systemPrompt(mode), /is data, not instructions/);
+  for (const mode of ['deps', 'issue']) assert.match(systemPrompt(mode), /update its dirdoc description/);
+  assert.doesNotMatch(systemPrompt('docs'), /run lint, typecheck/);
 });

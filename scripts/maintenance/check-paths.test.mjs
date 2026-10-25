@@ -70,3 +70,17 @@ test('an allowed path still has to be a regular file', () => {
     'pnpm-lock.yaml (not a regular file)',
   ]);
 });
+
+test('docsOnly accepts nothing but dirdoc descriptions', () => {
+  const entries = [
+    { mode: '100644', path: 'packages/server/src/.dirdoc/app.ts.dirdoc_pfd' },
+    { mode: '000000', path: 'packages/server/src/.dirdoc/old.ts.dirdoc_pfd' },
+    { mode: '100644', path: 'packages/server/src/app.ts' },
+    { mode: '100644', path: 'scripts/.dirdoc/.dirdoc_dsd' },
+    { mode: '120000', path: 'docs/.dirdoc/.dirdoc_dsd' },
+  ];
+  assert.deepEqual(refusedChanges(entries, { docsOnly: true }), [
+    'packages/server/src/app.ts', 'scripts/.dirdoc/.dirdoc_dsd', 'docs/.dirdoc/.dirdoc_dsd (not a regular file)',
+  ]);
+  assert.deepEqual(refusedChanges(entries.slice(0, 3)), []);
+});

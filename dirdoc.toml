@@ -1,0 +1,15 @@
+# dirdoc project settings. This file also marks the project root.
+
+[storage]
+compression = "zstd"   # "zstd" | "none"
+level = "best"         # "fastest" | "default" | "better" | "best"
+
+[walk]
+gitignore = true       # follow .gitignore files
+ignore = []            # extra patterns to exclude (gitignore syntax), e.g. ["target/", "node_modules/"]
+
+[lint]
+summary_max = { dsd = 200, pfd = 400, entry = 120 }   # warn when a summary is longer (Unicode code points)
+
+[show]
+format = "md"          # default output format: "md" | "json"

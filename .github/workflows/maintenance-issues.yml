@@ -2,8 +2,9 @@ name: AI issue maintenance
 
 # When a maintainer adds the ai-fix label to an issue, a model on OpenRouter
 # tries to resolve it and proposes the change as a draft PR that closes the
-# issue. If it cannot, it says why on the issue and removes the label. The
-# model sees the issue as it was when the label was added, and only the
+# issue, updating the dirdoc descriptions of the code it changes. If it
+# cannot, it says why on the issue and removes the label. The model sees the
+# issue as it was when the label was added, and only the
 # comments written by maintainers. If the issue was edited after that, nothing
 # runs until the label is added again. A manual run takes an issue number and
 # uses the issue as it is then.
@@ -113,6 +114,12 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24.8.0"
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.27.2"
+          cache: false
+      - name: Install dirdoc
+        run: bash scripts/maintenance/install-dirdoc.sh
       - name: Set up the command sandbox
         run: |
           set -euo pipefail
@@ -161,6 +168,7 @@ jobs:
           for check in lint typecheck test security:secrets; do
             node "$tools/sandbox.mjs" -- pnpm "$check"
           done
+          node "$tools/sandbox.mjs" -- dirdoc check
           git diff --cached --check
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: steps.result.outputs.changed == 'true'
