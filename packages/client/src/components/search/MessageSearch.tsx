@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useChannelStore } from '../../stores/channel.store';
 import { useMessageStore } from '../../stores/message.store';
+import { useWorkspaceStore } from '../../stores/workspace.store';
 import { searchLoadedMessages } from '../../stores/search-loaded-messages';
 import { formatDateTime } from '../../stores/date-format';
 import { Icon } from '../ui/Icon';
@@ -22,9 +23,10 @@ export function MessageSearch({ membersOpen, membersAvailable, onToggleMembers, 
   const channels = useChannelStore((state) => state.channels);
   const setActiveChannel = useChannelStore((state) => state.setActiveChannel);
   const messagesByChannel = useMessageStore((state) => state.messagesByChannel);
+  const members = useWorkspaceStore((state) => state.members);
   const results = useMemo(
-    () => searchLoadedMessages(query, messagesByChannel, channels),
-    [channels, messagesByChannel, query],
+    () => searchLoadedMessages(query, messagesByChannel, channels, members),
+    [channels, members, messagesByChannel, query],
   );
 
   useEffect(() => {

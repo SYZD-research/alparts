@@ -5644,6 +5644,73 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     }
   });
 
+  it('tells connected members at once about the members, channels and profiles of a workspace made after they connected', async () => {
+    const { db } = await import('../db/index.js');
+    const { users } = await import('../db/schema.js');
+    const { hashNewPassword } = await import('../services/auth.service.js');
+    const { createInvitation } = await import('../services/invitation.service.js');
+    const { io } = await import('socket.io-client');
+    // Made directly: sign-ups from this one source are limited per hour.
+    const signIn = async (name: string) => {
+      const password = `Correct-Horse-Battery-${name}!`;
+      const [created] = await db.insert(users).values({
+        email: `${name}-${randomUUID()}@example.test`, passwordHash: await hashNewPassword(password), displayName: name,
+      }).returning();
+      const login = await request('/api/auth/login', { method: 'POST', body: { email: created.email, password } });
+      assert.equal(login.status, 200);
+      const account = { cookie: login.headers.get('set-cookie')!.split(';', 1)[0], user: { id: created.id }, password };
+      // Only a session with a device may connect.
+      await registerDevice(account, deviceFixture(), `${name} device`);
+      return account;
+    };
+    const connect = async (cookie: string) => {
+      const socket = io(baseUrl, { transports: ['websocket'], extraHeaders: { Cookie: cookie, Origin: 'http://localhost:5173' } });
+      sockets.push(socket);
+      await onceConnected(socket);
+      return socket;
+    };
+    const owner = await signIn('live-owner');
+    const peer = await signIn('live-peer');
+    // Connected before the workspace exists, as a first account is when it makes one.
+    const ownerSocket = await connect(owner.cookie);
+    const workspaceResponse = await request('/api/workspaces', { method: 'POST', cookie: owner.cookie, body: { name: 'Live updates' } });
+    assert.equal(workspaceResponse.status, 201);
+    const workspace = await json<{ id: string }>(workspaceResponse);
+
+    const joined = onceSocketEventMatching<{ workspaceId: string; userId: string }>(
+      ownerSocket, 'workspace:member-added', (event) => event.workspaceId === workspace.id, 5_000,
+    );
+    const invitation = await createInvitation(workspace.id, owner.user.id, { expiresInSeconds: 3_600 });
+    const accepted = await request('/api/invitations/accept', { method: 'POST', cookie: peer.cookie, body: { token: invitation.token } });
+    assert.equal(accepted.status, 200);
+    assert.equal((await joined).userId, peer.user.id);
+
+    // A channel change names only the workspace, so a private channel stays
+    // unknown to a member who cannot see it; each member reloads its own list.
+    const peerSocket = await connect(peer.cookie);
+    const ownerTold = onceSocketEventMatching<Record<string, unknown>>(
+      ownerSocket, 'workspace:channels-changed', (event) => event.workspaceId === workspace.id, 5_000,
+    );
+    const peerTold = onceSocketEventMatching<Record<string, unknown>>(
+      peerSocket, 'workspace:channels-changed', (event) => event.workspaceId === workspace.id, 5_000,
+    );
+    const created = await request(`/api/workspaces/${workspace.id}/channels`, {
+      method: 'POST', cookie: owner.cookie, body: { name: 'owners-only', isPrivate: true },
+    });
+    assert.equal(created.status, 201);
+    assert.deepEqual(await ownerTold, { workspaceId: workspace.id });
+    assert.deepEqual(await peerTold, { workspaceId: workspace.id });
+
+    // A new name reaches the workspace's creator too.
+    const renamed = onceSocketEventMatching<{ workspaceId: string; userId: string }>(
+      ownerSocket, 'member:profile-updated', (event) => event.workspaceId === workspace.id && event.userId === peer.user.id, 5_000,
+    );
+    const profile = await request('/api/profile', { method: 'PATCH', cookie: peer.cookie, body: { displayName: 'live-peer renamed' } });
+    assert.equal(profile.status, 200);
+    await renamed;
+    assert.equal((await verifyAuditChain()).valid, true);
+  });
+
   it('fails the schema gate when the journal is intact but a catalog invariant is removed', async () => {
     const client = new pg.Client({ connectionString: process.env.DATABASE_URL });
     await client.connect();

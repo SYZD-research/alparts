@@ -7,8 +7,7 @@ import { stepUpRevalidation } from '../middleware/step-up.js';
 import { requireWorkspacePermission } from '../middleware/rbac.js';
 import { rateLimit } from '../middleware/rate-limit.js';
 import * as invitationService from '../services/invitation.service.js';
-import { joinAuthorizedUserToWorkspaceRoom } from '../websocket/room-membership.js';
-import { emitJoinedWorkspaceKeyState } from '../websocket/key-state.js';
+import { announceWorkspaceJoin } from '../websocket/workspace-events.js';
 import { canonicalUuid } from '../security/canonical-id.js';
 
 const router = Router();
@@ -25,13 +24,7 @@ router.post('/invitations/accept', authMiddleware, invitationMutationLimit, asyn
   try {
     const body = acceptSchema.parse(req.body);
     const result = await invitationService.acceptInvitation(req.userId!, body.token);
-    const io = req.app.get('io') as SocketServer | undefined;
-    if (io) await joinAuthorizedUserToWorkspaceRoom(io, req.userId!, result.workspaceId);
-    io?.to(`workspace:${result.workspaceId}`).emit('workspace:member-added', {
-      workspaceId: result.workspaceId,
-      userId: req.userId,
-    });
-    void emitJoinedWorkspaceKeyState(io, req.userId!, result.workspaceId);
+    await announceWorkspaceJoin(req.app.get('io') as SocketServer | undefined, req.userId!, result.workspaceId);
     res.json(result);
   } catch (error: any) {
     if (!sendInvitationError(res, error)) throw error;

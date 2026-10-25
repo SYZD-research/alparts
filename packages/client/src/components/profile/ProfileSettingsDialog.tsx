@@ -4,6 +4,7 @@ import { api } from '../../services/api';
 import { decodeAvatarSource, renderAvatar } from '../../services/avatar-image';
 import { useAuthStore } from '../../stores/auth.store';
 import { useUiStore } from '../../stores/ui.store';
+import { useWorkspaceStore } from '../../stores/workspace.store';
 import { Dialog } from '../ui/Dialog';
 import { UserAvatar } from '../user/UserAvatar';
 import type { SourceCrop } from './avatar-crop-model';
@@ -29,7 +30,10 @@ export function ProfileSettingsDialog() {
     setDisplayName(next.displayName);
     setBio(next.bio ?? '');
     const user = useAuthStore.getState().user;
-    if (user) useAuthStore.setState({ user: { ...user, displayName: next.displayName, avatarUrl: next.avatarUrl } });
+    if (!user) return;
+    useAuthStore.setState({ user: { ...user, displayName: next.displayName, avatarUrl: next.avatarUrl } });
+    // The open chat shows the change at once; the member list reloads when the server announces it.
+    useWorkspaceStore.getState().updateMemberProfile(user.id, { displayName: next.displayName, avatarUrl: next.avatarUrl });
   };
 
   // The decoded picture is released as soon as it is no longer being edited.

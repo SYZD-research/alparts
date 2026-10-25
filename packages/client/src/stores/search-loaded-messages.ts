@@ -7,6 +7,7 @@ export interface SearchableLoadedMessage {
   type: string;
   content: string;
   createdAt: string;
+  authorId?: string;
   author?: { displayName?: string };
 }
 export interface LoadedMessageSearchResult {
@@ -34,11 +35,14 @@ export function searchLoadedMessages(
   query: string,
   messagesByChannel: Record<string, SearchableLoadedMessage[]>,
   channels: Array<{ id: string; name: string }>,
+  /** Current names, which may differ from those the messages arrived with. */
+  members: ReadonlyArray<{ userId: string; user: { displayName: string } }> = [],
   limit = 50,
 ): LoadedMessageSearchResult[] {
   const needle = normalized(query.trim());
   if (!needle || limit <= 0) return [];
   const channelNames = new Map(channels.map((channel) => [channel.id, channel.name]));
+  const memberNames = new Map(members.map((member) => [member.userId, member.user.displayName]));
   const results: LoadedMessageSearchResult[] = [];
 
   for (const [channelId, messages] of Object.entries(messagesByChannel)) {
@@ -51,7 +55,7 @@ export function searchLoadedMessages(
         || NON_CONTENT_MARKERS.has(message.content)
       ) continue;
       const content = normalized(message.content);
-      const authorName = message.author?.displayName || t('不明なユーザー');
+      const authorName = (message.authorId && memberNames.get(message.authorId)) || message.author?.displayName || t('不明なユーザー');
       const author = normalized(authorName);
       const channel = normalized(channelName);
       const contentIndex = content.indexOf(needle);
