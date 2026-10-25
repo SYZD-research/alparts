@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   annotatePatch, buildReview, canRequest, commentableLines, parseReview, quietMentions, renderDiff, renderReviewTask,
-  requestNote, reviewFooter, reviewPrompt, showPath, visible, MAX_LINE_COMMENTS, REVIEW_TOOLS,
+  readRequest, requestNote, reviewFooter, reviewPrompt, showPath, visible, MAX_LINE_COMMENTS, REVIEW_TOOLS,
 } from './review.mjs';
 
 const MENTION = '@ai-review';
@@ -25,6 +25,15 @@ test('requestNote ignores mentions in quotes, code, hidden text and longer names
   ]) {
     assert.equal(requestNote(body, MENTION), null, body);
   }
+});
+
+test('readRequest asks for the deep review with the -deep name', () => {
+  assert.deepEqual(readRequest('@ai-review 認証を重点的に', MENTION), { deep: false, note: '認証を重点的に' });
+  assert.deepEqual(readRequest('@ai-review-deep 認証を重点的に', MENTION), { deep: true, note: '認証を重点的に' });
+  assert.deepEqual(readRequest('お願いします @AI-Review-Deep', MENTION), { deep: true, note: 'お願いします' });
+  assert.equal(readRequest('> @ai-review-deep\nありがとう', MENTION), null);
+  assert.equal(readRequest('@ai-review-deeper', MENTION), null);
+  assert.equal(readRequest('ありがとう', MENTION), null);
 });
 
 test('canRequest needs write access', () => {

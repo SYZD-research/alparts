@@ -7,16 +7,18 @@
 //   node review.mjs post --review <file> --files <file> --number <n> --head <sha>
 //
 // collect reads the comment event and prints one JSON object: "outputs" for
-// $GITHUB_OUTPUT and, when there is work, "task", the text the model
-// receives, and "files", the changed files with GitHub's diffs. review asks a
-// model on OpenRouter for the review and writes review.json; the model reads
-// the head commit, which must have been fetched, through read-only tools, and
-// nothing from it is checked out or run. post puts each comment on its line
-// when GitHub's diff has that line, and posts the review.
+// $GITHUB_OUTPUT, with the model to use, and, when there is work, "task", the
+// text the model receives, and "files", the changed files with GitHub's
+// diffs. Mentioning MENTION asks MODEL for the review, and MENTION-deep asks
+// DEEP_MODEL. review asks that model on OpenRouter for the review and writes
+// review.json; the model reads the head commit, which must have been fetched,
+// through read-only tools, and nothing from it is checked out or run. post
+// puts each comment on its line when GitHub's diff has that line, and posts
+// the review.
 //
 // collect and post use GITHUB_REPOSITORY, GITHUB_API_URL and GH_TOKEN; collect
-// also MENTION, and post REVIEW_MODEL and RUN_URL for the footer. review
-// requires OPENROUTER_API_KEY and REVIEW_MODEL.
+// also MENTION, MODEL and DEEP_MODEL, and post REVIEW_MODEL and RUN_URL for the
+// footer. review requires OPENROUTER_API_KEY and REVIEW_MODEL.
 
 import { execFile } from 'node:child_process';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
@@ -40,6 +42,10 @@ const MAX_FILE_PAGES = 30;
 const MAX_BODY = 60_000;
 const MAX_COMMENT = 8_000;
 export const MAX_LINE_COMMENTS = 30;
+// Past this cost in US dollars the model is told to finish with what it has.
+export const COST_LIMIT = 3;
+// The deep model can think for minutes before it answers.
+const REQUEST_TIMEOUT_MS = 10 * 60 * 1000;
 const GIT_TIMEOUT_MS = 60 * 1000;
 const SHA = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 
@@ -67,6 +73,15 @@ export function requestNote(body, mention) {
   }
   if (!mentionPattern(mention).test(live.join('\n'))) return null;
   return text.replace(mentionPattern(mention), '$1').trim();
+}
+
+// The review a comment asks for, or null: deep when it mentions
+// <mention>-deep, with the rest of the comment as the note.
+export function readRequest(body, mention) {
+  const deepNote = requestNote(body, `${mention}-deep`);
+  if (deepNote !== null) return { deep: true, note: deepNote };
+  const note = requestNote(body, mention);
+  return note === null ? null : { deep: false, note };
 }
 
 // The permission API reports maintain as write and triage as read.
@@ -159,12 +174,14 @@ async function readPull(number) {
 }
 
 async function collectReview(eventPath) {
+  for (const name of ['MENTION', 'MODEL', 'DEEP_MODEL']) {
+    if (!process.env[name]) throw new Error(`${name} is not set`);
+  }
   const mention = process.env.MENTION;
-  if (!mention) throw new Error('MENTION is not set');
   const { comment, issue } = JSON.parse(await readFile(eventPath, 'utf8'));
   if (!issue?.pull_request || comment?.user?.type === 'Bot') return { outputs: { work: 'false' } };
-  const note = requestNote(comment.body, mention);
-  if (note === null) {
+  const request = readRequest(comment.body, mention);
+  if (!request) {
     return { outputs: { work: 'false' }, notice: `${mention} appears only in quoted text or code, so no review was asked for.` };
   }
   const login = comment.user.login;
@@ -176,9 +193,10 @@ async function collectReview(eventPath) {
     return { outputs: { work: 'false' }, notice: `${login} has no write access to the repository, so the request was ignored.` };
   }
   const { pull, files } = await readPull(issue.number);
+  const model = request.deep ? process.env.DEEP_MODEL : process.env.MODEL;
   return {
-    outputs: { work: 'true', number: pull.number, head: pull.head.sha },
-    task: renderReviewTask(pull, files, { requester: login, note }),
+    outputs: { work: 'true', number: pull.number, head: pull.head.sha, model },
+    task: renderReviewTask(pull, files, { requester: login, note: request.note }),
     files,
   };
 }
@@ -339,20 +357,18 @@ async function runReview({ task, files, head, output }) {
     { role: 'user', content: await readFile(task, 'utf8') },
   ];
   const state = { head, files: JSON.parse(await readFile(files, 'utf8')) };
-  const options = { model: process.env.REVIEW_MODEL, title: 'alparts review' };
+  const options = { model: process.env.REVIEW_MODEL, title: 'alparts review', timeout: REQUEST_TIMEOUT_MS };
   let cost = 0;
   let result = null;
+  let last = MAX_TURNS;
 
-  for (let turn = 1; turn <= MAX_TURNS && !result; turn++) {
+  for (let turn = 1; turn <= last; turn++) {
     const body = await complete(messages, REVIEW_TOOLS, options);
     cost += body.usage?.cost ?? 0;
     const message = body.choices[0].message;
     messages.push(message);
     const calls = message.tool_calls ?? [];
-    if (calls.length === 0) {
-      messages.push({ role: 'user', content: 'Use a tool, or call finish with the review.' });
-      continue;
-    }
+    if (calls.length === 0) messages.push({ role: 'user', content: 'Use a tool, or call finish with the review.' });
     for (const call of calls) {
       let content;
       try {
@@ -369,13 +385,18 @@ async function runReview({ task, files, head, output }) {
       }
       messages.push({ role: 'tool', tool_call_id: call.id, content });
     }
-    if (!result && turn === MAX_TURNS - 2) {
-      messages.push({ role: 'user', content: 'Two turns are left. Call finish with the review now.' });
+    if (result) break;
+    if (cost > COST_LIMIT) last = Math.min(last, turn + 2);
+    if (turn === last - 2) {
+      messages.push({
+        role: 'user',
+        content: 'Two turns are left. Call finish with the review now, and say in the summary what you could not check.',
+      });
     }
   }
 
   console.log(`Model cost: $${cost.toFixed(4)}`);
-  if (!result) throw new Error(`No review after ${MAX_TURNS} turns`);
+  if (!result) throw new Error(`No review after ${last} turns`);
   console.log(`The review has ${result.comments.length} comments.`);
   await writeFile(join(output, 'review.json'), `${JSON.stringify(result, null, 2)}\n`);
 }

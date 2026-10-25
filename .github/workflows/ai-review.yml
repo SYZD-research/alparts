@@ -1,10 +1,12 @@
 name: AI review
 
 # Mentioning @ai-review in a comment on a pull request asks a model on
-# OpenRouter to review it. The review is posted on the pull request with the
-# findings on the lines they concern, and it never approves or requests
-# changes. Text after the mention says what to look at first. Only people
-# with write access can ask; other comments start nothing.
+# OpenRouter to review it, and @ai-review-deep asks a stronger and far more
+# expensive one, for changes that deserve a closer look. The review is posted
+# on the pull request with the findings on the lines they concern, and it
+# never approves or requests changes. Text after the mention says what to
+# look at first. Only people with write access can ask; other comments start
+# nothing.
 #
 # Trust: the workflow runs from the default branch and never checks out or
 # runs anything from the pull request, so pull requests from forks can be
@@ -16,10 +18,11 @@ name: AI review
 # the model cannot notify other accounts.
 #
 # Setup: the same OPENROUTER_API_KEY secret as maintenance-deps.yml.
-# Optionally set the AI_REVIEW_MODEL variable to use another model, or the
-# AI_REVIEW_MENTION variable to change the name to mention. On a public
-# repository, a GitHub account with that name is notified of every request,
-# so pick a name that no account uses.
+# Optionally set the AI_REVIEW_MODEL and AI_REVIEW_DEEP_MODEL variables to use
+# other models, or the AI_REVIEW_MENTION variable to change the name to
+# mention; the deep review takes the same name with -deep. On a public
+# repository, GitHub accounts with those names are notified of every
+# request, so pick names that no account uses.
 
 on:
   issue_comment:
@@ -45,6 +48,7 @@ jobs:
       work: ${{ steps.collect.outputs.work }}
       number: ${{ steps.collect.outputs.number }}
       head: ${{ steps.collect.outputs.head }}
+      model: ${{ steps.collect.outputs.model }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -57,6 +61,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           MENTION: ${{ vars.AI_REVIEW_MENTION || '@ai-review' }}
+          MODEL: ${{ vars.AI_REVIEW_MODEL || 'deepseek/deepseek-v4.1-flash-1017' }}
+          DEEP_MODEL: ${{ vars.AI_REVIEW_DEEP_MODEL || 'google/gemini-4-argon' }}
           KEY_SET: ${{ secrets.OPENROUTER_API_KEY != '' }}
         run: |
           set -euo pipefail
@@ -95,7 +101,8 @@ jobs:
     needs: plan
     if: needs.plan.outputs.work == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # The deep model can take minutes for each turn.
+    timeout-minutes: 60
     # One review of a pull request at a time.
     concurrency:
       group: ai-review-${{ needs.plan.outputs.number }}
@@ -124,7 +131,7 @@ jobs:
       - name: Review the change
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          REVIEW_MODEL: ${{ vars.AI_REVIEW_MODEL || 'deepseek/deepseek-v4.1-flash-1017' }}
+          REVIEW_MODEL: ${{ needs.plan.outputs.model }}
           HEAD_SHA: ${{ needs.plan.outputs.head }}
         run: >-
           node scripts/maintenance/review.mjs review --task "$RUNNER_TEMP/task/task.md"
@@ -161,7 +168,7 @@ jobs:
       - name: Post the review
         env:
           GH_TOKEN: ${{ github.token }}
-          REVIEW_MODEL: ${{ vars.AI_REVIEW_MODEL || 'deepseek/deepseek-v4.1-flash-1017' }}
+          REVIEW_MODEL: ${{ needs.plan.outputs.model }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           NUMBER: ${{ needs.plan.outputs.number }}
           HEAD_SHA: ${{ needs.plan.outputs.head }}
@@ -181,9 +188,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           NUMBER: ${{ needs.plan.outputs.number }}
-          MENTION: ${{ vars.AI_REVIEW_MENTION || '@ai-review' }}
-        run: |
-          set -euo pipefail
-          # shellcheck disable=SC2016 # The backticks are Markdown.
-          body=$(printf 'AI レビューを完了できませんでした。時間をおいて、もう一度 `%s` とメンションしてください。' "$MENTION")
-          gh api --silent "repos/$GITHUB_REPOSITORY/issues/$NUMBER/comments" -f body="$body"
+        run: >-
+          gh api --silent "repos/$GITHUB_REPOSITORY/issues/$NUMBER/comments"
+          -f body="AI レビューを完了できませんでした。時間をおいて、もう一度メンションしてください。"

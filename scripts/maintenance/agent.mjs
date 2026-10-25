@@ -421,8 +421,10 @@ export function systemPrompt(mode) {
   return `${COMMON_RULES}\n\n${MODE_RULES[mode]}`;
 }
 
-// The review workflow (review.mjs) passes its own model and title.
-export async function complete(messages, tools, { model = process.env.MAINTENANCE_MODEL, title = 'alparts maintenance' } = {}) {
+// The review workflow (review.mjs) passes its own model, title and timeout.
+export async function complete(messages, tools, {
+  model = process.env.MAINTENANCE_MODEL, title = 'alparts maintenance', timeout = REQUEST_TIMEOUT_MS,
+} = {}) {
   const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
     method: 'POST',
     headers: {
@@ -437,7 +439,7 @@ export async function complete(messages, tools, { model = process.env.MAINTENANC
       tool_choice: 'auto',
       usage: { include: true },
     }),
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    signal: AbortSignal.timeout(timeout),
   });
   const body = await response.json().catch(() => null);
   if (!response.ok || !body?.choices?.[0]) {
