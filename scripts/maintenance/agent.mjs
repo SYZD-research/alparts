@@ -421,22 +421,25 @@ export function systemPrompt(mode) {
   return `${COMMON_RULES}\n\n${MODE_RULES[mode]}`;
 }
 
-async function complete(messages, tools) {
+// The review workflow (review.mjs) passes its own model, title and timeout.
+export async function complete(messages, tools, {
+  model = process.env.MAINTENANCE_MODEL, title = 'alparts maintenance', timeout = REQUEST_TIMEOUT_MS,
+} = {}) {
   const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
     method: 'POST',
     headers: {
       authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
       'content-type': 'application/json',
-      'x-title': 'alparts maintenance',
+      'x-title': title,
     },
     body: JSON.stringify({
-      model: process.env.MAINTENANCE_MODEL,
+      model,
       messages,
       tools: tools.map((tool) => ({ type: 'function', function: tool })),
       tool_choice: 'auto',
       usage: { include: true },
     }),
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    signal: AbortSignal.timeout(timeout),
   });
   const body = await response.json().catch(() => null);
   if (!response.ok || !body?.choices?.[0]) {

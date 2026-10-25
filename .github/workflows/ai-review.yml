@@ -1,0 +1,193 @@
+name: AI review
+
+# Mentioning @ai-review in a comment on a pull request asks a model on
+# OpenRouter to review it, and @ai-review-deep asks a stronger and far more
+# expensive one, for changes that deserve a closer look. The review is posted
+# on the pull request with the findings on the lines they concern, and it
+# never approves or requests changes. Text after the mention says what to
+# look at first. Only people with write access can ask; other comments start
+# nothing.
+#
+# Trust: the workflow runs from the default branch and never checks out or
+# runs anything from the pull request, so pull requests from forks can be
+# reviewed too. The model reads the head commit only through read-only tools,
+# and the pull request's text and code reach it as data. Only the review step
+# holds the OpenRouter key, and its job can only read the repository. publish,
+# which can write to the pull request, has no key, puts comments only on lines
+# of GitHub's diff and turns mentions in the review into code, so text from
+# the model cannot notify other accounts.
+#
+# Setup: the same OPENROUTER_API_KEY secret as maintenance-deps.yml.
+# Optionally set the AI_REVIEW_MODEL and AI_REVIEW_DEEP_MODEL variables to use
+# other models, or the AI_REVIEW_MENTION variable to change the name to
+# mention; the deep review takes the same name with -deep. On a public
+# repository, GitHub accounts with those names are notified of every
+# request, so pick names that no account uses.
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    # Other comments end here without starting a runner.
+    if: >-
+      github.event.issue.pull_request
+      && github.event.comment.user.type != 'Bot'
+      && contains(github.event.comment.body, vars.AI_REVIEW_MENTION || '@ai-review')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: write
+    outputs:
+      work: ${{ steps.collect.outputs.work }}
+      number: ${{ steps.collect.outputs.number }}
+      head: ${{ steps.collect.outputs.head }}
+      model: ${{ steps.collect.outputs.model }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24.8.0"
+      - name: Read the request
+        id: collect
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MENTION: ${{ vars.AI_REVIEW_MENTION || '@ai-review' }}
+          MODEL: ${{ vars.AI_REVIEW_MODEL || 'deepseek/deepseek-v4.1-flash-1017' }}
+          DEEP_MODEL: ${{ vars.AI_REVIEW_DEEP_MODEL || 'google/gemini-4-argon' }}
+          KEY_SET: ${{ secrets.OPENROUTER_API_KEY != '' }}
+        run: |
+          set -euo pipefail
+          if [ "$KEY_SET" != true ]; then
+            echo "::notice::OPENROUTER_API_KEY is not set, so there is nothing to do."
+            echo work=false >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          mkdir -p "$RUNNER_TEMP/task"
+          node scripts/maintenance/review.mjs collect --event "$GITHUB_EVENT_PATH" >"$RUNNER_TEMP/collect.json"
+          notice=$(jq -r '.notice // empty' "$RUNNER_TEMP/collect.json")
+          if [ -n "$notice" ]; then echo "::notice::$notice"; fi
+          # The task carries pull request text from GitHub, which the model
+          # treats as data.
+          jq -r '.task // empty' "$RUNNER_TEMP/collect.json" >"$RUNNER_TEMP/task/task.md"
+          jq '.files // []' "$RUNNER_TEMP/collect.json" >"$RUNNER_TEMP/task/files.json"
+          jq -r '.outputs | to_entries[] | "\(.key)=\(.value)"' "$RUNNER_TEMP/collect.json" | tee -a "$GITHUB_OUTPUT"
+      - name: Show that the request was seen
+        if: steps.collect.outputs.work == 'true'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+        run: gh api --silent -X POST "repos/$GITHUB_REPOSITORY/issues/comments/$COMMENT_ID/reactions" -f content=eyes
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: steps.collect.outputs.work == 'true'
+        with:
+          name: review-task
+          path: |
+            ${{ runner.temp }}/task/task.md
+            ${{ runner.temp }}/task/files.json
+          if-no-files-found: error
+          retention-days: 7
+
+  review:
+    needs: plan
+    if: needs.plan.outputs.work == 'true'
+    runs-on: ubuntu-24.04
+    # The deep model can take minutes for each turn.
+    timeout-minutes: 60
+    # One review of a pull request at a time.
+    concurrency:
+      group: ai-review-${{ needs.plan.outputs.number }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24.8.0"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: review-task
+          path: ${{ runner.temp }}/task
+      # Only the objects are fetched: nothing from the pull request is checked
+      # out, and the token is not kept.
+      - name: Fetch the head commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ needs.plan.outputs.head }}
+        run: |
+          set -euo pipefail
+          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          git -c "http.extraHeader=$auth" fetch -q --no-tags --depth=1 origin "$HEAD_SHA"
+      - name: Review the change
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          REVIEW_MODEL: ${{ needs.plan.outputs.model }}
+          HEAD_SHA: ${{ needs.plan.outputs.head }}
+        run: >-
+          node scripts/maintenance/review.mjs review --task "$RUNNER_TEMP/task/task.md"
+          --files "$RUNNER_TEMP/task/files.json" --head "$HEAD_SHA" --output "$RUNNER_TEMP/review"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: review-result
+          path: ${{ runner.temp }}/review/review.json
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: [plan, review]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24.8.0"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: review-task
+          path: ${{ runner.temp }}/task
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: review-result
+          path: ${{ runner.temp }}/review
+      - name: Post the review
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVIEW_MODEL: ${{ needs.plan.outputs.model }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          NUMBER: ${{ needs.plan.outputs.number }}
+          HEAD_SHA: ${{ needs.plan.outputs.head }}
+        run: >-
+          node scripts/maintenance/review.mjs post --review "$RUNNER_TEMP/review/review.json"
+          --files "$RUNNER_TEMP/task/files.json" --number "$NUMBER" --head "$HEAD_SHA"
+
+  report:
+    needs: [plan, review, publish]
+    if: failure() && needs.plan.outputs.work == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Say that the review failed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NUMBER: ${{ needs.plan.outputs.number }}
+        run: >-
+          gh api --silent "repos/$GITHUB_REPOSITORY/issues/$NUMBER/comments"
+          -f body="AI レビューを完了できませんでした。時間をおいて、もう一度メンションしてください。"
