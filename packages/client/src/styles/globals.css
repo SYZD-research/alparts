@@ -24,19 +24,28 @@
   --color-yellow-200: #fef08a;
   --color-yellow-300: #fde047;
   --color-yellow-500: #eab308;
-  --color-discord-bg: #313338;
-  --color-discord-sidebar: #2b2d31;
-  --color-discord-input: #383a40;
-  --color-discord-hover: #404249;
-  --color-discord-active: #4e505899;
-  --color-discord-text: #dbdee1;
-  --color-discord-muted: #949ba4;
-  --color-discord-accent: #5865f2;
-  --color-discord-accent-hover: #4752c4;
-  --color-discord-green: #23a559;
-  --color-discord-red: #ed4245;
-  --color-discord-yellow: #f0b232;
-  --color-discord-channel: #80848e;
+
+  /* The alparts palette: warm charcoal surfaces with an oat accent, after the
+     white alpaca on black of the logo. The desktop window background and the
+     Android colours (res/values/colors.xml) follow these values. */
+  --color-panel: #181715; /* sidebars, member list, dialogs */
+  --color-canvas: #1f1e1c; /* the conversation */
+  --color-raised: #292725; /* menus, toolbars and toasts above other surfaces */
+  --color-field: #282624; /* inputs */
+  --color-hover: #2c2a27;
+  --color-selected: #36332f;
+  --color-line: #2f2d2a;
+  --color-line-strong: #45413c;
+  --color-ink-strong: #faf7f2;
+  --color-ink: #e8e3db;
+  --color-ink-soft: #bab3a9;
+  --color-muted: #8f887f;
+  --color-accent: #ece3d4;
+  --color-accent-strong: #fbf6ee;
+  --color-on-accent: #1c1a17; /* text on accent fills */
+  --color-danger: #e5484d;
+  --color-success: #4cb782;
+  --color-warning: #e3b341;
 }
 
 /*
@@ -53,13 +62,13 @@
   ::before,
   ::backdrop,
   ::file-selector-button {
-    border-color: var(--color-gray-200, currentcolor);
+    border-color: var(--color-line, currentcolor);
   }
 
   /* Tailwind v3 preflight defaults that v4 dropped. */
   input::placeholder,
   textarea::placeholder {
-    color: #9ca3af;
+    color: var(--color-muted);
   }
 
   button,
@@ -72,12 +81,98 @@
   }
 }
 
+@layer components {
+  /* Message text. Markdown arrives as plain elements, which the reset leaves unstyled. */
+  .message-markdown {
+    line-height: 1.6;
+  }
+  .message-markdown :where(p, ul, ol, pre, blockquote, table, h1, h2, h3, h4, h5, h6, hr)
+    + :where(p, ul, ol, pre, blockquote, table, h1, h2, h3, h4, h5, h6, hr) {
+    margin-top: 0.375rem;
+  }
+  .message-markdown :where(h1, h2, h3, h4, h5, h6) {
+    font-weight: 600;
+    color: var(--color-ink-strong);
+    line-height: 1.4;
+  }
+  .message-markdown :where(h1) {
+    font-size: 1.25em;
+  }
+  .message-markdown :where(h2) {
+    font-size: 1.125em;
+  }
+  .message-markdown :where(strong) {
+    font-weight: 600;
+    color: var(--color-ink-strong);
+  }
+  .message-markdown :where(ul) {
+    list-style: disc;
+    padding-left: 1.25rem;
+  }
+  .message-markdown :where(ol) {
+    list-style: decimal;
+    padding-left: 1.25rem;
+  }
+  .message-markdown :where(li) + :where(li) {
+    margin-top: 0.125rem;
+  }
+  .message-markdown :where(li)::marker {
+    color: var(--color-muted);
+  }
+  .message-markdown :where(code) {
+    border-radius: 0.375rem;
+    background-color: var(--color-field);
+    padding: 0.1em 0.35em;
+    font-family: var(--font-mono);
+    font-size: 0.875em;
+  }
+  .message-markdown :where(pre) {
+    overflow-x: auto;
+    border: 1px solid var(--color-line);
+    border-radius: 0.625rem;
+    background-color: var(--color-panel);
+    padding: 0.625rem 0.875rem;
+    font-family: var(--font-mono);
+    font-size: 0.8125rem;
+    line-height: 1.6;
+  }
+  .message-markdown :where(pre code) {
+    background: none;
+    padding: 0;
+    font-size: inherit;
+  }
+  .message-markdown :where(blockquote) {
+    border-left: 3px solid var(--color-line-strong);
+    padding-left: 0.75rem;
+    color: var(--color-ink-soft);
+  }
+  .message-markdown :where(hr) {
+    border-color: var(--color-line);
+  }
+  .message-markdown :where(table) {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
+    border-collapse: collapse;
+    font-size: 0.875em;
+  }
+  .message-markdown :where(th, td) {
+    border: 1px solid var(--color-line);
+    padding: 0.25rem 0.5rem;
+    text-align: left;
+  }
+  .message-markdown :where(th) {
+    background-color: var(--color-panel);
+    font-weight: 600;
+  }
+}
+
 @layer utilities {
   .chat-toolbar[hidden] {
     display: none;
   }
   .chat-header {
-    padding-right: 224px;
+    padding-right: 232px;
   }
   .member-navigation {
     padding-top: 48px;
@@ -167,7 +262,7 @@
       z-index: 40;
       width: min(320px, calc(100% - 48px));
       padding-top: 0;
-      box-shadow: -8px 0 24px rgb(0 0 0 / 0.2);
+      box-shadow: -12px 0 32px rgb(0 0 0 / 0.35);
     }
     .chat-header,
     .app-layout:has(.member-navigation) .chat-header {
@@ -195,14 +290,22 @@
 }
 
 @layer base {
+  :root {
+    color-scheme: dark;
+  }
+
   body {
-    @apply bg-discord-bg text-discord-text font-sans antialiased;
+    @apply bg-canvas text-ink font-sans antialiased;
     overflow: hidden;
   }
 
+  ::selection {
+    background-color: rgb(236 227 212 / 0.28);
+  }
+
   ::-webkit-scrollbar {
-    width: 8px;
-    height: 8px;
+    width: 10px;
+    height: 10px;
   }
 
   ::-webkit-scrollbar-track {
@@ -210,34 +313,37 @@
   }
 
   ::-webkit-scrollbar-thumb {
-    @apply bg-discord-sidebar rounded-full;
+    border: 3px solid transparent;
+    border-radius: 9999px;
+    background-color: var(--color-line-strong);
+    background-clip: padding-box;
   }
 
   ::-webkit-scrollbar-thumb:hover {
-    @apply bg-discord-hover;
+    background-color: var(--color-muted);
   }
 
   :focus-visible {
-    outline: 2px solid #aeb5ff;
+    outline: 2px solid var(--color-accent);
     outline-offset: 2px;
   }
 
   [data-self-mention='true'] {
-    background-color: rgb(249 115 22 / 0.10);
+    background-color: rgb(249 115 22 / 0.09);
     box-shadow: inset 2px 0 0 #fb923c;
   }
 
   [data-self-mention='true']:hover {
-    background-color: rgb(249 115 22 / 0.15);
+    background-color: rgb(249 115 22 / 0.14);
   }
 
   [data-permalink-highlight='true'] {
-    background-color: rgb(88 101 242 / 0.28);
-    box-shadow: inset 3px 0 0 #aeb5ff;
+    background-color: rgb(236 227 212 / 0.1);
+    box-shadow: inset 3px 0 0 var(--color-accent);
   }
 
   [data-permalink-highlight='true']:hover {
-    background-color: rgb(88 101 242 / 0.28);
+    background-color: rgb(236 227 212 / 0.1);
   }
 
   @media (prefers-reduced-motion: reduce) {

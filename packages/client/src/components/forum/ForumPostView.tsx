@@ -100,11 +100,11 @@ export function ForumPostView({ channelId, postId, sendDisabled }: Props) {
 
   if (view?.activePostFailed && display.status !== 'ready') {
     return (
-      <div role="alert" className="flex flex-1 flex-col items-center justify-center gap-3 px-8 text-center text-discord-muted">
+      <div role="alert" className="flex flex-1 flex-col items-center justify-center gap-3 px-8 text-center text-muted">
         <p>{t('投稿を読み込めませんでした。')}</p>
         <div className="flex gap-2">
-          <button type="button" onClick={() => void openPost(channelId, postId)} className="rounded-sm bg-discord-hover px-3 py-2 text-sm text-discord-text hover:text-white">{t('再試行')}</button>
-          <button type="button" onClick={back} className="rounded-sm px-3 py-2 text-sm text-discord-muted hover:bg-discord-hover">{t('投稿一覧へ戻る')}</button>
+          <button type="button" onClick={() => void openPost(channelId, postId)} className="rounded-lg bg-hover px-3 py-2 text-sm text-ink hover:text-ink-strong">{t('再試行')}</button>
+          <button type="button" onClick={back} className="rounded-lg px-3 py-2 text-sm text-muted hover:bg-hover">{t('投稿一覧へ戻る')}</button>
         </div>
       </div>
     );
@@ -112,17 +112,17 @@ export function ForumPostView({ channelId, postId, sendDisabled }: Props) {
 
   if (view?.activePostGone || display.status === 'deleted') {
     return (
-      <div className="flex flex-1 flex-col items-center justify-center gap-3 px-8 text-center text-discord-muted">
+      <div className="flex flex-1 flex-col items-center justify-center gap-3 px-8 text-center text-muted">
         <p>{t('この投稿は削除されたか、表示できなくなりました。')}</p>
-        <button type="button" onClick={back} className="rounded-sm bg-discord-hover px-3 py-2 text-sm text-discord-text hover:text-white">{t('投稿一覧へ戻る')}</button>
+        <button type="button" onClick={back} className="rounded-lg bg-hover px-3 py-2 text-sm text-ink hover:text-ink-strong">{t('投稿一覧へ戻る')}</button>
       </div>
     );
   }
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex items-center gap-2 border-b border-discord-sidebar px-4 py-2">
-        <button type="button" onClick={back} className="h-9 rounded-sm px-2 text-sm text-discord-muted hover:bg-discord-hover hover:text-white">
+      <div className="flex items-center gap-2 border-b border-line px-4 py-2">
+        <button type="button" onClick={back} className="h-9 rounded-lg px-2 text-sm text-muted hover:bg-hover hover:text-ink-strong">
           {t('← 投稿一覧')}
         </button>
         <div className="ml-auto flex flex-wrap items-center justify-end gap-1">
@@ -131,13 +131,13 @@ export function ForumPostView({ channelId, postId, sendDisabled }: Props) {
               type="button"
               disabled={busy}
               onClick={() => void act(() => setResolved(channelId, postId, !state.resolved), t('状態を変更できませんでした。'))}
-              className="h-9 rounded-sm px-2 text-sm text-discord-muted hover:bg-discord-hover hover:text-white disabled:opacity-50"
+              className="h-9 rounded-lg px-2 text-sm text-muted hover:bg-hover hover:text-ink-strong disabled:opacity-50"
             >
               {state.resolved ? t('未解決に戻す') : t('解決済みにする')}
             </button>
           )}
           {state && (isAuthor || canManage) && view && view.tags.length > 0 && (
-            <button type="button" onClick={() => setEditingTags(state.tagIds)} className="h-9 rounded-sm px-2 text-sm text-discord-muted hover:bg-discord-hover hover:text-white">
+            <button type="button" onClick={() => setEditingTags(state.tagIds)} className="h-9 rounded-lg px-2 text-sm text-muted hover:bg-hover hover:text-ink-strong">
               {t('タグを編集')}
             </button>
           )}
@@ -146,7 +146,7 @@ export function ForumPostView({ channelId, postId, sendDisabled }: Props) {
               type="button"
               disabled={busy}
               onClick={() => void act(() => setPinned(channelId, postId, !state.isPinned), t('ピン留めを変更できませんでした。'))}
-              className="h-9 rounded-sm px-2 text-sm text-discord-muted hover:bg-discord-hover hover:text-white disabled:opacity-50"
+              className="h-9 rounded-lg px-2 text-sm text-muted hover:bg-hover hover:text-ink-strong disabled:opacity-50"
             >
               {state.isPinned ? t('ピンを外す') : t('ピン留め')}
             </button>
@@ -156,7 +156,7 @@ export function ForumPostView({ channelId, postId, sendDisabled }: Props) {
               type="button"
               disabled={busy}
               onClick={() => void act(() => setLocked(channelId, postId, !state.locked), t('ロックを変更できませんでした。'))}
-              className="h-9 rounded-sm px-2 text-sm text-discord-muted hover:bg-discord-hover hover:text-white disabled:opacity-50"
+              className="h-9 rounded-lg px-2 text-sm text-muted hover:bg-hover hover:text-ink-strong disabled:opacity-50"
             >
               {state.locked ? t('ロックを解除') : t('ロック')}
             </button>
@@ -165,13 +165,13 @@ export function ForumPostView({ channelId, postId, sendDisabled }: Props) {
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
-        <article id={`message-${postId}`} tabIndex={-1} className="rounded-sm border border-discord-hover bg-discord-sidebar/60 px-4 py-3">
+        <article id={`message-${postId}`} tabIndex={-1} className="rounded-xl border border-line bg-panel/60 px-5 py-4">
           <div className="flex flex-wrap items-center gap-2">
-            {state?.isPinned && <span className="text-xs text-discord-yellow">{t('📌 ピン留め')}</span>}
-            {state?.resolved && <span className="rounded-sm bg-discord-green/20 px-1.5 text-xs text-discord-green">{t('解決済み')}</span>}
-            {locked && <span className="rounded-sm bg-discord-hover px-1.5 text-xs text-discord-muted">{t('🔒 ロック中')}</span>}
+            {state?.isPinned && <span className="text-xs text-warning">{t('📌 ピン留め')}</span>}
+            {state?.resolved && <span className="rounded-md bg-success/15 px-1.5 py-0.5 text-xs font-medium text-success">{t('解決済み')}</span>}
+            {locked && <span className="rounded-md bg-hover px-1.5 py-0.5 text-xs text-muted">{t('🔒 ロック中')}</span>}
             {tags.map((tag) => (
-              <span key={tag.id} className="rounded-sm bg-discord-input px-1.5 py-0.5 text-xs text-discord-text">{tag.name}</span>
+              <span key={tag.id} className="rounded-md border border-line px-1.5 py-0.5 text-xs text-ink-soft">{tag.name}</span>
             ))}
           </div>
           {display.status === 'ready' ? (
@@ -196,7 +196,7 @@ export function ForumPostView({ channelId, postId, sendDisabled }: Props) {
                   maxLength={MAX_FORUM_POST_TITLE_LENGTH}
                   onChange={(event) => setEditing({ ...editing, title: event.target.value })}
                   aria-label={t('タイトル')}
-                  className="h-10 w-full rounded-sm bg-discord-input px-3 text-discord-text"
+                  className="h-10 w-full rounded-lg bg-field px-3 text-ink"
                 />
                 <textarea
                   value={editing.body}
@@ -204,17 +204,17 @@ export function ForumPostView({ channelId, postId, sendDisabled }: Props) {
                   onChange={(event) => setEditing({ ...editing, body: event.target.value })}
                   aria-label={t('本文')}
                   rows={6}
-                  className="w-full resize-y rounded-sm bg-discord-input px-3 py-2 text-discord-text"
+                  className="w-full resize-y rounded-lg bg-field px-3 py-2 text-ink"
                 />
                 <div className="flex justify-end gap-2">
-                  <button type="button" onClick={() => setEditing(null)} className="rounded-sm px-3 py-1 text-sm text-discord-muted hover:bg-discord-hover">{t('キャンセル')}</button>
-                  <button type="submit" disabled={busy || sendDisabled || !editing.title.trim()} className="rounded-sm bg-discord-accent px-3 py-1 text-sm text-white disabled:opacity-50">{t('保存')}</button>
+                  <button type="button" onClick={() => setEditing(null)} className="rounded-lg px-3 py-1 text-sm text-muted hover:bg-hover">{t('キャンセル')}</button>
+                  <button type="submit" disabled={busy || sendDisabled || !editing.title.trim()} className="rounded-lg bg-accent px-3 py-1 text-sm text-on-accent disabled:opacity-50">{t('保存')}</button>
                 </div>
               </form>
             ) : (
               <>
-                <h2 className="mt-1 wrap-break-word text-xl font-bold text-white">{display.title}</h2>
-                <div className="mt-2 flex items-center gap-2 text-sm text-discord-muted">
+                <h2 className="mt-1 wrap-break-word text-xl font-semibold text-ink-strong">{display.title}</h2>
+                <div className="mt-2 flex items-center gap-2 text-sm text-muted">
                   {root && (
                     <UserAvatar
                       displayName={authorName}
@@ -226,7 +226,7 @@ export function ForumPostView({ channelId, postId, sendDisabled }: Props) {
                   <button
                     type="button"
                     onClick={() => { if (activeWorkspaceId && root) openMemberProfile(activeWorkspaceId, root.authorId); }}
-                    className="font-medium text-discord-text hover:underline"
+                    className="font-semibold text-ink hover:underline"
                   >
                     {authorName}
                   </button>
@@ -234,7 +234,7 @@ export function ForumPostView({ channelId, postId, sendDisabled }: Props) {
                   {display.edited && <span className="text-xs">{t('（編集済み）')}</span>}
                 </div>
                 {display.body && (
-                  <div className="mt-3 wrap-break-word text-discord-text">
+                  <div className="message-markdown mt-3 wrap-break-word text-ink">
                     <MessageContent content={display.body} members={members} currentUserId={currentUserId} authenticatedBroadcastMention={root?.broadcastMention === true} />
                   </div>
                 )}
@@ -247,7 +247,7 @@ export function ForumPostView({ channelId, postId, sendDisabled }: Props) {
                       key={reaction.emoji}
                       type="button"
                       onClick={() => { if (currentUserId) void toggleReaction(postId, reaction.emoji, channelId, currentUserId).catch(() => undefined); }}
-                      className={`rounded-sm px-2 py-0.5 text-sm ${currentUserId && reaction.userIds.includes(currentUserId) ? 'bg-discord-accent/30 text-white' : 'bg-discord-input text-discord-text'}`}
+                      className={`flex h-7 items-center rounded-full border px-2.5 text-sm transition-colors ${currentUserId && reaction.userIds.includes(currentUserId) ? 'border-accent/45 bg-accent/10 text-accent' : 'border-line bg-panel/60 text-ink-soft hover:border-line-strong hover:bg-hover'}`}
                     >
                       {reaction.emoji} {reaction.count}
                     </button>
@@ -255,22 +255,22 @@ export function ForumPostView({ channelId, postId, sendDisabled }: Props) {
                   <button
                     type="button"
                     onClick={() => { if (currentUserId) void toggleReaction(postId, '👍', channelId, currentUserId).catch(() => undefined); }}
-                    className="rounded-sm px-2 py-0.5 text-sm text-discord-muted hover:bg-discord-hover"
+                    className="flex h-7 items-center rounded-full border border-dashed border-line px-2.5 text-sm text-muted transition-colors hover:border-line-strong hover:bg-hover"
                     aria-label={t('いいね')}
                   >
                     👍
                   </button>
                   {isAuthor && (
-                    <button type="button" onClick={() => setEditing({ title: display.title, body: display.body })} className="ml-auto text-sm text-discord-muted underline">{t('編集')}</button>
+                    <button type="button" onClick={() => setEditing({ title: display.title, body: display.body })} className="ml-auto text-sm text-muted underline">{t('編集')}</button>
                   )}
                   {(isAuthor || canManage) && (
-                    <button type="button" onClick={() => setConfirmDelete(true)} className={`${isAuthor ? '' : 'ml-auto '}text-sm text-discord-red underline`}>{t('削除')}</button>
+                    <button type="button" onClick={() => setConfirmDelete(true)} className={`${isAuthor ? '' : 'ml-auto '}text-sm text-danger underline`}>{t('削除')}</button>
                   )}
                 </div>
               </>
             )
           ) : (
-            <p className="mt-2 text-discord-muted">
+            <p className="mt-2 text-muted">
               {display.status === 'loading'
                 ? t('読み込み中…')
                 : display.status === 'unreadable' ? t(FORUM_UNREADABLE_DETAIL) : t('この投稿は安全性を確認できないため表示できません。')}
@@ -279,34 +279,34 @@ export function ForumPostView({ channelId, postId, sendDisabled }: Props) {
         </article>
 
         {view?.activePostFailed && (
-          <div role="alert" className="mt-2 flex items-center justify-between gap-3 rounded-sm bg-discord-red/15 px-3 py-2 text-sm text-discord-red">
+          <div role="alert" className="mt-2 flex items-center justify-between gap-3 rounded-lg bg-danger/15 px-3 py-2 text-sm text-danger">
             <span>{t('返信を読み込めませんでした。')}</span>
             <button type="button" onClick={() => void openPost(channelId, postId)} className="underline">{t('再試行')}</button>
           </div>
         )}
 
         {actionError && (
-          <div role="alert" className="mt-2 flex items-center justify-between gap-3 rounded-sm bg-discord-red/15 px-3 py-2 text-sm text-discord-red">
+          <div role="alert" className="mt-2 flex items-center justify-between gap-3 rounded-lg bg-danger/15 px-3 py-2 text-sm text-danger">
             <span>{actionError}</span>
             <button type="button" onClick={() => setActionError(null)} className="underline">{t('閉じる')}</button>
           </div>
         )}
 
-        <h3 className="mb-1 mt-4 text-sm font-semibold text-discord-muted">{t('返信 {count}件', { count: state ? state.replyCount : replies.filter((reply) => reply.type !== 'delete').length })}</h3>
+        <h3 className="mb-1 mt-4 text-sm font-semibold text-muted">{t('返信 {count}件', { count: state ? state.replyCount : replies.filter((reply) => reply.type !== 'delete').length })}</h3>
         {view?.postHasMore[postId] && (
           <div className="py-2 text-center">
             <button
               type="button"
               disabled={view.postLoading[postId]}
               onClick={() => void loadMorePostMessages(channelId, postId)}
-              className="rounded-sm bg-discord-hover px-3 py-1 text-sm text-discord-text hover:text-white disabled:opacity-50"
+              className="rounded-lg bg-hover px-3 py-1 text-sm text-ink hover:text-ink-strong disabled:opacity-50"
             >
               {view.postLoading[postId] ? t('読み込み中…') : t('以前の返信を表示')}
             </button>
           </div>
         )}
         {replies.length === 0 && !view?.postLoading[postId] && !repliesPending && (
-          <p className="px-4 py-3 text-sm text-discord-muted">{t('まだ返信はありません。')}</p>
+          <p className="px-4 py-3 text-sm text-muted">{t('まだ返信はありません。')}</p>
         )}
         {replies.map((message, index) => {
           const previous = replies[index - 1];
@@ -330,18 +330,18 @@ export function ForumPostView({ channelId, postId, sendDisabled }: Props) {
         // Keyed by post so files and pasted text chosen in one post never reach another.
         <MessageInput key={postId} channelId={channelId} postId={postId} sendDisabled={sendDisabled} placeholder={t('返信を送信')} />
       ) : (
-        <p role="status" className="border-t border-discord-sidebar px-4 py-3 text-sm text-discord-muted">
+        <p role="status" className="border-t border-line px-4 py-3 text-sm text-muted">
           {locked ? t('この投稿はロックされているため、返信できません。') : t('このフォーラムに返信する権限がありません。')}
         </p>
       )}
 
       <Dialog open={confirmDelete} onClose={() => setConfirmDelete(false)} title={t('投稿を削除しますか？')} size="sm">
         <div className="space-y-4">
-          <p className="rounded-sm border border-discord-red/60 bg-discord-red/10 p-3 text-sm text-discord-text">
+          <p className="rounded-lg border border-danger/60 bg-danger/10 p-3 text-sm text-ink">
             {t('投稿を削除すると、返信も表示されなくなり、新しく返信できなくなります。この操作は元に戻せません。')}
           </p>
           <div className="flex justify-end gap-2">
-            <button type="button" onClick={() => setConfirmDelete(false)} className="rounded-sm px-3 py-2 text-sm text-discord-muted hover:bg-discord-hover">{t('キャンセル')}</button>
+            <button type="button" onClick={() => setConfirmDelete(false)} className="rounded-lg px-3 py-2 text-sm text-muted hover:bg-hover">{t('キャンセル')}</button>
             <button
               type="button"
               disabled={busy}
@@ -349,7 +349,7 @@ export function ForumPostView({ channelId, postId, sendDisabled }: Props) {
                 setConfirmDelete(false);
                 if (deleted) back();
               })}
-              className="rounded-sm bg-discord-red px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
+              className="rounded-lg bg-danger px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
             >
               {t('削除')}
             </button>
@@ -361,14 +361,14 @@ export function ForumPostView({ channelId, postId, sendDisabled }: Props) {
         <div className="space-y-4">
           <TagPicker tags={view?.tags ?? []} selected={editingTags ?? []} onChange={setEditingTags} />
           <div className="flex justify-end gap-2">
-            <button type="button" onClick={() => setEditingTags(null)} className="rounded-sm px-3 py-2 text-sm text-discord-muted hover:bg-discord-hover">{t('キャンセル')}</button>
+            <button type="button" onClick={() => setEditingTags(null)} className="rounded-lg px-3 py-2 text-sm text-muted hover:bg-hover">{t('キャンセル')}</button>
             <button
               type="button"
               disabled={busy}
               onClick={() => void act(() => setPostTags(channelId, postId, editingTags ?? []), t('タグを保存できませんでした。')).then((saved) => {
                 if (saved) setEditingTags(null);
               })}
-              className="rounded-sm bg-discord-accent px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
+              className="rounded-lg bg-accent px-3 py-2 text-sm font-medium text-on-accent disabled:opacity-50"
             >
               {t('保存')}
             </button>

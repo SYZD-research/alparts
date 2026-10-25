@@ -31,6 +31,8 @@ import {
   type ActiveMentionQuery,
   type MentionMember,
 } from '../../services/mention-model';
+import { Icon } from '../ui/Icon';
+import { avatarTone } from '../user/UserAvatar';
 import { intlLocale, t, useT } from '../../i18n';
 
 interface Props {
@@ -477,7 +479,7 @@ export function MessageInput({ channelId, sendDisabled = false, postId, placehol
     : '';
 
   return (
-    <div className="px-4 pb-6 pt-2">
+    <div className="px-4 pb-5 pt-1">
       <Dialog
         open={Boolean(pendingPaste)}
         onClose={closePastePreview}
@@ -487,32 +489,32 @@ export function MessageInput({ channelId, sendDisabled = false, postId, placehol
       >
         {pendingPaste && (
           <div className="space-y-4">
-            <p className="text-sm text-discord-muted">
+            <p className="text-sm text-muted">
               {t('{characters}文字分・{lines}行', { characters: pendingPaste.preview.byteCount.toLocaleString(intlLocale()), lines: pendingPaste.preview.lineCount.toLocaleString(intlLocale()) })}
             </p>
-            <section aria-label={t('貼り付け内容のプレビュー')} className="rounded-sm bg-discord-input p-3">
-              <p className="mb-1 text-xs font-medium text-discord-muted">{pendingPaste.preview.omitted ? t('先頭') : t('内容')}</p>
-              <pre className="max-h-44 overflow-auto whitespace-pre-wrap wrap-break-word text-sm text-discord-text">{pendingPaste.preview.head}</pre>
+            <section aria-label={t('貼り付け内容のプレビュー')} className="rounded-lg bg-field p-3">
+              <p className="mb-1 text-xs font-medium text-muted">{pendingPaste.preview.omitted ? t('先頭') : t('内容')}</p>
+              <pre className="max-h-44 overflow-auto whitespace-pre-wrap wrap-break-word text-sm text-ink">{pendingPaste.preview.head}</pre>
               {pendingPaste.preview.omitted && (
                 <>
-                  <p className="my-2 text-center text-xs text-discord-muted">{t('…中間を省略…')}</p>
-                  <p className="mb-1 text-xs font-medium text-discord-muted">{t('末尾')}</p>
-                  <pre className="max-h-44 overflow-auto whitespace-pre-wrap wrap-break-word text-sm text-discord-text">{pendingPaste.preview.tail}</pre>
+                  <p className="my-2 text-center text-xs text-muted">{t('…中間を省略…')}</p>
+                  <p className="mb-1 text-xs font-medium text-muted">{t('末尾')}</p>
+                  <pre className="max-h-44 overflow-auto whitespace-pre-wrap wrap-break-word text-sm text-ink">{pendingPaste.preview.tail}</pre>
                 </>
               )}
             </section>
             {pastedResult.length > MAX_MESSAGE_LENGTH && (
-              <p role="alert" className="rounded-sm bg-discord-red/15 px-3 py-2 text-sm text-discord-red">
+              <p role="alert" className="rounded-lg bg-danger/15 px-3 py-2 text-sm text-danger">
                 {t('反映後は{length}文字になり、上限{max}文字を超えます。短くしてから貼り付けてください。', { length: pastedResult.length.toLocaleString(intlLocale()), max: MAX_MESSAGE_LENGTH.toLocaleString(intlLocale()) })}
               </p>
             )}
             <div className="flex justify-end gap-2">
-              <button type="button" onClick={closePastePreview} className="rounded-sm px-3 py-2 text-sm text-discord-muted hover:bg-discord-hover">{t('キャンセル')}</button>
+              <button type="button" onClick={closePastePreview} className="rounded-lg px-3 py-2 text-sm text-muted hover:bg-hover">{t('キャンセル')}</button>
               <button
                 type="button"
                 onClick={applyPendingPaste}
                 disabled={pastedResult.length > MAX_MESSAGE_LENGTH}
-                className="rounded-sm bg-discord-accent px-4 py-2 text-sm text-white disabled:opacity-40"
+                className="rounded-lg bg-accent px-4 py-2 text-sm text-on-accent disabled:opacity-40"
               >
                 {t('入力欄へ反映')}
               </button>
@@ -521,11 +523,14 @@ export function MessageInput({ channelId, sendDisabled = false, postId, placehol
         )}
       </Dialog>
       {(replyTarget || editTarget) && (
-        <div className="flex items-center justify-between rounded-t-lg bg-discord-sidebar px-3 py-2 text-xs text-discord-muted">
-          <span className="truncate">
-            {editTarget
-              ? t('{name} のメッセージを編集中', { name: editTarget.author.displayName })
-              : t('{name} に返信中', { name: replyTarget?.author.displayName ?? '' })}
+        <div className="mb-2 flex items-center justify-between gap-3 rounded-xl border border-line bg-panel py-1.5 pl-3 pr-1.5 text-xs text-muted">
+          <span className="flex min-w-0 items-center gap-1.5">
+            <Icon name={editTarget ? 'pencil' : 'reply'} size={14} />
+            <span className="truncate">
+              {editTarget
+                ? t('{name} のメッセージを編集中', { name: editTarget.author.displayName })
+                : t('{name} に返信中', { name: replyTarget?.author.displayName ?? '' })}
+            </span>
           </span>
           <button
             type="button"
@@ -537,14 +542,14 @@ export function MessageInput({ channelId, sendDisabled = false, postId, placehol
                 setReplyTarget(channelId, null);
               }
             }}
-            className="ml-3 text-discord-text hover:underline"
+            className="shrink-0 rounded-md px-1.5 py-0.5 text-ink-soft hover:bg-hover hover:text-ink-strong"
           >
             {t('キャンセル')}
           </button>
         </div>
       )}
       {(draftError || outboxError || attachmentError || pasteError) && (
-        <div role="alert" className="mb-2 flex items-center justify-between gap-3 rounded-sm bg-discord-red/15 px-3 py-2 text-xs text-discord-red">
+        <div role="alert" className="mb-2 flex items-center justify-between gap-3 rounded-lg bg-danger/15 px-3 py-2 text-xs text-danger">
           <span>
             {attachmentError
               || pasteError
@@ -566,7 +571,7 @@ export function MessageInput({ channelId, sendDisabled = false, postId, placehol
         </div>
       )}
       {channelAttachmentTasks.length > 0 && (
-        <div aria-live="polite" className="mb-2 space-y-2 rounded-sm bg-discord-sidebar px-3 py-2 text-xs text-discord-muted">
+        <div aria-live="polite" className="mb-2 space-y-2 rounded-xl border border-line bg-panel px-3 py-2 text-xs text-muted">
           {channelAttachmentTasks.map((task) => (
             <div key={task.id} className="space-y-1">
               <div className="flex items-center justify-between gap-3">
@@ -591,10 +596,10 @@ export function MessageInput({ channelId, sendDisabled = false, postId, placehol
                 value={task.progress}
                 max={100}
                 aria-label={t('{name} アップロード進捗 {percent}%', { name: task.fileName, percent: task.progress })}
-                className={`h-1 w-full overflow-hidden rounded-sm ${task.status === 'failed' ? 'accent-discord-red' : 'accent-discord-accent'}`}
+                className={`h-1 w-full overflow-hidden rounded-lg ${task.status === 'failed' ? 'accent-danger' : 'accent-accent'}`}
               />
               {task.error && (
-                <p role="alert" className="text-discord-red">
+                <p role="alert" className="text-danger">
                   {task.resendRequired
                     ? t('この会話のメンバーが変わったため、ファイルを送信できませんでした。もう一度送信してください。')
                     : t('ファイルを送信できませんでした。再試行してください')}
@@ -605,7 +610,7 @@ export function MessageInput({ channelId, sendDisabled = false, postId, placehol
         </div>
       )}
       {channelOutboxItems.length > 0 && (
-        <div aria-live="polite" className="mb-2 space-y-1 rounded-sm bg-discord-sidebar px-3 py-2 text-xs text-discord-muted">
+        <div aria-live="polite" className="mb-2 space-y-1 rounded-xl border border-line bg-panel px-3 py-2 text-xs text-muted">
           {channelOutboxItems.map((item) => (
             <div key={item.id} className="flex items-center justify-between gap-3">
               <span>
@@ -614,7 +619,7 @@ export function MessageInput({ channelId, sendDisabled = false, postId, placehol
                 {item.status === 'failed' && t('送信できませんでした')}
               </span>
               {item.status !== 'sending' && (
-                <button type="button" onClick={() => retry(item.id)} className="shrink-0 text-discord-text underline">
+                <button type="button" onClick={() => retry(item.id)} className="shrink-0 text-ink underline">
                   {t('再試行')}
                 </button>
               )}
@@ -631,12 +636,12 @@ export function MessageInput({ channelId, sendDisabled = false, postId, placehol
         className="relative"
       >
         {isDraggingFiles && (
-          <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center rounded-lg border-2 border-dashed border-discord-accent bg-discord-bg/95 text-sm font-semibold text-white">
+          <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center rounded-2xl border-2 border-dashed border-accent/70 bg-canvas/95 text-sm font-semibold text-ink-strong">
             {t('ここに画像・ファイルをドロップ')}
           </div>
         )}
         {selectedFiles.length > 0 && (
-          <ul aria-label={t('送信する添付ファイル')} className="mb-2 flex flex-wrap gap-2 rounded-sm bg-discord-sidebar p-2 text-xs text-discord-muted">
+          <ul aria-label={t('送信する添付ファイル')} className="mb-2 flex flex-wrap gap-2 rounded-xl border border-line bg-panel p-2 text-xs text-muted">
             {selectedFiles.map((file, index) => (
               <PendingFilePreview
                 key={`${fileIdentity(file)}:${index}`}
@@ -646,121 +651,125 @@ export function MessageInput({ channelId, sendDisabled = false, postId, placehol
             ))}
           </ul>
         )}
-        <div className="relative">
-          {showMentionPopup && (
-            <div
-              id={`mention-list-${channelId}`}
-              className="absolute bottom-full left-0 right-0 z-30 mb-2 max-h-64 overflow-hidden rounded-lg border border-discord-hover bg-discord-sidebar shadow-2xl"
-              aria-label={t('メンション候補')}
-            >
-              <p className="border-b border-discord-hover px-3 py-2 text-[11px] font-bold uppercase tracking-wide text-discord-muted">
-                {t('メンションするメンバー')}
-              </p>
-              {mentionCandidates.length > 0 ? (
-                <ul role="listbox" className="max-h-52 overflow-y-auto p-1">
-                  {mentionCandidates.map((candidate, index) => {
-                    const workspaceMember = workspaceMembers.find((member) => member.userId === candidate.userId);
-                    const selected = index === Math.min(activeMentionIndex, mentionCandidates.length - 1);
-                    return (
-                      <li key={candidate.userId} role="presentation">
-                        <button
-                          id={`mention-option-${candidate.userId}`}
-                          type="button"
-                          role="option"
-                          aria-selected={selected}
-                          onMouseDown={(event) => event.preventDefault()}
-                          onClick={() => completeMention(candidate)}
-                          onMouseEnter={() => setActiveMentionIndex(index)}
-                          className={`flex w-full items-center gap-2 rounded px-2 py-2 text-left text-sm ${
-                            selected ? 'bg-discord-accent text-white' : 'text-discord-text hover:bg-discord-hover'
-                          }`}
-                        >
-                          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-discord-bg font-bold text-white">
-                            {candidate.displayName.slice(0, 1).toUpperCase()}
-                          </span>
-                          <span className="min-w-0 flex-1 truncate font-medium">@{candidate.displayName}</span>
-                          {workspaceMember && (() => {
-                            const status = memberStatus(workspaceMember, presenceStatuses);
-                            return (
-                              <span className="shrink-0 text-[11px] opacity-70">
-                                {status === 'online' ? t('オンライン') : status === 'offline' ? t('オフライン') : t('退席中')}
-                              </span>
-                            );
-                          })()}
-                        </button>
-                      </li>
-                    );
-                  })}
-                </ul>
-              ) : (
-                <p className="px-3 py-3 text-sm text-discord-muted">{t('候補を読み込めませんでした')}</p>
+        <div className="rounded-2xl border border-line bg-field transition-colors focus-within:border-muted">
+          <div className="relative">
+            {showMentionPopup && (
+              <div
+                id={`mention-list-${channelId}`}
+                className="absolute bottom-full left-0 right-0 z-30 mb-2 max-h-64 overflow-hidden rounded-xl border border-line bg-raised shadow-2xl shadow-black/40"
+                aria-label={t('メンション候補')}
+              >
+                <p className="border-b border-line px-3 py-2 text-xs font-medium text-muted">
+                  {t('メンションするメンバー')}
+                </p>
+                {mentionCandidates.length > 0 ? (
+                  <ul role="listbox" className="max-h-52 overflow-y-auto p-1">
+                    {mentionCandidates.map((candidate, index) => {
+                      const workspaceMember = workspaceMembers.find((member) => member.userId === candidate.userId);
+                      const selected = index === Math.min(activeMentionIndex, mentionCandidates.length - 1);
+                      return (
+                        <li key={candidate.userId} role="presentation">
+                          <button
+                            id={`mention-option-${candidate.userId}`}
+                            type="button"
+                            role="option"
+                            aria-selected={selected}
+                            onMouseDown={(event) => event.preventDefault()}
+                            onClick={() => completeMention(candidate)}
+                            onMouseEnter={() => setActiveMentionIndex(index)}
+                            className={`flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left text-sm ${
+                              selected ? 'bg-selected text-ink-strong' : 'text-ink hover:bg-hover'
+                            }`}
+                          >
+                            <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full ${avatarTone(candidate.displayName)} text-xs font-semibold text-white`}>
+                              {candidate.displayName.slice(0, 1).toUpperCase()}
+                            </span>
+                            <span className="min-w-0 flex-1 truncate font-medium">@{candidate.displayName}</span>
+                            {workspaceMember && (() => {
+                              const status = memberStatus(workspaceMember, presenceStatuses);
+                              return (
+                                <span className="shrink-0 text-[11px] text-muted">
+                                  {status === 'online' ? t('オンライン') : status === 'offline' ? t('オフライン') : t('退席中')}
+                                </span>
+                              );
+                            })()}
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                ) : (
+                  <p className="px-3 py-3 text-sm text-muted">{t('候補を読み込めませんでした')}</p>
+                )}
+              </div>
+            )}
+            <textarea
+              ref={textareaRef}
+              id={`message-input-${channelId}`}
+              value={content}
+              onChange={(event) => {
+                const nextContent = event.target.value;
+                if (editTarget) setEditContent(nextContent);
+                else setDraft(draftScope, nextContent);
+                setActiveMention(findActiveMentionQuery(nextContent, event.target.selectionStart));
+                setActiveMentionIndex(0);
+                handleTyping();
+              }}
+              onSelect={(event) => {
+                setActiveMention(findActiveMentionQuery(content, event.currentTarget.selectionStart));
+                setActiveMentionIndex(0);
+              }}
+              onKeyDown={handleKeyDown}
+              onPaste={handlePaste}
+              placeholder={editTarget ? t('メッセージを編集') : placeholder ?? t('メッセージを送信')}
+              aria-label={editTarget ? t('メッセージを編集') : t('メッセージを送信')}
+              aria-autocomplete="list"
+              aria-expanded={showMentionPopup}
+              aria-controls={showMentionPopup ? `mention-list-${channelId}` : undefined}
+              aria-activedescendant={showMentionPopup && mentionCandidates.length > 0
+                ? `mention-option-${mentionCandidates[Math.min(activeMentionIndex, mentionCandidates.length - 1)].userId}`
+                : undefined}
+              className="block min-h-[44px] max-h-[200px] w-full resize-none bg-transparent px-4 pb-1 pt-3 text-ink outline-hidden placeholder:text-muted"
+              rows={1}
+              maxLength={MAX_MESSAGE_LENGTH}
+            />
+          </div>
+          <div className="flex items-center justify-between gap-3 px-2 pb-2 text-xs text-muted">
+            <div className="flex min-w-0 items-center gap-2">
+              {!editTarget && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={!isOnline || isSending || sendDisabled}
+                    className="flex min-w-0 items-center gap-1.5 rounded-lg px-2 py-1.5 transition-colors hover:bg-hover hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <Icon name="paperclip" size={16} />
+                    <span className="text-left leading-snug">{t('画像・ファイル（最大{count}件・各100MB）', { count: ATTACHMENT_MAX_COUNT_PER_MESSAGE })}</span>
+                  </button>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    multiple
+                    disabled={!isOnline || isSending || sendDisabled}
+                    onChange={handleFilesSelected}
+                    aria-label={t('送信する画像またはファイルを選択')}
+                    className="sr-only"
+                    tabIndex={-1}
+                  />
+                  {!isOnline && <span role="status" className="truncate">{t('オフライン中は本文のみ保存され、接続復旧後に自動送信されます')}</span>}
+                </>
               )}
             </div>
-          )}
-          <textarea
-            ref={textareaRef}
-            id={`message-input-${channelId}`}
-            value={content}
-            onChange={(event) => {
-              const nextContent = event.target.value;
-              if (editTarget) setEditContent(nextContent);
-              else setDraft(draftScope, nextContent);
-              setActiveMention(findActiveMentionQuery(nextContent, event.target.selectionStart));
-              setActiveMentionIndex(0);
-              handleTyping();
-            }}
-            onSelect={(event) => {
-              setActiveMention(findActiveMentionQuery(content, event.currentTarget.selectionStart));
-              setActiveMentionIndex(0);
-            }}
-            onKeyDown={handleKeyDown}
-            onPaste={handlePaste}
-            placeholder={editTarget ? t('メッセージを編集') : placeholder ?? t('メッセージを送信')}
-            aria-label={editTarget ? t('メッセージを編集') : t('メッセージを送信')}
-            aria-autocomplete="list"
-            aria-expanded={showMentionPopup}
-            aria-controls={showMentionPopup ? `mention-list-${channelId}` : undefined}
-            aria-activedescendant={showMentionPopup && mentionCandidates.length > 0
-              ? `mention-option-${mentionCandidates[Math.min(activeMentionIndex, mentionCandidates.length - 1)].userId}`
-              : undefined}
-            className="block min-h-[44px] max-h-[200px] w-full resize-none rounded-lg bg-discord-input px-4 py-3 text-discord-text outline-hidden placeholder-discord-muted focus:ring-1 focus:ring-discord-accent"
-            rows={1}
-            maxLength={MAX_MESSAGE_LENGTH}
-          />
-        </div>
-        <div className="mt-2 flex items-center justify-between gap-3 text-xs text-discord-muted">
-          <div className="flex min-w-0 items-center gap-2">
-            {!editTarget && (
-              <>
-                <button
-                  type="button"
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={!isOnline || isSending || sendDisabled}
-                  className="rounded-sm px-2 py-1 hover:bg-discord-hover disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {t('＋ 画像・ファイル（最大{count}件・各100MB）', { count: ATTACHMENT_MAX_COUNT_PER_MESSAGE })}
-                </button>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  multiple
-                  disabled={!isOnline || isSending || sendDisabled}
-                  onChange={handleFilesSelected}
-                  aria-label={t('送信する画像またはファイルを選択')}
-                  className="sr-only"
-                  tabIndex={-1}
-                />
-                {!isOnline && <span role="status" className="truncate">{t('オフライン中は本文のみ保存され、接続復旧後に自動送信されます')}</span>}
-              </>
-            )}
+            <button
+              type="submit"
+              disabled={isSending || sendDisabled || (!content.trim() && selectedFiles.length === 0)}
+              className="flex h-9 shrink-0 items-center gap-1.5 rounded-xl bg-accent px-4 text-sm font-medium text-on-accent transition-colors hover:bg-accent-strong disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <Icon name="send" size={15} />
+              {isSending ? t('送信中…') : sendDisabled ? t('準備中…') : editTarget ? t('変更を保存') : heldAttachments ? t('画像・ファイルを再送信') : selectedFiles.length > 0 ? t('画像・ファイルを送信') : t('送信')}
+            </button>
           </div>
-          <button
-            type="submit"
-            disabled={isSending || sendDisabled || (!content.trim() && selectedFiles.length === 0)}
-            className="shrink-0 rounded-sm bg-discord-accent px-4 py-2 font-medium text-white hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            {isSending ? t('送信中…') : sendDisabled ? t('準備中…') : editTarget ? t('変更を保存') : heldAttachments ? t('画像・ファイルを再送信') : selectedFiles.length > 0 ? t('画像・ファイルを送信') : t('送信')}
-          </button>
         </div>
       </form>
     </div>
@@ -800,12 +809,12 @@ function PendingFilePreview({ file, onRemove }: { file: File; onRemove: () => vo
   }, [previewUrl]);
 
   return (
-    <li className="relative w-36 overflow-hidden rounded-sm border border-discord-hover bg-discord-bg/60">
+    <li className="relative w-36 overflow-hidden rounded-lg border border-line bg-canvas/60">
       {previewUrl ? (
         <img
           src={previewUrl}
           alt={t('{name} のプレビュー', { name: file.name })}
-          className="h-24 w-full bg-discord-input object-contain"
+          className="h-24 w-full bg-field object-contain"
           onError={() => {
             setPreviewUrl(null);
             setPreviewUnavailable(true);
@@ -813,22 +822,22 @@ function PendingFilePreview({ file, onRemove }: { file: File; onRemove: () => vo
         />
       ) : (
         <div className="flex h-24 flex-col items-center justify-center px-3 text-center" aria-hidden="true">
-          <span className="text-2xl">📄</span>
-          {previewUnavailable && <span className="mt-1 text-[10px] text-discord-muted">{t('画像プレビュー不可')}</span>}
+          <Icon name="file" size={26} className="text-muted" />
+          {previewUnavailable && <span className="mt-1 text-[10px] text-muted">{t('画像プレビュー不可')}</span>}
         </div>
       )}
       <div className="px-2 py-1.5">
-        <p className="truncate text-discord-text" title={file.name}>{file.name}</p>
+        <p className="truncate text-ink" title={file.name}>{file.name}</p>
         <p>{formatFileSize(file.size)}</p>
       </div>
       <button
         type="button"
         onClick={onRemove}
-        className="absolute right-1 top-1 flex h-6 w-6 items-center justify-center rounded-full bg-discord-bg/90 text-sm text-white hover:bg-discord-red"
+        className="absolute right-1 top-1 flex h-6 w-6 items-center justify-center rounded-full bg-canvas/90 text-sm text-ink-strong hover:bg-danger"
         aria-label={t('{name}を添付から削除', { name: file.name })}
         title={t('添付から削除')}
       >
-        ×
+        <Icon name="close" size={14} />
       </button>
     </li>
   );

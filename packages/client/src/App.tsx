@@ -17,8 +17,8 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 
   if (isLoading || !isInitialized) {
     return (
-      <div className="flex items-center justify-center h-screen bg-discord-bg">
-        <div className="text-discord-muted">{t('読み込み中…')}</div>
+      <div className="flex items-center justify-center h-screen bg-canvas">
+        <div className="text-muted">{t('読み込み中…')}</div>
       </div>
     );
   }

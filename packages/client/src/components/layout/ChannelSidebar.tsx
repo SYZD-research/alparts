@@ -20,10 +20,22 @@ import { defaultChannelReadState, scanLoadedMentionUnread } from '../../stores/u
 import { useMessageStore } from '../../stores/message.store';
 import { useVoiceStore } from '../../stores/voice.store';
 import { VoiceCallPanel } from '../voice/VoiceCallPanel';
+import { Icon, type IconName } from '../ui/Icon';
+import { UserAvatar, avatarTone } from '../user/UserAvatar';
 import { useT } from '../../i18n';
 
 const EMPTY_DMS: DirectMessageConversation[] = [];
 const EMPTY_CHANNEL_STATES: Record<string, ChannelReadState> = {};
+const HEADER_TOOL = 'flex h-8 w-8 items-center justify-center rounded-lg text-muted transition-colors hover:bg-hover hover:text-ink-strong';
+const SECTION_TITLE = 'px-2 pb-1 pt-0.5 text-xs font-medium text-muted';
+const CHANNEL_ICONS: Record<Channel['type'], IconName> = {
+  text: 'hash',
+  dm: 'at',
+  announcement: 'announcement',
+  voice: 'voice',
+  forum: 'forum',
+};
+const PREFERENCE_CHIP = 'rounded-lg border border-line px-2.5 py-1 text-xs text-ink-soft transition-colors hover:bg-hover hover:text-ink-strong aria-pressed:border-transparent aria-pressed:bg-selected aria-pressed:text-ink-strong disabled:opacity-50';
 
 export function ChannelSidebar({ onNavigateToChat }: { onNavigateToChat?: () => void }) {
   const t = useT();
@@ -132,35 +144,35 @@ export function ChannelSidebar({ onNavigateToChat }: { onNavigateToChat?: () => 
   };
 
   return (
-    <div className="flex h-full min-h-0 w-full flex-col bg-discord-sidebar">
-      <div className="flex h-12 shrink-0 items-center justify-between gap-2 border-b border-discord-bg px-4 shadow-xs">
-        <h2 className="truncate font-bold text-white">
+    <div className="flex h-full min-h-0 w-full flex-col bg-panel">
+      <div className="flex h-12 shrink-0 items-center justify-between gap-2 border-b border-line pl-4 pr-2">
+        <h2 className="truncate text-[15px] font-semibold text-ink-strong">
           {useWorkspaceStore.getState().workspaces.find((workspace) => workspace.id === activeWorkspaceId)?.name || t('ワークスペース')}
         </h2>
-        <div className="flex shrink-0 items-center">
-          <button type="button" onClick={openWorkspaceManager} className="rounded-sm px-2 py-1 text-discord-muted hover:bg-discord-hover hover:text-white" title={t('招待・ロール・権限を管理')} aria-label={t('ワークスペースの招待・ロール・権限を管理')}>◈</button>
-          {canManageChannels && <button type="button" onClick={openChannelManager} className="rounded-sm px-2 py-1 text-discord-muted hover:bg-discord-hover hover:text-white" title={t('チャンネルとカテゴリーを管理')} aria-label={t('チャンネルとカテゴリーを管理')}>⚙</button>}
+        <div className="flex shrink-0 items-center gap-0.5">
+          <button type="button" onClick={openWorkspaceManager} className={HEADER_TOOL} title={t('招待・ロール・権限を管理')} aria-label={t('ワークスペースの招待・ロール・権限を管理')}><Icon name="sliders" /></button>
+          {canManageChannels && <button type="button" onClick={openChannelManager} className={HEADER_TOOL} title={t('チャンネルとカテゴリーを管理')} aria-label={t('チャンネルとカテゴリーを管理')}><Icon name="settings" /></button>}
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-2 pt-3">
-        {channelStateError && <p role="alert" className="mb-2 rounded-sm bg-discord-red/10 px-2 py-1 text-xs text-discord-red">{t('チャンネルを読み込めませんでした')}</p>}
+      <div className="flex-1 overflow-y-auto px-2 pb-3 pt-3">
+        {channelStateError && <p role="alert" className="mb-2 rounded-lg bg-danger/10 px-2.5 py-1.5 text-xs text-danger">{t('チャンネルを読み込めませんでした')}</p>}
 
         {favoriteChannels.length > 0 && (
           <section className="mb-4" aria-labelledby="favorite-channels-title">
-            <h3 id="favorite-channels-title" className="px-1 py-1 text-xs font-bold uppercase tracking-wide text-discord-muted">{t('★ お気に入り')}</h3>
+            <h3 id="favorite-channels-title" className={SECTION_TITLE}>{t('★ お気に入り')}</h3>
             {favoriteChannels.map((channel) => channelRow(channel, 'favorite'))}
           </section>
         )}
 
         <section className="mb-4" aria-labelledby="direct-messages-title">
-          <div className="flex items-center justify-between px-1 py-1 text-xs font-bold uppercase tracking-wide text-discord-muted">
-            <h3 id="direct-messages-title">{t('ダイレクトメッセージ')}</h3>
-            <button type="button" onClick={() => openDmComposer(activeWorkspaceId)} className="rounded-sm px-1 text-base font-normal hover:bg-discord-hover hover:text-white" aria-label={t('DMを開始')}>+</button>
+          <div className="flex items-center justify-between pr-1">
+            <h3 id="direct-messages-title" className={SECTION_TITLE}>{t('ダイレクトメッセージ')}</h3>
+            <button type="button" onClick={() => openDmComposer(activeWorkspaceId)} className="flex h-6 w-6 items-center justify-center rounded-md text-muted hover:bg-hover hover:text-ink-strong" aria-label={t('DMを開始')}><Icon name="plus" size={16} /></button>
           </div>
-          {dmError && <p role="alert" className="px-2 py-1 text-xs text-discord-red">{t('DMを読み込めませんでした')}</p>}
-          {isLoadingDms && <p role="status" className="px-2 py-1 text-xs text-discord-muted">{t('DMを読み込み中…')}</p>}
-          {!isLoadingDms && !dmError && conversations.length === 0 && <p className="px-2 py-1 text-xs text-discord-muted">{t('まだDMはありません')}</p>}
+          {dmError && <p role="alert" className="px-2 py-1 text-xs text-danger">{t('DMを読み込めませんでした')}</p>}
+          {isLoadingDms && <p role="status" className="px-2 py-1 text-xs text-muted">{t('DMを読み込み中…')}</p>}
+          {!isLoadingDms && !dmError && conversations.length === 0 && <p className="px-2 py-1 text-xs text-muted">{t('まだDMはありません')}</p>}
           {conversations.map((conversation) => {
             const channel = channels.find((candidate) => candidate.id === conversation.channelId);
             if (!channel || !isVisible(channel)) return null;
@@ -173,43 +185,44 @@ export function ChannelSidebar({ onNavigateToChat }: { onNavigateToChat?: () => 
           if (categoryChannels.length === 0) return null;
           const collapsed = collapsedCategories.has(category.id);
           return (
-            <section key={category.id} className="mb-1">
-              <button type="button" onClick={() => toggleCategory(category.id)} aria-expanded={!collapsed} className="flex w-full items-center px-1 py-1 text-xs font-bold uppercase tracking-wide text-discord-muted hover:text-discord-text">
-                <svg width="12" height="12" viewBox="0 0 12 12" className={`mr-0.5 transition-transform ${collapsed ? '-rotate-90' : ''}`} fill="currentColor" aria-hidden="true"><path d="M2 4l4 4 4-4" /></svg>
+            <section key={category.id} className="mb-3">
+              <button type="button" onClick={() => toggleCategory(category.id)} aria-expanded={!collapsed} className={`${SECTION_TITLE} flex w-full items-center gap-1 rounded-md hover:text-ink`}>
+                <Icon name="chevronDown" size={14} className={`transition-transform ${collapsed ? '-rotate-90' : ''}`} />
                 {category.name}
               </button>
-              {!collapsed && <div className="ml-2">{categoryChannels.map((channel) => channelRow(channel, `category-${category.id}`))}</div>}
+              {!collapsed && <div>{categoryChannels.map((channel) => channelRow(channel, `category-${category.id}`))}</div>}
             </section>
           );
         })}
 
         {visibleChannels.some((channel) => !channel.categoryId) && (
-          <section className="mb-1" aria-labelledby="uncategorized-channels-title">
-            <h3 id="uncategorized-channels-title" className="px-1 py-1 text-xs font-bold uppercase tracking-wide text-discord-muted">{t('チャンネル')}</h3>
+          <section className="mb-3" aria-labelledby="uncategorized-channels-title">
+            <h3 id="uncategorized-channels-title" className={SECTION_TITLE}>{t('チャンネル')}</h3>
             {visibleChannels.filter((channel) => !channel.categoryId).map((channel) => channelRow(channel, 'uncategorized'))}
           </section>
         )}
 
         {hiddenCount > 0 && (
-          <button type="button" onClick={() => toggleShowHidden(activeWorkspaceId)} aria-pressed={showHidden} className="mt-2 flex w-full items-center rounded-sm px-2 py-1.5 text-xs text-discord-muted hover:bg-discord-hover hover:text-white">
+          <button type="button" onClick={() => toggleShowHidden(activeWorkspaceId)} aria-pressed={showHidden} className="mt-1 flex w-full items-center rounded-lg px-2 py-1.5 text-xs text-muted hover:bg-hover hover:text-ink-strong">
             {showHidden ? t('非表示チャンネルを隠す') : t('非表示チャンネルを表示（{count}）', { count: hiddenCount })}
           </button>
         )}
-        <p className="mt-2 px-2 text-[10px] leading-4 text-discord-muted">{t('テキストチャンネルでは、ミュートすると通知を止められます。非表示にすると一覧から隠れます。')}</p>
+        <p className="mt-2 px-2 text-[11px] leading-relaxed text-muted">{t('テキストチャンネルでは、ミュートすると通知を止められます。非表示にすると一覧から隠れます。')}</p>
 
         {canManageChannels && (
-          <button type="button" onClick={openChannelManager} className="mt-2 flex w-full items-center rounded-sm px-2 py-1.5 text-sm text-discord-muted hover:bg-discord-hover hover:text-discord-text"><span className="mr-1.5">+</span>{t('チャンネルを追加・管理')}</button>
+          <button type="button" onClick={openChannelManager} className="mt-2 flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-sm text-muted hover:bg-hover hover:text-ink"><Icon name="plus" size={16} />{t('チャンネルを追加・管理')}</button>
         )}
       </div>
 
       <VoiceCallPanel />
 
       {user && (
-        <div className="flex h-14 shrink-0 items-center bg-discord-bg/50 px-2">
-          <div className="flex min-w-0 flex-1 items-center gap-2 rounded-sm px-2 py-1">
-            <div className="flex h-8 w-8 items-center justify-center rounded-full bg-discord-accent text-sm font-bold text-white">{user.displayName.slice(0, 1).toUpperCase()}</div>
-            <div className="min-w-0"><div className="truncate text-sm font-medium text-white">{user.displayName}</div><div className="truncate text-xs text-discord-muted">{t('オンライン')}</div></div>
+        <div className="flex h-14 shrink-0 items-center gap-2.5 border-t border-line px-3">
+          <div className="relative">
+            <UserAvatar displayName={user.displayName} avatarUrl={user.avatarUrl} size="sm" />
+            <span aria-hidden="true" className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full bg-success ring-2 ring-panel" />
           </div>
+          <div className="min-w-0"><div className="truncate text-sm font-medium text-ink-strong">{user.displayName}</div><div className="truncate text-xs text-muted">{t('オンライン')}</div></div>
         </div>
       )}
     </div>
@@ -249,7 +262,7 @@ function ChannelRow({
 }) {
   const t = useT();
   const isVoice = channel.type === 'voice';
-  const prefix = channel.type === 'dm' ? '@' : channel.type === 'announcement' ? '!' : isVoice ? '🔊' : channel.type === 'forum' ? '💬' : '#';
+  const selected = isVoice ? voiceActive : active;
   const unreadLabel = preference.unreadCount > 99 ? '99+' : String(preference.unreadCount);
   const participantUsers = [...new Set(participants.map((participant) => participant.userId))]
     .map((userId) => ({
@@ -258,21 +271,21 @@ function ChannelRow({
       muted: participants.filter((participant) => participant.userId === userId).every((participant) => participant.muted),
     }));
   return (
-    <div className={`mb-0.5 rounded-sm ${preference.hidden ? 'opacity-65' : ''}`}>
+    <div className={`mb-px rounded-lg ${preference.hidden ? 'opacity-65' : ''}`}>
       <div className="flex items-center gap-0.5">
-        <button type="button" onClick={onSelect} className={`flex min-w-0 flex-1 items-center rounded-sm px-2 py-1.5 text-sm transition-colors ${(isVoice ? voiceActive : active) ? 'bg-discord-active text-white' : 'text-discord-channel hover:bg-discord-hover hover:text-discord-text'}`}>
-          <span className="mr-1.5 text-discord-muted" aria-hidden="true">{prefix}</span>
+        <button type="button" onClick={onSelect} className={`flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2 py-1.5 text-sm transition-colors ${selected ? 'bg-selected font-medium text-ink-strong' : 'text-ink-soft hover:bg-hover hover:text-ink'}`}>
+          <Icon name={CHANNEL_ICONS[channel.type]} size={16} className={selected ? 'text-ink' : 'text-muted'} />
           <span className="truncate">{label}</span>
           <span className="ml-auto flex shrink-0 items-center gap-1 pl-1">
-            {!isVoice && preference.muted && <span title={t('ミュート中')} aria-label={t('ミュート中')}>🔕</span>}
-            {!isVoice && mentionCount > 0 && <span title={t('メンション{count}件', { count: mentionCount })} className="rounded-sm bg-discord-red px-1 text-[10px] text-white">@{mentionCount}</span>}
-            {!isVoice && preference.unreadCount > 0 && <span aria-label={t('未読{count}件', { count: preference.unreadCount })} className="min-w-5 rounded-full bg-discord-accent px-1 text-center text-[10px] text-white">{unreadLabel}</span>}
+            {!isVoice && preference.muted && <span role="img" title={t('ミュート中')} aria-label={t('ミュート中')} className="text-muted"><Icon name="bellOff" size={14} /></span>}
+            {!isVoice && mentionCount > 0 && <span title={t('メンション{count}件', { count: mentionCount })} className="rounded-full bg-danger px-1.5 text-[10px] font-semibold leading-4 text-white">@{mentionCount}</span>}
+            {!isVoice && preference.unreadCount > 0 && <span aria-label={t('未読{count}件', { count: preference.unreadCount })} className="min-w-5 rounded-full bg-accent px-1.5 text-center text-[10px] font-semibold leading-4 text-on-accent">{unreadLabel}</span>}
           </span>
         </button>
-        <button type="button" onClick={onToggleSettings} aria-expanded={expanded} aria-label={isVoice ? t('{name}の表示設定', { name: label }) : t('{name}の通知と表示設定', { name: label })} className="rounded-sm px-1.5 py-1 text-xs text-discord-muted hover:bg-discord-hover hover:text-white">⋯</button>
+        <button type="button" onClick={onToggleSettings} aria-expanded={expanded} aria-label={isVoice ? t('{name}の表示設定', { name: label }) : t('{name}の通知と表示設定', { name: label })} className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg transition-colors hover:bg-hover hover:text-ink-strong ${expanded ? 'bg-hover text-ink-strong' : 'text-muted'}`}><Icon name="more" size={16} /></button>
       </div>
       {isVoice && participantUsers.length > 0 && (
-        <ul aria-label={t('{name}の参加者', { name: label })} className="ml-7 flex flex-wrap gap-1 px-1 pb-1.5 pt-1">
+        <ul aria-label={t('{name}の参加者', { name: label })} className="ml-8 flex flex-wrap gap-1.5 px-1 pb-1.5 pt-1">
           {participantUsers.map(({ member, speaking, muted }, index) => {
             const displayName = member?.user.displayName || t('ユーザー');
             return (
@@ -280,7 +293,7 @@ function ChannelRow({
                 key={member?.userId || `${displayName}:${index}`}
                 title={muted ? t('{name}（ミュート中）', { name: displayName }) : speaking ? t('{name}（発言中）', { name: displayName }) : displayName}
                 aria-label={muted ? t('{name}、ミュート中', { name: displayName }) : speaking ? t('{name}、発言中', { name: displayName }) : displayName}
-                className={`flex h-7 w-7 items-center justify-center rounded-full bg-discord-accent text-[11px] font-bold text-white ${speaking ? 'ring-2 ring-discord-green' : ''} ${muted ? 'opacity-55' : ''}`}
+                className={`flex h-6 w-6 items-center justify-center rounded-full ${avatarTone(displayName)} text-[10px] font-semibold text-white ${speaking ? 'ring-2 ring-success ring-offset-2 ring-offset-panel' : ''} ${muted ? 'opacity-55' : ''}`}
               >
                 {displayName.slice(0, 1).toUpperCase()}
               </li>
@@ -289,22 +302,22 @@ function ChannelRow({
         </ul>
       )}
       {expanded && (
-        <div role="group" aria-label={t('{name}の個人設定', { name: label })} className="mx-1 mb-1 space-y-2 rounded-sm bg-discord-bg/70 p-2">
-          <div className="flex flex-wrap gap-1">
-            <button type="button" aria-pressed={preference.favorite} disabled={saving} onClick={() => void onUpdate({ favorite: !preference.favorite }).catch(() => undefined)} className="rounded-sm px-2 py-1 text-xs text-discord-muted hover:bg-discord-hover hover:text-white disabled:opacity-50">{preference.favorite ? t('★ お気に入り') : t('☆ お気に入り')}</button>
-            {!isVoice && <button type="button" aria-pressed={preference.muted} disabled={saving} onClick={() => void onUpdate({ muted: !preference.muted }).catch(() => undefined)} className="rounded-sm px-2 py-1 text-xs text-discord-muted hover:bg-discord-hover hover:text-white disabled:opacity-50">{preference.muted ? t('🔔 ミュート解除') : t('🔕 ミュート')}</button>}
-            <button type="button" aria-pressed={preference.hidden} disabled={saving} onClick={() => void onUpdate({ hidden: !preference.hidden }).catch(() => undefined)} className="rounded-sm px-2 py-1 text-xs text-discord-muted hover:bg-discord-hover hover:text-white disabled:opacity-50">{preference.hidden ? t('表示に戻す') : t('非表示')}</button>
+        <div role="group" aria-label={t('{name}の個人設定', { name: label })} className="mx-1 mb-2 mt-1 space-y-2.5 rounded-xl border border-line bg-canvas p-2.5">
+          <div className="flex flex-wrap gap-1.5">
+            <button type="button" aria-pressed={preference.favorite} disabled={saving} onClick={() => void onUpdate({ favorite: !preference.favorite }).catch(() => undefined)} className={PREFERENCE_CHIP}>{preference.favorite ? t('★ お気に入り') : t('☆ お気に入り')}</button>
+            {!isVoice && <button type="button" aria-pressed={preference.muted} disabled={saving} onClick={() => void onUpdate({ muted: !preference.muted }).catch(() => undefined)} className={PREFERENCE_CHIP}>{preference.muted ? t('🔔 ミュート解除') : t('🔕 ミュート')}</button>}
+            <button type="button" aria-pressed={preference.hidden} disabled={saving} onClick={() => void onUpdate({ hidden: !preference.hidden }).catch(() => undefined)} className={PREFERENCE_CHIP}>{preference.hidden ? t('表示に戻す') : t('非表示')}</button>
           </div>
-          {!isVoice && <label className="block text-[11px] text-discord-muted">
+          {!isVoice && <label className="block text-[11px] text-muted">
             {t('通知レベル')}
-            <select value={preference.notificationLevel} disabled={saving} onChange={(event) => void onUpdate({ notificationLevel: event.target.value as NotificationLevel }).catch(() => undefined)} className="mt-1 w-full rounded-sm bg-discord-input px-2 py-1 text-xs text-discord-text disabled:opacity-50">
+            <select value={preference.notificationLevel} disabled={saving} onChange={(event) => void onUpdate({ notificationLevel: event.target.value as NotificationLevel }).catch(() => undefined)} className="mt-1 w-full rounded-lg border border-line bg-field px-2 py-1.5 text-xs text-ink disabled:opacity-50">
               <option value="all">{t('すべて|notification-level')}</option>
               <option value="mentions">{t('メンションのみ')}</option>
               <option value="none">{t('通知なし|notification-level')}</option>
             </select>
           </label>}
-          {saving && <p role="status" className="text-[10px] text-discord-muted">{t('保存中…')}</p>}
-          {error && <p role="alert" className="text-[10px] text-discord-red">{t('設定を保存できませんでした')}</p>}
+          {saving && <p role="status" className="text-[10px] text-muted">{t('保存中…')}</p>}
+          {error && <p role="alert" className="text-[10px] text-danger">{t('設定を保存できませんでした')}</p>}
         </div>
       )}
     </div>

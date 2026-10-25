@@ -25,6 +25,7 @@ import { sendWithAttachments, type HeldAttachments } from '../../services/attach
 import { Dialog } from '../ui/Dialog';
 import { ForumPostView } from './ForumPostView';
 import { FORUM_UNREADABLE_TITLE, forumPostDisplay, forumPostPreview, formatForumTime } from './forum-display';
+import { Icon } from '../ui/Icon';
 import { useT } from '../../i18n';
 
 interface Props {
@@ -67,10 +68,11 @@ export function ForumView({ channelId, sendDisabled, visible = true }: Props) {
           onManageTags={() => setTagManagerOpen(true)}
         />
       )}
-      {/* Keyed by forum so a draft or a pending deletion never carries over to another forum. */}
+      {/* Keyed by forum so a draft or a pending deletion never carries over to another forum.
+          The keys differ because sibling keys must be unique. */}
       {view && (
         <ForumPostComposer
-          key={channelId}
+          key={`composer:${channelId}`}
           open={composerOpen}
           channelId={channelId}
           tags={view.tags}
@@ -81,7 +83,7 @@ export function ForumView({ channelId, sendDisabled, visible = true }: Props) {
       )}
       {view && (
         <ForumTagManager
-          key={channelId}
+          key={`tags:${channelId}`}
           open={tagManagerOpen}
           channelId={channelId}
           tags={view.tags}
@@ -156,14 +158,15 @@ function ForumPostList({ channelId, view, onCreate, onManageTags }: {
   });
 
   if (!view || (!view.loaded && view.loading)) {
-    return <div className="flex flex-1 items-center justify-center text-discord-muted">{t('読み込み中…')}</div>;
+    return <div className="flex flex-1 items-center justify-center text-muted">{t('読み込み中…')}</div>;
   }
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex flex-wrap items-center gap-2 border-b border-discord-sidebar px-4 py-3">
+      <div className="flex flex-wrap items-center gap-2 border-b border-line px-4 py-3">
         {view.viewer?.canCreatePosts && (
-          <button type="button" onClick={onCreate} className="h-9 rounded-sm bg-discord-accent px-3 text-sm font-medium text-white hover:bg-discord-accent-hover">
+          <button type="button" onClick={onCreate} className="flex h-9 items-center gap-1.5 rounded-lg bg-accent px-3.5 text-sm font-medium text-on-accent transition-colors hover:bg-accent-strong">
+            <Icon name="plus" size={16} />
             {t('新しい投稿')}
           </button>
         )}
@@ -173,19 +176,19 @@ function ForumPostList({ channelId, view, onCreate, onManageTags }: {
           onChange={(event) => setQuery(event.target.value)}
           placeholder={t('投稿を検索')}
           aria-label={t('表示中の投稿を検索')}
-          className="h-9 min-w-0 flex-1 rounded-sm bg-discord-input px-3 text-sm text-discord-text placeholder:text-discord-muted"
+          className="h-9 min-w-0 flex-1 rounded-lg bg-field px-3 text-sm text-ink placeholder:text-muted"
         />
         <select
           value={view.sort}
           onChange={(event) => setSort(channelId, event.target.value === 'created' ? 'created' : 'activity')}
           aria-label={t('並び順')}
-          className="h-9 rounded-sm bg-discord-input px-2 text-sm text-discord-text"
+          className="h-9 rounded-lg bg-field px-2 text-sm text-ink"
         >
           <option value="activity">{t('最新の返信順')}</option>
           <option value="created">{t('新しい投稿順')}</option>
         </select>
         {view.viewer?.canManage && (
-          <button type="button" onClick={onManageTags} className="h-9 rounded-sm px-3 text-sm text-discord-muted hover:bg-discord-hover hover:text-white">
+          <button type="button" onClick={onManageTags} className="h-9 rounded-lg px-3 text-sm text-muted hover:bg-hover hover:text-ink-strong">
             {t('タグを管理')}
           </button>
         )}
@@ -201,21 +204,24 @@ function ForumPostList({ channelId, view, onCreate, onManageTags }: {
         </div>
       )}
       {view.error && (
-        <div role="alert" className="mx-4 mt-3 flex items-center justify-between gap-3 rounded-sm bg-discord-red/15 px-3 py-2 text-sm text-discord-red">
+        <div role="alert" className="mx-4 mt-3 flex items-center justify-between gap-3 rounded-lg bg-danger/15 px-3 py-2 text-sm text-danger">
           <span>{t('投稿を読み込めませんでした。')}</span>
           <button type="button" onClick={() => void loadPosts(channelId)} className="underline">{t('再試行')}</button>
         </div>
       )}
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
         {rows.length === 0 ? (
-          <div className="flex h-full flex-col items-center justify-center gap-3 text-center text-discord-muted">
+          <div className="flex h-full flex-col items-center justify-center gap-3 text-center text-muted">
             {normalizedQuery ? (
               <p>{t('表示中の投稿に一致するものはありません。')}</p>
             ) : (
               <>
-                <p className="text-lg font-bold text-discord-text">{t('まだ投稿はありません')}</p>
+                <div className="flex h-14 w-14 items-center justify-center rounded-2xl border border-line bg-raised text-ink-soft">
+                  <Icon name="forum" size={28} />
+                </div>
+                <p className="text-lg font-semibold text-ink-strong">{t('まだ投稿はありません')}</p>
                 {view.viewer?.canCreatePosts && (
-                  <button type="button" onClick={onCreate} className="rounded-sm bg-discord-accent px-3 py-2 text-sm text-white hover:bg-discord-accent-hover">
+                  <button type="button" onClick={onCreate} className="rounded-lg bg-accent px-3 py-2 text-sm text-on-accent hover:bg-accent-strong">
                     {t('最初の投稿を作成')}
                   </button>
                 )}
@@ -244,7 +250,7 @@ function ForumPostList({ channelId, view, onCreate, onManageTags }: {
               type="button"
               disabled={view.loadingMore}
               onClick={() => void loadMorePosts(channelId)}
-              className="rounded-sm bg-discord-hover px-3 py-2 text-sm text-discord-text hover:text-white disabled:opacity-50"
+              className="rounded-lg bg-hover px-3 py-2 text-sm text-ink hover:text-ink-strong disabled:opacity-50"
             >
               {view.loadingMore ? t('読み込み中…') : t('さらに表示')}
             </button>
@@ -273,24 +279,25 @@ function ForumPostRow({ state, display, tags, authorName, unread, onOpen }: {
     <button
       type="button"
       onClick={onOpen}
-      className="w-full rounded-sm border border-discord-hover bg-discord-sidebar/60 px-4 py-3 text-left hover:bg-discord-hover/60"
+      className="w-full rounded-xl border border-line bg-panel/60 px-4 py-3.5 text-left transition-colors hover:border-line-strong hover:bg-hover/50"
     >
       <div className="flex flex-wrap items-center gap-2">
-        {state.isPinned && <span className="text-xs text-discord-yellow">{t('📌 ピン留め')}</span>}
-        {state.resolved && <span className="rounded-sm bg-discord-green/20 px-1.5 text-xs text-discord-green">{t('解決済み')}</span>}
-        {state.locked && <span className="rounded-sm bg-discord-hover px-1.5 text-xs text-discord-muted">{t('🔒 ロック中')}</span>}
-        {unread && <span className="rounded-sm bg-discord-accent px-1.5 text-xs font-medium text-white">{t('新着')}</span>}
+        {state.isPinned && <span className="text-xs text-warning">{t('📌 ピン留め')}</span>}
+        {state.resolved && <span className="rounded-md bg-success/15 px-1.5 py-0.5 text-xs font-medium text-success">{t('解決済み')}</span>}
+        {state.locked && <span className="rounded-md bg-hover px-1.5 py-0.5 text-xs text-muted">{t('🔒 ロック中')}</span>}
+        {unread && <span className="rounded-md bg-accent px-1.5 py-0.5 text-xs font-medium text-on-accent">{t('新着')}</span>}
       </div>
-      <p className={`mt-1 wrap-break-word text-base ${unread ? 'font-bold text-white' : 'font-medium text-discord-text'}`}>{title}</p>
+      <p className={`mt-1 wrap-break-word text-base ${unread ? 'font-semibold text-ink-strong' : 'font-medium text-ink'}`}>{title}</p>
       {display.status === 'ready' && display.body && (
-        <p className="mt-1 line-clamp-2 wrap-break-word text-sm text-discord-muted">{forumPostPreview(display.body)}</p>
+        <p className="mt-1 line-clamp-2 wrap-break-word text-sm text-muted">{forumPostPreview(display.body)}</p>
       )}
-      <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-discord-muted">
+      <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
         <span>{authorName}</span>
-        <span>💬 {state.replyCount}</span>
+        <span className="sr-only">{t('返信 {count}件', { count: state.replyCount })}</span>
+        <span aria-hidden="true" className="flex items-center gap-1"><Icon name="forum" size={13} />{state.replyCount}</span>
         <span>{formatForumTime(state.lastActivityAt)}</span>
         {tags.map((tag) => (
-          <span key={tag.id} className="rounded-sm bg-discord-input px-1.5 py-0.5 text-discord-text">{tag.name}</span>
+          <span key={tag.id} className="rounded-md border border-line px-1.5 py-0.5 text-ink-soft">{tag.name}</span>
         ))}
       </div>
     </button>
@@ -303,7 +310,7 @@ function FilterChip({ active, onClick, children }: { active: boolean; onClick: (
       type="button"
       aria-pressed={active}
       onClick={onClick}
-      className={`rounded-full px-3 py-1 text-sm ${active ? 'bg-discord-accent text-white' : 'bg-discord-input text-discord-text hover:bg-discord-hover'}`}
+      className={`rounded-full border px-3 py-1 text-sm transition-colors ${active ? 'border-transparent bg-accent text-on-accent' : 'border-line text-ink-soft hover:bg-hover hover:text-ink-strong'}`}
     >
       {children}
     </button>
@@ -319,13 +326,13 @@ export function TagPicker({ tags, selected, onChange }: {
   if (tags.length === 0) return null;
   return (
     <fieldset>
-      <legend className="mb-1 text-sm font-medium text-discord-text">{t('タグ（{count}個まで）', { count: MAX_FORUM_TAGS_PER_POST })}</legend>
+      <legend className="mb-1 text-sm font-medium text-ink">{t('タグ（{count}個まで）', { count: MAX_FORUM_TAGS_PER_POST })}</legend>
       <div className="flex flex-wrap gap-2">
         {tags.map((tag) => {
           const checked = selected.includes(tag.id);
           const disabled = !checked && selected.length >= MAX_FORUM_TAGS_PER_POST;
           return (
-            <label key={tag.id} className={`flex items-center gap-1 rounded-full px-3 py-1 text-sm ${checked ? 'bg-discord-accent text-white' : 'bg-discord-input text-discord-text'} ${disabled ? 'opacity-50' : 'cursor-pointer'}`}>
+            <label key={tag.id} className={`flex items-center gap-1 rounded-full border px-3 py-1 text-sm ${checked ? 'border-transparent bg-accent text-on-accent' : 'border-line text-ink-soft'} ${disabled ? 'opacity-50' : 'cursor-pointer'}`}>
               <input
                 type="checkbox"
                 className="sr-only"
@@ -449,32 +456,32 @@ function ForumPostComposer({ open, channelId, tags, canAttach, sendDisabled, onC
     <Dialog open={open} onClose={close} title={t('新しい投稿')} size="md">
       <form className="space-y-4" onSubmit={(event) => void submit(event)}>
         <label className="block">
-          <span className="mb-1 block text-sm font-medium text-discord-text">{t('タイトル')}</span>
+          <span className="mb-1 block text-sm font-medium text-ink">{t('タイトル')}</span>
           <input
             value={title}
             disabled={held !== null}
             maxLength={MAX_FORUM_POST_TITLE_LENGTH}
             onChange={(event) => setTitle(event.target.value)}
-            className="h-10 w-full rounded-sm bg-discord-input px-3 text-discord-text"
+            className="h-10 w-full rounded-lg bg-field px-3 text-ink"
             autoFocus
             required
           />
         </label>
         <label className="block">
-          <span className="mb-1 block text-sm font-medium text-discord-text">{t('本文')}</span>
+          <span className="mb-1 block text-sm font-medium text-ink">{t('本文')}</span>
           <textarea
             value={body}
             disabled={held !== null}
             maxLength={forumPostBodyLimit(title)}
             onChange={(event) => setBody(event.target.value)}
             rows={8}
-            className="w-full resize-y rounded-sm bg-discord-input px-3 py-2 text-discord-text"
+            className="w-full resize-y rounded-lg bg-field px-3 py-2 text-ink"
           />
         </label>
         <TagPicker tags={tags} selected={tagIds} onChange={setTagIds} />
         {canAttach && (
           <div>
-            <label className="inline-flex cursor-pointer items-center gap-2 rounded-sm bg-discord-hover px-3 py-2 text-sm text-discord-text hover:text-white">
+            <label className="inline-flex cursor-pointer items-center gap-2 rounded-lg bg-hover px-3 py-2 text-sm text-ink hover:text-ink-strong">
               {t('ファイルを追加')}
               <input
                 type="file"
@@ -487,7 +494,7 @@ function ForumPostComposer({ open, channelId, tags, canAttach, sendDisabled, onC
               />
             </label>
             {files.length > 0 && (
-              <ul className="mt-2 space-y-1 text-sm text-discord-muted">
+              <ul className="mt-2 space-y-1 text-sm text-muted">
                 {files.map((file, index) => (
                   <li key={`${file.name}-${index}`} className="flex items-center justify-between gap-2">
                     <span className="truncate">{file.name}</span>
@@ -498,13 +505,13 @@ function ForumPostComposer({ open, channelId, tags, canAttach, sendDisabled, onC
             )}
           </div>
         )}
-        {sendDisabled && <p role="status" className="text-sm text-discord-yellow">{t('送信の準備ができるまでお待ちください。')}</p>}
-        {error && <p role="alert" className="rounded-sm bg-discord-red/15 px-3 py-2 text-sm text-discord-red">{error}</p>}
+        {sendDisabled && <p role="status" className="text-sm text-warning">{t('送信の準備ができるまでお待ちください。')}</p>}
+        {error && <p role="alert" className="rounded-lg bg-danger/15 px-3 py-2 text-sm text-danger">{error}</p>}
         <div className="flex justify-end gap-2">
-          <button type="button" onClick={close} disabled={submitting} className="rounded-sm px-3 py-2 text-sm text-discord-muted hover:bg-discord-hover disabled:opacity-50">
+          <button type="button" onClick={close} disabled={submitting} className="rounded-lg px-3 py-2 text-sm text-muted hover:bg-hover disabled:opacity-50">
             {t('キャンセル')}
           </button>
-          <button type="submit" disabled={submitting || sendDisabled || !title.trim()} className="rounded-sm bg-discord-accent px-3 py-2 text-sm font-medium text-white disabled:opacity-50">
+          <button type="submit" disabled={submitting || sendDisabled || !title.trim()} className="rounded-lg bg-accent px-3 py-2 text-sm font-medium text-on-accent disabled:opacity-50">
             {submitting ? t('投稿中…') : held ? t('ファイルを再送信') : t('投稿する')}
           </button>
         </div>
@@ -567,16 +574,16 @@ function ForumTagManager({ open, channelId, tags, onClose }: {
             placeholder={t('新しいタグ')}
             aria-label={t('新しいタグ名')}
             disabled={tags.length >= MAX_FORUM_TAGS_PER_CHANNEL}
-            className="h-9 min-w-0 flex-1 rounded-sm bg-discord-input px-3 text-sm text-discord-text"
+            className="h-9 min-w-0 flex-1 rounded-lg bg-field px-3 text-sm text-ink"
           />
-          <button type="submit" disabled={busy || !name.trim() || tags.length >= MAX_FORUM_TAGS_PER_CHANNEL} className="rounded-sm bg-discord-accent px-3 text-sm text-white disabled:opacity-50">
+          <button type="submit" disabled={busy || !name.trim() || tags.length >= MAX_FORUM_TAGS_PER_CHANNEL} className="rounded-lg bg-accent px-3 text-sm text-on-accent disabled:opacity-50">
             {t('追加')}
           </button>
         </form>
         {tags.length >= MAX_FORUM_TAGS_PER_CHANNEL && (
-          <p className="text-sm text-discord-muted">{t('タグは{count}個まで作成できます。', { count: MAX_FORUM_TAGS_PER_CHANNEL })}</p>
+          <p className="text-sm text-muted">{t('タグは{count}個まで作成できます。', { count: MAX_FORUM_TAGS_PER_CHANNEL })}</p>
         )}
-        {error && <p role="alert" className="rounded-sm bg-discord-red/15 px-3 py-2 text-sm text-discord-red">{error}</p>}
+        {error && <p role="alert" className="rounded-lg bg-danger/15 px-3 py-2 text-sm text-danger">{error}</p>}
         <ul className="space-y-2">
           {tags.map((tag) => (
             <li key={tag.id} className="flex items-center gap-2">
@@ -598,27 +605,27 @@ function ForumTagManager({ open, channelId, tags, onClose }: {
                     maxLength={MAX_FORUM_TAG_NAME_LENGTH}
                     onChange={(event) => setEditing({ id: tag.id, name: event.target.value })}
                     aria-label={t('タグ名')}
-                    className="h-8 min-w-0 flex-1 rounded-sm bg-discord-input px-2 text-sm text-discord-text"
+                    className="h-8 min-w-0 flex-1 rounded-lg bg-field px-2 text-sm text-ink"
                     autoFocus
                   />
-                  <button type="submit" disabled={busy} className="text-sm text-discord-accent underline">{t('保存')}</button>
-                  <button type="button" onClick={() => setEditing(null)} className="text-sm text-discord-muted underline">{t('キャンセル')}</button>
+                  <button type="submit" disabled={busy} className="text-sm text-accent underline">{t('保存')}</button>
+                  <button type="button" onClick={() => setEditing(null)} className="text-sm text-muted underline">{t('キャンセル')}</button>
                 </form>
               ) : (
                 <>
-                  <span className="flex-1 truncate rounded-sm bg-discord-input px-2 py-1 text-sm text-discord-text">{tag.name}</span>
-                  <button type="button" onClick={() => setEditing({ id: tag.id, name: tag.name })} className="text-sm text-discord-muted underline">{t('名前を変更')}</button>
-                  <button type="button" onClick={() => setConfirmDelete(tag)} className="text-sm text-discord-red underline">{t('削除')}</button>
+                  <span className="flex-1 truncate rounded-lg bg-field px-2 py-1 text-sm text-ink">{tag.name}</span>
+                  <button type="button" onClick={() => setEditing({ id: tag.id, name: tag.name })} className="text-sm text-muted underline">{t('名前を変更')}</button>
+                  <button type="button" onClick={() => setConfirmDelete(tag)} className="text-sm text-danger underline">{t('削除')}</button>
                 </>
               )}
             </li>
           ))}
         </ul>
         {confirmDelete && (
-          <div role="alertdialog" aria-label={t('タグの削除')} className="space-y-2 rounded-sm border border-discord-red/60 bg-discord-red/10 p-3 text-sm text-discord-text">
+          <div role="alertdialog" aria-label={t('タグの削除')} className="space-y-2 rounded-lg border border-danger/60 bg-danger/10 p-3 text-sm text-ink">
             <p>{t('「{name}」を削除すると、このタグはすべての投稿から外れます。', { name: confirmDelete.name })}</p>
             <div className="flex justify-end gap-2">
-              <button type="button" onClick={() => setConfirmDelete(null)} className="rounded-sm px-3 py-1 text-discord-muted hover:bg-discord-hover">{t('キャンセル')}</button>
+              <button type="button" onClick={() => setConfirmDelete(null)} className="rounded-lg px-3 py-1 text-muted hover:bg-hover">{t('キャンセル')}</button>
               <button
                 type="button"
                 disabled={busy}
@@ -626,7 +633,7 @@ function ForumTagManager({ open, channelId, tags, onClose }: {
                   await deleteTag(channelId, confirmDelete.id);
                   setConfirmDelete(null);
                 })}
-                className="rounded-sm bg-discord-red px-3 py-1 text-white disabled:opacity-50"
+                className="rounded-lg bg-danger px-3 py-1 text-white disabled:opacity-50"
               >
                 {t('削除')}
               </button>

@@ -98,11 +98,11 @@ export function ProfileSettingsDialog() {
   return (
     <Dialog open={open} onClose={() => { if (!busy) close(); }} title={t('プロフィール')} size="sm">
       {!profile ? (
-        <p className="py-6 text-center text-discord-muted">{message?.text ?? t('読み込み中…')}</p>
+        <p className="py-6 text-center text-muted">{message?.text ?? t('読み込み中…')}</p>
       ) : cropping ? (
         <div className="space-y-3">
           <AvatarCropper bitmap={cropping} busy={busy} onConfirm={(crop) => { void saveImage(cropping, crop); }} onCancel={() => setCropping(null)} />
-          {message?.kind === 'error' && <p role="alert" className="rounded-sm bg-discord-red/15 px-3 py-2 text-sm text-discord-red">{message.text}</p>}
+          {message?.kind === 'error' && <p role="alert" className="rounded-lg bg-danger/15 px-3 py-2 text-sm text-danger">{message.text}</p>}
         </div>
       ) : (
         <div className="space-y-4">
@@ -116,43 +116,43 @@ export function ProfileSettingsDialog() {
                 className="hidden"
                 onChange={(event) => { void chooseImage(event.target.files?.[0]); event.target.value = ''; }}
               />
-              <button type="button" disabled={busy} onClick={() => fileInput.current?.click()} className="rounded-sm bg-discord-hover px-3 py-1.5 text-sm text-white disabled:opacity-50">
+              <button type="button" disabled={busy} onClick={() => fileInput.current?.click()} className="rounded-lg bg-hover px-3 py-1.5 text-sm text-ink-strong disabled:opacity-50">
                 {t('画像を選ぶ')}
               </button>
               {profile.avatarUrl && (
-                <button type="button" disabled={busy} onClick={() => { void removeImage(); }} className="rounded-sm px-3 py-1.5 text-sm text-discord-red hover:bg-discord-red/10 disabled:opacity-50">
+                <button type="button" disabled={busy} onClick={() => { void removeImage(); }} className="rounded-lg px-3 py-1.5 text-sm text-danger hover:bg-danger/10 disabled:opacity-50">
                   {t('画像を削除')}
                 </button>
               )}
-              <p className="text-xs text-discord-muted">{t('PNG・JPEG・WebP（5MBまで）')}</p>
+              <p className="text-xs text-muted">{t('PNG・JPEG・WebP（5MBまで）')}</p>
             </div>
           </div>
 
-          <label className="block text-sm text-discord-muted">
+          <label className="block text-sm text-muted">
             {t('表示名')}
             <input
               value={displayName}
               maxLength={100}
               onChange={(event) => setDisplayName(event.target.value)}
-              className="mt-1 block w-full rounded-sm bg-discord-input px-3 py-2 text-discord-text"
+              className="mt-1 block w-full rounded-lg bg-field px-3 py-2 text-ink"
             />
           </label>
 
-          <label className="block text-sm text-discord-muted">
+          <label className="block text-sm text-muted">
             {t('自己紹介')}
             <textarea
               value={bio}
               rows={5}
               onChange={(event) => setBio(event.target.value)}
-              className="mt-1 block w-full resize-none rounded-sm bg-discord-input px-3 py-2 text-discord-text"
+              className="mt-1 block w-full resize-none rounded-lg bg-field px-3 py-2 text-ink"
             />
-            <span className={`mt-1 block text-right text-xs ${length.ok ? 'text-discord-muted' : 'text-discord-red'}`}>
+            <span className={`mt-1 block text-right text-xs ${length.ok ? 'text-muted' : 'text-danger'}`}>
               {t('{characters}/200文字・{lines}/5行', { characters: length.characters, lines: length.lines })}
             </span>
           </label>
 
           {message && (
-            <p role={message.kind === 'error' ? 'alert' : 'status'} className={`rounded-sm px-3 py-2 text-sm ${message.kind === 'error' ? 'bg-discord-red/15 text-discord-red' : 'bg-discord-hover text-discord-text'}`}>
+            <p role={message.kind === 'error' ? 'alert' : 'status'} className={`rounded-lg px-3 py-2 text-sm ${message.kind === 'error' ? 'bg-danger/15 text-danger' : 'bg-hover text-ink'}`}>
               {message.text}
             </p>
           )}
@@ -162,36 +162,36 @@ export function ProfileSettingsDialog() {
               type="button"
               disabled={busy || !length.ok || displayName.trim().length === 0}
               onClick={() => { void save(); }}
-              className="rounded-sm bg-discord-accent px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+              className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-on-accent disabled:opacity-50"
             >
               {busy ? t('保存中…') : t('保存')}
             </button>
           </div>
 
           {profile.flags.length > 0 && (
-            <section className="space-y-2 border-t border-discord-hover pt-4">
+            <section className="space-y-2 border-t border-line pt-4">
               {profile.flags.map((flag) => (
-                <div key={flag.workspaceId} className="rounded-sm border border-discord-yellow/40 bg-discord-yellow/10 p-3 text-sm text-discord-text">
+                <div key={flag.workspaceId} className="rounded-lg border border-warning/40 bg-warning/10 p-3 text-sm text-ink">
                   <p>{t('「{workspace}」の管理者が、あなたのプロフィールの確認を必要としています。このワークスペースでは、ほかのメンバーが見る前に確認が表示されます。', { workspace: flag.workspaceName })}</p>
-                  {flag.appealStatus === 'pending' && <p className="mt-2 text-discord-muted">{t('管理者に警告の解除を依頼しています。')}</p>}
-                  {flag.appealStatus === 'denied' && <p className="mt-2 text-discord-muted">{t('解除の依頼は認められませんでした。')}</p>}
+                  {flag.appealStatus === 'pending' && <p className="mt-2 text-muted">{t('管理者に警告の解除を依頼しています。')}</p>}
+                  {flag.appealStatus === 'denied' && <p className="mt-2 text-muted">{t('解除の依頼は認められませんでした。')}</p>}
                   {flag.appealStatus === 'none' && flag.canAppeal && (
                     confirmAppeal === flag.workspaceId ? (
                       <div className="mt-2 space-y-2">
                         <p className="font-medium">{t('解除を依頼できるのは、すべてのワークスペースを通じて一度だけです。認められなかった場合、再び依頼することはできません。依頼しますか？')}</p>
                         <div className="flex gap-2">
-                          <button type="button" disabled={busy} onClick={() => { void appeal(flag.workspaceId); }} className="rounded-sm bg-discord-accent px-3 py-1.5 text-white disabled:opacity-50">{t('依頼する')}</button>
-                          <button type="button" disabled={busy} onClick={() => setConfirmAppeal(null)} className="rounded-sm px-3 py-1.5 text-discord-muted hover:bg-discord-hover">{t('やめる')}</button>
+                          <button type="button" disabled={busy} onClick={() => { void appeal(flag.workspaceId); }} className="rounded-lg bg-accent px-3 py-1.5 text-on-accent disabled:opacity-50">{t('依頼する')}</button>
+                          <button type="button" disabled={busy} onClick={() => setConfirmAppeal(null)} className="rounded-lg px-3 py-1.5 text-muted hover:bg-hover">{t('やめる')}</button>
                         </div>
                       </div>
                     ) : (
-                      <button type="button" disabled={busy} onClick={() => setConfirmAppeal(flag.workspaceId)} className="mt-2 rounded-sm bg-discord-hover px-3 py-1.5 text-white disabled:opacity-50">
+                      <button type="button" disabled={busy} onClick={() => setConfirmAppeal(flag.workspaceId)} className="mt-2 rounded-lg bg-hover px-3 py-1.5 text-ink-strong disabled:opacity-50">
                         {t('プロフィールを見直したので、解除を依頼する')}
                       </button>
                     )
                   )}
                   {flag.appealStatus === 'none' && !flag.canAppeal && (
-                    <p className="mt-2 text-discord-muted">
+                    <p className="mt-2 text-muted">
                       {profile.appealUsed
                         ? t('解除の依頼はすでに使用済みです。')
                         : t('プロフィールを変更すると、解除を一度だけ依頼できます。')}

@@ -29,6 +29,8 @@ import { useVoiceChannelPresence } from '../../hooks/useVoiceChannelPresence';
 import { AttentionNotifications } from '../notification/AttentionNotifications';
 import { useHorizontalSwipe } from '../../hooks/useHorizontalSwipe';
 import { useMobileLayout } from '../../hooks/useMobileLayout';
+import { BrandMark } from '../ui/BrandMark';
+import { Icon } from '../ui/Icon';
 import { useT } from '../../i18n';
 
 type PermalinkNavigationStatus = {
@@ -227,7 +229,7 @@ export function AppLayout() {
       {permalinkStatus && (
         <div
           role={permalinkStatus.kind === 'error' ? 'alert' : 'status'}
-          className={`fixed left-1/2 top-14 z-40 flex max-w-xl -translate-x-1/2 items-center gap-3 rounded-sm border px-4 py-2 text-sm shadow-xl ${permalinkStatus.kind === 'error' ? 'border-discord-red bg-discord-sidebar text-discord-red' : 'border-discord-hover bg-discord-sidebar text-discord-text'}`}
+          className={`fixed left-1/2 top-14 z-40 flex max-w-xl -translate-x-1/2 items-center gap-3 rounded-xl border px-4 py-2.5 text-sm shadow-2xl shadow-black/40 ${permalinkStatus.kind === 'error' ? 'border-danger/50 bg-raised text-danger' : 'border-line bg-raised text-ink'}`}
         >
           <span>{permalinkStatus.message}</span>
           {permalinkStatus.kind === 'error' ? (
@@ -274,21 +276,22 @@ export function AppLayout() {
           {activeChannelId ? (
             <ChatArea visible={!mobile || (mobilePanel === 'chat' && !membersOpen)} />
           ) : (
-            <div className="flex-1 flex items-center justify-center bg-discord-bg">
-              <div className="text-center text-discord-muted">
-                <h2 className="text-2xl font-bold mb-2">alparts</h2>
-                <p>{t('チャンネルを選択してください')}</p>
+            <div className="flex-1 flex items-center justify-center bg-canvas">
+              <div className="flex flex-col items-center text-center text-muted">
+                <BrandMark size={56} className="mb-4 text-ink-soft" />
+                <h2 className="mb-1 text-xl font-semibold text-ink-strong">alparts</h2>
+                <p className="text-sm">{t('チャンネルを選択してください')}</p>
               </div>
             </div>
           )}
         </div>
         {mobile && mobilePanel === 'channels' && (
-          <button type="button" className="channel-drawer-backdrop absolute inset-0 z-20 bg-black/40" onClick={showChat} aria-label={t('チャットに戻る')} />
+          <button type="button" className="channel-drawer-backdrop absolute inset-0 z-20 bg-black/50" onClick={showChat} aria-label={t('チャットに戻る')} />
         )}
       </div>
       {activeChannelId && membersOpen && (
         <>
-          {mobile && <button type="button" className="fixed inset-x-0 bottom-0 top-12 z-30 bg-black/40" aria-label={t('メンバー一覧を閉じる')} onClick={() => setMembersOpen(false)} />}
+          {mobile && <button type="button" className="fixed inset-x-0 bottom-0 top-12 z-30 bg-black/50" aria-label={t('メンバー一覧を閉じる')} onClick={() => setMembersOpen(false)} />}
           <aside id="member-list" className="member-navigation flex shrink-0" aria-label={t('メンバー一覧')}>
             <ResizablePane
               storageKey="alparts:member-sidebar-width"
@@ -298,10 +301,10 @@ export function AppLayout() {
               resizeEdge="left"
               label={t('メンバー一覧の幅を変更')}
             >
-              <div className="flex h-full min-h-0 flex-col bg-discord-sidebar">
-                <div className="flex h-11 shrink-0 items-center justify-between border-b border-discord-hover px-4">
-                  <h2 className="text-sm font-bold text-white">{t('メンバー')}</h2>
-                  <button type="button" className="h-10 w-10 rounded-sm text-xl text-discord-muted hover:bg-discord-hover hover:text-white" aria-label={t('メンバー一覧を閉じる')} onClick={() => setMembersOpen(false)}>×</button>
+              <div className="flex h-full min-h-0 flex-col border-l border-line bg-panel">
+                <div className="flex h-11 shrink-0 items-center justify-between border-b border-line pl-4 pr-1.5">
+                  <h2 className="text-sm font-semibold text-ink-strong">{t('メンバー')}</h2>
+                  <button type="button" className="flex h-10 w-10 items-center justify-center rounded-lg text-muted transition-colors hover:bg-hover hover:text-ink-strong" aria-label={t('メンバー一覧を閉じる')} onClick={() => setMembersOpen(false)}><Icon name="close" /></button>
                 </div>
                 <div className="min-h-0 flex-1"><UserList /></div>
               </div>

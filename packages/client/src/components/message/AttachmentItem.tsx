@@ -17,6 +17,7 @@ import {
   canPreviewImage,
   isPreviewableImageMimeType,
 } from '../../services/attachment-preview';
+import { Icon } from '../ui/Icon';
 import { t, useT } from '../../i18n';
 
 interface Props {
@@ -161,7 +162,7 @@ export function AttachmentItem({ attachment, message }: Props) {
   if (imagePreviewPending) {
     return (
       <div className="mt-2 max-w-xl" aria-live="polite">
-        <progress value={previewPercentage} max={100} aria-label={t('画像を準備中 {percent}%', { percent: previewPercentage })} className="h-1.5 w-full overflow-hidden rounded-sm accent-discord-accent" />
+        <progress value={previewPercentage} max={100} aria-label={t('画像を準備中 {percent}%', { percent: previewPercentage })} className="h-1.5 w-full overflow-hidden rounded-lg accent-accent" />
       </div>
     );
   }
@@ -175,12 +176,12 @@ export function AttachmentItem({ attachment, message }: Props) {
           aria-haspopup="dialog"
           aria-expanded={expanded}
           onClick={() => setExpanded(true)}
-          className="mt-2 block max-w-full cursor-zoom-in rounded-sm focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-discord-accent"
+          className="mt-2 block max-w-full cursor-zoom-in rounded-lg focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-accent"
         >
           <img
             src={previewUrl}
             alt={filename || t('添付画像')}
-            className="max-h-80 max-w-full rounded-sm object-contain"
+            className="max-h-80 max-w-full rounded-lg object-contain"
             onError={markPreviewUnrenderable}
           />
         </button>
@@ -220,14 +221,17 @@ export function AttachmentItem({ attachment, message }: Props) {
   return (
       <section
         aria-label={t('添付ファイル')}
-        className="mt-2 max-w-xl rounded-sm border border-discord-hover bg-discord-sidebar/70 p-3 text-sm"
+        className="mt-2 max-w-xl rounded-xl border border-line bg-panel/70 p-3 text-sm"
       >
-        <div>
+        <div className="flex items-center gap-3">
+          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-raised text-ink-soft">
+            <Icon name="file" size={20} />
+          </span>
           <div className="min-w-0">
-            <p className="truncate font-medium text-discord-text">
+            <p className="truncate font-medium text-ink">
               {filename || (filenameError ? t('ファイル名を確認できない添付ファイル') : t('ファイル名を確認中…'))}
             </p>
-            <p className="text-xs text-discord-muted">
+            <p className="text-xs text-muted">
               {metadataVerified
                 ? formatBytes(attachment.plaintextSizeBytes)
                 : filenameError ? t('ファイル情報を確認できません') : t('ファイル情報を確認中…')}
@@ -236,12 +240,12 @@ export function AttachmentItem({ attachment, message }: Props) {
         </div>
 
       {dangerous && (
-        <div role="alert" className="mt-2 rounded-sm border border-discord-yellow/50 bg-discord-yellow/10 p-2 text-xs text-discord-yellow">
+        <div role="alert" className="mt-2 rounded-lg border border-warning/50 bg-warning/10 p-2 text-xs text-warning">
           <p className="font-semibold">{t('安全でない可能性があるファイルです')}</p>
           <p className="mt-1">
             {t('信頼できる相手から届いた場合のみ保存してください。')}
           </p>
-          <label className="mt-2 flex cursor-pointer items-start gap-2 text-discord-text">
+          <label className="mt-2 flex cursor-pointer items-start gap-2 text-ink">
             <input
               type="checkbox"
               checked={acknowledged}
@@ -253,9 +257,9 @@ export function AttachmentItem({ attachment, message }: Props) {
         </div>
       )}
 
-      {filenameError && <p role="alert" className="mt-2 text-xs text-discord-red">{filenameError}</p>}
+      {filenameError && <p role="alert" className="mt-2 text-xs text-danger">{filenameError}</p>}
       {previewError && (
-        <div role="alert" className="mt-2 flex items-center gap-2 text-xs text-discord-red">
+        <div role="alert" className="mt-2 flex items-center gap-2 text-xs text-danger">
           <span>{previewError}</span>
           <button type="button" onClick={() => setPreviewAttempt((value) => value + 1)} className="shrink-0 underline">{t('再試行')}</button>
         </div>
@@ -264,26 +268,26 @@ export function AttachmentItem({ attachment, message }: Props) {
         && isPreviewableImageMimeType(attachment.mimeType)
         && attachment.cryptoManifest.plaintextSize > ATTACHMENT_IMAGE_PREVIEW_MAX_BYTES
         && (
-          <p className="mt-2 text-xs text-discord-muted">
+          <p className="mt-2 text-xs text-muted">
             {t('25MBを超える画像は、ファイルとして保存してください。')}
           </p>
         )}
-      {downloadError && <p role="alert" className="mt-2 text-xs text-discord-red">{downloadError}</p>}
+      {downloadError && <p role="alert" className="mt-2 text-xs text-danger">{downloadError}</p>}
       {downloadState === 'downloading' && (
         <div className="mt-2" aria-live="polite">
           <progress
             value={percentage}
             max={100}
             aria-label={t('添付ファイル保存進捗 {percent}%', { percent: percentage })}
-            className="h-1.5 w-full overflow-hidden rounded-sm accent-discord-accent"
+            className="h-1.5 w-full overflow-hidden rounded-lg accent-accent"
           />
-          <p className="mt-1 text-xs text-discord-muted">
+          <p className="mt-1 text-xs text-muted">
             {t('保存中 {percent}%', { percent: percentage })}
           </p>
         </div>
       )}
       {downloadState === 'saved' && (
-        <p role="status" className="mt-2 text-xs text-discord-green">{t('保存しました')}</p>
+        <p role="status" className="mt-2 text-xs text-success">{t('保存しました')}</p>
       )}
 
       <div className="mt-3 flex gap-2">
@@ -291,7 +295,7 @@ export function AttachmentItem({ attachment, message }: Props) {
           type="button"
           onClick={() => void startDownload()}
           disabled={!filename || Boolean(filenameError) || downloadState === 'downloading' || (dangerous && !acknowledged)}
-          className="rounded-sm bg-discord-accent px-3 py-1.5 text-xs font-medium text-white hover:bg-discord-accent/80 disabled:cursor-not-allowed disabled:opacity-50"
+          className="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-on-accent transition-colors hover:bg-accent-strong disabled:cursor-not-allowed disabled:opacity-50"
         >
           {downloadState === 'saved' ? t('もう一度保存') : t('ファイルを保存')}
         </button>
@@ -299,7 +303,7 @@ export function AttachmentItem({ attachment, message }: Props) {
           <button
             type="button"
             onClick={() => controllerRef.current?.abort()}
-            className="rounded-sm bg-discord-hover px-3 py-1.5 text-xs text-discord-text hover:bg-discord-red"
+            className="rounded-lg bg-hover px-3 py-1.5 text-xs text-ink transition-colors hover:bg-danger hover:text-white"
           >
             {t('キャンセル')}
           </button>
@@ -373,9 +377,9 @@ function ExpandedImage({
         type="button"
         onClick={onClose}
         aria-label={t('閉じる')}
-        className="absolute right-4 top-4 flex h-10 w-10 items-center justify-center rounded-full bg-black/70 text-2xl text-white hover:bg-black focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-white"
+        className="absolute right-4 top-4 flex h-10 w-10 items-center justify-center rounded-full bg-black/70 text-white hover:bg-black focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-white"
       >
-        ×
+        <Icon name="close" size={20} />
       </button>
     </div>,
     document.body,

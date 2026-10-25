@@ -105,32 +105,32 @@ export function AuditLogPanel({ workspaceId, canView }: AuditLogPanelProps) {
 
   return (
     <section aria-labelledby="workspace-audit-heading" className="space-y-4">
-      <h3 id="workspace-audit-heading" className="font-semibold text-white">{t('操作履歴')}</h3>
+      <h3 id="workspace-audit-heading" className="font-semibold text-ink-strong">{t('操作履歴')}</h3>
 
       {error && (
-        <div role="alert" className="flex items-center justify-between gap-3 rounded-sm bg-discord-red/15 px-3 py-2 text-sm text-discord-red">
+        <div role="alert" className="flex items-center justify-between gap-3 rounded-lg bg-danger/15 px-3 py-2 text-sm text-danger">
           <span>{error}</span>
           <button type="button" onClick={() => { void loadInitial(); }} className="shrink-0 underline">{t('再試行')}</button>
         </div>
       )}
 
-      <div aria-live="polite" className="rounded-sm bg-discord-input px-3 py-2 text-sm">
-        <span className="font-medium text-white">{t('記録の状態:')} </span>
+      <div aria-live="polite" className="rounded-lg bg-field px-3 py-2 text-sm">
+        <span className="font-medium text-ink-strong">{t('記録の状態:')} </span>
         {loading && !integrity ? (
-          <span className="text-discord-muted">{t('確認中…')}</span>
+          <span className="text-muted">{t('確認中…')}</span>
         ) : integrity ? (
-          <span className={integrity.valid ? 'text-discord-green' : 'text-discord-red'}>
+          <span className={integrity.valid ? 'text-success' : 'text-danger'}>
             {integrity.valid ? t('問題ありません') : t('確認が必要です')}
           </span>
         ) : (
-          <span className="text-discord-muted">{t('未確認')}</span>
+          <span className="text-muted">{t('未確認')}</span>
         )}
       </div>
 
       {loading && entries.length === 0 ? (
-        <p role="status" className="py-6 text-center text-discord-muted">{t('操作履歴を読み込み中…')}</p>
+        <p role="status" className="py-6 text-center text-muted">{t('操作履歴を読み込み中…')}</p>
       ) : entries.length === 0 ? (
-        <p className="py-6 text-center text-discord-muted">{t('表示できる操作履歴はありません。')}</p>
+        <p className="py-6 text-center text-muted">{t('表示できる操作履歴はありません。')}</p>
       ) : (
         <ol className="space-y-2" aria-label={t('操作履歴（新しい順）')}>
           {entries.map((entry) => {
@@ -138,15 +138,15 @@ export function AuditLogPanel({ workspaceId, canView }: AuditLogPanelProps) {
             const result = auditResult(entry);
             const target = auditTargetLabel(entry.targetType);
             return (
-              <li key={entry.id} className="rounded-sm border border-discord-hover bg-discord-bg/40 px-3 py-3 text-sm">
+              <li key={entry.id} className="rounded-lg border border-line bg-canvas/40 px-3 py-3 text-sm">
                 <div className="flex flex-wrap items-start justify-between gap-2">
                   <div>
-                    <p className="font-medium text-white">{auditActionLabel(entry.action)}</p>
-                    {target && <p className="mt-0.5 text-xs text-discord-muted">{t('対象: {target}', { target })}</p>}
+                    <p className="font-medium text-ink-strong">{auditActionLabel(entry.action)}</p>
+                    {target && <p className="mt-0.5 text-xs text-muted">{t('対象: {target}', { target })}</p>}
                   </div>
-                  <div className="text-right text-xs text-discord-muted">
+                  <div className="text-right text-xs text-muted">
                     <time dateTime={entry.createdAt}>{formatAuditTime(entry.createdAt)}</time>
-                    <p className={result === 'failure' ? 'text-discord-red' : result === 'success' ? 'text-discord-green' : ''}>
+                    <p className={result === 'failure' ? 'text-danger' : result === 'success' ? 'text-success' : ''}>
                       {t('結果: {result}', { result: result === 'success' ? t('成功') : result === 'failure' ? t('失敗') : t('記録なし') })}
                     </p>
                   </div>
@@ -155,8 +155,8 @@ export function AuditLogPanel({ workspaceId, canView }: AuditLogPanelProps) {
                   <dl className="mt-2 grid gap-x-3 gap-y-1 text-xs sm:grid-cols-[max-content_1fr]">
                     {details.map((detail) => (
                       <div key={detail.key} className="contents">
-                        <dt className="text-discord-muted">{detail.key}</dt>
-                        <dd className="break-all text-discord-text">{detail.value}</dd>
+                        <dt className="text-muted">{detail.key}</dt>
+                        <dd className="break-all text-ink">{detail.value}</dd>
                       </div>
                     ))}
                   </dl>
@@ -173,7 +173,7 @@ export function AuditLogPanel({ workspaceId, canView }: AuditLogPanelProps) {
             type="button"
             onClick={() => { void loadMore(); }}
             disabled={loadingMore || !cursor}
-            className="rounded-sm bg-discord-hover px-4 py-2 text-sm text-white disabled:opacity-40"
+            className="rounded-lg bg-hover px-4 py-2 text-sm text-ink-strong disabled:opacity-40"
           >
             {loadingMore ? t('読み込み中…') : t('さらに古いログを読み込む')}
           </button>

@@ -3,7 +3,7 @@
   "short_name": "alparts",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#313338",
+  "background_color": "#1f1e1c",
   "theme_color": "#000000",
   "icons": [
     {

@@ -37,13 +37,13 @@ export function DirectoryCheckpoint() {
   };
   return (
     <section className="space-y-3" aria-label={t('端末一覧の確認')}>
-      <h3 className="font-bold text-white">{t('端末一覧の確認')}</h3>
-      <p className="text-sm text-discord-muted">
+      <h3 className="font-semibold text-ink-strong">{t('端末一覧の確認')}</h3>
+      <p className="text-sm text-muted">
         {t('自分の別の端末と確認コードを照合できます。コードはその端末の画面で直接確認してください。')}
       </p>
       <button
         disabled={busy}
-        className="rounded-sm border border-discord-muted px-3 py-2"
+        className="rounded-lg border border-line-strong px-3 py-2 text-ink transition-colors hover:bg-hover"
         onClick={() => {
           void run(false);
         }}
@@ -51,7 +51,7 @@ export function DirectoryCheckpoint() {
         {t('確認コードを表示')}
       </button>
       {code && (
-        <code className="block select-all break-all rounded-sm bg-discord-bg p-3 text-sm">{code}</code>
+        <code className="block select-all break-all rounded-lg bg-canvas p-3 text-sm">{code}</code>
       )}
       <form
         className="space-y-2"
@@ -67,12 +67,12 @@ export function DirectoryCheckpoint() {
             onChange={(event) => setOtherCode(event.target.value)}
             autoComplete="off"
             spellCheck={false}
-            className="mt-2 block w-full rounded-sm bg-discord-bg p-3"
+            className="mt-2 block w-full rounded-lg bg-canvas p-3"
           />
         </label>
         <button
           disabled={busy || !otherCode.trim()}
-          className="rounded-sm bg-discord-accent px-3 py-2 text-white disabled:opacity-50"
+          className="rounded-lg bg-accent px-3 py-2 text-on-accent disabled:opacity-50"
         >
           {t('照合する')}
         </button>

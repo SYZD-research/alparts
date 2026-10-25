@@ -17,7 +17,11 @@ import { canSwipeMessage, messageSwipeAction } from './message-swipe-model';
 import { formatDateParts } from '../../stores/date-format';
 import { useUiStore } from '../../stores/ui.store';
 import { UserAvatar } from '../user/UserAvatar';
+import { Icon } from '../ui/Icon';
 import { useT } from '../../i18n';
+
+const MESSAGE_TOOL = 'flex h-8 w-8 items-center justify-center rounded-lg transition-colors disabled:opacity-40';
+const QUIET_TOOL = `${MESSAGE_TOOL} text-muted hover:bg-hover hover:text-ink-strong`;
 
 interface Props {
   message: Message;
@@ -114,7 +118,7 @@ export function MessageItem({ message, isFirst, onJumpToMessage, canPin = true }
 
   if (isDeleted) {
     return (
-      <div id={`message-${message.id}`} tabIndex={-1} className="px-4 py-1 text-sm italic text-discord-muted">
+      <div id={`message-${message.id}`} tabIndex={-1} className="px-4 py-1 text-sm italic text-muted">
         <span>{t('メッセージが削除されました')}</span>
         <button
           type="button"
@@ -133,7 +137,7 @@ export function MessageItem({ message, isFirst, onJumpToMessage, canPin = true }
               readOnly
               value={fallbackLink}
               onFocus={(event) => event.currentTarget.select()}
-              className="mt-1 block w-full rounded-sm bg-discord-input px-2 py-1 text-discord-text"
+              className="mt-1 block w-full rounded-lg bg-field px-2 py-1 text-ink"
             />
           </label>
         )}
@@ -166,8 +170,8 @@ export function MessageItem({ message, isFirst, onJumpToMessage, canPin = true }
     <div
       id={`message-${message.id}`}
       data-self-mention={mentionsCurrentUser ? 'true' : undefined}
-      className={`message-swipe group relative ${
-        mentionsCurrentUser ? '' : 'hover:bg-discord-hover/30'
+      className={`message-swipe group relative rounded-lg ${
+        mentionsCurrentUser ? '' : 'hover:bg-hover/45'
       } ${
         isFirst ? 'mt-4' : ''
       }`}
@@ -184,16 +188,16 @@ export function MessageItem({ message, isFirst, onJumpToMessage, canPin = true }
       {swipe.isDragging && swipe.offsetX < 0 && (
         <div
           className={`message-swipe-action pointer-events-none absolute inset-y-0 right-2 flex w-12 items-center justify-center gap-1 text-xs ${
-            swipeAction ? 'text-discord-accent' : 'text-discord-muted'
+            swipeAction ? 'text-accent' : 'text-muted'
           }`}
           role="status"
         >
-          <span aria-hidden="true" className="text-xl leading-none">{swipeAction === 'edit' ? '✎' : '↩'}</span>
+          <Icon name={swipeAction === 'edit' ? 'pencil' : 'reply'} size={20} />
           <span>{swipeAction === 'edit' ? t('編集') : t('返信')}</span>
         </div>
       )}
       <div
-        className={`message-swipe-content relative flex w-full gap-4 px-4 py-0.5 ${isFirst ? 'pt-2' : ''} ${swipe.isDragging ? 'bg-discord-bg' : ''}`}
+        className={`message-swipe-content relative flex w-full gap-4 px-4 py-0.5 ${isFirst ? 'pt-2' : ''} ${swipe.isDragging ? 'bg-canvas' : ''}`}
         style={{ transform: swipe.isDragging ? `translateX(${Math.max(-184, swipe.offsetX)}px)` : undefined }}
       >
         {isFirst ? (
@@ -204,7 +208,7 @@ export function MessageItem({ message, isFirst, onJumpToMessage, canPin = true }
             className={message.refMessageId ? 'mt-6' : 'mt-0.5'}
           />
         ) : (
-          <div className={`shrink-0 w-10 text-xs text-discord-muted text-center opacity-0 group-hover:opacity-100 ${message.refMessageId ? 'pt-7' : 'pt-1'}`}>
+          <div className={`shrink-0 w-10 text-xs text-muted text-center opacity-0 group-hover:opacity-100 ${message.refMessageId ? 'pt-7' : 'pt-1'}`}>
             {timestamp}
           </div>
         )}
@@ -215,10 +219,10 @@ export function MessageItem({ message, isFirst, onJumpToMessage, canPin = true }
               type="button"
               onClick={() => onJumpToMessage?.(message.refMessageId!)}
               disabled={!onJumpToMessage || referencedMessage === null}
-              className="relative mb-1 flex max-w-full items-center gap-1.5 text-left text-xs text-discord-muted hover:text-discord-text disabled:cursor-default"
+              className="mb-1 flex max-w-full items-center gap-1.5 rounded-md bg-panel/70 py-0.5 pl-1.5 pr-2 text-left text-xs text-muted transition-colors hover:bg-hover hover:text-ink disabled:cursor-default disabled:hover:bg-panel/70"
               aria-label={t('返信先のメッセージへ移動')}
             >
-              <span aria-hidden="true" className="absolute -left-9 top-1/2 h-4 w-9 -translate-y-px rounded-tl-md border-l-2 border-t-2 border-discord-hover" />
+              <Icon name="reply" size={13} />
               <UserAvatar
                 displayName={referencedMessage?.author?.displayName || '?'}
                 avatarUrl={referencedMessage?.author?.avatarUrl}
@@ -227,7 +231,7 @@ export function MessageItem({ message, isFirst, onJumpToMessage, canPin = true }
               />
               {referencedMessage ? (
                 <>
-                  <span className="shrink-0 font-semibold text-discord-text">{referencedMessage.author?.displayName || t('不明なユーザー')}</span>
+                  <span className="shrink-0 font-medium text-ink-soft">{referencedMessage.author?.displayName || t('不明なユーザー')}</span>
                   <span className="truncate">
                     {referencedMessage.type === 'delete'
                       ? t('削除されたメッセージ')
@@ -246,26 +250,26 @@ export function MessageItem({ message, isFirst, onJumpToMessage, canPin = true }
               <button
                 type="button"
                 onClick={() => { if (activeWorkspaceId) openMemberProfile(activeWorkspaceId, message.authorId); }}
-                className="font-medium text-white hover:underline"
+                className="font-semibold text-ink-strong hover:underline"
               >
                 {message.author?.displayName || t('不明なユーザー')}
               </button>
-              <span className="text-xs text-discord-muted">
+              <span className="text-xs text-muted">
                 {date} {timestamp}
               </span>
             </div>
           )}
 
-          <div className="text-discord-text leading-relaxed wrap-break-word prose prose-invert prose-sm max-w-none">
+          <div className="message-markdown wrap-break-word text-ink">
             <MessageContent
               content={message.content || ''}
               members={workspaceMembers}
               currentUserId={user?.id || null}
               authenticatedBroadcastMention={message.broadcastMention === true}
             />
-            {message.type === 'edit' && <span className="ml-1 text-xs text-discord-muted">{t('（編集済み）')}</span>}
-            {message.isPinned && <span className="ml-2 text-xs text-discord-yellow">{t('📌 ピン留め')}</span>}
-            {bookmarked && <span className="ml-2 text-xs text-discord-accent">{t('🔖 保存済み')}</span>}
+            {message.type === 'edit' && <span className="ml-1 text-xs text-muted">{t('（編集済み）')}</span>}
+            {message.isPinned && <span className="ml-2 text-xs text-warning">{t('📌 ピン留め')}</span>}
+            {bookmarked && <span className="ml-2 text-xs text-accent">{t('🔖 保存済み')}</span>}
           </div>
           {message.attachments?.map((attachment) => (
             <AttachmentItem
@@ -274,35 +278,36 @@ export function MessageItem({ message, isFirst, onJumpToMessage, canPin = true }
               message={attachmentKeyMessage || message}
             />
           ))}
-          {bookmarkFailure && <p role="alert" className="mt-1 text-xs text-discord-red">{bookmarkFailure}</p>}
-          {copyStatus && <p role="status" className="mt-1 text-xs text-discord-muted">{copyStatus}</p>}
+          {bookmarkFailure && <p role="alert" className="mt-1 text-xs text-danger">{bookmarkFailure}</p>}
+          {copyStatus && <p role="status" className="mt-1 text-xs text-muted">{copyStatus}</p>}
           {fallbackLink && (
-            <label className="mt-1 block text-xs text-discord-muted">
+            <label className="mt-1 block text-xs text-muted">
               {t('コピー用リンク')}
               <input
                 readOnly
                 value={fallbackLink}
                 onFocus={(event) => event.currentTarget.select()}
-                className="mt-1 block w-full rounded-sm bg-discord-input px-2 py-1 text-discord-text"
+                className="mt-1 block w-full rounded-lg bg-field px-2 py-1 text-ink"
               />
             </label>
           )}
 
           {/* Reactions */}
           {message.reactions && message.reactions.length > 0 && (
-            <div className="flex flex-wrap gap-1 mt-1">
+            <div className="mt-1.5 flex flex-wrap gap-1.5">
               {message.reactions.map((reaction) => (
                 <button
                   key={reaction.emoji}
+                  type="button"
                   onClick={() => handleReaction(reaction.emoji)}
-                  className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-sm border ${
+                  className={`flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-sm transition-colors ${
                     reaction.userIds?.includes(user?.id || '')
-                      ? 'bg-discord-accent/20 border-discord-accent text-discord-accent'
-                      : 'bg-discord-sidebar border-discord-hover text-discord-muted hover:border-discord-text'
+                      ? 'border-accent/45 bg-accent/10 text-accent'
+                      : 'border-line bg-panel/60 text-ink-soft hover:border-line-strong hover:bg-hover'
                   }`}
                 >
-                  <span>{reaction.emoji}</span>
-                  <span className="text-xs">{reaction.count}</span>
+                  <span className="leading-none">{reaction.emoji}</span>
+                  <span className="text-xs font-medium">{reaction.count}</span>
                 </button>
               ))}
             </div>
@@ -311,28 +316,33 @@ export function MessageItem({ message, isFirst, onJumpToMessage, canPin = true }
 
         {/* Action buttons */}
         {showActions && !swipe.isDragging && (
-          <div className="absolute -top-4 right-4 flex bg-discord-sidebar rounded-sm border border-discord-hover shadow-sm">
+          <div className="absolute -top-4 right-4 flex items-center gap-0.5 rounded-xl border border-line bg-raised p-1 shadow-lg shadow-black/30">
             <button
+              type="button"
               onClick={() => handleReaction('👍')}
-              className="px-2 py-1 hover:bg-discord-hover text-discord-muted hover:text-discord-text text-sm"
+              className={`${QUIET_TOOL} text-[15px]`}
               title={t('リアクション')}
             >
               👍
             </button>
             <button
+              type="button"
               onClick={() => selectMessageAction('reply')}
-              className="px-2 py-1 hover:bg-discord-hover text-discord-muted hover:text-discord-text text-sm"
+              className={QUIET_TOOL}
               title={t('返信')}
+              aria-label={t('返信')}
             >
-              ↩
+              <Icon name="reply" />
             </button>
             {canPin && (
               <button
+                type="button"
                 onClick={() => void pinMessage(message.id, message.channelId).catch(() => undefined)}
-                className="px-2 py-1 hover:bg-discord-hover text-discord-muted hover:text-discord-text text-sm"
+                className={`${MESSAGE_TOOL} hover:bg-hover ${message.isPinned ? 'text-warning' : 'text-muted hover:text-ink-strong'}`}
                 title={message.isPinned ? t('ピンを外す') : t('ピン留め')}
+                aria-label={message.isPinned ? t('ピンを外す') : t('ピン留め')}
               >
-                📌
+                <Icon name="pin" />
               </button>
             )}
             <button
@@ -341,36 +351,40 @@ export function MessageItem({ message, isFirst, onJumpToMessage, canPin = true }
               disabled={bookmarkSaving}
               aria-pressed={bookmarked}
               aria-label={bookmarked ? t('保存済みメッセージから削除') : t('メッセージを保存')}
-              className="px-2 py-1 hover:bg-discord-hover text-discord-muted hover:text-discord-text text-sm disabled:opacity-50"
+              className={`${MESSAGE_TOOL} hover:bg-hover ${bookmarked ? 'text-accent' : 'text-muted hover:text-ink-strong'}`}
               title={bookmarked ? t('保存済みから削除') : t('保存')}
             >
-              {bookmarked ? '🔖' : '♡'}
+              <Icon name="bookmark" filled={bookmarked} />
             </button>
             <button
               type="button"
               onClick={() => { void handleCopyLink(); }}
               disabled={!permalinkPath}
-              className="px-2 py-1 text-sm text-discord-muted hover:bg-discord-hover hover:text-discord-text disabled:opacity-40"
+              className={QUIET_TOOL}
               title={t('リンクをコピー')}
               aria-label={t('メッセージへのリンクをコピー')}
             >
-              🔗
+              <Icon name="link" />
             </button>
             {isOwn && (
               <>
                 <button
+                  type="button"
                   onClick={() => selectMessageAction('edit')}
-                  className="px-2 py-1 hover:bg-discord-hover text-discord-muted hover:text-discord-text text-sm"
+                  className={QUIET_TOOL}
                   title={t('編集')}
+                  aria-label={t('編集')}
                 >
-                  ✎
+                  <Icon name="pencil" />
                 </button>
                 <button
+                  type="button"
                   onClick={handleDelete}
-                  className="px-2 py-1 hover:bg-discord-red hover:text-white text-discord-muted text-sm"
+                  className={`${MESSAGE_TOOL} text-muted hover:bg-danger/15 hover:text-danger`}
                   title={t('削除')}
+                  aria-label={t('削除')}
                 >
-                  🗑
+                  <Icon name="trash" />
                 </button>
               </>
             )}

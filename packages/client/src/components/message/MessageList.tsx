@@ -9,6 +9,8 @@ import { latestReadableMessageId } from '../../stores/user-state-model';
 import { useWorkspaceStore } from '../../stores/workspace.store';
 import { focusMessageElement } from '../../services/message-navigation';
 import { MessageContent } from './MessageContent';
+import { Icon } from '../ui/Icon';
+import { UserAvatar } from '../user/UserAvatar';
 import { useT } from '../../i18n';
 
 interface Props {
@@ -129,7 +131,7 @@ export function MessageList({ channelId, visible: chatVisible = true }: Props) {
   if (isLoading && messages.length === 0) {
     return (
       <div className="flex-1 flex items-center justify-center">
-        <div className="text-discord-muted">{t('読み込み中…')}</div>
+        <div className="text-muted">{t('読み込み中…')}</div>
       </div>
     );
   }
@@ -152,13 +154,13 @@ export function MessageList({ channelId, visible: chatVisible = true }: Props) {
         className="flex-1 overflow-y-auto px-4 py-2"
       >
       {isLoadingMore && (
-        <div className="text-center py-2 text-discord-muted text-sm">
+        <div className="text-center py-2 text-muted text-sm">
           {t('さらに読み込み中...')}
         </div>
       )}
 
       {jumpError && (
-        <div role="alert" className="sticky top-1 z-10 mx-4 flex items-center justify-between gap-3 rounded-sm bg-discord-red/15 px-3 py-2 text-sm text-discord-red">
+        <div role="alert" className="sticky top-1 z-10 mx-4 flex items-center justify-between gap-3 rounded-lg bg-danger/15 px-3 py-2 text-sm text-danger">
           <span>{jumpError}</span>
           <button type="button" onClick={() => setJumpError(null)} className="underline">{t('閉じる')}</button>
         </div>
@@ -166,10 +168,12 @@ export function MessageList({ channelId, visible: chatVisible = true }: Props) {
 
       {messages.length === 0 && channelOutboxItems.length === 0 && (
         <div className="flex items-center justify-center h-full">
-          <div className="text-center text-discord-muted">
-            <div className="text-4xl mb-2">#</div>
-            <p className="font-bold text-lg text-discord-text">{t('このチャンネルの始まりです')}</p>
-            <p>{t('最初のメッセージを送信しましょう！')}</p>
+          <div className="text-center text-muted">
+            <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl border border-line bg-raised text-ink-soft">
+              <Icon name="hash" size={28} />
+            </div>
+            <p className="mb-1 text-lg font-semibold text-ink-strong">{t('このチャンネルの始まりです')}</p>
+            <p className="text-sm">{t('最初のメッセージを送信しましょう！')}</p>
           </div>
         </div>
       )}
@@ -187,21 +191,19 @@ export function MessageList({ channelId, visible: chatVisible = true }: Props) {
         <div
           key={item.id}
           data-outbox-status={item.status}
-          className="mt-4 flex gap-4 rounded-sm px-4 py-2 opacity-75 hover:bg-discord-hover/30"
+          className="mt-4 flex gap-4 rounded-lg px-4 py-2 opacity-75 hover:bg-hover/45"
         >
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-discord-accent font-bold text-white">
-            {(user?.displayName || '?').slice(0, 1).toUpperCase()}
-          </div>
+          <UserAvatar displayName={user?.displayName || '?'} />
           <div className="min-w-0 flex-1">
             <div className="flex items-baseline gap-2">
-              <span className="font-medium text-white">{user?.displayName || t('自分')}</span>
-              <span className="text-xs text-discord-muted">
+              <span className="font-semibold text-ink-strong">{user?.displayName || t('自分')}</span>
+              <span className="text-xs text-muted">
                 {item.status === 'sending' && t('送信中…')}
                 {item.status === 'queued' && t('未送信・自動送信待ち')}
                 {item.status === 'failed' && t('送信失敗')}
               </span>
             </div>
-            <div className="wrap-break-word text-discord-text">
+            <div className="message-markdown wrap-break-word text-ink">
               <MessageContent
                 content={item.content}
                 members={workspaceMembers}
@@ -209,7 +211,7 @@ export function MessageList({ channelId, visible: chatVisible = true }: Props) {
               />
             </div>
             {item.status !== 'sending' && (
-              <button type="button" onClick={() => retryOutboxItem(item.id)} className="mt-1 text-xs text-discord-muted underline hover:text-discord-text">
+              <button type="button" onClick={() => retryOutboxItem(item.id)} className="mt-1 text-xs text-muted underline hover:text-ink">
                 {item.status === 'failed' ? t('送信できませんでした — 再試行') : t('今すぐ再試行')}
               </button>
             )}

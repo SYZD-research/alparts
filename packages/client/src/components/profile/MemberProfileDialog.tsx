@@ -60,7 +60,7 @@ export function MemberProfileDialog() {
   return (
     <Dialog open={target !== null} onClose={() => { if (!busy) close(); }} title={profile?.displayName ?? t('プロフィール')} size="sm">
       {!profile || !target ? (
-        <p className="py-6 text-center text-discord-muted">{error ?? t('読み込み中…')}</p>
+        <p className="py-6 text-center text-muted">{error ?? t('読み込み中…')}</p>
       ) : (
         <MemberProfileView
           profile={profile}
@@ -95,15 +95,15 @@ export function MemberProfileView({ profile, revealed, busy, error, target, act,
   if (profile.flagged && !revealed) {
     return (
       <div className="space-y-4">
-        <p role="alert" className="rounded-sm border border-discord-red/60 bg-discord-red/10 p-3 text-sm text-discord-text">
+        <p role="alert" className="rounded-lg border border-danger/60 bg-danger/10 p-3 text-sm text-ink">
           {t('管理者がこのユーザーのプロフィールを')}<strong>{t('なりすまし・及び悪質なサービスへの誘導')}</strong>{t('とマークしています。それでも見ますか？')}
         </p>
         <div className="flex justify-end gap-2">
-          <button type="button" onClick={onClose} className="rounded-sm px-3 py-2 text-sm text-discord-muted hover:bg-discord-hover">{t('閉じる')}</button>
-          <button type="button" onClick={onReveal} className="rounded-sm bg-discord-red px-3 py-2 text-sm font-medium text-white">{t('見る')}</button>
+          <button type="button" onClick={onClose} className="rounded-lg px-3 py-2 text-sm text-muted hover:bg-hover">{t('閉じる')}</button>
+          <button type="button" onClick={onReveal} className="rounded-lg bg-danger px-3 py-2 text-sm font-medium text-white">{t('見る')}</button>
         </div>
         <ManagerActions profile={profile} busy={busy} act={act} target={target} />
-        {error && <p role="alert" className="text-sm text-discord-red">{error}</p>}
+        {error && <p role="alert" className="text-sm text-danger">{error}</p>}
       </div>
     );
   }
@@ -111,20 +111,20 @@ export function MemberProfileView({ profile, revealed, busy, error, target, act,
     <div className="space-y-4">
       <div className="flex items-center gap-4">
         <UserAvatar displayName={profile.displayName} avatarUrl={profile.avatarUrl} size="lg" />
-        <p className="min-w-0 wrap-break-word text-lg font-semibold text-white">{profile.displayName}</p>
+        <p className="min-w-0 wrap-break-word text-lg font-semibold text-ink-strong">{profile.displayName}</p>
       </div>
       {profile.flagged && (
-        <p className="rounded-sm bg-discord-red/10 px-3 py-2 text-xs text-discord-red">
+        <p className="rounded-lg bg-danger/10 px-3 py-2 text-xs text-danger">
           {t('管理者がこのプロフィールに警告を付けています。リンクや連絡先の誘導に注意してください。')}
         </p>
       )}
       {profile.bio ? (
-        <p className="whitespace-pre-wrap wrap-break-word text-sm text-discord-text">{profile.bio}</p>
+        <p className="whitespace-pre-wrap wrap-break-word text-sm text-ink">{profile.bio}</p>
       ) : (
-        <p className="text-sm text-discord-muted">{t('自己紹介はありません。')}</p>
+        <p className="text-sm text-muted">{t('自己紹介はありません。')}</p>
       )}
       <ManagerActions profile={profile} busy={busy} act={act} target={target} />
-      {error && <p role="alert" className="text-sm text-discord-red">{error}</p>}
+      {error && <p role="alert" className="text-sm text-danger">{error}</p>}
     </div>
   );
 }
@@ -138,18 +138,18 @@ function ManagerActions({ profile, busy, act, target }: {
   const t = useT();
   const [confirmFlag, setConfirmFlag] = useState(false);
   if (!profile.canManageFlag) return null;
-  const button = 'rounded-sm px-3 py-1.5 text-sm disabled:opacity-50';
+  const button = 'rounded-lg px-3 py-1.5 text-sm disabled:opacity-50';
   return (
-    <section className="space-y-2 border-t border-discord-hover pt-3 text-sm">
-      <p className="text-xs text-discord-muted">{t('管理者の操作（このワークスペースのみ）')}</p>
+    <section className="space-y-2 border-t border-line pt-3 text-sm">
+      <p className="text-xs text-muted">{t('管理者の操作（このワークスペースのみ）')}</p>
       {profile.flagged ? (
         <div className="flex flex-wrap gap-2">
-          {profile.appealStatus === 'pending' && <p className="w-full text-discord-yellow">{t('このユーザーから警告の解除を依頼されています。')}</p>}
-          <button type="button" disabled={busy} onClick={() => { void act(() => api.unflagProfile(target.workspaceId, target.userId)); }} className={`${button} bg-discord-hover text-white`}>
+          {profile.appealStatus === 'pending' && <p className="w-full text-warning">{t('このユーザーから警告の解除を依頼されています。')}</p>}
+          <button type="button" disabled={busy} onClick={() => { void act(() => api.unflagProfile(target.workspaceId, target.userId)); }} className={`${button} bg-hover text-ink-strong`}>
             {profile.appealStatus === 'pending' ? t('依頼を認めて警告を外す') : t('警告を外す')}
           </button>
           {profile.appealStatus === 'pending' && (
-            <button type="button" disabled={busy} onClick={() => { void act(() => api.denyProfileAppeal(target.workspaceId, target.userId)); }} className={`${button} text-discord-red hover:bg-discord-red/10`}>
+            <button type="button" disabled={busy} onClick={() => { void act(() => api.denyProfileAppeal(target.workspaceId, target.userId)); }} className={`${button} text-danger hover:bg-danger/10`}>
               {t('依頼を認めない')}
             </button>
           )}
@@ -158,12 +158,12 @@ function ManagerActions({ profile, busy, act, target }: {
         <div className="space-y-2">
           <p>{t('このワークスペースのメンバーがこのプロフィールを見る前に、確認を表示します。よろしいですか？')}</p>
           <div className="flex gap-2">
-            <button type="button" disabled={busy} onClick={() => { setConfirmFlag(false); void act(() => api.flagProfile(target.workspaceId, target.userId)); }} className={`${button} bg-discord-red text-white`}>{t('警告を付ける')}</button>
-            <button type="button" disabled={busy} onClick={() => setConfirmFlag(false)} className={`${button} text-discord-muted hover:bg-discord-hover`}>{t('やめる')}</button>
+            <button type="button" disabled={busy} onClick={() => { setConfirmFlag(false); void act(() => api.flagProfile(target.workspaceId, target.userId)); }} className={`${button} bg-danger text-white`}>{t('警告を付ける')}</button>
+            <button type="button" disabled={busy} onClick={() => setConfirmFlag(false)} className={`${button} text-muted hover:bg-hover`}>{t('やめる')}</button>
           </div>
         </div>
       ) : (
-        <button type="button" disabled={busy} onClick={() => setConfirmFlag(true)} className={`${button} text-discord-red hover:bg-discord-red/10`}>
+        <button type="button" disabled={busy} onClick={() => setConfirmFlag(true)} className={`${button} text-danger hover:bg-danger/10`}>
           {t('なりすまし・悪質なサービスへの誘導として警告を付ける')}
         </button>
       )}

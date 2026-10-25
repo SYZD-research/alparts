@@ -9,12 +9,12 @@ export function LanguageSelect({ className = '' }: { className?: string }) {
 
   return (
     <div className={className}>
-      <label htmlFor={id} className="block text-sm text-discord-muted">{t('表示言語')}</label>
+      <label htmlFor={id} className="block text-sm text-muted">{t('表示言語')}</label>
       <select
         id={id}
         value={preference}
         onChange={(event) => setPreference(event.target.value as LocalePreference)}
-        className="mt-1 block w-full rounded-sm bg-discord-input px-3 py-2 text-sm text-discord-text"
+        className="mt-1 block w-full rounded-lg bg-field px-3 py-2 text-sm text-ink"
       >
         <option value="system">{t('システムの設定に合わせる')}</option>
         <option value="ja" lang="ja">{LANGUAGE_NAMES.ja}</option>

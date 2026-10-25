@@ -42,7 +42,7 @@ describe('MessageContent', () => {
       expect(html, content).toContain('title="新しいタブでリンクを開く"');
       expect(html, content).toContain('↗</span></a>');
       expect(html, content).not.toContain('<button');
-      expect(html, content).not.toContain('bg-discord-hover');
+      expect(html, content).not.toContain('bg-hover');
     }
   });
 

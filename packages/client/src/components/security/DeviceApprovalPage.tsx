@@ -41,13 +41,13 @@ export function DeviceApprovalPage({ onApproved }: { onApproved: () => void }) {
     };
   }, [onApproved]);
   return (
-    <main className="min-h-screen bg-discord-bg p-6 text-discord-text">
-      <div className="mx-auto max-w-xl space-y-6 rounded-sm bg-discord-sidebar p-6">
-        <h1 className="text-xl font-bold text-white">{t('この端末の承認を待っています')}</h1>
+    <main className="min-h-screen bg-canvas p-6 text-ink">
+      <div className="mx-auto max-w-xl space-y-6 rounded-2xl border border-line bg-panel p-6 shadow-2xl shadow-black/30 sm:p-8">
+        <h1 className="text-xl font-semibold text-ink-strong">{t('この端末の承認を待っています')}</h1>
         <p>
           {t('以前から使っている端末で「ログイン中の端末」を開き、この端末を承認してください。表示される確認コードが一致していることを確認してください。')}
         </p>
-        <p className="select-all rounded-sm bg-discord-bg p-3 font-mono text-lg">{fingerprint}</p>
+        <p className="select-all rounded-xl border border-line bg-canvas p-3 font-mono text-lg">{fingerprint}</p>
         {error && (
           <p role="alert">{t('端末の情報を確認できませんでした。接続を確認してお試しください。')}</p>
         )}
@@ -62,7 +62,7 @@ export function DeviceApprovalPage({ onApproved }: { onApproved: () => void }) {
           onClick={() => {
             void useAuthStore.getState().logout();
           }}
-          className="text-discord-muted"
+          className="text-sm text-muted underline-offset-4 hover:text-ink hover:underline"
         >
           {t('ログアウト')}
         </button>

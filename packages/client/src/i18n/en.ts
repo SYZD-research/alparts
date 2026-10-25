@@ -994,7 +994,7 @@ export const en = {
   'オフライン': 'Offline',
   '退席中': 'Away',
   '候補を読み込めませんでした': 'Could not load suggestions',
-  '＋ 画像・ファイル（最大{count}件・各100MB）': '+ Images or files (up to {count}, 100 MB each)',
+  '画像・ファイル（最大{count}件・各100MB）': 'Images or files (up to {count}, 100 MB each)',
   '送信する画像またはファイルを選択': 'Choose images or files to send',
   'オフライン中は本文のみ保存され、接続復旧後に自動送信されます': 'While offline, only the text is kept and sent automatically when you reconnect',
   '変更を保存': 'Save changes',

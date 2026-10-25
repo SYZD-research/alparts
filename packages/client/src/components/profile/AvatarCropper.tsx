@@ -114,11 +114,11 @@ export function AvatarCropper({ bitmap, busy, onConfirm, onCancel }: {
 
   const largest = maxFrameSize(source, state);
   const zoomBy = (factor: number) => setState(setZoom(source, state, state.zoom * factor));
-  const control = 'h-8 w-8 shrink-0 rounded-sm bg-discord-hover text-white disabled:opacity-50';
+  const control = 'h-8 w-8 shrink-0 rounded-lg bg-hover text-ink-strong disabled:opacity-50';
 
   return (
     <div className="space-y-4">
-      <p className="text-sm text-discord-muted">
+      <p className="text-sm text-muted">
         {t('枠の中がアイコンになります。画像や枠をドラッグして位置を、枠の角で大きさを調整できます。')}
       </p>
       <div className="flex flex-wrap items-start justify-center gap-4">
@@ -132,7 +132,7 @@ export function AvatarCropper({ bitmap, busy, onConfirm, onCancel }: {
           onPointerUp={pointerUp}
           onPointerCancel={pointerUp}
           onKeyDown={keyDown}
-          className="relative shrink-0 cursor-move touch-none select-none overflow-hidden rounded-sm bg-black/40 outline-hidden focus-visible:ring-2 focus-visible:ring-discord-accent"
+          className="relative shrink-0 cursor-move touch-none select-none overflow-hidden rounded-lg bg-black/40 outline-hidden focus-visible:ring-2 focus-visible:ring-accent"
           style={{ width: CROP_STAGE, height: CROP_STAGE }}
         >
           <canvas ref={canvas} className="pointer-events-none absolute inset-0" style={{ width: CROP_STAGE, height: CROP_STAGE }} />
@@ -143,17 +143,17 @@ export function AvatarCropper({ bitmap, busy, onConfirm, onCancel }: {
           >
             <div className="pointer-events-none absolute inset-0 rounded-full border border-white/70" />
             {CORNERS.map(({ corner, className }) => (
-              <span key={corner} data-corner={corner} className={`absolute h-4 w-4 rounded-xs border-2 border-discord-bg bg-white ${className}`} />
+              <span key={corner} data-corner={corner} className={`absolute h-4 w-4 rounded-xs border-2 border-line bg-white ${className}`} />
             ))}
           </div>
         </div>
-        <div className="flex flex-col items-center gap-1 text-xs text-discord-muted">
+        <div className="flex flex-col items-center gap-1 text-xs text-muted">
           <canvas ref={preview} className="rounded-full bg-black/40" style={{ width: PREVIEW_SIZE, height: PREVIEW_SIZE }} />
           {t('仕上がり')}
         </div>
       </div>
 
-      <div className="space-y-3 text-sm text-discord-muted">
+      <div className="space-y-3 text-sm text-muted">
         <div className="flex items-center gap-2">
           <span className="w-20 shrink-0">{t('拡大')}</span>
           <button type="button" aria-label={t('縮小')} disabled={busy} onClick={() => zoomBy(1 / 1.25)} className={control}>−</button>
@@ -166,7 +166,7 @@ export function AvatarCropper({ bitmap, busy, onConfirm, onCancel }: {
             aria-label={t('拡大率')}
             value={Math.round(zoomToSlider(state.zoom))}
             onChange={(event) => setState(setZoom(source, state, sliderToZoom(Number(event.target.value))))}
-            className="min-w-0 flex-1 accent-discord-accent"
+            className="min-w-0 flex-1 accent-accent"
           />
           <button type="button" aria-label={t('拡大')} disabled={busy} onClick={() => zoomBy(1.25)} className={control}>＋</button>
         </div>
@@ -180,20 +180,20 @@ export function AvatarCropper({ bitmap, busy, onConfirm, onCancel }: {
             disabled={busy || largest <= MIN_FRAME}
             value={Math.round(state.frameSize)}
             onChange={(event) => setState(setFrameSize(source, state, Number(event.target.value)))}
-            className="min-w-0 flex-1 accent-discord-accent"
+            className="min-w-0 flex-1 accent-accent"
           />
         </label>
       </div>
 
       <div className="flex justify-between gap-2">
-        <button type="button" disabled={busy} onClick={() => setState(initialCrop(source))} className="rounded-sm px-3 py-2 text-sm text-discord-muted hover:bg-discord-hover disabled:opacity-50">
+        <button type="button" disabled={busy} onClick={() => setState(initialCrop(source))} className="rounded-lg px-3 py-2 text-sm text-muted hover:bg-hover disabled:opacity-50">
           {t('元に戻す')}
         </button>
         <div className="flex gap-2">
-          <button type="button" disabled={busy} onClick={onCancel} className="rounded-sm px-3 py-2 text-sm text-discord-muted hover:bg-discord-hover disabled:opacity-50">
+          <button type="button" disabled={busy} onClick={onCancel} className="rounded-lg px-3 py-2 text-sm text-muted hover:bg-hover disabled:opacity-50">
             {t('やめる')}
           </button>
-          <button type="button" disabled={busy} onClick={() => onConfirm(toSourceCrop(source, state))} className="rounded-sm bg-discord-accent px-4 py-2 text-sm font-medium text-white disabled:opacity-50">
+          <button type="button" disabled={busy} onClick={() => onConfirm(toSourceCrop(source, state))} className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-on-accent disabled:opacity-50">
             {busy ? t('保存中…') : t('この範囲で設定')}
           </button>
         </div>
