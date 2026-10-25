@@ -5861,9 +5861,9 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 --------------------------------------------------------------------------------
 
-body-parser 2.3.0
+body-parser 2.4.0
 License: MIT
-Package: pkg:npm/body-parser@2.3.0
+Package: pkg:npm/body-parser@2.4.0
 
 (The MIT License)
 
@@ -10290,9 +10290,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 --------------------------------------------------------------------------------
 
-nodemailer 10.1.3
+nodemailer 10.2.1
 License: MIT-0
-Package: pkg:npm/nodemailer@10.1.3
+Package: pkg:npm/nodemailer@10.2.1
 
 Copyright (c) 2011-2023 Andris Reinman
 
@@ -10917,9 +10917,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 --------------------------------------------------------------------------------
 
-qs 6.16.0
+qs 6.16.1
 License: BSD-3-Clause
-Package: pkg:npm/qs@6.16.0
+Package: pkg:npm/qs@6.16.1
 
 BSD 3-Clause License
 
@@ -12831,9 +12831,9 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 Desktop runtime
 ================================================================================
 
-Electron 44.7.2
+Electron 44.9.3
 License: MIT
-Package: pkg:npm/electron@44.7.2
+Package: pkg:npm/electron@44.9.3
 
 Copyright (c) Electron contributors
 Copyright (c) 2013-2020 GitHub Inc.
