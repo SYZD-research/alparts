@@ -40,16 +40,30 @@ export function fenced(text) {
   return `${fence}text\n${text}\n${fence}`;
 }
 
-async function api(path) {
+// A request to the repository's GitHub API; body is sent as JSON. Failures
+// carry the HTTP status.
+export async function api(path, { method = 'GET', body } = {}) {
   const headers = {
     accept: 'application/vnd.github+json',
     'user-agent': 'alparts-maintenance',
     'x-github-api-version': '2022-11-28',
   };
   if (process.env.GH_TOKEN) headers.authorization = `Bearer ${process.env.GH_TOKEN}`;
+  const init = { method, headers };
+  if (body !== undefined) {
+    headers['content-type'] = 'application/json';
+    init.body = JSON.stringify(body);
+  }
   const base = process.env.GITHUB_API_URL ?? 'https://api.github.com';
-  const response = await fetch(`${base}/repos/${process.env.GITHUB_REPOSITORY}${path}`, { headers });
-  if (!response.ok) throw new Error(`GitHub API ${path} failed (${response.status})`);
+  const response = await fetch(`${base}/repos/${process.env.GITHUB_REPOSITORY}${path}`, init);
+  if (!response.ok) {
+    const json = await response.json().catch(() => null);
+    const detail = [json?.message, ...(Array.isArray(json?.errors) ? json.errors : [])]
+      .map((item) => (typeof item === 'string' ? item : item?.message)).filter(Boolean).join('; ');
+    const error = new Error(`GitHub API ${path} failed (${response.status})${detail ? `: ${detail}` : ''}`);
+    error.status = response.status;
+    throw error;
+  }
   return response.json();
 }
 
