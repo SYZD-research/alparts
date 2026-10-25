@@ -4,19 +4,23 @@
 //
 //   node collect.mjs deps
 //   node collect.mjs issue --number <n> [--snapshot <file>]
+//   node collect.mjs docs [--limit <n>]
 //
 // --snapshot is a JSON file with the issue's title and body when it was
-// labelled; the issue is skipped if they have changed since.
+// labelled; the issue is skipped if they have changed since. docs takes its
+// work from the git history (docs-drift.mjs), so it needs a full clone.
 //
 // Uses GITHUB_REPOSITORY, GITHUB_API_URL and, when set, GH_TOKEN.
 
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
+import { DEFAULT_LIMIT, findDrift, renderDocsTask } from './docs-drift.mjs';
 
 export const FIX_LABEL = 'ai-fix';
 export const EOL_LABEL = 'end-of-support';
 export const DEPS_BRANCH_PREFIX = 'ai-maintenance/deps-';
+export const DOCS_BRANCH_PREFIX = 'ai-maintenance/docs-';
 export const issueBranchPrefix = (number) => `ai-maintenance/issue-${number}-`;
 // Comments from anyone else on a labelled issue are left out of the task.
 const TRUSTED_AUTHORS = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
@@ -166,10 +170,18 @@ async function collectIssue(number, snapshot) {
   return { outputs: { work: 'true', number: issue.number }, task: renderIssueTask(issue, comments) };
 }
 
+async function collectDocs(limit) {
+  const pulls = await api('/pulls?state=open&per_page=100');
+  if (hasOpenBranch(pulls, DOCS_BRANCH_PREFIX)) return { outputs: { busy: 'true', work: 'false' } };
+  const { items, total } = findDrift({ limit });
+  if (!items.length) return { outputs: { busy: 'false', work: 'false' } };
+  return { outputs: { busy: 'false', work: 'true' }, task: renderDocsTask(items, total) };
+}
+
 async function main() {
   const { values, positionals } = parseArgs({
     allowPositionals: true,
-    options: { number: { type: 'string' }, snapshot: { type: 'string' } },
+    options: { number: { type: 'string' }, snapshot: { type: 'string' }, limit: { type: 'string' } },
   });
   if (!process.env.GITHUB_REPOSITORY) throw new Error('GITHUB_REPOSITORY is required');
   let result;
@@ -178,8 +190,10 @@ async function main() {
   } else if (positionals[0] === 'issue' && /^[1-9][0-9]*$/.test(values.number ?? '')) {
     const snapshot = values.snapshot ? JSON.parse(await readFile(values.snapshot, 'utf8')) : null;
     result = await collectIssue(values.number, snapshot);
+  } else if (positionals[0] === 'docs' && /^(?:0|[1-9][0-9]*)?$/.test(values.limit ?? '')) {
+    result = await collectDocs(values.limit ? Number(values.limit) : DEFAULT_LIMIT);
   } else {
-    throw new Error('usage: collect.mjs deps | issue --number <n> [--snapshot <file>]');
+    throw new Error('usage: collect.mjs deps | issue --number <n> [--snapshot <file>] | docs [--limit <n>]');
   }
   console.log(JSON.stringify(result));
 }

@@ -205,6 +205,20 @@ pnpm --filter @alparts/server test:account-security
 
 画面の文言はすべて[packages/client/src/i18n](packages/client/src/i18n)の翻訳関数を通します。日本語の文言をそのままキーとして使い、英語の辞書（`en.ts`）はそのキーに対して型付けしているため、英訳が欠けると型チェックで失敗します。`t()`を通さない日本語の文言を追加した場合も、クライアントのテストが失敗します。デスクトップのメニュー、Androidのリソース、登録用メールは、それぞれ日本語と英語の文言を個別に持っています。
 
+### AIエージェントと開発する場合
+
+各ディレクトリとソースファイルには、[dirdoc](https://github.com/SYZD-research/dirdoc)で書いた説明が`.dirdoc/`ディレクトリに保存されています。エージェントはこの説明を読んでコードの構成を把握し、コードを変更したときは説明も更新します（手順は[AGENTS.md](AGENTS.md)にあります）。エージェントにこのリポジトリで作業させる前に、dirdocをインストールし（Goが必要です）、クローンごとに一度、説明の変更をgitで差分表示できるように設定してください。
+
+```bash
+go install github.com/SYZD-research/dirdoc/cmd/dirdoc@latest
+```
+
+```bash
+dirdoc init --git
+```
+
+説明を変更したら`dirdoc check`を実行してください。コードに追いついていない説明は、週に一度のワークフローでも更新案が作られます。
+
 ## ドキュメント
 
 - [ドキュメント一覧](docs/INDEX.ja.md) — 設計・運用・検証資料の入口

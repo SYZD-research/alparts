@@ -205,6 +205,20 @@ Never run the integration tests against an environment that holds real data. Bui
 
 All interface text goes through the translator in [packages/client/src/i18n](packages/client/src/i18n). The Japanese text is the message key, and the English catalog (`en.ts`) is typed against those keys, so a missing translation fails the type check. A client test also fails if Japanese text is added without going through `t()`. The desktop menu, Android resources and registration emails have their own small English and Japanese string sets.
 
+### Working with AI agents
+
+Each directory and source file has a description written with [dirdoc](https://github.com/SYZD-research/dirdoc), kept in the `.dirdoc/` directories. Agents read these to find their way around the code and update them when they change it, as [AGENTS.md](AGENTS.md) explains. Before letting an agent work on this repository, install dirdoc (Go is required) and set up git to show changes to the descriptions as text, once per clone:
+
+```bash
+go install github.com/SYZD-research/dirdoc/cmd/dirdoc@latest
+```
+
+```bash
+dirdoc init --git
+```
+
+Run `dirdoc check` after changing descriptions. A weekly workflow also proposes updates for descriptions that have fallen behind the code.
+
 ## Documentation
 
 - [Documentation index](docs/INDEX.md) — Entry point to design, operations and verification documents
