@@ -14,6 +14,16 @@ docker compose version >/dev/null 2>&1 || die "docker compose プラグインが
 # pnpm loads into every script, including the application.
 STORAGE_ADMIN_ENV="$PWD/.local/storage-admin.env"
 
+# Present while a setup this script started has yet to provision the audit
+# checkpoint, so a run that stopped earlier (Ctrl+C, a failed step) finishes
+# it next time. A checkpoint that existed and went missing gets no mark and is
+# never re-created here (docs/OPERATIONS.md).
+AUDIT_SETUP_PENDING="$PWD/.local/audit-checkpoint.pending"
+mark_audit_setup_pending() {
+  mkdir -p .local
+  (umask 077 && : > "$AUDIT_SETUP_PENDING")
+}
+
 # --tailscale also serves the development client to this tailnet over HTTPS,
 # so an Android device on the same tailnet can use it as its server.
 use_tailscale=0
@@ -73,6 +83,8 @@ created_env=0
 if [ ! -f .env ]; then
   info ".env が存在しないため、ランダムなシークレット付きで生成します"
   umask 077
+  # Marked before .env is written, so an interruption never leaves .env without the mark.
+  mark_audit_setup_pending
   db_pass="$(rand_hex 24)"
   cat > .env <<EOF
 POSTGRES_USER=alparts
@@ -233,6 +245,7 @@ if [ -z "${PASSWORD_PEPPER:-}" ] && [ -z "${PASSWORD_PEPPER_FILE:-}" ]; then
 fi
 if [ -z "${AUDIT_CHECKPOINT_PATH:-}" ]; then
   info ".env に監査チェックポイントの設定がないため、ローカルの検証ファイルを追加します"
+  mark_audit_setup_pending
   AUDIT_CHECKPOINT_PATH="$PWD/.local/audit-checkpoint.json"
   AUDIT_CHECKPOINT_REQUIRED=true
   append_env AUDIT_CHECKPOINT_PATH "$AUDIT_CHECKPOINT_PATH"
@@ -321,8 +334,16 @@ pnpm install
 info "データベースマイグレーションを実行します"
 pnpm --filter @alparts/server exec tsx src/scripts/migrate-runtime.ts
 
-if [ "${created_env}" = 1 ] || [ "${checkpoint_added}" = 1 ]; then
-  pnpm --filter @alparts/server audit:checkpoint:init
+if [ -f "${AUDIT_SETUP_PENDING}" ]; then
+  if [ "${created_env}" = 0 ] && [ "${checkpoint_added}" = 0 ]; then
+    info "前回のセットアップが監査チェックポイントの初期化の前に止まったため、続きから初期化します"
+  fi
+  # A run that stopped after initializing but before clearing the mark has
+  # already written the checkpoint; it is kept.
+  if [ ! -f "${AUDIT_CHECKPOINT_PATH}" ]; then
+    pnpm --filter @alparts/server audit:checkpoint:init
+  fi
+  rm -f -- "${AUDIT_SETUP_PENDING}"
 else
   # 保存先を追記した回だけでなく、移行が済むまで毎回止める。
   # 起動時に head を自動作成しないのは意図した動作 (docs/OPERATIONS.ja.md)。

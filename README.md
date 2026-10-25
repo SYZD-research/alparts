@@ -84,7 +84,7 @@ Run this from the repository root.
 ./dev.sh
 ```
 
-The first run generates development credentials and saves them to `.env` (only the storage administrator credentials go to `.local/storage-admin.env`, so that they never reach the app). It then starts PostgreSQL and S3-compatible storage (SeaweedFS), installs dependencies, migrates the database and initializes the audit checkpoint, and finally starts the web client and the API. Docker is driven with `sudo docker compose`.
+The first run generates development credentials and saves them to `.env` (only the storage administrator credentials go to `.local/storage-admin.env`, so that they never reach the app). It then starts PostgreSQL and S3-compatible storage (SeaweedFS), installs dependencies, migrates the database and initializes the audit checkpoint, and finally starts the web client and the API. If the first run stops before the checkpoint is initialized, the next `./dev.sh` finishes it. Docker is driven with `sudo docker compose`.
 
 | Service | URL |
 | --- | --- |
