@@ -18,6 +18,7 @@ import {
   leaveUserChannelRooms,
 } from '../websocket/room-membership.js';
 import { emitChannelKeyState, keyStateChannelIds } from '../websocket/key-state.js';
+import { emitWorkspaceChannelsChanged } from '../websocket/workspace-events.js';
 import { canonicalUuid } from '../security/canonical-id.js';
 
 const router = Router();
@@ -64,6 +65,7 @@ router.post('/workspaces/:wid/channels', authMiddleware, requireWorkspacePermiss
       topic: body.topic,
       position: body.position,
     }, req.userId!);
+    emitWorkspaceChannelsChanged(req.app.get('io') as SocketServer | undefined, req.params.wid);
     res.status(201).json(channel);
   } catch (error: any) {
     if (error.name === 'ZodError' || error.message === 'INVALID_CATEGORY') {
@@ -120,6 +122,7 @@ router.put('/channels/:id', authMiddleware, requireChannelPermission(Permissions
     }
     if (result.rotationRequired || result.gainedUserIds.length > 0) void emitChannelKeyState(io, [req.params.id]);
     io?.to(`channel:${req.params.id}`).emit('channel:updated', result.channel);
+    emitWorkspaceChannelsChanged(io, result.workspaceId);
     res.json(result.channel);
   } catch (error: any) {
     if (error.message === 'MEMBER_HIERARCHY') {
@@ -160,6 +163,7 @@ router.delete('/channels/:id', authMiddleware, requireChannelPermission(Permissi
       });
     }
     if (io) clearDeletedChannelRooms(io, req.params.id);
+    emitWorkspaceChannelsChanged(io, result.workspaceId);
     res.json({ success: true });
   } catch (error: any) {
     if (error.message === 'MEMBER_HIERARCHY') {
@@ -196,6 +200,8 @@ router.post('/channels/:id/members', authMiddleware, requireChannelPermission(Pe
     }
     io?.to(`channel:${req.params.id}`).emit('channel:member-added', member);
     void emitChannelKeyState(io, keyStateChannelIds(member.roomEffects));
+    // The added member's list gains the channel.
+    emitWorkspaceChannelsChanged(io, member.workspaceId);
     res.status(201).json(member);
   } catch (error: any) {
     if (error.name === 'ZodError') {
@@ -229,6 +235,7 @@ router.delete('/channels/:id/members/:userId', authMiddleware, requireChannelPer
     }
     io?.to(`channel:${req.params.id}`).emit('channel:member-removed', result);
     if (result.rotationRequired) void emitChannelKeyState(io, [req.params.id]);
+    emitWorkspaceChannelsChanged(io, result.workspaceId);
     res.json({ success: true });
   } catch (error: any) {
     if (['CHANNEL_NOT_FOUND', 'PRIVATE_CHANNEL_NOT_FOUND', 'CHANNEL_MEMBER_NOT_FOUND'].includes(error.message)) {
@@ -251,6 +258,7 @@ router.post('/workspaces/:wid/categories', authMiddleware, requireWorkspacePermi
   try {
     const body = createCategorySchema.parse(req.body);
     const category = await channelService.createCategory(req.params.wid, body.name, body.position, req.userId!);
+    emitWorkspaceChannelsChanged(req.app.get('io') as SocketServer | undefined, req.params.wid);
     res.status(201).json(category);
   } catch (error: any) {
     if (error.name === 'ZodError' || error.message === 'INVALID_POSITION') {
@@ -282,6 +290,7 @@ router.put('/workspaces/:wid/categories/:categoryId', authMiddleware, requireWor
       res.status(404).json({ error: 'NOT_FOUND', message: 'Category not found', statusCode: 404 });
       return;
     }
+    emitWorkspaceChannelsChanged(req.app.get('io') as SocketServer | undefined, req.params.wid);
     res.json(category);
   } catch (error: any) {
     if (error.name === 'ZodError' || error.message === 'INVALID_POSITION') {
@@ -327,6 +336,7 @@ router.delete('/workspaces/:wid/categories/:categoryId', authMiddleware, require
       });
     }
     void emitChannelKeyState(io, keyStateChannelIds(result.roomEffects));
+    emitWorkspaceChannelsChanged(io, result.workspaceId);
     res.json(result.response);
   } catch (error: any) {
     if (error.message === 'MEMBER_HIERARCHY') {

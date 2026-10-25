@@ -14,6 +14,7 @@ import { MessageContent } from '../message/MessageContent';
 import { AttachmentItem } from '../message/AttachmentItem';
 import { UserAvatar } from '../user/UserAvatar';
 import { isPictureHidden } from '../../stores/profile-visibility';
+import { currentAuthor } from '../../stores/author-profile';
 import { Dialog } from '../ui/Dialog';
 import { TagPicker } from './ForumView';
 import { FORUM_UNREADABLE_DETAIL, forumPostDisplay, formatForumTime } from './forum-display';
@@ -80,7 +81,8 @@ export function ForumPostView({ channelId, postId, sendDisabled }: Props) {
   const locked = Boolean(state?.locked);
   const canReply = Boolean(viewer?.canReply) && (!locked || canManage);
   const tags = (state?.tagIds ?? []).flatMap((tagId) => view?.tags.find((tag) => tag.id === tagId) ?? []);
-  const authorName = root?.author?.displayName || members.find((member) => member.userId === state?.authorId)?.user.displayName || t('不明なユーザー');
+  const author = currentAuthor(members, root?.authorId ?? state?.authorId, root?.author);
+  const authorName = author.displayName || t('不明なユーザー');
 
   const back = () => void openPost(channelId, null);
 
@@ -218,7 +220,7 @@ export function ForumPostView({ channelId, postId, sendDisabled }: Props) {
                   {root && (
                     <UserAvatar
                       displayName={authorName}
-                      avatarUrl={root.author?.avatarUrl}
+                      avatarUrl={author.avatarUrl}
                       hidden={isPictureHidden(root.authorId, members, warnedUsers)}
                       size="sm"
                     />

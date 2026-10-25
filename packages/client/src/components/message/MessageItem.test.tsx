@@ -34,6 +34,15 @@ describe('MessageItem quotes', () => {
   });
 });
 
+describe('MessageItem readability', () => {
+  it('says a message cannot be read on this device instead of leaving it blank', () => {
+    const html = renderToStaticMarkup(
+      <MessageItem message={markMessageKeyUnavailable({ ...replyMessage(), refMessageId: null })} isFirst />,
+    );
+    expect(html).toContain('この端末では読めないメッセージです（参加する前のメッセージなど）');
+  });
+});
+
 describe('message swipe actions', () => {
   it('replies at 64 pixels and edits an own message at 136 pixels', () => {
     expect(messageSwipeAction(-63, true)).toBeNull();

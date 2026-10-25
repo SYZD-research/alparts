@@ -48,6 +48,8 @@ export function useSocketEvents() {
   const loadWorkspaceState = useUserStateStore((state) => state.loadWorkspaceState);
   const loadWorkspaces = useWorkspaceStore((state) => state.loadWorkspaces);
   const loadMembers = useWorkspaceStore((state) => state.loadMembers);
+  const loadCategories = useWorkspaceStore((state) => state.loadCategories);
+  const loadDms = useDmStore((state) => state.loadDms);
   const setActiveWorkspace = useWorkspaceStore((state) => state.setActiveWorkspace);
   const userId = useAuthStore((state) => state.user?.id);
   const resumeFailedUploads = useAttachmentStore((state) => state.resumeFailedUploads);
@@ -164,7 +166,7 @@ export function useSocketEvents() {
       await Promise.allSettled(previousChannelIds
         .filter((channelId) => !visibleIds.has(channelId))
         .map((channelId) => clearChannelSecurityScope(workspaceId, channelId)));
-      await Promise.allSettled([loadWorkspaceState(workspaceId), loadMembers(workspaceId)]);
+      await Promise.allSettled([loadWorkspaceState(workspaceId), loadMembers(workspaceId), loadCategories(workspaceId)]);
       syncLoadedWorkspaceKeys(workspaceId);
     };
 
@@ -289,6 +291,11 @@ export function useSocketEvents() {
         enqueueAuthorizationWork(() => refreshWorkspaceAuthorization(data.workspaceId));
       }
     };
+    // Channels or categories were added, changed or removed by someone else.
+    const onWorkspaceChannelsChanged = (value: unknown) => {
+      const data = parseWorkspaceAuthorizationRefresh(value);
+      if (data) enqueueAuthorizationWork(() => refreshWorkspaceAuthorization(data.workspaceId));
+    };
     const onWorkspaceKeyStateDirty = (value: unknown) => {
       const data = parseWorkspaceAuthorizationRefresh(value);
       if (!data) return;
@@ -334,12 +341,16 @@ export function useSocketEvents() {
     const onChannelKeyStateChanged = (value: unknown) => handleChannelKeyStateEvent(value, channelKeyEventActions);
     const onPresenceChanged = (data: { userId: string; status: UserStatusType }) => setStatus(data.userId, data.status);
     // Profile (name, picture, self-introduction) or warning changes: refresh
-    // the member list of the workspace being shown.
+    // the member list of the workspace being shown, which messages and
+    // mentions take names and pictures from, and the names of its DMs.
     const onMemberProfileChanged = (value: unknown) => {
       if (typeof value !== 'object' || value === null) return;
       const { workspaceId, userId: changedUserId } = value as { workspaceId?: unknown; userId?: unknown };
       if (typeof workspaceId !== 'string') return;
-      if (workspaceId === useWorkspaceStore.getState().activeWorkspaceId) void loadMembers(workspaceId);
+      if (workspaceId === useWorkspaceStore.getState().activeWorkspaceId) {
+        void loadMembers(workspaceId);
+        void loadDms(workspaceId);
+      }
       if (changedUserId === userId) {
         void api.getMe().then((me) => {
           const current = useAuthStore.getState().user;
@@ -427,6 +438,7 @@ export function useSocketEvents() {
     socket.on('workspace:member-added', onWorkspaceMembershipChanged);
     socket.on('workspace:roles-changed', onWorkspaceMembershipChanged);
     socket.on('workspace:permissions-updated', onWorkspaceMembershipChanged);
+    socket.on('workspace:channels-changed', onWorkspaceChannelsChanged);
     socket.on('workspace:key-state-dirty', onWorkspaceKeyStateDirty);
     socket.on('workspace:access-revoked', onWorkspaceAccessRevoked);
     socket.on('channel:permissions-updated', onChannelPermissionsUpdated);
@@ -493,6 +505,7 @@ export function useSocketEvents() {
       socket.off('workspace:member-added', onWorkspaceMembershipChanged);
       socket.off('workspace:roles-changed', onWorkspaceMembershipChanged);
       socket.off('workspace:permissions-updated', onWorkspaceMembershipChanged);
+      socket.off('workspace:channels-changed', onWorkspaceChannelsChanged);
       socket.off('workspace:key-state-dirty', onWorkspaceKeyStateDirty);
       socket.off('workspace:access-revoked', onWorkspaceAccessRevoked);
       socket.off('channel:permissions-updated', onChannelPermissionsUpdated);
@@ -505,7 +518,7 @@ export function useSocketEvents() {
       if (outboxFlushTimer) clearTimeout(outboxFlushTimer);
     };
   }, [addAttention, addMessages, applyAttachment, applyPinUpdate, applyReactionUpdate, applySocketReadPosition,
-    flushOutbox, loadChannels, loadMembers, loadMessages, loadWorkspaces, loadWorkspaceState,
+    flushOutbox, loadCategories, loadChannels, loadDms, loadMembers, loadMessages, loadWorkspaces, loadWorkspaceState,
     noteBaseMessage, removeMessage, resumeFailedUploads, setActiveWorkspace, setStatus, setTyping,
     upsertDm, userId]);
 }

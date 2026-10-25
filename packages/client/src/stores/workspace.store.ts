@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { api } from '../services/api';
-import type { Workspace, Category, WorkspaceMember } from '@alparts/shared';
+import type { Workspace, Category, PublicUser, WorkspaceMember } from '@alparts/shared';
 import { useChannelStore } from './channel.store';
 import { useMessageStore } from './message.store';
 import { usePresenceStore } from './presence.store';
@@ -22,6 +22,8 @@ interface WorkspaceState {
   createWorkspace: (name: string) => Promise<void>;
   loadCategories: (workspaceId: string) => Promise<void>;
   loadMembers: (workspaceId: string) => Promise<void>;
+  /** A member's new name and picture, shown until the member list is next loaded. */
+  updateMemberProfile: (userId: string, profile: Pick<PublicUser, 'displayName' | 'avatarUrl'>) => void;
   createCategory: (workspaceId: string, name: string) => Promise<void>;
   removeWorkspace: (workspaceId: string) => void;
   reset: () => void;
@@ -101,7 +103,13 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
   createWorkspace: async (name) => {
     const workspace = await api.createWorkspace(name);
-    set(state => ({ workspaces: [...state.workspaces, workspace] }));
+    // A list loaded meanwhile may already hold it.
+    set((state) => ({
+      workspaces: [...state.workspaces.filter((candidate) => candidate.id !== workspace.id), workspace],
+    }));
+    // Open it, so its channels are shown right away. Loading them reports its
+    // own failure and does not hold up the creation.
+    void get().setActiveWorkspace(workspace.id);
   },
 
   loadCategories: async (workspaceId) => {
@@ -114,6 +122,14 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         set({ error: error instanceof Error ? error.message : t('カテゴリーを読み込めませんでした') });
       }
     }
+  },
+
+  updateMemberProfile: (userId, profile) => {
+    set((state) => (state.members.some((member) => member.userId === userId) ? {
+      members: state.members.map((member) => (
+        member.userId === userId ? { ...member, user: { ...member.user, ...profile } } : member
+      )),
+    } : state));
   },
 
   loadMembers: async (workspaceId) => {

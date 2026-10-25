@@ -1,5 +1,8 @@
 import type { Message } from '@alparts/shared';
 import { useMessageStore } from '../../stores/message.store';
+import { isMessageKeyUnavailable } from '../../stores/message-projector';
+import { useWorkspaceStore } from '../../stores/workspace.store';
+import { currentAuthor } from '../../stores/author-profile';
 import { Dialog } from '../ui/Dialog';
 import { userFacingMessageText } from '../../services/message-display';
 import { intlLocale, t, useT } from '../../i18n';
@@ -64,15 +67,21 @@ export function ThreadPanel({ channelId, root, replies, onClose }: ThreadPanelPr
 
 function ThreadMessage({ message, label }: { message: Message; label?: string }) {
   const t = useT();
+  const members = useWorkspaceStore((state) => state.members);
+  const author = currentAuthor(members, message.authorId, message.author);
   return (
     <article className="rounded-lg border border-line bg-canvas/40 px-3 py-2">
       {label && <p className="mb-1 text-xs font-medium text-accent">{label}</p>}
       <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <span className="font-medium text-ink-strong">{message.author?.displayName || t('不明なユーザー')}</span>
+        <span className="font-medium text-ink-strong">{author.displayName || t('不明なユーザー')}</span>
         <time dateTime={message.createdAt} className="text-xs text-muted">{formatMessageTime(message.createdAt)}</time>
       </div>
       <p className="mt-1 whitespace-pre-wrap wrap-break-word text-sm text-ink">
-        {message.type === 'delete' ? t('削除されたメッセージ') : userFacingMessageText(message.content || '') || t('（本文なし）')}
+        {message.type === 'delete'
+          ? t('削除されたメッセージ')
+          : isMessageKeyUnavailable(message)
+            ? t('この端末では読めないメッセージ')
+            : userFacingMessageText(message.content || '') || t('（本文なし）')}
       </p>
     </article>
   );

@@ -152,7 +152,8 @@ export async function register(
       throw error;
     }
     if (!result.user) throw new Error('INVALID_INVITATION');
-    return publicUser(result.user);
+    // The workspace the invitation added the account to, for the caller to announce.
+    return { user: publicUser(result.user), joinedWorkspaceId: result.invitation?.workspaceId ?? null };
   });
 }
 

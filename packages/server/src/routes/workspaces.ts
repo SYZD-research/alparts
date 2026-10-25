@@ -8,7 +8,11 @@ import { authMiddleware, type AuthRequest } from '../middleware/auth.js';
 import { stepUpRevalidation } from '../middleware/step-up.js';
 import { requireWorkspaceMember, requireWorkspacePermission } from '../middleware/rbac.js';
 import { rateLimit } from '../middleware/rate-limit.js';
-import { joinAuthorizedUserToChannelRoom, leaveUserChannelRooms } from '../websocket/room-membership.js';
+import {
+  joinAuthorizedUserToChannelRoom,
+  joinAuthorizedUserToWorkspaceRoom,
+  leaveUserChannelRooms,
+} from '../websocket/room-membership.js';
 import { emitChannelKeyState, keyStateChannelIds } from '../websocket/key-state.js';
 import { canonicalUuid } from '../security/canonical-id.js';
 
@@ -24,6 +28,11 @@ router.post('/', authMiddleware, createLimit, async (req: AuthRequest, res) => {
   try {
     const body = createSchema.parse(req.body);
     const workspace = await workspaceService.createWorkspace(body.name, req.userId!, body.iconUrl);
+    // The creator's open connections joined their rooms before the workspace
+    // existed; without this they would miss its members, profiles and channels
+    // until they reconnect.
+    const io = req.app.get('io') as SocketServer | undefined;
+    if (io) await joinAuthorizedUserToWorkspaceRoom(io, req.userId!, workspace.id);
     res.status(201).json(workspace);
   } catch (error: any) {
     if (error.name === 'ZodError') {

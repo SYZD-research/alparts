@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useMessageStore } from '../../stores/message.store';
-import { quotedMessage } from '../../stores/message-projector';
+import { isMessageKeyUnavailable, quotedMessage } from '../../stores/message-projector';
 import { useAuthStore } from '../../stores/auth.store';
 import type { Message } from '@alparts/shared';
 import { useUserStateStore } from '../../stores/user-state.store';
@@ -9,6 +9,7 @@ import { useChannelStore } from '../../stores/channel.store';
 import { buildMessagePermalink } from '../../stores/permalink-model';
 import { useWorkspaceStore } from '../../stores/workspace.store';
 import { isPictureHidden } from '../../stores/profile-visibility';
+import { currentAuthor } from '../../stores/author-profile';
 import { messageMentionsCurrentUser } from '../../services/mention-model';
 import { MessageContent } from './MessageContent';
 import { userFacingMessageText } from '../../services/message-display';
@@ -60,6 +61,11 @@ export function MessageItem({ message, isFirst, onJumpToMessage, canPin = true }
   // Pictures of profiles an administrator warned about stay hidden, also for former members.
   const authorFlagged = isPictureHidden(message.authorId, workspaceMembers, warnedUsers);
   const referencedAuthorFlagged = Boolean(referencedMessage && isPictureHidden(referencedMessage.authorId, workspaceMembers, warnedUsers));
+  // Names and pictures follow profile changes made after the message was loaded.
+  const author = currentAuthor(workspaceMembers, message.authorId, message.author);
+  const referencedAuthor = currentAuthor(workspaceMembers, referencedMessage?.authorId, referencedMessage?.author);
+  // Sent before this device could read the channel, e.g. before its user joined.
+  const unreadable = isMessageKeyUnavailable(message);
   const mentionMembers = useMemo(() => workspaceMembers.map((member) => ({
     userId: member.userId,
     displayName: member.user.displayName,
@@ -202,8 +208,8 @@ export function MessageItem({ message, isFirst, onJumpToMessage, canPin = true }
       >
         {isFirst ? (
           <UserAvatar
-            displayName={message.author?.displayName || '?'}
-            avatarUrl={message.author?.avatarUrl}
+            displayName={author.displayName || '?'}
+            avatarUrl={author.avatarUrl}
             hidden={authorFlagged}
             className={message.refMessageId ? 'mt-6' : 'mt-0.5'}
           />
@@ -224,18 +230,20 @@ export function MessageItem({ message, isFirst, onJumpToMessage, canPin = true }
             >
               <Icon name="reply" size={13} />
               <UserAvatar
-                displayName={referencedMessage?.author?.displayName || '?'}
-                avatarUrl={referencedMessage?.author?.avatarUrl}
+                displayName={referencedAuthor.displayName || '?'}
+                avatarUrl={referencedAuthor.avatarUrl}
                 hidden={referencedAuthorFlagged}
                 size="xs"
               />
               {referencedMessage ? (
                 <>
-                  <span className="shrink-0 font-medium text-ink-soft">{referencedMessage.author?.displayName || t('不明なユーザー')}</span>
+                  <span className="shrink-0 font-medium text-ink-soft">{referencedAuthor.displayName || t('不明なユーザー')}</span>
                   <span className="truncate">
                     {referencedMessage.type === 'delete'
                       ? t('削除されたメッセージ')
-                      : userFacingMessageText(referencedMessage.content || '') || (referencedMessage.attachments?.length ? t('添付ファイル') : t('本文なし'))}
+                      : isMessageKeyUnavailable(referencedMessage)
+                        ? t('この端末では読めないメッセージ')
+                        : userFacingMessageText(referencedMessage.content || '') || (referencedMessage.attachments?.length ? t('添付ファイル') : t('本文なし'))}
                   </span>
                 </>
               ) : referencedMessage === null ? (
@@ -252,7 +260,7 @@ export function MessageItem({ message, isFirst, onJumpToMessage, canPin = true }
                 onClick={() => { if (activeWorkspaceId) openMemberProfile(activeWorkspaceId, message.authorId); }}
                 className="font-semibold text-ink-strong hover:underline"
               >
-                {message.author?.displayName || t('不明なユーザー')}
+                {author.displayName || t('不明なユーザー')}
               </button>
               <span className="text-xs text-muted">
                 {date} {timestamp}
@@ -261,12 +269,16 @@ export function MessageItem({ message, isFirst, onJumpToMessage, canPin = true }
           )}
 
           <div className="message-markdown wrap-break-word text-ink">
-            <MessageContent
-              content={message.content || ''}
-              members={workspaceMembers}
-              currentUserId={user?.id || null}
-              authenticatedBroadcastMention={message.broadcastMention === true}
-            />
+            {unreadable ? (
+              <p className="text-sm italic text-muted">{t('この端末では読めないメッセージです（参加する前のメッセージなど）')}</p>
+            ) : (
+              <MessageContent
+                content={message.content || ''}
+                members={workspaceMembers}
+                currentUserId={user?.id || null}
+                authenticatedBroadcastMention={message.broadcastMention === true}
+              />
+            )}
             {message.type === 'edit' && <span className="ml-1 text-xs text-muted">{t('（編集済み）')}</span>}
             {message.isPinned && <span className="ml-2 text-xs text-warning">{t('📌 ピン留め')}</span>}
             {bookmarked && <span className="ml-2 text-xs text-accent">{t('🔖 保存済み')}</span>}

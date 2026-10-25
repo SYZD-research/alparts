@@ -925,6 +925,8 @@ export const en = {
   '返信先のメッセージへ移動': 'Go to the message being replied to',
   '添付ファイル': 'Attachment',
   '本文なし': 'No text',
+  'この端末では読めないメッセージ': 'A message this device cannot read',
+  'この端末では読めないメッセージです（参加する前のメッセージなど）': 'This device cannot read this message (for example, one sent before you joined).',
   '元のメッセージを表示': 'Show original message',
   '元のメッセージを表示できません': 'The original message cannot be shown',
   '🔖 保存済み': '🔖 Saved',

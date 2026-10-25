@@ -17,6 +17,7 @@ import { expiredSessionCookie, sessionCookie } from '../security/cookies.js';
 import { emailLocale } from '../services/email-messages.js';
 import { assertStepUpStillValid } from '../services/passkey.service.js';
 import { canonicalUuid } from '../security/canonical-id.js';
+import { announceWorkspaceJoin } from '../websocket/workspace-events.js';
 
 const router = Router();
 const password = z.string().min(12).max(72).refine((value) => Buffer.byteLength(value, 'utf8') <= 72);
@@ -123,7 +124,9 @@ router.post('/register/code', registrationCodeIpLimit, registrationCodeLimit, re
 router.post('/register', registrationIpLimit, registrationLimit, async (req, res) => {
   try {
     const body = registerSchema.parse(req.body);
-    const user = await authService.register(body.email, body.password, body.displayName, body.inviteToken, body.emailCode);
+    const { user, joinedWorkspaceId } = await authService.register(body.email, body.password, body.displayName, body.inviteToken, body.emailCode);
+    // Members who are signed in learn of the new account now, not on their next reload.
+    if (joinedWorkspaceId) await announceWorkspaceJoin(req.app.get('io') as SocketServer | undefined, user.id, joinedWorkspaceId);
     res.status(201).json(user);
   } catch (error: any) {
     if (sendRegistrationError(res, error)) return;

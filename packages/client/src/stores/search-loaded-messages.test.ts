@@ -49,4 +49,14 @@ describe('searchLoadedMessages', () => {
 
     expect(result.map((item) => item.messageId)).toEqual(['content', 'metadata']);
   });
+
+  it('names and finds authors by the names they have now', () => {
+    const messages = {
+      'channel-1': [message({ id: 'renamed', content: 'unrelated', authorId: 'u1', author: { displayName: 'Konoha' } })],
+    };
+    const members = [{ userId: 'u1', user: { displayName: 'Konoha Mori' } }];
+    const result = searchLoadedMessages('mori', messages, [{ id: 'channel-1', name: 'general' }], members);
+
+    expect(result.map((item) => [item.messageId, item.authorName])).toEqual([['renamed', 'Konoha Mori']]);
+  });
 });
