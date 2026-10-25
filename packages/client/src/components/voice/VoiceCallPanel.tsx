@@ -9,6 +9,15 @@ import {
 import { Icon } from '../ui/Icon';
 import { t, useT } from '../../i18n';
 
+/**
+ * Calls `release` whenever the window loses focus, so a held push-to-talk key
+ * whose release the page never sees stops sending. Returns the cleanup.
+ */
+export function releaseOnWindowBlur(target: EventTarget, release: () => void): () => void {
+  target.addEventListener('blur', release);
+  return () => target.removeEventListener('blur', release);
+}
+
 /** Persistent call controls live in the sidebar so text-channel navigation cannot unmount them. */
 export function VoiceCallPanel() {
   const t = useT();
@@ -38,11 +47,7 @@ export function VoiceCallPanel() {
   ));
   const members = useWorkspaceStore((state) => state.members);
 
-  useEffect(() => {
-    const releasePushToTalk = () => useVoiceStore.getState().setPushToTalkActive(false);
-    window.addEventListener('blur', releasePushToTalk);
-    return () => window.removeEventListener('blur-sm', releasePushToTalk);
-  }, []);
+  useEffect(() => releaseOnWindowBlur(window, () => useVoiceStore.getState().setPushToTalkActive(false)), []);
 
   if (status === 'idle' || !channelId) return null;
   if (status !== 'connected') {

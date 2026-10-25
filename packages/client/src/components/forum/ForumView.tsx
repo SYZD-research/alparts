@@ -68,10 +68,11 @@ export function ForumView({ channelId, sendDisabled, visible = true }: Props) {
           onManageTags={() => setTagManagerOpen(true)}
         />
       )}
-      {/* Keyed by forum so a draft or a pending deletion never carries over to another forum. */}
+      {/* Keyed by forum so a draft or a pending deletion never carries over to another forum.
+          The keys differ because sibling keys must be unique. */}
       {view && (
         <ForumPostComposer
-          key={channelId}
+          key={`composer:${channelId}`}
           open={composerOpen}
           channelId={channelId}
           tags={view.tags}
@@ -82,7 +83,7 @@ export function ForumView({ channelId, sendDisabled, visible = true }: Props) {
       )}
       {view && (
         <ForumTagManager
-          key={channelId}
+          key={`tags:${channelId}`}
           open={tagManagerOpen}
           channelId={channelId}
           tags={view.tags}
