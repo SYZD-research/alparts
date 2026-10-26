@@ -12831,9 +12831,9 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 Desktop runtime
 ================================================================================
 
-Electron 44.9.3
+Electron 45.0.0
 License: MIT
-Package: pkg:npm/electron@44.9.3
+Package: pkg:npm/electron@45.0.0
 
 Copyright (c) Electron contributors
 Copyright (c) 2013-2020 GitHub Inc.
