@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "devDependencies": {
     "@secretlint/secretlint-rule-preset-recommend": "13.0.7",
-    "oxlint": "1.88.0",
+    "oxlint": "1.89.0",
     "secretlint": "13.0.7"
   },
   "description": "Secure communications platform",
