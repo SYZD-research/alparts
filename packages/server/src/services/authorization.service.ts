@@ -16,7 +16,7 @@ import {
   workspaces,
 } from '../db/schema.js';
 import {
-  refreshGroupRemoveRequirement,
+  refreshMemberAccessLoss,
   requireChannelKeyRotation,
 } from './key-epoch-state.js';
 import {
@@ -703,7 +703,7 @@ export async function applyViewerEffectsAndRotation(
     if (lostUserIds.length > 0 || gainedUserIds.length > 0) {
       const result = await requireChannelKeyRotation(store, [channelId]);
       rotationRequired = result.keyedChannelIds.includes(channelId);
-      await refreshGroupRemoveRequirement(store, channelId, [...next]);
+      await refreshMemberAccessLoss(store, channelId, [...next], lostUserIds);
       for (const userId of lostUserIds) lostViewers.push({ channelId, userId });
     }
     if (lostUserIds.length > 0 || gainedUserIds.length > 0 || lostCallUserIds.length > 0 || rotationRequired) {

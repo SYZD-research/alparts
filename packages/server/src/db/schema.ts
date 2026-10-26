@@ -781,7 +781,6 @@ export const mlsGroups = pgTable('mls_groups', {
   genesisVersion: integer('genesis_version'),
   pathRefreshedAt: timestamp('path_refreshed_at', { withTimezone: true }),
   genesisRequestedAt: timestamp('genesis_requested_at', { withTimezone: true }),
-  removeRequiredAt: timestamp('remove_required_at', { withTimezone: true }),
 }, (t) => [
   check('mls_groups_genesis_check', sql`(${t.genesisVersion} is null) = (${t.pathRefreshedAt} is null)`),
   check('mls_groups_genesis_version_check', sql`${t.genesisVersion} is null or ${t.genesisVersion} >= 1`),
@@ -830,6 +829,8 @@ export const mlsGroupMembers = pgTable('mls_group_members', {
   encryptionKey: text('encryption_key').notNull(),
   leafUpdatedAt: timestamp('leaf_updated_at', { withTimezone: true }).defaultNow().notNull(),
   lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).defaultNow().notNull(),
+  /** Since when the member's user no longer sees the channel (fresh start rule c counts its removal from it). */
+  accessLostAt: timestamp('access_lost_at', { withTimezone: true }),
 }, (t) => [
   primaryKey({ columns: [t.channelId, t.deviceId, t.joinedVersion] }),
   unique('mls_group_members_package_id_unique').on(t.packageId),

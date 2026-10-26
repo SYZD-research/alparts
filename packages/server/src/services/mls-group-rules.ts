@@ -62,6 +62,8 @@ export interface GroupMemberState {
   lastSeenAt: Date;
   /** When the device was revoked, if it was. */
   revokedAt?: Date | null;
+  /** Since when the member's user no longer sees the channel, if it does not. */
+  accessLostAt?: Date | null;
 }
 
 export interface MemberPackageState {
@@ -261,8 +263,6 @@ export interface FreshStartInput {
   members: readonly GroupMemberState[];
   /** When the current group's genesis was accepted. */
   genesisCreatedAt: Date;
-  /** Since when a member's user has no longer seen the channel (mls_groups). */
-  removeRequiredAt?: Date | null;
 }
 
 /**
@@ -284,7 +284,7 @@ export function pendingSince(input: FreshStartInput): Date | null {
   }
   for (const deviceId of input.view.requiredRemoveDeviceIds) {
     const member = input.members.find((candidate) => candidate.deviceId === deviceId);
-    const since = member?.revokedAt ?? input.removeRequiredAt ?? null;
+    const since = member?.revokedAt ?? member?.accessLostAt ?? null;
     if (since) times.push(since);
   }
   if (times.length === 0) return null;
@@ -416,7 +416,6 @@ export interface AdmissionState {
     genesisCreatedAt: Date | null;
     pathRefreshedAt: Date | null;
     genesisRequestedAt: Date | null;
-    removeRequiredAt?: Date | null;
   } | null;
   eligible: readonly EligibleDevice[];
   members: readonly GroupMemberState[];
@@ -734,7 +733,6 @@ export function describeGroupState(
       view,
       members: snapshot.members,
       genesisCreatedAt: snapshot.group!.genesisCreatedAt!,
-      removeRequiredAt: snapshot.group?.removeRequiredAt ?? null,
     }),
   );
   return {

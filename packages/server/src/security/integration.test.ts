@@ -109,7 +109,7 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     const auditModule = await import('../middleware/audit.js');
     const dbModule = await import('../db/index.js');
     closeDb = dbModule.closeDb;
-    assert.equal(await dbModule.checkDatabaseSchema(), 26);
+    assert.equal(await dbModule.checkDatabaseSchema(), 27);
     verifyAuditChain = auditModule.verifyAuditChain;
     await auditModule.provisionAuditCheckpoint();
     const startupAudit = await verifyAuditChain();
@@ -4994,15 +4994,40 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
         .map((entry) => entry.version), [2, 3]);
 
       // A member whose user lost access blocks writes the same way.
+      const lostAt = async (device: { id: string }) => ((await db.execute(sql`select extract(epoch from access_lost_at)::float8 as "at"
+        from mls_group_members where channel_id = ${channelId} and device_id = ${device.id} and removed_version is null`)).rows[0]?.at ?? null) as number | null;
+      const lostCount = async () => (await db.execute(sql`select count(*)::int as count from mls_group_members
+        where channel_id = ${channelId} and removed_version is null and access_lost_at is not null`)).rows[0].count;
       assert.equal((await request(`/api/channels/${channelId}/members/${bob.user.id}`, { method: 'DELETE', cookie: owner.cookie })).status, 200);
-      const since = (await db.execute(sql`select remove_required_at as "since" from mls_groups where channel_id = ${channelId}`)).rows[0].since;
-      assert.ok(since, 'the group records since when a remove is due');
+      assert.ok(await lostAt(b1), 'the member records since when its user lost the channel');
+      assert.equal(await lostCount(), 1);
       response = await postMessage(o1, channelId, key, 3);
       assert.deepEqual([response.status, (await json<{ code: string }>(response)).code], [400, 'KEY_ROTATION_REQUIRED']);
       assert.equal((await request(`/api/channels/${channelId}/mls/group/commits?after=0`, { cookie: bob.cookie })).status, 404);
       assert.equal((await group.commit(o1, { remove: [b1] })).response.status, 201);
-      assert.equal((await db.execute(sql`select remove_required_at as "since" from mls_groups where channel_id = ${channelId}`)).rows[0].since, null);
+      assert.equal(await lostCount(), 0);
       assert.equal((await postMessage(o1, channelId, key, 4)).status, 201);
+
+      // Each member counts from its own loss (R-057): carol's device does not
+      // take the time of bob's earlier loss, which bob's return undid.
+      assert.equal((await request(`/api/channels/${channelId}/members`, {
+        method: 'POST', cookie: owner.cookie, body: { userId: bob.user.id },
+      })).status, 201);
+      assert.equal((await publishPackage(b1, channelId)).status, 201);
+      assert.equal((await group.commit(o1, { add: [b1] })).response.status, 201);
+      assert.equal(await lostAt(b1), null);
+      assert.equal((await request(`/api/channels/${channelId}/members/${bob.user.id}`, { method: 'DELETE', cookie: owner.cookie })).status, 200);
+      const bobLost = (await lostAt(b1))!;
+      await delay(50);
+      assert.equal((await request(`/api/channels/${channelId}/members/${carol.user.id}`, { method: 'DELETE', cookie: owner.cookie })).status, 200);
+      const carolLost = (await lostAt(c1))!;
+      assert.ok(carolLost > bobLost, 'carol counts from her own loss');
+      assert.equal(await lostAt(b1), bobLost, 'bob still counts from his');
+      assert.equal((await request(`/api/channels/${channelId}/members`, {
+        method: 'POST', cookie: owner.cookie, body: { userId: bob.user.id },
+      })).status, 201);
+      assert.equal(await lostAt(b1), null, 'bob sees the channel again');
+      assert.equal(await lostAt(c1), carolLost, 'carol keeps counting from her own loss');
     });
 
     it('restarts a group only when permitted and records who left', async () => {
@@ -5731,7 +5756,7 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
       await client.end();
     }
     const { checkDatabaseSchema } = await import('../db/index.js');
-    assert.equal(await checkDatabaseSchema(), 26);
+    assert.equal(await checkDatabaseSchema(), 27);
   });
 
   it('never re-signs a shortened audit chain after the external checkpoint anchor is deleted', async () => {
