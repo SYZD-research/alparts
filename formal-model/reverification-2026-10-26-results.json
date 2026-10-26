@@ -3356,7 +3356,8 @@
    "model": "M3s",
    "check": "KS-sound",
    "risk_register": "R-057",
-   "summary": "mls_groups.remove_required_at is kept from the first loss of access while any member who lost access remains (coalesce); after that user regains access, a newer loss is counted from the older one and a manager outside the group can fresh start under rule (c) before anything waited 15 minutes. Confidentiality is unaffected. Not fixed: the fix needs a design decision (per-member loss time, or resetting the time when access returns)."
+   "summary": "mls_groups.remove_required_at is kept from the first loss of access while any member who lost access remains (coalesce); after that user regains access, a newer loss is counted from the older one and a manager outside the group can fresh start under rule (c) before anything waited 15 minutes. Confidentiality is unaffected. Not fixed: the fix needs a design decision (per-member loss time, or resetting the time when access returns).",
+   "status": "fixed the same day: per-member access_lost_at (migration 0026); see addendum_r057"
   }
  ],
  "limitations": [
@@ -3444,5 +3445,151 @@
   "databases": "alparts_security_test_formal_<uuid> created and dropped by each service audit run",
   "object_store": "disposable SeaweedFS buckets alparts-formal and alparts-formal-audit in the session scratch space",
   "credentials": "generated for this run only, not in the repository"
+ },
+ "addendum_r057": {
+  "summary": "R-057 fixed: each current member keeps mls_group_members.access_lost_at (set when its user loses the channel, kept while the user stays without it, cleared when the user sees it again); pendingSince counts each removal from its own member (a revoked device from its revocation). Migration 0026 drops mls_groups.remove_required_at and gives the current members of groups that had it the migration time, which can only delay rule (c).",
+  "model_summary_after_fix": {
+   "PASS": 213,
+   "LIMIT": 29,
+   "FINDING": 0,
+   "MODEL-GAP": 0,
+   "VACUOUS": 0
+  },
+  "model_run": {
+   "command": "python3 formal-model/run.py M3s",
+   "elapsed_seconds": 52,
+   "model_seconds": {
+    "M3s": 52
+   },
+   "summary": {
+    "PASS": 6,
+    "LIMIT": 0,
+    "FINDING": 0,
+    "MODEL-GAP": 0,
+    "VACUOUS": 0
+   },
+   "checks": [
+    {
+     "model": "M3s",
+     "check": "KS-sound",
+     "title": "a manager replaces the group by rule (c) only when an addition, rejoin or remove has waited 15 minutes in the current group",
+     "verdict": "PASS"
+    },
+    {
+     "model": "M3s",
+     "check": "KS-keep",
+     "title": "an ordinary commit that leaves such a change pending does not restart the manager's wait",
+     "verdict": "PASS"
+    },
+    {
+     "model": "M3s",
+     "check": "KS-keep-ctl",
+     "title": "before 0b0fb41: counting from the active version, any commit restarted the wait (GHSA-3qj2-5q79-8vj6)",
+     "verdict": "PASS"
+    },
+    {
+     "model": "M3s",
+     "check": "KS-sound-ctl",
+     "title": "between 0b0fb41 and fc9ec50: without the genesis clamp a new group could be replaced at once",
+     "verdict": "PASS"
+    },
+    {
+     "model": "M3s",
+     "check": "KS-purge-ctl",
+     "title": "before 0b0fb41: a package kept while its user could not see the channel counted as waiting from before access returned",
+     "verdict": "PASS"
+    },
+    {
+     "model": "M3s",
+     "check": "KS-loss-ctl",
+     "title": "before migration 0026: one time for the whole group counted a later loss of access from an earlier one that had been undone (R-057)",
+     "verdict": "PASS"
+    }
+   ],
+   "states": 640929,
+   "transitions": 2328037
+  },
+  "control_witness": {
+   "check": "KS-loss-ctl",
+   "trace": [
+    "Y1: publish package",
+    "authz: Z gains view",
+    "Z1: publish package",
+    "clock: the 24-hour genesis wait ends",
+    "Y1: genesis with {Y1,Z1}",
+    "authz: Y loses view",
+    "clock: 15 minutes pass",
+    "X1: publish package",
+    "authz: Z loses view",
+    "authz: Y gains view",
+    "X1: fresh start: manager, changes stalled with {X1}"
+   ]
+  },
+  "harness_regressions": {
+   "command": "python3 -m unittest discover -s formal-model -p 'test_*.py' -v",
+   "tests": 27,
+   "result": "OK"
+  },
+  "server_tests": {
+   "unit": {
+    "command": "pnpm --filter @alparts/server test",
+    "tests": 236,
+    "pass": 235,
+    "skipped": 1,
+    "fail": 0
+   },
+   "integration": {
+    "command": "pnpm --filter @alparts/server test:integration",
+    "tests": 26,
+    "pass": 25,
+    "fail": 1,
+    "note": "the failing test (audit checkpoint write failure) makes the checkpoint directory read-only, which root ignores; run without CAP_DAC_OVERRIDE it passes 2/2"
+   },
+   "account_security": {
+    "command": "pnpm --filter @alparts/server test:account-security",
+    "tests": 27,
+    "pass": 27,
+    "fail": 0
+   },
+   "typecheck": "tsc --noEmit OK",
+   "lint": "oxlint --deny-warnings packages OK"
+  },
+  "service_conformance_summary": {
+   "PASS": 36
+  },
+  "migration_check": {
+   "method": "database at migration 0025 with one group that had remove_required_at (two current members, one removed) and one without; then the dev.sh command pnpm --filter @alparts/server exec tsx src/scripts/migrate-runtime.ts",
+   "result": "27 migrations; access_lost_at set only on the two current members of the flagged group; remove_required_at dropped; a second run changes nothing",
+   "schema_catalog": {
+    "fresh_0025": {
+     "entryCount": 745,
+     "sha256": "9ea192c8b319bd2cae05f2d7203e87fda078211586a79692dd5073ceb2dd0d42"
+    },
+    "fresh_0026": {
+     "entryCount": 745,
+     "sha256": "a794c2baae2376f5c53643372bb0e1e541a96a215d36c31defdf300704f86b63"
+    },
+    "upgraded_0025_to_0026": {
+     "entryCount": 745,
+     "sha256": "a794c2baae2376f5c53643372bb0e1e541a96a215d36c31defdf300704f86b63"
+    }
+   },
+   "not_run": "dev.sh itself (needs Docker, unavailable here)"
+  },
+  "source_sha256": {
+   "formal-model/m3s_stall.py": "4be160a6f75bfde237790f058e28546de7cea3b76403dfcb56498e0123123d6f",
+   "formal-model/test_harness.py": "9e49bf20542fcaffb646eb82bc3b521e1feb47ef3bff119b86f345cf98e44a74",
+   "packages/server/src/db/schema.ts": "efa26c6d0f3b0a09b253801755874d6d6705d6970fc1b20ed8e32a5abd801645",
+   "packages/server/src/db/schema-catalog.ts": "2aa3c5fad5951c273b87623c16975b17b0557329af4d5678a9ba43def2361e3b",
+   "packages/server/src/db/migrations/0026_member_access_lost.sql": "0cfbcb2bead37db052e030c0603c9f90521ecf58f86aeefad0c41be3448c37c0",
+   "packages/server/src/db/migrations/meta/_journal.json": "8b549cbb6e97ac670494b77f635ca0e9cb516e486a6c693fd7f44d64c7a84e82",
+   "packages/server/src/services/key-epoch-state.ts": "c6d24037d675c5742f6df27c7134832f3370969637dc73f94609ac2aca5d1fc3",
+   "packages/server/src/services/authorization.service.ts": "365381313b3710cc796c3fabb73e29bfdbbeb8c0bec93867836d07ec8c8a5165",
+   "packages/server/src/services/mls-group-rules.ts": "64525837736b9980165782278a40476fcd8589ec222f4d67c3b0b748538042b1",
+   "packages/server/src/services/mls-group-state.ts": "7ed24324f3ad8730fbbab1b8fa73c7a24ddd21db3977caff5ca312506abba288",
+   "packages/server/src/services/mls-group.service.ts": "7f75073db7d0f2fd9f5e9664985e1be76cecaf57c4a4535f10bc20a3fdbfb1d1",
+   "packages/server/src/services/mls-group-rules.test.ts": "18591c1e9599303af6b4d354c2538d3fc25be33017a2e6beec06dfb97dffd3ee",
+   "packages/server/src/security/integration.test.ts": "57741c00fcc17e3ab18baa0017968b8c022d329926c410501f911feffa34ea51"
+  }
  }
 }

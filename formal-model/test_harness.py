@@ -250,6 +250,26 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(verdicts['AV-catalog'], 'MODEL-GAP')
         self.assertEqual(verdicts['AV-case'], 'MODEL-GAP')
 
+    def test_stall_rule_counts_each_loss_of_access_from_its_own_time(self):
+        # R-057: Z loses view after Y's loss has been 15 minutes old, then Y gains view again. One time for the
+        # whole group lets the manager replace the group at once; each member's own time does not.
+        import m3s_stall
+        steps = ['Y1: publish package', 'authz: Z gains view', 'Z1: publish package',
+                 'clock: the 24-hour genesis wait ends', 'Y1: genesis with {Y1,Z1}', 'authz: Y loses view',
+                 'clock: 15 minutes pass', 'X1: publish package', 'authz: Z loses view', 'authz: Y gains view']
+        fresh_start = 'X1: fresh start: manager, changes stalled with {X1}'
+        for loss_time, permitted in (('group', True), ('member', False)):
+            with self.subTest(loss_time=loss_time):
+                rules = m3s_stall.StallRules(loss_time=loss_time)
+                v = m3s_stall.base_variant(rules)
+                s = m3s_stall.s_initial(v)
+                for step in steps:
+                    s = next(nxt for action, nxt in m3s_stall.s_transitions(s, rules, v)
+                             if m3s_stall.s_label(s, v, action) == step)
+                labels = [m3s_stall.s_label(s, v, action) for action, _ in m3s_stall.s_transitions(s, rules, v)]
+                self.assertEqual(fresh_start in labels, permitted)
+                self.assertFalse(m3s_stall.truly_stalled(s, v))
+
     def test_incomplete_result_sets_runner_exit_failure(self):
         with patch.object(conformance, 'run_harness', side_effect=harness.HarnessError('missing')):
             self.assertEqual(run.main(['M1c']), 1)
