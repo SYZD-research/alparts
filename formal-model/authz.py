@@ -6,7 +6,9 @@ packages/server/src/services/authorization.service.ts line for line:
   channel level   = same, applied to the category result
   owner           = channel result | CHANNEL_SCOPED
   visible         = member && (public || private member) && VIEW
-                    && (voice => CONNECT_VOICE)
+                    (isVisibleChannelAuthorization: channel list and rooms)
+  key recipient   = visible && (voice => CONNECT_VOICE)
+                    (isChannelKeyRecipient: a voice channel's call and keys)
 
 The conformance test (conformance.py) runs this evaluator and the real
 TypeScript implementation on the same random inputs and requires equality.
@@ -87,10 +89,18 @@ def is_private_member(ws: Workspace, user: str, channel: str) -> bool:
 
 def visible(ws: Workspace, user: str, channel: str) -> bool:
     mask = channel_mask(ws, user, channel)
-    if mask is None or not is_private_member(ws, user, channel) or not mask & VIEW:
+    return mask is not None and is_private_member(ws, user, channel) and bool(mask & VIEW)
+
+
+def key_recipient(ws: Workspace, user: str, channel: str) -> bool:
+    if not visible(ws, user, channel):
         return False
-    return not ws.channels[channel].voice or bool(mask & CONNECT)
+    return not ws.channels[channel].voice or bool(channel_mask(ws, user, channel) & CONNECT)
 
 
 def viewers(ws: Workspace, channel: str) -> frozenset[str]:
     return frozenset(u for u in ws.members if visible(ws, u, channel))
+
+
+def key_recipients(ws: Workspace, channel: str) -> frozenset[str]:
+    return frozenset(u for u in ws.members if key_recipient(ws, u, channel))

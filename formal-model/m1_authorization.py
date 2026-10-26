@@ -62,9 +62,16 @@ class Member:
         return If(self.owner, m | bv(CHANNEL_SCOPED), m)
 
     def visible(self, private_gate: bool = True):
+        # isVisibleChannelAuthorization: the channel list and the channel's rooms.
         m = self.mask()
         gate = Or(Not(self.private), self.private_member) if private_gate else Bool('true_gate') == Bool('true_gate')
-        return And(gate, m & bv(VIEW) != 0, Or(Not(self.voice), m & bv(CONNECT) != 0))
+        return And(gate, m & bv(VIEW) != 0)
+
+    def key_recipient(self, voice_gate: bool = True):
+        # isChannelKeyRecipient: a voice channel's call, presence and keys.
+        if not voice_gate:
+            return self.visible()
+        return And(self.visible(), Or(Not(self.voice), self.mask() & bv(CONNECT) != 0))
 
 
 def prove(check_id, title, expect, *assertions, member=None, show=None):
@@ -98,8 +105,8 @@ def run() -> None:
           (m.mask() ^ m.workspace()) & bv(ALL_PERMS & ~CHANNEL_SCOPED) != 0, member=m)
     prove('A4', 'a private channel is invisible to non-members, including the owner', 'HOLDS',
           m.private, Not(m.private_member), m.visible(), member=m)
-    prove('A5', 'a voice channel is never visible without CONNECT_VOICE', 'HOLDS',
-          m.voice, m.visible(), m.mask() & bv(CONNECT) == 0, member=m)
+    prove('A5', "a voice channel's call and keys never reach a member without CONNECT_VOICE", 'HOLDS',
+          m.voice, m.key_recipient(), m.mask() & bv(CONNECT) == 0, member=m)
     prove('A6', 'the owner can never be denied a channel-scoped bit', 'HOLDS',
           m.owner, m.mask() & bv(CHANNEL_SCOPED) != bv(CHANNEL_SCOPED), member=m)
 
@@ -124,6 +131,8 @@ def run() -> None:
     # Controls: removing a safety mechanism must break the matching property.
     prove('A4-ctl', 'without the private-membership gate a non-member sees a private channel', 'CONTROL',
           m.private, Not(m.private_member), m.visible(private_gate=False), member=m)
+    prove('A5-ctl', "with key recipients equal to viewers, a voice channel's keys reach a member without CONNECT_VOICE",
+          'CONTROL', m.voice, m.key_recipient(voice_gate=False), m.mask() & bv(CONNECT) == 0, member=m)
     weak = Member('w', validate_overrides=False)
     prove('A3-ctl', 'without override mask validation an override grants a workspace-scope bit', 'CONTROL',
           (weak.mask() ^ weak.workspace()) & bv(ALL_PERMS & ~CHANNEL_SCOPED) != 0, member=weak)

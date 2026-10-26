@@ -13,7 +13,10 @@ Written from the implementation at commit ce09b19:
   M8k  the frame keys of SFU calls (client services/voice-frame-keys.ts) run
        as real code for three clients under a server that chooses every
        delivery, repetition and notification order
-       (conformance/voice-keys-harness.mts).
+       (conformance/voice-keys-harness.mts). Since 2026-10-26 also: B's frame
+       worker installing keys in the server's time (several key messages
+       handled at once), C signing key messages of its own, and one relay
+       the server fails (KT, KW).
   M8c  who can obtain call audio: P2P (signed SDP, DTLS-SRTP between the
        endpoints, TURN relays ciphertext) versus the SFU (DTLS ends at the
        server; frames are encrypted end to end above it).
@@ -21,6 +24,9 @@ Written from the implementation at commit ce09b19:
 Updated 2026-10-09 for SFU calls: the SFU session belongs to the socket's
 call participant (VP7), speaker and listener limits are configuration (the
 harness uses four), and every frame is encrypted by the sender (M8k, M8c).
+Updated 2026-10-26: a revocation can take CONNECT_VOICE alone (the member
+still sees the channel); the routes then leave the channel's rooms for the
+key recipients who stopped being so (lostCallUserIds, 31aeda9), VP8.
 The real-media check is conformance/voice-sfu-e2e.mts (mediasoup, Chromium).
 
 Common assumptions: one Node.js process, so a synchronous run between two
@@ -76,6 +82,8 @@ class Variant:
     watch_room_filter: bool = True    # CONTROL: False lists every checked channel (before the 2026-10-09 fix)
     sfu_requires_call: bool = True    # CONTROL: False gives SFU sessions of their own (before the SFU media signaling)
     revoke: tuple = CH                # channels whose access is revoked once during the run
+    connect_only: tuple = ('C1',)     # revocations that take CONNECT_VOICE alone (the user still sees the channel)
+    call_loss_leaves_rooms: bool = True  # CONTROL: False leaves the rooms only on loss of visibility (e12058e..31aeda9)
 
 
 def m8a_initial() -> S:
@@ -295,12 +303,16 @@ def m8a_successors(s: S, v: Variant):
         revs = list(s.revs)
         if r == 0 and (not v.lock or s.lock == 0):
             revs[k] = 1
-            out.append((f'revoke {c}: exclusive lock', s._replace(revs=tuple(revs), lock=-1 if v.lock else 0)))
+            what = ' (CONNECT_VOICE only)' if c in v.connect_only else ''
+            out.append((f'revoke {c}{what}: exclusive lock', s._replace(revs=tuple(revs), lock=-1 if v.lock else 0)))
         elif r == 1:
             revs[k] = 2
             out.append((f'revoke {c}: commit', s._replace(revs=tuple(revs), auth=s.auth - {c}, lock=0)))
         elif r == 2:
             revs[k] = 3
+            if c in v.connect_only and not v.call_loss_leaves_rooms:
+                out.append((f'revoke {c}: CONNECT_VOICE only, no room effect', s._replace(revs=tuple(revs))))
+                continue
             t = _leave_room(s._replace(revs=tuple(revs)), ('pr', c), v)
             out.append((f'revoke {c}: leaveUserChannelRooms', _leave_room(t, ('ch', c), v)))
     if s.connected and not s.disc:
@@ -393,6 +405,10 @@ def run_m8a() -> None:
                  'left on revocation', 'VP4')
     holds('VP6', 'after revocation and once its handlers finish, no call state of the channel remains', 'VP6')
     holds('VP7', 'an SFU session is acknowledged only for the socket\'s participant of that call, under its id', 'VP7')
+    vp8 = {prop: hit for prop, hit in found.items() if prop in ('VP2', 'VP6') and 'C1' in hit[1]}
+    record('M8', 'VP8', 'losing CONNECT_VOICE alone (C1, still visible) ends the call, the SFU session and the presence '
+                        'watch as losing the channel does (C2)', 'HOLDS', bool(vp8),
+           witness=[line for prop, hit in vp8.items() for line in trace(states, hit[0]) + ['=> ' + hit[1]]])
 
     def control(check_id, title, prop, variant):
         st, fd, _ = bfs(m8a_initial(), lambda s: m8a_successors(s, variant), lambda s: m8a_violations(s, variant),
@@ -411,6 +427,8 @@ def run_m8a() -> None:
             Variant(sfu_listener=False, revoke=('C1',)))
     control('VP7-ctl', 'SFU sessions of their own (before media signaling) are granted to sockets outside the call',
             'VP7', Variant(sfu_requires_call=False, revoke=('C1',)))
+    control('VP8-ctl', 'between e12058e and 31aeda9: a member who lost CONNECT_VOICE but still saw the channel stayed '
+                       'in its call and presence rooms', 'VP2', Variant(call_loss_leaves_rooms=False, revoke=('C1',)))
 
 
 # ---------------------------------------------------------------------------
@@ -489,6 +507,13 @@ M8K_RUNS = [
     ('C joins', dict(scenario='join')),
     ('C joins, every key message delivered up to twice', dict(scenario='join', duplicates=True)),
     ('C joins and leaves', dict(scenario='join-leave')),
+    # 2026-10-26: B's frame worker installs keys in the server's time, so B handles several key messages at once.
+    ('C joins, B installs keys in its own time', dict(scenario='join', installSteps=True)),
+    ('C joins and leaves, B installs C\'s keys in its own time', dict(scenario='join-leave', installSteps='c')),
+    # C also signs key messages of its own (new key ids, then its first one again).
+    ('C joins and signs keys of its own', dict(scenario='join', insider=True)),
+    # The server fails to relay one key message; its sender sends a new key again.
+    ('C joins, one relay fails', dict(scenario='join', failAck=True)),
 ]
 M8K_PROPERTIES = [
     ('KJ', 'a participant who joins receives only keys made after the others knew it joined (no earlier audio)'),
@@ -497,6 +522,10 @@ M8K_PROPERTIES = [
     ('KR', 'a key is accepted at most once, never after a newer one of its sender, and only as its maker\'s key'),
     ('KH', 'once the server delivered everything, the participants hold each other\'s current keys, and none that '
            'a former participant received'),
+    ('KT', 'a delivered key message waits only for its own install or an earlier message of its sender, never for '
+           'the receiver\'s own rotation'),
+    ('KW', 'once a participant\'s key messages settled, its frame worker holds exactly the keys it keeps for each '
+           'current sender, and none of a sender it forgot'),
 ]
 M8K_CONTROLS = [
     ('KL-ctl', 'before the fix: a key that reached someone who left while it was signed was still sent and used',
@@ -505,6 +534,14 @@ M8K_CONTROLS = [
      'join-sends-current-key', 'C joins'),
     ('KR-ctl', 'without the sequence and key id checks a repeated key message is accepted again', 'KR',
      'receive-without-replay-check', 'C joins, every key message delivered up to twice'),
+    ('KT-ctl', '0eda053..a75ca5c: key messages waited behind the receiver\'s own rotation, which waits for the server',
+     'KT', 'shared-receive-queue', 'C joins'),
+    ('KW-ctl', 'before a75ca5c: the key of a sender who left while it was installed stayed in the frame worker', 'KW',
+     'install-after-leave', 'C joins and leaves, B installs C\'s keys in its own time'),
+    ('KR-reuse-ctl', 'before 0eda053: a key id that had left the three kept keys was accepted again (resetting its '
+                     'replay window)', 'KR', 'unserialized-receive', 'C joins and signs keys of its own'),
+    ('KH-retry-ctl', 'before d3319e3: a key the server failed to relay was not sent again, so a participant lacked it',
+     'KH', 'no-retry', 'C joins, one relay fails'),
 ]
 
 
