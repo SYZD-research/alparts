@@ -3577,19 +3577,20 @@
    "not_run": "dev.sh itself (needs Docker, unavailable here)"
   },
   "source_sha256": {
-   "formal-model/m3s_stall.py": "4be160a6f75bfde237790f058e28546de7cea3b76403dfcb56498e0123123d6f",
+   "formal-model/m3s_stall.py": "55f0774e2ae13454f7dace4234675b269112941584cdba7e48da11c5f7a7329d",
+   "formal-model/m4_devices.py": "5e028fd86ccc2578a2a28adbc7d69201f5fbe06d31dd98cc3326039e800ee2ec",
    "formal-model/test_harness.py": "9e49bf20542fcaffb646eb82bc3b521e1feb47ef3bff119b86f345cf98e44a74",
-   "packages/server/src/db/schema.ts": "efa26c6d0f3b0a09b253801755874d6d6705d6970fc1b20ed8e32a5abd801645",
-   "packages/server/src/db/schema-catalog.ts": "2aa3c5fad5951c273b87623c16975b17b0557329af4d5678a9ba43def2361e3b",
    "packages/server/src/db/migrations/0026_member_access_lost.sql": "0cfbcb2bead37db052e030c0603c9f90521ecf58f86aeefad0c41be3448c37c0",
    "packages/server/src/db/migrations/meta/_journal.json": "8b549cbb6e97ac670494b77f635ca0e9cb516e486a6c693fd7f44d64c7a84e82",
-   "packages/server/src/services/key-epoch-state.ts": "c6d24037d675c5742f6df27c7134832f3370969637dc73f94609ac2aca5d1fc3",
+   "packages/server/src/db/schema-catalog.ts": "2aa3c5fad5951c273b87623c16975b17b0557329af4d5678a9ba43def2361e3b",
+   "packages/server/src/db/schema.ts": "efa26c6d0f3b0a09b253801755874d6d6705d6970fc1b20ed8e32a5abd801645",
+   "packages/server/src/security/integration.test.ts": "57741c00fcc17e3ab18baa0017968b8c022d329926c410501f911feffa34ea51",
    "packages/server/src/services/authorization.service.ts": "365381313b3710cc796c3fabb73e29bfdbbeb8c0bec93867836d07ec8c8a5165",
+   "packages/server/src/services/key-epoch-state.ts": "c6d24037d675c5742f6df27c7134832f3370969637dc73f94609ac2aca5d1fc3",
+   "packages/server/src/services/mls-group-rules.test.ts": "18591c1e9599303af6b4d354c2538d3fc25be33017a2e6beec06dfb97dffd3ee",
    "packages/server/src/services/mls-group-rules.ts": "64525837736b9980165782278a40476fcd8589ec222f4d67c3b0b748538042b1",
    "packages/server/src/services/mls-group-state.ts": "7ed24324f3ad8730fbbab1b8fa73c7a24ddd21db3977caff5ca312506abba288",
-   "packages/server/src/services/mls-group.service.ts": "7f75073db7d0f2fd9f5e9664985e1be76cecaf57c4a4535f10bc20a3fdbfb1d1",
-   "packages/server/src/services/mls-group-rules.test.ts": "18591c1e9599303af6b4d354c2538d3fc25be33017a2e6beec06dfb97dffd3ee",
-   "packages/server/src/security/integration.test.ts": "57741c00fcc17e3ab18baa0017968b8c022d329926c410501f911feffa34ea51"
+   "packages/server/src/services/mls-group.service.ts": "7f75073db7d0f2fd9f5e9664985e1be76cecaf57c4a4535f10bc20a3fdbfb1d1"
   }
  }
 }

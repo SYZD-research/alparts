@@ -264,7 +264,6 @@ def _retire(state: LState, ids, status='retired') -> LState:
 def lockout_transitions(state: LState, rules: LRules, only_l: bool = False):
     """Every step; with only_l, L's own steps, whose registrations the exploration bound does not limit."""
     status = {d: s for d, _, s in state.devices}
-    controller = {d: c for d, c, _ in state.devices}
     holders = ('L',) if only_l else ('L', 'Att')
     for holder in holders:
         if holder == 'L' or state.att_password:
