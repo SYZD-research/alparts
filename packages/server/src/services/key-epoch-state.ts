@@ -99,28 +99,32 @@ export async function deleteEpochRecipients(store: any, scope: SQL): Promise<voi
 }
 
 /**
- * Since when a continuous group has a member whose user no longer sees the
- * channel (fresh start rule c counts from it). Set when the first such member
- * appears and cleared when access returns; an accepted commit clears it too,
- * as it must remove those members.
+ * Since when each current member's user no longer sees the channel (fresh
+ * start rule c counts that member's removal from it). A user who lost the
+ * channel in this change starts counting now, even if its members carry an
+ * older time; one who lost it earlier keeps counting from then; a user who sees
+ * the channel counts nothing. A commit ends those members, and the new rows of
+ * a later membership start without a time.
  */
-export async function refreshGroupRemoveRequirement(
+export async function refreshMemberAccessLoss(
   store: any,
   channelId: string,
   viewerUserIds: readonly string[],
+  lostUserIds: readonly string[],
 ): Promise<void> {
-  const lostAccess = viewerUserIds.length === 0
-    ? sql`true`
-    : sql`m.user_id not in (${sql.join(viewerUserIds.map((id) => sql`${id}`), sql`, `)})`;
+  const among = (userIds: readonly string[]) => (userIds.length === 0
+    ? sql`false`
+    : sql`m.user_id in (${sql.join(userIds.map((id) => sql`${id}`), sql`, `)})`);
+  const sees = among(viewerUserIds);
+  const lostNow = among(lostUserIds);
   await store.execute(sql`
-    update mls_groups g set remove_required_at = case
-      when exists (
-        select 1 from mls_group_members m
-        where m.channel_id = g.channel_id and m.removed_version is null and ${lostAccess}
-      ) then coalesce(g.remove_required_at, now())
-      else null
+    update mls_group_members m set access_lost_at = case
+      when ${sees} then null
+      when ${lostNow} then now()
+      else coalesce(m.access_lost_at, now())
     end
-    where g.channel_id = ${channelId} and g.genesis_version is not null
+    where m.channel_id = ${channelId} and m.removed_version is null
+      and (m.access_lost_at is not null or not ${sees})
   `);
 }
 

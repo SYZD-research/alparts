@@ -59,6 +59,7 @@ export async function loadCurrentGroupMembers(
     leafUpdatedAt: mlsGroupMembers.leafUpdatedAt,
     lastSeenAt: mlsGroupMembers.lastSeenAt,
     revokedAt: devices.revokedAt,
+    accessLostAt: mlsGroupMembers.accessLostAt,
   }).from(mlsGroupMembers)
     .innerJoin(devices, eq(devices.id, mlsGroupMembers.deviceId))
     .where(and(eq(mlsGroupMembers.channelId, channelId), isNull(mlsGroupMembers.removedVersion)))
@@ -157,7 +158,6 @@ export async function loadGroupSnapshot(
       genesisCreatedAt: genesisEpoch?.createdAt ?? null,
       pathRefreshedAt: group.pathRefreshedAt,
       genesisRequestedAt: group.genesisRequestedAt,
-      removeRequiredAt: group.removeRequiredAt,
     } : null,
     members,
     packages,

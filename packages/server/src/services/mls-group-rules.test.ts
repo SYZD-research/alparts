@@ -1010,7 +1010,6 @@ describe('continuous group state', () => {
     packages?: MemberPackageState[];
     manager?: boolean;
     caller?: string;
-    removeRequiredAt?: Date;
   }) => {
     const eligible = (overrides.eligible ?? ['a', 'b', 'x']).map((id) => ({ id, userId: `u-${id}`, identityKey: id }));
     const current = overrides.members ?? [member('a', 'u-a', 0, now), member('b', 'u-b', 1, now)];
@@ -1021,7 +1020,6 @@ describe('continuous group state', () => {
       view: deriveMembership({ eligible, members: current, packages: overrides.packages ?? [], rejoinRequests: overrides.rejoin ?? [], now }),
       members: current,
       genesisCreatedAt: new Date(now - 60 * MINUTE),
-      removeRequiredAt: overrides.removeRequiredAt ?? null,
     };
   };
   /** Valid since `validFor` ago (published then, or valid on a slower clock from then). */
@@ -1101,10 +1099,34 @@ describe('continuous group state', () => {
     // The group started an hour ago, but the device was revoked just now.
     assert.equal(freshStartPermitted(input({ members: revokedSince(5 * MINUTE) })), false);
     assert.equal(freshStartPermitted(input({ members: revokedSince(16 * MINUTE) })), true);
-    // A user that lost access counts from mls_groups.remove_required_at, and not at all without it.
-    assert.equal(freshStartPermitted(input({})), false);
-    assert.equal(freshStartPermitted(input({ removeRequiredAt: new Date(now - 5 * MINUTE) })), false);
-    assert.equal(freshStartPermitted(input({ removeRequiredAt: new Date(now - 16 * MINUTE) })), true);
+    // A member whose user lost access counts from its own access_lost_at, and not at all without it.
+    const lostSince = (age?: number) => [
+      member('a', 'u-a', 0, now),
+      { ...member('b', 'u-b', 1, now), accessLostAt: age === undefined ? null : new Date(now - age) },
+    ];
+    assert.equal(freshStartPermitted(input({ members: lostSince() })), false);
+    assert.equal(freshStartPermitted(input({ members: lostSince(5 * MINUTE) })), false);
+    assert.equal(freshStartPermitted(input({ members: lostSince(16 * MINUTE) })), true);
+    // A revoked member counts from its revocation even if its user lost access earlier.
+    const both = [member('a', 'u-a', 0, now),
+      { ...member('b', 'u-b', 1, now), revokedAt: new Date(now - 5 * MINUTE), accessLostAt: new Date(now - 20 * MINUTE) }];
+    assert.equal(freshStartPermitted(input({ members: both })), false);
+  });
+
+  it('counts each lost viewer from its own loss, not from an earlier one that was undone (R-057)', () => {
+    const now = Date.now();
+    const input = (members: GroupMemberState[]) => freshStartPermitted(freshStartInput(now, {
+      eligible: ['a', 'b', 'x'], manager: true, members,
+    }));
+    // b lost the channel 20 minutes ago and has it back; c lost it 5 minutes ago.
+    const members = [
+      member('a', 'u-a', 0, now),
+      { ...member('b', 'u-b', 1, now), accessLostAt: null },
+      { ...member('c', 'u-c', 2, now), accessLostAt: new Date(now - 5 * MINUTE) },
+    ];
+    assert.equal(input(members), false);
+    // Two removals due: the earlier one decides.
+    assert.equal(input([...members.slice(0, 2), { ...members[2], accessLostAt: new Date(now - 16 * MINUTE) }]), true);
   });
 
   it('refuses packages that can never be added', () => {

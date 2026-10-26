@@ -8,8 +8,12 @@ migration changes the schema.
 
 Several migrations (0009–0020) are written by hand because they contain
 triggers, functions and data backfills that drizzle-kit cannot express, so
-`meta/` has no snapshots for 0009–0017. `meta/0018_snapshot.json` through `meta/0025_snapshot.json` were generated
+`meta/` has no snapshots for 0009–0017. `meta/0018_snapshot.json` through `meta/0026_snapshot.json` were generated
 from `src/db/schema.ts`, so `drizzle-kit generate` diffs against the current
 table model instead of the stale 0008 snapshot. Always review generated SQL:
 the snapshot does not describe triggers or functions. Never use `db:push`
 against a real database.
+
+`drizzle-kit generate` reads every entry of this folder and of `meta/` as a
+file, so it stops with `EISDIR` on the `.dirdoc/` description folders. Move
+both `.dirdoc/` folders aside while generating, and put them back afterwards.

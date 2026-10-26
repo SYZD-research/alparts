@@ -77,7 +77,7 @@ for name in ('channel.preference.update', 'message.bookmark.add', 'message.bookm
 for name in ('account.disable', 'account.enable', 'account.password.reset', 'audit.checkpoint.provision',
              'audit.checkpoint_write_failed_after_commit', 'authentication.challenge',
              'authentication.challenge.consume', 'authentication.step_up', 'authentication.step_up.consume',
-             'device.approve', 'device.bind', 'device.register', 'device.revoke', 'device.revoke.replay',
+             'device.approve', 'device.bind', 'device.expire', 'device.register', 'device.revoke', 'device.revoke.replay',
              'passkey.delete', 'passkey.register', 'recovery.access.enroll', 'recovery.configure', 'recovery.device',
              'recovery.disable', 'recovery.key.backup', 'security.audit.truncation-control', 'session.revoke',
              'session.revoke_all', 'user.avatar.remove', 'user.avatar.update', 'user.login', 'user.login.failed',

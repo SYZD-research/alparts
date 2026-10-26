@@ -43,7 +43,10 @@ requestRejoin / commitLocked / createLocked / runMaintenance
   write gate  the active version is a continuous group, the key version is
               the active one, the writer is a current member, every member is
               eligible (M ⊆ E) and the group key is less than 24 h old.
-  viewer +/-, device approve/revoke, clocks (24 h key age, 24 h genesis wait),
+  viewer +/-  a user who stops seeing the channel loses its devices' packages
+              and rejoin requests there (purgeLostViewerPackages, 2026-10-21);
+              it publishes again once it sees the channel again.
+  device approve/revoke, clocks (24 h key age, 24 h genesis wait),
   Y1 going offline for good, restore (a device learns every key its user's
   devices derived or restored: history backup).
 
@@ -130,6 +133,8 @@ class Variant:
     leave_ended_unreadable: bool = True  # an unreadable envelope of an ended membership is not a rejoin
     idle_fresh_start: bool = True      # (a) also when every usable member has been offline for 72 h
     malicious_server: bool = False     # the server ignores channel visibility
+    purge_on_loss: bool = True         # losing the channel drops the user's packages (2026-10-21)
+    view_users: tuple = (0, 1, 2)      # users whose access may change
 
 
 def bits(mask: int) -> list[int]:
@@ -423,11 +428,14 @@ def transitions(s: State, v: Variant):
                 yield ('restore', d), s._replace(restored=_set(s.restored, d, s.restored[d] | new)), 'other'
 
     if s.viewer_changes < v.max_viewer_changes:
-        for u in range(len(USERS)):
+        for u in v.view_users:
             viewers = s.viewers ^ (1 << u)
             if viewers:
+                pkg = s.pkg
+                if not viewers >> u & 1 and v.purge_on_loss:   # purgeLostViewerPackages: packages and rejoin requests go
+                    pkg = tuple(NO_PKG if USER_DEVICES[u] >> d & 1 else p for d, p in enumerate(pkg))
                 yield ('view', u, bool(viewers >> u & 1)), s._replace(
-                    viewers=viewers, viewer_changes=s.viewer_changes + 1), 'other'
+                    viewers=viewers, pkg=pkg, viewer_changes=s.viewer_changes + 1), 'other'
     if s.device_changes < v.max_device_changes:
         for d in range(N):
             if s.status[d] == UNAPPROVED:

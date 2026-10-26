@@ -650,7 +650,6 @@ export async function admitGroupCommit(
           }),
           members: snapshot.members,
           genesisCreatedAt: snapshot.group!.genesisCreatedAt!,
-          removeRequiredAt: snapshot.group!.removeRequiredAt ?? null,
         })
         : false,
     }, route);
@@ -744,7 +743,9 @@ export async function admitGroupCommit(
         isNull(mlsGroupMembers.removedVersion),
       ));
     }
-    // Every member is eligible after an accepted commit, so no remove is due.
+    // Every member is eligible after an accepted commit, so no remove is due:
+    // the members whose user lost the channel, and their loss times, ended
+    // with it.
     if (plan.kind === 'create') {
       await tx.insert(mlsGroups).values({
         channelId: commit.channelId,
@@ -752,13 +753,10 @@ export async function admitGroupCommit(
         pathRefreshedAt: acceptedAt,
       }).onConflictDoUpdate({
         target: mlsGroups.channelId,
-        set: { genesisVersion: version, pathRefreshedAt: acceptedAt, removeRequiredAt: null },
+        set: { genesisVersion: version, pathRefreshedAt: acceptedAt },
       });
-    } else {
-      await tx.update(mlsGroups).set({
-        removeRequiredAt: null,
-        ...(plan.pathRefresh ? { pathRefreshedAt: acceptedAt } : {}),
-      }).where(eq(mlsGroups.channelId, commit.channelId));
+    } else if (plan.pathRefresh) {
+      await tx.update(mlsGroups).set({ pathRefreshedAt: acceptedAt }).where(eq(mlsGroups.channelId, commit.channelId));
     }
     await tx.execute(sql`insert into channel_directory_heads (channel_id, user_id, sequence)
       values ${sql.join(commit.directoryHeads.map((head) => sql`(${commit.channelId}, ${head.userId}, ${head.sequence})`), sql`, `)}

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run every model and print a verdict table.
 
-  python3 run.py            all models (M3 about 6 minutes and ~0.9 GB, M8 about 10 minutes)
+  python3 run.py            all models (M3 about 7 minutes and ~0.9 GB, M8 about an hour on 4 cores)
   python3 run.py M1 M4      selected models only
 
 Exit status: 0 when every check has its expected outcome, 1 when a design
@@ -18,8 +18,9 @@ MODELS = {
     'M1c': ('conformance', 'model/implementation conformance'),
     'M1': ('m1_authorization', 'authorization algebra'),
     'M2': ('m2_hierarchy', 'role hierarchy'),
-    'M2c': ('hierarchy_conformance', 'superior guard implementation conformance'),
+    'M2c': ('hierarchy_conformance', 'hierarchy guard implementation conformance'),
     'M3': ('m3_key_epochs', 'channel key epochs'),
+    'M3s': ('m3s_stall', 'the fresh-start stall rule over time'),
     'M3r': ('m3r_own_commit', 'own group commits with lost answers'),
     'M4': ('m4_devices', 'devices and sessions'),
     'M4s': ('m4s_sessions', 'credentials, sessions and sockets under concurrent requests'),

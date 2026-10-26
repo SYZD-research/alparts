@@ -2,15 +2,23 @@
 
 Random workspaces (roles, overrides, private/voice channels, owner) are
 evaluated by authz.py and by getChannelAuthorizationFromSnapshot /
-captureChannelViewersFromSnapshot via conformance/authz-harness.mts.
+captureChannelViewersFromSnapshot / captureChannelAccessFromSnapshot (key
+recipients) via conformance/authz-harness.mts.
 Any mismatch means the model does not describe the implementation.
+
+C2 runs the real applyViewerEffectsAndRotation on random changes (a role's
+VIEW_CHANNELS or CONNECT_VOICE, an override on them, a role taken away, a
+private membership) and requires the room effects the routes act on: users
+who lost the channel, users who gained it, and viewers of a voice channel who
+stopped being its key recipients (they must leave its call, 31aeda9).
 """
 from __future__ import annotations
 
+import copy
 import random
 
-from authz import Channel, Role, Workspace, channel_mask, viewers
-from common import ALL_PERMS, CHANNEL_SCOPED, PERM, record
+from authz import Channel, Role, Workspace, channel_mask, key_recipients, viewers
+from common import ALL_PERMS, CHANNEL_SCOPED, CONNECT, PERM, VIEW, record
 from harness import HarnessError, require_rows, run_harness
 
 
@@ -89,8 +97,9 @@ def run(cases: int = 400, seed: int = 20260929) -> None:
                     raise HarnessError('Missing or malformed channel masks')
                 if masks['__missing_channel__'] != -1 or (user == '__nonmember__' and any(mask != -1 for mask in masks.values())):
                     raise HarnessError('Unknown channel or non-member unexpectedly authorized')
-            if not isinstance(out.get('viewers'), dict) or set(out['viewers']) != set(ws.channels) or not all(isinstance(v, list) and all(isinstance(u, str) for u in v) for v in out['viewers'].values()):
-                raise HarnessError('Missing or malformed viewer results')
+            for key in ('viewers', 'keyRecipients'):
+                if not isinstance(out.get(key), dict) or set(out[key]) != set(ws.channels) or not all(isinstance(v, list) and all(isinstance(u, str) for u in v) for v in out[key].values()):
+                    raise HarnessError(f'Missing or malformed {key} results')
     except HarnessError as error:
         record('M1c', 'C1', 'Python evaluator equals TypeScript implementation', 'HOLDS', False,
                str(error), incomplete=True)
@@ -104,8 +113,9 @@ def run(cases: int = 400, seed: int = 20260929) -> None:
                 if (expected if expected is not None else -1) != actual:
                     mismatches.append(f'case {index} {user}/{channel}: model={expected} impl={actual}')
         for channel in ws.channels:
-            if sorted(viewers(ws, channel)) != sorted(out['viewers'].get(channel, [])):
-                mismatches.append(f'case {index} viewers {channel}: model={sorted(viewers(ws, channel))} impl={out["viewers"].get(channel)}')
+            for key, users in (('viewers', viewers), ('keyRecipients', key_recipients)):
+                if sorted(users(ws, channel)) != sorted(out[key].get(channel, [])):
+                    mismatches.append(f'case {index} {key} {channel}: model={sorted(users(ws, channel))} impl={out[key].get(channel)}')
     comparisons = sum(len(ws.members) * len(ws.channels) for ws in workspaces)
     # CONTROL: an evaluator with allow-wins instead of deny-wins must disagree.
     mutated = 0
@@ -116,8 +126,90 @@ def run(cases: int = 400, seed: int = 20260929) -> None:
                     mutated += 1
     record('M1c', 'C0', 'an allow-wins evaluator is detected as non-conforming', 'CONTROL', mutated > 0,
            f'{mutated} mismatches for the mutant')
+    # CONTROL: viewers gated on CONNECT_VOICE (before e12058e, 2026-10-21) must disagree.
+    gated = sum(1 for ws, out in zip(workspaces, outputs, strict=True) for channel in ws.channels
+                if sorted(key_recipients(ws, channel)) != sorted(out['viewers'][channel]))
+    record('M1c', 'C0b', 'viewers gated on CONNECT_VOICE (before 2026-10-21) are detected as non-conforming', 'CONTROL',
+           gated > 0, f'{gated} mismatches for the mutant')
     record('M1c', 'C1', f'Python evaluator equals TypeScript implementation ({cases} random workspaces, {comparisons} masks)',
            'HOLDS', bool(mismatches), f'{len(mismatches)} mismatches' if mismatches else '', mismatches)
+    run_effects()
+
+
+def mutate(rng: random.Random, ws: Workspace) -> Workspace:
+    """One authorization change of the kinds the routes make."""
+    after = copy.deepcopy(ws)
+    kind = rng.choice(('role-bit', 'role-bit', 'override', 'unassign', 'private'))
+    if kind == 'role-bit':
+        name = rng.choice(sorted(after.roles))
+        role = after.roles[name]
+        after.roles[name] = Role(name, role.permissions ^ rng.choice((VIEW, CONNECT, CONNECT)), role.position)
+    elif kind == 'override':
+        target = (rng.choice(sorted(after.channels)), rng.choice(sorted(after.roles)))
+        allow, deny = after.channel_overrides.get(target, (0, 0))
+        after.channel_overrides[target] = (allow, deny ^ rng.choice((VIEW, CONNECT, CONNECT)))
+    elif kind == 'unassign':
+        user = rng.choice(sorted(after.members))
+        if after.members[user]:
+            after.members[user] = after.members[user] - {rng.choice(sorted(after.members[user]))}
+    else:
+        private = [c for c, ch in after.channels.items() if ch.private]
+        if private:
+            channel = rng.choice(private)
+            after.private_members[channel] = after.private_members[channel] ^ {rng.choice(sorted(after.members))}
+    return after
+
+
+def expected_effects(before: Workspace, after: Workspace, call_loss: bool = True) -> dict:
+    out = {}
+    for channel in before.channels:
+        vb, va = viewers(before, channel), viewers(after, channel)
+        kb, ka = key_recipients(before, channel), key_recipients(after, channel)
+        lost_call = sorted((kb - ka) & va) if call_loss else []
+        if vb != va or lost_call:
+            out[channel] = (sorted(vb - va), sorted(va - vb), lost_call)
+    return out
+
+
+def run_effects(cases: int = 800, seed: int = 20261026) -> None:
+    rng = random.Random(seed)
+    pairs = []
+    while len(pairs) < cases:
+        before = random_workspace(rng)
+        if not any(ch.voice for ch in before.channels.values()):
+            continue
+        pairs.append((before, mutate(rng, before)))
+    try:
+        result = run_harness('authz-harness.mts', [{**to_json(b), 'effects': {'after': to_json(a)}} for b, a in pairs])
+        if not isinstance(result, dict):
+            raise HarnessError('Missing effects result envelope')
+        outputs = require_rows(result.get('results'), len(pairs))
+        if any(not isinstance(row.get('effects'), list) for row in outputs):
+            raise HarnessError('Malformed room effects')
+    except HarnessError as error:
+        record('M1c', 'C2', 'room effects equal the model (a viewer who stops being a key recipient leaves the call)',
+               'HOLDS', False, str(error), incomplete=True)
+        return
+    mismatches, unended, lost_calls, mutant = [], [], 0, 0
+    for index, ((before, after), row) in enumerate(zip(pairs, outputs, strict=True)):
+        actual = {e['channelId']: (sorted(e['lostUserIds']), sorted(e['gainedUserIds']), sorted(e['lostCallUserIds']))
+                  for e in row['effects']}
+        want = expected_effects(before, after)
+        if actual != want:
+            mismatches.append(f'case {index}: model={want} impl={actual}')
+        for channel in before.channels:
+            gone = key_recipients(before, channel) - key_recipients(after, channel)
+            lost, _, calls = actual.get(channel, ([], [], []))
+            if gone - set(lost) - set(calls):
+                unended.append(f'case {index} {channel}: {sorted(gone)} stopped receiving keys without a room effect')
+            lost_calls += len(calls)
+        mutant += expected_effects(before, after, call_loss=False) != actual
+    print(f'     {cases} changes, {lost_calls} viewers who kept a voice channel but lost its call')
+    record('M1c', 'C2b', 'without lostCallUserIds (e12058e..31aeda9), the corpus has a viewer that loses only the call',
+           'CONTROL', mutant > 0 and lost_calls > 0, f'{mutant} changes disagree with the mutant')
+    record('M1c', 'C2', 'room effects equal the model; everyone who stops receiving a voice channel\'s keys gets one '
+           '(a viewer who loses CONNECT_VOICE leaves the call)', 'HOLDS', bool(mismatches or unended),
+           witness=(unended + mismatches)[:20])
 
 
 if __name__ == '__main__':

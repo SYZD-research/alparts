@@ -183,6 +183,13 @@
       "when": 1791586800000,
       "tag": "0025_passkey_sessions",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1791673200000,
+      "tag": "0026_member_access_lost",
+      "breakpoints": true
     }
   ]
 }

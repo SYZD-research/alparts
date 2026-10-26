@@ -16,7 +16,7 @@ import { crc32, deflateSync } from 'node:zlib';
 const server = fileURLToPath(new URL('../../packages/server/', import.meta.url));
 const require = createRequire(join(server, 'package.json'));
 const pg = require('pg');
-const { eq } = require('drizzle-orm');
+const { and, eq, isNull } = require('drizzle-orm');
 const { Permissions: P } = require('@alparts/shared');
 assert.equal(process.env.RUN_FORMAL_CONFORMANCE, '1', 'Set RUN_FORMAL_CONFORMANCE=1 for this disposable integration audit');
 assert.match(new URL(process.env.DATABASE_URL!).pathname, /^\/alparts_(?:security_)?test(?:_\w+)?$/);
@@ -776,6 +776,61 @@ try {
       assert.equal(revoked.status, 200, JSON.stringify(revoked.body));
       assert.equal(Boolean(await db.query.sessions.findFirst({ where: eq(schema.sessions.id, stolen.sessionId) })), false);
     });
+  });
+
+  await check('M4c-device-limit', 'At the device limit a registration retires the oldest device nobody approved, ends its sessions and leaves approved devices alone; the operator reset retires every such device (M4 LK1, ES1)', async () => {
+    const f = await fixture();
+    const { MAX_ACTIVE_DEVICES_PER_USER } = await import('../../packages/shared/src/index.ts');
+    const { resetPassword } = await import('../../packages/server/src/services/account-state.service.ts');
+    const { hashPassword } = await import('../../packages/server/src/security/password-work.ts');
+    const first = await register(f.subject);
+    setup(first.approvedAt !== null, 'the first device was not approved on first use');
+    // Someone who can sign in fills every other place with devices nobody approves.
+    const pending: Array<Awaited<ReturnType<typeof register>>> = [];
+    for (let index = 1; index < MAX_ACTIVE_DEVICES_PER_USER; index += 1) pending.push(await register(f.subject));
+    setup(pending.every((device) => device.approvedAt === null), 'a later device was approved');
+    const device = async (id: string) => (await db.query.devices.findFirst({ where: eq(schema.devices.id, id) }))!;
+    const sessionOf = async (id: string) => db.query.sessions.findFirst({ where: eq(schema.sessions.id, id) });
+    // The owner, who can no longer use the approved device, adds one more.
+    const added = await register(f.subject).catch((error: Error) => assert.fail(`the owner could not add a device: ${error.message}`));
+    assert.notEqual((await device(pending[0].id)).revokedAt, null, 'the oldest pending device was not retired at the limit');
+    assert.equal(await sessionOf(pending[0].sessionId), undefined, 'the retired device kept its session');
+    assert.equal((await device(first.id)).revokedAt, null, 'the approved device was retired');
+    assert.equal((await device(added.id)).revokedAt, null);
+    for (const other of pending.slice(1)) assert.equal((await device(other.id)).revokedAt, null, 'a newer pending device was retired');
+    const events = await db.select().from(schema.deviceDirectoryEvents).where(eq(schema.deviceDirectoryEvents.userId, f.subject));
+    assert.ok(events.some((row: any) => row.event.kind === 'expire' && row.event.deviceId === pending[0].id),
+      'the directory does not say the device was retired');
+    // The operator reset retires every device nobody approved and keeps the approved one.
+    const result = await resetPassword(f.subject, await hashPassword(randomUUID() + randomUUID(), 12));
+    assert.equal(result.devicesRetired.length, MAX_ACTIVE_DEVICES_PER_USER - 1);
+    const active = await db.select().from(schema.devices).where(and(eq(schema.devices.userId, f.subject), isNull(schema.devices.revokedAt)));
+    assert.deepEqual(active.map((row: any) => row.id), [first.id], 'the reset left a device nobody approved, or retired the approved one');
+  });
+
+  await check('M4c-passkey-delete', 'Deleting a passkey ends the other sessions opened with it, keeps the asking session and the sessions opened otherwise, and the last passkey cannot be deleted (M4s PK1)', async () => {
+    const f = await fixture();
+    const auth = await import('../../packages/server/src/services/auth.service.ts');
+    const passkeys = await import('../../packages/server/src/services/passkey.service.ts');
+    const user = (await db.query.users.findFirst({ where: eq(schema.users.id, f.subject) }))!;
+    const keys = ['formal-owner-' + randomUUID(), 'formal-added-' + randomUUID()];
+    for (const id of keys) {
+      await db.insert(schema.passkeys).values({ id, userId: f.subject, name: id, publicKey: 'formal', counter: 0, transports: [] });
+    }
+    const open = async (method: string, passkeyId?: string) => {
+      const { token } = await auth.establishSession(user, undefined, method, undefined, undefined, passkeyId);
+      return (await db.query.sessions.findFirst({ where: eq(schema.sessions.tokenHash, createHash('sha256').update(token).digest('hex')) }))!.id;
+    };
+    const asking = await open('passkey', keys[1]);
+    const added = await open('passkey', keys[1]);
+    const ownersKey = await open('passkey', keys[0]);
+    const withPassword = await open('password');
+    const alive = async (id: string) => Boolean(await db.query.sessions.findFirst({ where: eq(schema.sessions.id, id) }));
+    const ended = await passkeys.deletePasskey(f.subject, asking, keys[1], async () => undefined);
+    assert.deepEqual(ended, [added], 'deleting the passkey did not end exactly the other sessions opened with it');
+    assert.equal(await alive(added), false, 'a session opened with the deleted passkey survived');
+    for (const id of [asking, ownersKey, withPassword]) assert.equal(await alive(id), true, 'a session not opened with it ended');
+    await assert.rejects(passkeys.deletePasskey(f.subject, ownersKey, keys[0], async () => undefined), /LAST_PASSKEY/);
   });
 
   await check('M3c-identical-retry', 'The same commit sent again gets the replay answer, whichever check finds its version taken (M3r K2)', async () => {

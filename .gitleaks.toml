@@ -20,5 +20,5 @@ paths = ['''^scripts/tests/''', '''^docs/''', '''^audit-alparts/findings/''']
 [[allowlists]]
 description = "Source file digests in formal-model results"
 condition = "AND"
-paths = ['''^formal-model/[a-z-]+-results\.json$''']
+paths = ['''^formal-model/[a-z0-9-]+-results\.json$''']
 regexes = ['''^[0-9a-f]{64}$''']

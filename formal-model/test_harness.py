@@ -32,22 +32,60 @@ class EvidenceTests(unittest.TestCase):
     @staticmethod
     def workspace():
         return Workspace('o', {'r': Role('r', common.VIEW, 10)},
-                         {'o': frozenset(), 'u': frozenset({'r'})}, {'c': Channel('c', None)},
+                         {'o': frozenset(), 'u': frozenset({'r'})},
+                         {'c': Channel('c', None), 'v': Channel('v', None, voice=True)},
                          channel_overrides={('c', 'r'): (common.VIEW, common.VIEW)})
 
     @staticmethod
     def output():
         return {'permissions': common.PERM, 'channelScopedMask': common.CHANNEL_SCOPED, 'results': [{
-            'masks': {'o': {'c': common.CHANNEL_SCOPED, '__missing_channel__': -1},
-                      'u': {'c': 0, '__missing_channel__': -1},
-                      '__nonmember__': {'c': -1, '__missing_channel__': -1}},
-            'viewers': {'c': ['o']},
+            'masks': {'o': {'c': common.CHANNEL_SCOPED, 'v': common.CHANNEL_SCOPED, '__missing_channel__': -1},
+                      'u': {'c': 0, 'v': common.VIEW, '__missing_channel__': -1},
+                      '__nonmember__': {'c': -1, 'v': -1, '__missing_channel__': -1}},
+            'viewers': {'c': ['o'], 'v': ['o', 'u']},
+            'keyRecipients': {'c': ['o'], 'v': ['o']},
         }]}
 
     def execute(self, output, count=1):
         with patch.object(conformance, 'random_workspace', return_value=self.workspace()), \
-                patch.object(conformance, 'run_harness', return_value=output):
+                patch.object(conformance, 'run_harness', return_value=output), \
+                patch.object(conformance, 'run_effects', lambda: None):
             conformance.run(cases=count)
+
+    @staticmethod
+    def call_change():
+        before = Workspace('o', {'r': Role('r', common.VIEW | common.CONNECT, 10)},
+                           {'o': frozenset(), 'u': frozenset({'r'})}, {'v': Channel('v', None, voice=True)})
+        after = Workspace('o', {'r': Role('r', common.VIEW, 10)},
+                          {'o': frozenset(), 'u': frozenset({'r'})}, {'v': Channel('v', None, voice=True)})
+        return before, after
+
+    def execute_effects(self, effects):
+        before, after = self.call_change()
+        output = {'results': [{'effects': effects}]}
+        with patch.object(conformance, 'random_workspace', return_value=before), \
+                patch.object(conformance, 'mutate', return_value=after), \
+                patch.object(conformance, 'run_harness', return_value=output):
+            conformance.run_effects(cases=1)
+
+    def test_room_effects_with_the_lost_call_pass(self):
+        self.execute_effects([{'channelId': 'v', 'lostUserIds': [], 'gainedUserIds': [], 'lostCallUserIds': ['u']}])
+        self.assertEqual([r.verdict for r in common.RESULTS], ['PASS', 'PASS'])
+
+    def test_room_effects_without_the_lost_call_are_a_finding(self):
+        self.execute_effects([])
+        self.assertEqual(common.RESULTS[-1].verdict, 'FINDING')
+
+    def test_missing_room_effects_are_incomplete(self):
+        for output in ({'results': []}, {'results': [{}]}, None):
+            with self.subTest(output=output):
+                common.RESULTS.clear()
+                before, after = self.call_change()
+                with patch.object(conformance, 'random_workspace', return_value=before), \
+                        patch.object(conformance, 'mutate', return_value=after), \
+                        patch.object(conformance, 'run_harness', return_value=output):
+                    conformance.run_effects(cases=1)
+                self.assert_incomplete()
 
     def assert_incomplete(self):
         self.assertTrue(common.RESULTS)
@@ -56,11 +94,12 @@ class EvidenceTests(unittest.TestCase):
     def test_missing_runtime_is_not_pass(self):
         with patch.object(conformance, 'run_harness', side_effect=harness.HarnessError('missing runtime')):
             conformance.run()
+            conformance.run_effects()
         self.assert_incomplete()
 
     def test_complete_results_and_deny_mutant(self):
         self.execute(self.output())
-        self.assertEqual([r.verdict for r in common.RESULTS], ['PASS', 'PASS'])
+        self.assertEqual([r.verdict for r in common.RESULTS], ['PASS', 'PASS', 'PASS'])
 
     def test_truncated_results_are_not_zipped_away(self):
         self.execute(self.output(), count=400)
@@ -93,6 +132,18 @@ class EvidenceTests(unittest.TestCase):
                 common.RESULTS.clear()
                 self.execute(output)
                 self.assert_incomplete()
+
+    def test_missing_key_recipients_are_incomplete(self):
+        output = self.output()
+        del output['results'][0]['keyRecipients']
+        self.execute(output)
+        self.assert_incomplete()
+
+    def test_key_recipient_mismatch_is_a_finding(self):
+        output = self.output()
+        output['results'][0]['keyRecipients']['c'] = []
+        self.execute(output)
+        self.assertEqual(common.RESULTS[-1].verdict, 'FINDING')
 
     def test_real_mask_mismatch_is_a_finding(self):
         output = self.output()
@@ -170,6 +221,26 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual([v['property'] for v in out['violations']], ['KL'])
         self.assertEqual(out['violations'][0]['trace'][-2:], ['tell a that c left', 'resolve sign(a#3)'])
 
+    def test_key_harness_reports_a_message_stuck_behind_a_rotation(self):
+        # With the receive queue shared with rotations (0eda053), a key message waits for the receiver's own
+        # rotation, which waits for the server; KT must see it although the search otherwise looks complete.
+        try:
+            out = harness.run_harness('voice-keys-harness.mts', {'scenario': 'join', 'mutation': 'shared-receive-queue',
+                                                                 'stop': ['KT']}, timeout=120)
+        except harness.HarnessError as error:
+            self.skipTest(str(error))
+        self.assertTrue(out['complete'])
+        self.assertEqual([v['property'] for v in out['violations']], ['KT'])
+
+    def test_hierarchy_guard_gaps_are_not_passes(self):
+        import hierarchy_conformance
+        for output in (None, {'results': []}, {'results': [{}]}):
+            with self.subTest(output=output):
+                common.RESULTS.clear()
+                with patch.object(hierarchy_conformance, 'run_harness', return_value=output):
+                    hierarchy_conformance.guard_checks(1, steps=2)
+                self.assert_incomplete()
+
     def test_unclassified_audit_action_is_a_model_gap(self):
         actions = m5v_audit_view.source_actions() | {'channel.something.new'}
         with patch.object(m5v_audit_view, 'source_actions', return_value=actions), \
@@ -178,6 +249,26 @@ class EvidenceTests(unittest.TestCase):
         verdicts = {r.check_id: r.verdict for r in common.RESULTS}
         self.assertEqual(verdicts['AV-catalog'], 'MODEL-GAP')
         self.assertEqual(verdicts['AV-case'], 'MODEL-GAP')
+
+    def test_stall_rule_counts_each_loss_of_access_from_its_own_time(self):
+        # R-057: Z loses view after Y's loss has been 15 minutes old, then Y gains view again. One time for the
+        # whole group lets the manager replace the group at once; each member's own time does not.
+        import m3s_stall
+        steps = ['Y1: publish package', 'authz: Z gains view', 'Z1: publish package',
+                 'clock: the 24-hour genesis wait ends', 'Y1: genesis with {Y1,Z1}', 'authz: Y loses view',
+                 'clock: 15 minutes pass', 'X1: publish package', 'authz: Z loses view', 'authz: Y gains view']
+        fresh_start = 'X1: fresh start: manager, changes stalled with {X1}'
+        for loss_time, permitted in (('group', True), ('member', False)):
+            with self.subTest(loss_time=loss_time):
+                rules = m3s_stall.StallRules(loss_time=loss_time)
+                v = m3s_stall.base_variant(rules)
+                s = m3s_stall.s_initial(v)
+                for step in steps:
+                    s = next(nxt for action, nxt in m3s_stall.s_transitions(s, rules, v)
+                             if m3s_stall.s_label(s, v, action) == step)
+                labels = [m3s_stall.s_label(s, v, action) for action, _ in m3s_stall.s_transitions(s, rules, v)]
+                self.assertEqual(fresh_start in labels, permitted)
+                self.assertFalse(m3s_stall.truly_stalled(s, v))
 
     def test_incomplete_result_sets_runner_exit_failure(self):
         with patch.object(conformance, 'run_harness', side_effect=harness.HarnessError('missing')):

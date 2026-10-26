@@ -21,6 +21,20 @@
 //   KH  once the server delivered everything, every two current participants
 //       hold each other's current key (and the current keys differ from any
 //       key C received, after C left)
+//   KT  a delivered key message waits only for its own install or for an
+//       earlier message of the same sender, never for the receiver's own
+//       rotation (which waits for the server)
+//   KW  once a client's key messages settled, its frame worker holds exactly
+//       the keys the client keeps for each current sender, and none of a
+//       sender it forgot
+//
+// Options widen what the server and the participants can do: with
+// installSteps, B's frame worker installs each key (or, with 'c', each of C's
+// keys) when the server's schedule says so (so B handles several messages at
+// once); with insider, C also signs key messages of its own making for B
+// (three new key ids, then its first key id again, each once the call has
+// settled); with failAck, the server may fail to relay one key message (its
+// sender then sends a new key again).
 //
 // Two choices are left out because they cannot change what follows: which of
 // a client's pending acknowledgements comes first (they all end the waits of
@@ -30,7 +44,8 @@
 // workers > 1, worker threads replay the schedules of each search depth and
 // the main thread takes their results in the same order as a single thread.
 //
-// Input: { scenario: 'join' | 'join-leave', maxStates, duplicates, mutation, stop, progress, workers }
+// Input: { scenario: 'join' | 'join-leave', maxStates, duplicates, installSteps, insider, failAck, mutation, stop,
+//          progress, workers }
 // Output: { executions, states, transitions, depth, complete, violations }
 // With { scenario, schedule: [...] } it replays that one schedule and reports
 // the choices, violations and fingerprint of the state it reaches.
@@ -47,7 +62,12 @@ interface Input {
   scenario: 'join' | 'join-leave';
   maxStates?: number;
   duplicates?: boolean;
-  mutation?: 'pre-fix-rotation' | 'join-sends-current-key' | 'receive-without-replay-check';
+  /** B's frame worker installs keys when the server's schedule says so: all of them, or only C's ('c'). */
+  installSteps?: boolean | 'c';
+  insider?: boolean;
+  failAck?: boolean;
+  mutation?: 'pre-fix-rotation' | 'join-sends-current-key' | 'receive-without-replay-check'
+    | 'shared-receive-queue' | 'unserialized-receive' | 'install-after-leave' | 'no-retry';
   stop?: string[];
   /** Report each new search depth on stderr. */
   progress?: boolean;
@@ -63,7 +83,8 @@ const INDEX: Record<Name, number> = { a: 1, b: 2, c: 3 };
 const peer = (name: Name) => ({ participantId: `p-${name}`, userId: `u-${name}`, deviceId: `d-${name}` });
 const nameOf = (id: string) => id.slice(2) as Name;
 
-interface Pending { label: string; resolve: () => void }
+interface Pending { label: string; resolve: (value?: unknown) => void; message?: Message }
+/** delivered: times delivered, or -1 when the server failed to relay it. */
 interface Message { label: string; from: Name; to: Name; keyId: number; envelope: any; signature: string; delivered: number }
 interface Violation { property: string; message: string }
 
@@ -77,6 +98,8 @@ class World {
   cJoined = false;
   cLeft = false;
   notified = new Set<string>();
+  failed = false;
+  forged = 0;
 }
 
 const drain = async () => {
@@ -91,13 +114,21 @@ class Client {
   knowsLeave = false;
   readonly installed: number[] = [];
   readonly received = new Map<Name, number[]>();
-  private counters = { key: 0, sign: 0, ack: 0, delay: 0 };
+  /** The frame worker's receive keys and their senders. */
+  readonly worker = new Map<number, Name>();
+  /** Delivered key messages whose handling has not settled, oldest first. */
+  readonly inflight: Message[] = [];
+  private counters = { key: 0, sign: 0, ack: 0, delay: 0, install: 0 };
   private lastKeyId = 0;
 
   constructor(private readonly world: World, readonly name: Name) {
     const self = { channelId: CHANNEL, ...peer(name) };
-    const pending = (kind: 'sign' | 'ack' | 'delay', value: unknown) => new Promise<any>((resolve) => {
-      world.pending.push({ label: `${kind}(${name}#${++this.counters[kind]})`, resolve: () => resolve(value) });
+    const pending = (kind: 'sign' | 'ack' | 'delay' | 'install', value: unknown, message?: Message, note = '') => new Promise<any>((resolve) => {
+      world.pending.push({
+        label: `${kind}(${name}#${++this.counters[kind]}${note})`,
+        resolve: (override?: unknown) => resolve(override === undefined ? value : override),
+        message,
+      });
     });
     this.keys = new VoiceFrameKeys(self, {
       // Key ids are per client, so the same logical key has the same id in every schedule.
@@ -127,8 +158,9 @@ class Client {
         if (to === 'c' && this.knowsLeave) {
           world.violations.push({ property: 'KL', message: `${name} sends c key ${envelope.keyId} after it knew that c left` });
         }
-        world.messages.push({ label: `${name}>${to}#${envelope.sequence}`, from: name, to, keyId: envelope.keyId, envelope, signature, delivered: 0 });
-        return pending('ack', true);
+        const message = { label: `${name}>${to}#${envelope.sequence}`, from: name, to, keyId: envelope.keyId, envelope, signature, delivered: 0 };
+        world.messages.push(message);
+        return pending('ack', true, message);
       },
       useSendKey: async (keyId) => {
         this.installed.push(keyId);
@@ -147,15 +179,28 @@ class Client {
           world.violations.push({ property: 'KR', message: `${name} accepts key ${keyId} as ${from}'s` });
         }
         this.received.set(from, [...earlier, keyId]);
+        // The frame worker installs asynchronously; with installSteps the server's schedule decides when, at B.
+        if (name === 'b' && (input.installSteps === true || (input.installSteps === 'c' && from === 'c'))) {
+          await pending('install', undefined, undefined, `:${from}:${keyId}`);
+        }
+        this.worker.set(keyId, from);
       },
-      removeReceiveKey: () => undefined,
-      removeParticipant: () => undefined,
+      removeReceiveKey: (keyId) => {
+        this.worker.delete(keyId);
+      },
+      removeParticipant: (participantId) => {
+        for (const [keyId, sender] of [...this.worker]) if (sender === nameOf(participantId)) this.worker.delete(keyId);
+      },
       delay: () => pending('delay', undefined),
     });
   }
 
-  async deliver(message: Message): Promise<void> {
-    await this.keys.receive(message.envelope, message.signature);
+  /** Hands the message to the key manager without waiting for it to settle. */
+  deliver(message: Message): void {
+    this.inflight.push(message);
+    void this.keys.receive(message.envelope, message.signature).catch(() => false).then(() => {
+      this.inflight.splice(this.inflight.indexOf(message), 1);
+    });
   }
 }
 
@@ -228,6 +273,94 @@ function applyMutation(): void {
       if (this.keyOwners.get(envelope.keyId) === envelope.senderParticipantId) this.keyOwners.delete(envelope.keyId);
       return receive.call(this, envelope, signature);
     };
+  } else if (input.mutation === 'shared-receive-queue') {
+    // 0eda053..a75ca5c: every key message waited on the queue of this participant's own rotations.
+    prototype.receive = function receive(this: any, envelope: any, signature: string) {
+      const run = this.queue.catch(() => undefined).then(() => this.receiveNow(envelope, signature));
+      this.queue = run.then(() => undefined, () => undefined);
+      return run;
+    };
+  } else if (input.mutation === 'unserialized-receive') {
+    // Before 0eda053: receive ran unserialized, counted the sequence before its
+    // awaits and accepted a key id again once it had left the kept keys.
+    prototype.receive = async function receive(this: any, envelope: any, signature: string) {
+      if (this.closed) return false;
+      if (envelope.targetParticipantId !== this.self.participantId || envelope.senderParticipantId === this.self.participantId) return false;
+      const sender = this.participants.get(envelope.senderParticipantId);
+      if (!sender) {
+        this.early.push({ envelope, signature });
+        if (this.early.length > 16) this.early.shift();
+        return false;
+      }
+      if (sender.deviceId !== envelope.senderDeviceId) return false;
+      const identity = (await this.deps.identities([sender.deviceId]).catch(() => null))?.get(sender.deviceId);
+      if (!identity || identity.userId !== sender.userId) return false;
+      if (!await this.deps.verify(envelope, signature, identity.identityKey).catch(() => false)) return false;
+      if (this.closed || this.participants.get(sender.participantId) !== sender) return false;
+      const state = this.inbound.get(sender.participantId) ?? { deviceId: sender.deviceId, lastSequence: 0, keyIds: [] };
+      if (state.deviceId !== sender.deviceId || envelope.sequence <= state.lastSequence) return false;
+      const owner = this.keyOwners.get(envelope.keyId);
+      if (owner !== undefined && (owner !== sender.participantId || state.keyIds.includes(envelope.keyId))) return false;
+      state.lastSequence = envelope.sequence;
+      this.inbound.set(sender.participantId, state);
+      let key: Uint8Array;
+      try {
+        key = await this.deps.unwrapKey(envelope.wrappedKey);
+      } catch {
+        return false;
+      }
+      if (key.length !== 32 || this.closed || this.participants.get(sender.participantId) !== sender) return false;
+      if (this.keyOwners.has(envelope.keyId) && this.keyOwners.get(envelope.keyId) !== sender.participantId) return false;
+      this.keyOwners.set(envelope.keyId, sender.participantId);
+      state.keyIds.push(envelope.keyId);
+      await this.deps.addReceiveKey(sender.participantId, envelope.keyId, key);
+      key.fill(0);
+      while (state.keyIds.length > 3) this.deps.removeReceiveKey(state.keyIds.shift()!);
+      return true;
+    };
+  } else if (input.mutation === 'install-after-leave') {
+    // 0eda053..a75ca5c (the checks and the install, without the queue): no
+    // check after the install, so the key of a sender who left while it was
+    // installed stayed in the frame worker and its sequence state came back.
+    prototype.receiveNow = async function receiveNow(this: any, envelope: any, signature: string) {
+      if (this.closed) return false;
+      if (envelope.targetParticipantId !== this.self.participantId || envelope.senderParticipantId === this.self.participantId) return false;
+      const sender = this.participants.get(envelope.senderParticipantId);
+      if (!sender) {
+        this.early.push({ envelope, signature });
+        if (this.early.length > 16) this.early.shift();
+        return false;
+      }
+      if (sender.deviceId !== envelope.senderDeviceId) return false;
+      const identity = (await this.deps.identities([sender.deviceId]).catch(() => null))?.get(sender.deviceId);
+      if (!identity || identity.userId !== sender.userId) return false;
+      if (!await this.deps.verify(envelope, signature, identity.identityKey).catch(() => false)) return false;
+      if (this.closed || this.participants.get(sender.participantId) !== sender) return false;
+      const state = this.inbound.get(sender.participantId) ?? { deviceId: sender.deviceId, lastSequence: 0, keyIds: [] };
+      if (state.deviceId !== sender.deviceId || envelope.sequence <= state.lastSequence) return false;
+      if (this.keyOwners.has(envelope.keyId)) return false;
+      let key: Uint8Array;
+      try {
+        key = await this.deps.unwrapKey(envelope.wrappedKey);
+      } catch {
+        return false;
+      }
+      if (key.length !== 32 || this.closed || this.participants.get(sender.participantId) !== sender) return false;
+      this.keyOwners.set(envelope.keyId, sender.participantId);
+      state.keyIds.push(envelope.keyId);
+      try {
+        await this.deps.addReceiveKey(sender.participantId, envelope.keyId, key);
+      } finally {
+        key.fill(0);
+      }
+      state.lastSequence = envelope.sequence;
+      this.inbound.set(sender.participantId, state);
+      while (state.keyIds.length > 3) this.deps.removeReceiveKey(state.keyIds.shift()!);
+      return true;
+    };
+  } else if (input.mutation === 'no-retry') {
+    // Before d3319e3: a key that did not reach everyone was not sent again.
+    prototype.retryLater = function retryLater() {};
   } else if (input.mutation) {
     throw new Error(`unknown mutation ${input.mutation}`);
   }
@@ -255,7 +388,7 @@ async function fresh(): Promise<World> {
     const message = world.messages.find((entry) => entry.delivered === 0);
     if (!message) break;
     message.delivered += 1;
-    await world.clients.get(message.to)!.deliver(message);
+    world.clients.get(message.to)!.deliver(message);
   }
   await drain();
   world.messages = [];
@@ -275,6 +408,18 @@ function choices(world: World): string[] {
       acking.add(ack[1]!);
     }
     out.push(`resolve ${entry.label}`);
+  }
+  if (input.failAck && !world.failed) {
+    // Only a message the server has not delivered yet can be reported as not relayed.
+    for (const entry of world.pending) if (entry.label.startsWith('ack(') && entry.message!.delivered === 0) out.push(`fail ${entry.label}`);
+  }
+  // C signs three key messages of its own with new key ids, enough to push its
+  // first key out of the three B keeps, and then one naming that first key again.
+  // It does so once the call has settled (nothing pending, everything delivered),
+  // which keeps the search small and is all the key id checks need.
+  const settled = world.pending.length === 0 && world.messages.every((message) => message.delivered !== 0);
+  if (input.insider && settled && world.cJoined && !world.cLeft && world.forged < 4 && world.keys.has(3001)) {
+    out.push(`c forges key ${world.forged < 3 ? 3101 + world.forged : 3001} for b`);
   }
   for (const message of world.messages) {
     // C stopped (close) when it left; a message delivered to it then changes nothing.
@@ -299,11 +444,32 @@ async function apply(world: World, choice: string): Promise<void> {
     const index = world.pending.findIndex((entry) => entry.label === choice.slice(8));
     const [entry] = world.pending.splice(index, 1);
     entry!.resolve();
+  } else if (choice.startsWith('fail ')) {
+    // The server did not relay this message and says so.
+    const index = world.pending.findIndex((entry) => entry.label === choice.slice(5));
+    const [entry] = world.pending.splice(index, 1);
+    world.failed = true;
+    entry!.message!.delivered = -1;
+    entry!.resolve(false);
+  } else if (choice.startsWith('c forges key ')) {
+    // C signs, with its own device, a key message of its own making for B.
+    const keyId = Number(choice.split(' ')[3]);
+    const keys = world.clients.get('c')!.keys as any;
+    const sequence = (keys.outboundSequences.get('p-b') ?? 0) + 1;
+    keys.outboundSequences.set('p-b', sequence);
+    const envelope = {
+      type: 'voice-key', sequence, channelId: CHANNEL, senderParticipantId: 'p-c', senderDeviceId: 'd-c',
+      targetParticipantId: 'p-b', targetDeviceId: 'd-b', keyId, wrappedKey: wrap('d-b', keyId),
+    };
+    if (!world.keys.has(keyId)) world.keys.set(keyId, { creator: 'c', knewJoin: true });
+    world.forged += 1;
+    world.messages.push({ label: `c!b#${sequence}`, from: 'c', to: 'b', keyId, envelope,
+      signature: `sig:d-c:${serializeVoiceKeyEnvelope(envelope as any)}`, delivered: 0 });
   } else if (choice.startsWith('deliver ')) {
     const message = world.messages.find((entry) => entry.label === choice.slice(8))!;
     message.delivered += 1;
     const target = world.clients.get(message.to);
-    if (target) await target.deliver(message);
+    if (target) target.deliver(message);
   } else if (choice === 'c joins') {
     world.cJoined = true;
     const c = new Client(world, 'c');
@@ -333,7 +499,7 @@ function check(world: World): Violation[] {
   const out = [...world.violations];
   // KH: once the server delivered everything, current participants hold each other's current keys.
   const caughtUp = world.pending.length === 0
-    && world.messages.every((message) => message.delivered > 0 || (message.to === 'c' && world.cLeft))
+    && world.messages.every((message) => message.delivered !== 0 || (message.to === 'c' && world.cLeft))
     && (!world.cJoined || (world.notified.has('join a') && world.notified.has('join b')))
     && (!world.cLeft || (world.notified.has('leave a') && world.notified.has('leave b')));
   if (caughtUp) {
@@ -352,6 +518,39 @@ function check(world: World): Violation[] {
       if (world.cLeft && world.messages.some((message) => message.to === 'c' && message.keyId === keyId)) {
         out.push({ property: 'KH', message: `${sender} still sends under key ${keyId}, which c received` });
       }
+    }
+  }
+  for (const [name, client] of world.clients) {
+    const keys = client.keys as any;
+    if (keys.closed) continue;
+    // KT: each message still being handled waits for its own install or an earlier message of its sender.
+    for (const [index, message] of client.inflight.entries()) {
+      const installing = world.pending.some((entry) => entry.label.startsWith(`install(${name}#`)
+        && entry.label.endsWith(`:${message.from}:${message.keyId})`));
+      const queued = client.inflight.slice(0, index).some((earlier) => earlier.from === message.from);
+      if (!installing && !queued) {
+        out.push({ property: 'KT', message: `${name}'s handling of ${message.label} waits for neither its install nor an earlier message of ${message.from}` });
+      }
+    }
+    // KW: once nothing is being handled, the frame worker holds what the client keeps.
+    const installs = world.pending.some((entry) => entry.label.startsWith(`install(${name}#`));
+    if (client.inflight.length || installs) continue;
+    const kept = new Map<number, Name>();
+    for (const [participantId, state] of keys.inbound as Map<string, { keyIds: number[] }>) {
+      for (const keyId of state.keyIds) kept.set(keyId, nameOf(participantId));
+    }
+    for (const [keyId, sender] of [...client.worker, ...kept]) {
+      if (!keys.participants.has(`p-${sender}`)) {
+        out.push({ property: 'KW', message: `${name} still holds key ${keyId} of ${sender}, which it forgot` });
+      }
+    }
+    for (const [keyId, sender] of client.worker) {
+      if (kept.get(keyId) !== sender) {
+        out.push({ property: 'KW', message: `${name}'s frame worker holds key ${keyId} of ${sender}, which ${name} no longer keeps` });
+      }
+    }
+    for (const [keyId, sender] of kept) {
+      if (client.worker.get(keyId) !== sender) out.push({ property: 'KW', message: `${name} keeps key ${keyId} of ${sender} that its frame worker lacks` });
     }
   }
   return out;
@@ -373,13 +572,15 @@ function fingerprint(world: World): string {
       [...keys.participants.keys()].sort(), [...keys.inbound.entries()].map(([id, state]: [string, any]) => [id, state.lastSequence, state.keyIds]).sort(),
       [...keys.outboundSequences.entries()].sort(),
       [...keys.keyOwners.entries()].sort(), [...keys.ownKeyIds].sort(), keys.currentKeyId, keys.closed,
+      [...client.worker.entries()].sort(), client.inflight.map((message) => message.label),
+      [...keys.receiving.keys()].sort(), keys.rotations, keys.retries,
     ];
   });
   return JSON.stringify([
     clients,
     world.pending.map((entry) => entry.label).sort(),
     world.messages.map((message) => [message.label, message.keyId, message.delivered]).sort(),
-    world.cJoined, world.cLeft, [...world.notified].sort(),
+    world.cJoined, world.cLeft, [...world.notified].sort(), world.failed, world.forged,
     [...world.keys.entries()].sort(), world.violations.map((violation) => `${violation.property} ${violation.message}`).sort(),
   ]);
 }

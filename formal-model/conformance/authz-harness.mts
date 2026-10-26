@@ -1,6 +1,11 @@
 // Evaluates authorization cases with the real server implementation.
 // Input: JSON array of cases. Output: permission metadata and one result per case.
 // Never touches a database: only snapshot-based pure functions are called.
+// A case with `guard` asks assertNoSuperiorAccessLoss; one with `check` asks
+// assertCategoryChangeAuthority, assertRoleOverridesHeld or
+// mayGrantInvitationRole whether the change is allowed; one with `effects`
+// runs applyViewerEffectsAndRotation on the access before and after a change,
+// with a store that holds no key state (its writes do nothing).
 import { readFileSync } from 'node:fs';
 
 process.env.NODE_ENV = 'test';
@@ -12,6 +17,9 @@ process.env.PASSWORD_PEPPER ||= 'formal-model-conformance-pepper-32-bytes';
 process.env.AUDIT_INTEGRITY_KEY ||= 'formal-model-conformance-audit-key-32-bytes';
 
 const service = await import('../../packages/server/src/services/authorization.service.ts');
+const overrides = await import('../../packages/server/src/services/permission-override.service.ts');
+const roles = await import('../../packages/server/src/services/role.service.ts');
+const invitations = await import('../../packages/server/src/services/invitation.service.ts');
 const { Permissions } = await import('../../packages/shared/src/constants/index.ts');
 
 interface Case {
@@ -23,6 +31,50 @@ interface Case {
   channelOverrides: Array<[string, string, number, number]>;
   privateMembers: Record<string, string[]>;
   guard?: { actor: string; after: Case };
+  effects?: { after: Case };
+  check?:
+    | { kind: 'categoryChange'; actor: string; from: Array<[string, number, number]>; to: Array<[string, number, number]> }
+    | { kind: 'roleOverrides'; actor: string; action: 'assign' | 'unassign'; categories: Array<[number, number]>; channels: Array<[string, number, number]> }
+    | { kind: 'invitationRole'; actor: string; permissions: number; position: number; named: boolean };
+}
+
+const REFUSALS = new Set(['NOT_AUTHORIZED', 'PERMISSION_ESCALATION']);
+
+// No channel has key epochs, so requireChannelKeyRotation stops after one read;
+// the remove-requirement refresh and the package purge are writes.
+const emptyStore = {
+  selectDistinct: () => ({ from: () => ({ where: async () => [] }) }),
+  execute: async () => ({ rows: [], rowCount: 0 }),
+};
+
+function allowed(body: () => void): boolean {
+  try {
+    body();
+    return true;
+  } catch (error) {
+    if (!(error instanceof Error) || !REFUSALS.has(error.message)) throw error;
+    return false;
+  }
+}
+
+function runCheck(snapshot: any, check: NonNullable<Case['check']>): boolean {
+  const rows = (values: Array<[string, number, number]>) => values.map(([roleId, allowMask, denyMask]) => ({ roleId, allowMask, denyMask }));
+  if (check.kind === 'categoryChange') {
+    return allowed(() => overrides.assertCategoryChangeAuthority(snapshot, check.actor, rows(check.from), rows(check.to)));
+  }
+  if (check.kind === 'roleOverrides') {
+    return allowed(() => roles.assertRoleOverridesHeld(snapshot, check.actor, {
+      categories: check.categories.map(([allowMask, denyMask]) => ({ allowMask, denyMask })),
+      channels: check.channels.map(([channelId, allowMask, denyMask]) => ({ channelId, allowMask, denyMask })),
+    }, check.action));
+  }
+  const inviter = service.getWorkspaceAuthorizationFromSnapshot(snapshot, check.actor);
+  if (!inviter) throw new Error('inviter is not a member');
+  return invitations.mayGrantInvitationRole({
+    isOwner: inviter.isOwner,
+    permissions: inviter.permissionMask,
+    highestPosition: Math.max(-1, ...inviter.roles.map((role: { position: number }) => role.position)),
+  }, { permissions: check.permissions, position: check.position }, check.named);
 }
 
 function snapshotOf(input: Case) {
@@ -52,8 +104,14 @@ function snapshotOf(input: Case) {
 }
 
 const cases = JSON.parse(readFileSync(0, 'utf8')) as Case[];
-const output = cases.map((input) => {
+const output = await Promise.all(cases.map(async (input) => {
   const snapshot = snapshotOf(input);
+  if (input.effects) {
+    const before = service.captureChannelAccessFromSnapshot(snapshot as any);
+    const after = service.captureChannelAccessFromSnapshot(snapshotOf(input.effects.after) as any);
+    return { effects: await service.applyViewerEffectsAndRotation(emptyStore, before, after) };
+  }
+  if (input.check) return { allowed: runCheck(snapshot, input.check) };
   if (input.guard) {
     try {
       service.assertNoSuperiorAccessLoss(snapshot as any, snapshotOf(input.guard.after) as any, input.guard.actor);
@@ -73,6 +131,7 @@ const output = cases.map((input) => {
     masks[userId].__missing_channel__ = service.getChannelAuthorizationFromSnapshot(snapshot as any, userId, '__missing_channel__', {}, false)?.permissions ?? -1;
   }
   const viewers = Object.fromEntries(service.captureChannelViewersFromSnapshot(snapshot as any));
-  return { masks, viewers };
-});
+  const keyRecipients = Object.fromEntries(service.captureChannelAccessFromSnapshot(snapshot as any).keyRecipients);
+  return { masks, viewers, keyRecipients };
+}));
 process.stdout.write(JSON.stringify({ permissions: Permissions, channelScopedMask: service.CHANNEL_SCOPED_PERMISSION_MASK, results: output }));
