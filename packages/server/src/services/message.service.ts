@@ -345,7 +345,7 @@ export async function editMessage(messageId: string, authorId: string, input: Cr
     }
     // A repeated request is answered by insertCryptoEvent; a new edit must
     // replace the current version, not one an edit has already replaced.
-    if (!authorization.sequence.repeated && input.supersedes !== await currentVersionKey(transaction, original)) {
+    if (!authorization.sequence.repeated && !await replacesCurrentVersion(transaction, original, input.supersedes)) {
       throw new Error('EDIT_CONFLICT');
     }
     const stored = await insertCryptoEvent(
@@ -830,7 +830,7 @@ async function lockAndAuthorizeCryptoWrite(
   return { ...authorization, channelType: channel.type as string, sequence };
 }
 
-/** A write whose deviceSeq is not the device's next number; the body says which one is. */
+/** A write whose deviceSeq the device already used; the body says which number is next. */
 class SequenceMismatchError extends Error {
   constructor(readonly expectedSequence: number) {
     super('SEQUENCE_MISMATCH');
@@ -842,10 +842,16 @@ class SequenceMismatchError extends Error {
  * channel take turns (an advisory lock), so the number checked here is the
  * one stored. A repeat of a stored request (same idempotency key) is left to
  * insertCryptoEvent, which returns the stored event or refuses a different
- * one. Otherwise the event must carry the device's next number, and every
- * event it names as seen must be stored in this channel under that device,
- * number and signed key. Its time is then later than every event of the
- * channel, so an honest server orders events as their authors saw them.
+ * one. Otherwise the event must carry a number above every number the device
+ * has stored here: a number already used is refused with the next one, so a
+ * device never has two events under one number. A client takes the next
+ * number, so its events have no gaps; one that remembers a higher number
+ * than the server holds (after the server was restored from a backup)
+ * continues above it, and members then see the events that were lost as a
+ * gap. Every event it names as seen must be stored in this channel under
+ * that device, number and signed key. Its time is then later than every
+ * event of the channel, so an honest server orders events as their authors
+ * saw them.
  */
 async function admitSequencedEvent(
   store: any,
@@ -865,7 +871,7 @@ async function admitSequencedEvent(
     .from(messages)
     .where(and(eq(messages.channelId, channelId), eq(messages.deviceId, input.deviceId)));
   const expected = Number(last?.deviceSeq ?? 0) + 1;
-  if (input.deviceSeq !== expected) throw new SequenceMismatchError(expected);
+  if (input.deviceSeq < expected) throw new SequenceMismatchError(expected);
   let notBefore: Date | null = null;
   if (input.seenHeads.length > 0) {
     const rows = await store.select({
@@ -896,17 +902,28 @@ async function admitSequencedEvent(
 }
 
 /**
- * The signed key of the version an edit must replace: the message's latest
- * edit, or the message itself. The base message is locked for update, so
- * edits of one message take turns.
+ * Whether an edit may replace this version of the message. Once the message
+ * has a v6 edit, only its latest v6 edit may be replaced. Before that, the
+ * order of its edits was never signed (and clients show none signed in
+ * v3/v4), so the message itself or any of those edits may be the version a
+ * client shows. The base message is locked for update, so edits of one
+ * message take turns.
  */
-async function currentVersionKey(store: any, original: typeof messages.$inferSelect): Promise<string | null> {
+async function replacesCurrentVersion(store: any, original: typeof messages.$inferSelect, supersedes: string | null): Promise<boolean> {
+  if (!supersedes) return false;
+  const edits = and(eq(messages.refMessageId, original.id), eq(messages.type, 'edit'), eq(messages.channelId, original.channelId));
   const latest = await store.query.messages.findFirst({
     columns: { authorId: true, idempotencyKey: true },
-    where: and(eq(messages.refMessageId, original.id), eq(messages.type, 'edit'), eq(messages.channelId, original.channelId)),
+    where: and(edits, isNotNull(messages.deviceSeq)),
     orderBy: [desc(messages.createdAt), desc(messages.id)],
   });
-  return signedIdempotencyKey(latest ?? original);
+  if (latest) return signedIdempotencyKey(latest) === supersedes;
+  if (signedIdempotencyKey(original) === supersedes) return true;
+  const older = await store.query.messages.findFirst({
+    columns: { id: true },
+    where: and(edits, isNull(messages.deviceSeq), eq(messages.idempotencyKey, scopedIdempotencyKey(original.authorId, supersedes))),
+  });
+  return Boolean(older);
 }
 
 /** The body fields a client needs to send a refused v6 event again with the right number. */

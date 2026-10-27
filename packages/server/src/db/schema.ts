@@ -490,7 +490,7 @@ export const messages = pgTable('messages', {
   // Message protocol v6 (null on older events): the event's number among its
   // device's events in the channel, the newest events of other devices it was
   // written after, and for an edit the signed key of the version it replaces.
-  // All three are signed; the server accepts only the device's next number.
+  // All three are signed; the server refuses a number the device already used.
   deviceSeq: integer('device_seq'),
   seenHeads: jsonb('seen_heads'),
   supersedes: text('supersedes'),

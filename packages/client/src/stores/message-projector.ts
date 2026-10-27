@@ -349,6 +349,55 @@ export interface EventWindow {
 
 const UNKNOWN_WINDOW: EventWindow = { contiguous: false, complete: false };
 
+/**
+ * What this browser received of a device's events in the channel before:
+ * the highest number that verified and the start of that event's signed
+ * key (see channel-memory.ts).
+ */
+export interface RememberedHead {
+  deviceSeq: number;
+  keyPrefix: string;
+}
+
+/**
+ * Check a window against what was received before (formal model M10,
+ * MO-rollback). The server never removes an event, and a window holds the
+ * channel's newest events, so 'missing' when a device's newest held event is
+ * below the number received before (or, in a complete window, the device has
+ * nothing held), and 'order' when the remembered number is held under
+ * another key (the server swapped the event).
+ */
+export function compareWithRemembered(
+  ordered: readonly Message[],
+  window: EventWindow,
+  remembered: ReadonlyMap<string, RememberedHead>,
+): SequenceNotice | null {
+  if (remembered.size === 0) return null;
+  const newest = new Map<string, number>();
+  const keys = new Map<string, string>();
+  for (const event of ordered) {
+    const seq = claimedSequence(event);
+    if (seq === null) continue;
+    // Events still being checked count, so they do not show as missing
+    // meanwhile; an unverified event's number is the server's word.
+    if (!trustsNumber(event)) continue;
+    if ((newest.get(event.deviceId!) ?? 0) < seq) newest.set(event.deviceId!, seq);
+    if (hasSequencedEnvelope(event)) keys.set(`${event.deviceId}\u0000${seq}`, event.idempotencyKey);
+  }
+  let notice: SequenceNotice | null = null;
+  for (const [deviceId, head] of remembered) {
+    const key = keys.get(`${deviceId}\u0000${head.deviceSeq}`);
+    if (key !== undefined) {
+      if (!key.startsWith(head.keyPrefix)) notice ??= 'order';
+      continue;
+    }
+    if (!window.contiguous) continue;
+    const held = newest.get(deviceId);
+    if (held === undefined ? window.complete : held < head.deviceSeq) return 'missing';
+  }
+  return notice;
+}
+
 /** Fold immutable wire events into the logical messages rendered by the UI. */
 export function projectMessageEvents(rawEvents: Message[], window: EventWindow = UNKNOWN_WINDOW): ProjectedMessage[] {
   return projectOrderedMessageEvents(mergeMessageEvents(rawEvents), window);
@@ -361,6 +410,19 @@ function claimedSequence(event: Message): number | null {
 }
 
 /**
+ * Whether an event's number counts for gaps: once its v6 signature verified
+ * (even if its text cannot be read here), or while its check is pending
+ * (that ends soon, in a verdict). The number of an event whose signature did
+ * not verify is only the server's word, and such an event shows no text, so
+ * it holds no number: the gap it would fill is shown, and an unsigned event
+ * naming a huge number cannot hide every later gap (formal model M10,
+ * MO-forged-number).
+ */
+function trustsNumber(event: Message): boolean {
+  return hasSequencedEnvelope(event) || getMessageCryptoVerificationState(event) === undefined;
+}
+
+/**
  * Check an ordered window against what v6 events signed (formal model M10).
  * Returns, per event id, 'missing' when an event written before it is not in
  * the window although it should be, or 'order' when the server put it where
@@ -368,9 +430,9 @@ function claimedSequence(event: Message): number | null {
  *
  * - A device numbers its events 1, 2, 3, … with no gaps. In a contiguous
  *   window, a device's held events must have consecutive numbers ('missing'
- *   otherwise); in a complete one its first must be 1. An unverified message
- *   still fills its number (it is shown as one that could not be verified),
- *   and so does an edit or a deletion whose check has not finished.
+ *   otherwise); in a complete one its first must be 1. An event whose check
+ *   is pending counts; one whose signature did not verify does not (see
+ *   trustsNumber).
  * - The verified events of one device must appear in increasing number
  *   ('order' otherwise). The server takes no event in an older layout once
  *   it takes v6 ones, and gives each new event a later time than every
@@ -394,7 +456,7 @@ export function analyzeEventOrder(ordered: readonly Message[], window: EventWind
   const verifiedByDevice = new Map<string, Array<{ seq: number; index: number }>>();
   ordered.forEach((event, index) => {
     const seq = claimedSequence(event);
-    if (seq === null) return;
+    if (seq === null || !trustsNumber(event)) return;
     const lowest = lowestClaimed.get(event.deviceId!);
     if (lowest === undefined || seq < lowest) lowestClaimed.set(event.deviceId!, seq);
     if (!hasSequencedEnvelope(event)) return;
@@ -413,13 +475,13 @@ export function analyzeEventOrder(ordered: readonly Message[], window: EventWind
     const seq = claimedSequence(event);
     const verified = getMessageCryptoVerificationState(event) === true;
     const sequenced = hasSequencedEnvelope(event);
-    // A message fills its number even unverified (it is shown as such); an
-    // edit or a deletion fills it while its check is pending or once it passed.
-    if (seq !== null && (sequenced || event.type === 'message' || getMessageCryptoVerificationState(event) === undefined)) {
+    if (seq !== null) {
       const device = event.deviceId!;
       const previous = lastClaimed.get(device);
-      if (window.contiguous && (previous === undefined ? window.complete && seq > 1 : seq > previous + 1)) note(event, 'missing');
-      if (previous === undefined || seq > previous) lastClaimed.set(device, seq);
+      if (trustsNumber(event)) {
+        if (window.contiguous && (previous === undefined ? window.complete && seq > 1 : seq > previous + 1)) note(event, 'missing');
+        if (previous === undefined || seq > previous) lastClaimed.set(device, seq);
+      }
     }
     if (sequenced) {
       const device = event.deviceId!;
@@ -460,15 +522,24 @@ export interface ProjectedWindow {
   channelNotice: SequenceNotice | null;
 }
 
-export function projectMessageWindow(orderedEvents: Message[], window: EventWindow = UNKNOWN_WINDOW): ProjectedWindow {
+export function projectMessageWindow(
+  orderedEvents: Message[],
+  window: EventWindow = UNKNOWN_WINDOW,
+  remembered: ReadonlyMap<string, RememberedHead> = new Map(),
+): ProjectedWindow {
   const projected = new Map<string, ProjectedMessage>();
   let channelNotice: SequenceNotice | null = null;
   const noteChannel = (notice: SequenceNotice) => {
     if (channelNotice !== 'missing') channelNotice = notice;
   };
+  // Events received before and gone now, or swapped, have no place to show.
+  const rememberedNotice = compareWithRemembered(orderedEvents, window, remembered);
+  if (rememberedNotice) noteChannel(rememberedNotice);
   const notices = analyzeEventOrder(orderedEvents, window);
   // v6 edits wait here until the version they replace is the one shown.
   const waitingEdits = new Map<string, Message[]>();
+  // The versions each message was shown in (its own key, then each edit's).
+  const shownVersions = new Map<string, Set<string>>();
   let missingCarried = false;
   let lastBaseId: string | null = null;
 
@@ -488,6 +559,7 @@ export function projectMessageWindow(orderedEvents: Message[], window: EventWind
       refMessageId: target.refMessageId,
     };
     projected.set(target.id, edited);
+    shownVersions.get(target.id)?.add(event.idempotencyKey);
     return edited;
   };
   // Whether an edit may change the message shown: the author's verified
@@ -527,6 +599,7 @@ export function projectMessageWindow(orderedEvents: Message[], window: EventWind
         originIdempotencyKey: event.idempotencyKey,
         ...(notice === 'missing' || missingCarried ? { sequenceNotice: 'missing' as const } : notice ? { sequenceNotice: notice } : {}),
       });
+      shownVersions.set(event.id, new Set([event.idempotencyKey]));
       missingCarried = false;
       lastBaseId = event.id;
       // A v6 edit served before its message applies once the message is here.
@@ -587,9 +660,22 @@ export function projectMessageWindow(orderedEvents: Message[], window: EventWind
   // version it replaces was not delivered, or another edit already replaced it.
   for (const [targetId, waiting] of waitingEdits) {
     const target = projected.get(targetId);
-    if (target && target.type !== 'delete' && waiting.some((edit) => mayEdit(edit, target))) {
-      projected.set(targetId, { ...target, editUncertain: true });
+    if (!target || target.type === 'delete') continue;
+    const pending = waiting.filter((edit) => mayEdit(edit, target));
+    if (pending.length === 0) continue;
+    // A window that is not one run of events (a forum's list holds a post and
+    // its latest edit only) need not hold the versions in between. Any edit is
+    // newer than the message, so one edit that no other replaces is the
+    // newest held; two of them, or a gap inside one run, cannot be placed.
+    const newest = pending.filter((edit) => !pending.some((other) => other.supersedes === edit.idempotencyKey));
+    // It must replace a version that is not held: one that is held was
+    // already replaced, so a second edit of it cannot be the newest.
+    const held = shownVersions.get(targetId)!;
+    if (!window.contiguous && newest.length === 1 && pending.every((edit) => !held.has(edit.supersedes ?? ''))) {
+      applyEdit(newest[0], target);
+      continue;
     }
+    projected.set(targetId, { ...projected.get(targetId)!, editUncertain: true });
   }
 
   // Replacing an edit/delete preserves the insertion position of its base.

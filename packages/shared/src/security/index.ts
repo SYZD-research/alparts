@@ -157,10 +157,10 @@ export interface SignedMessageEnvelope {
   postBinding?: SignedEventReference | null;
   /**
    * Present exactly in v6 envelopes: this event's number among the events
-   * its device wrote in the channel, from 1 with no gaps. The server accepts
-   * only the next number, so a client that holds a device's events n and
-   * n + 2 knows that n + 1 was not delivered, and one that holds them in
-   * another order knows they were reordered.
+   * its device wrote in the channel, from 1 with no gaps. The server refuses
+   * a number the device already used, so a client that holds a device's
+   * events n and n + 2 knows that n + 1 was not delivered, and one that
+   * holds them in another order knows they were reordered.
    */
   deviceSeq?: number;
   /**

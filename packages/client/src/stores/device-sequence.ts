@@ -4,8 +4,8 @@ import { hasSequencedEnvelope } from './message-projector';
 /**
  * Numbering this device's events in a channel (message protocol v6).
  *
- * The server accepts only the device's next number, so a number is used at
- * most once by an honest server. The device must never sign two events under
+ * The server refuses a number the device already used, so a number is used
+ * at most once by an honest server. The device must never sign two events under
  * one number either: a server that stored both could show one to some members
  * and the other to the rest, and neither would see a gap. So the next number
  * is above every number this device knows was stored (its own events it has
@@ -16,6 +16,14 @@ import { hasSequencedEnvelope } from './message-projector';
 
 const STORAGE_PREFIX = 'alparts.device-sequence.v1:';
 const MAX_REMEMBERED_CHANNELS = 512;
+/**
+ * How far above the highest stored number the server may ask this device to
+ * go. Its honest request is the number after the device's last stored event,
+ * which is at most a few writes (another tab's, or one whose answer was
+ * lost) above what this device knows; a server asking for much more would
+ * only open gaps, or run the numbers out.
+ */
+const MAX_EXPECTED_JUMP = 1_000;
 
 interface DeviceScope {
   userId: string;
@@ -31,17 +39,20 @@ function scopeKey(scope: DeviceScope): string {
   return `${scope.userId}:${scope.deviceId}`;
 }
 
+/**
+ * The highest stored number per channel, as this tab knows it merged with
+ * what the browser keeps (another tab of the same device may have written
+ * since). Numbers only go up.
+ */
 function remembered(scope: DeviceScope): Map<string, number> {
   const key = scopeKey(scope);
-  let channels = storedHigh.get(key);
-  if (channels) return channels;
-  channels = new Map();
+  const channels = storedHigh.get(key) ?? new Map<string, number>();
   try {
     const raw = globalThis.localStorage?.getItem(STORAGE_PREFIX + key);
     const parsed = raw ? JSON.parse(raw) as unknown : null;
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
       for (const [channelId, value] of Object.entries(parsed as Record<string, unknown>)) {
-        if (isDeviceSequence(value)) channels.set(channelId, value);
+        if (isDeviceSequence(value) && (channels.get(channelId) ?? 0) < value) channels.set(channelId, value);
       }
     }
   } catch {
@@ -75,6 +86,7 @@ export function noteStoredSequence(scope: DeviceScope, channelId: string, device
 /** Record the number the server asked for when it refused one (only ever raises the next number). */
 export function noteExpectedSequence(scope: DeviceScope, channelId: string, expected: number | null): void {
   if (expected === null || !isDeviceSequence(expected)) return;
+  if (expected > (remembered(scope).get(channelId) ?? 0) + MAX_EXPECTED_JUMP) return;
   const key = scopeKey(scope);
   const channels = serverExpected.get(key) ?? new Map<string, number>();
   if ((channels.get(channelId) ?? 0) < expected) channels.set(channelId, expected);

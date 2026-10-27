@@ -133,16 +133,30 @@ describe('what a client can tell from v6 events (formal model M10)', () => {
     expect(notices([sequenced('b1', 'B', 1), older], CONTIGUOUS)).toEqual({ old: 'order' });
   });
 
-  it('takes nothing from what was not signed: an unverified message fills its number but proves no order', () => {
+  it('takes nothing from what was not signed: an unverified message holds no number and proves no order', () => {
     const a1 = sequenced('a1', 'A', 1);
     const unverified = sequenced('a2', 'A', 2, {}, false);
     const a3 = sequenced('a3', 'A', 3);
-    expect(notices([a1, unverified, a3], CONTIGUOUS)).toEqual({});
+    // It shows no text, so the event under its number is not shown.
+    expect(notices([a1, unverified, a3], CONTIGUOUS)).toEqual({ a3: 'missing' });
     // A forged copy claiming an earlier number later in the window proves nothing.
     const forged = sequenced('forged', 'A', 1, {}, false);
     expect(notices([a1, a3, forged].filter(Boolean), FORUM)).toEqual({});
     // An event that cannot be read on this device still has a verified number.
     expect(hasSequencedEnvelope(markMessageKeyUnavailable(a3, true))).toBe(true);
+  });
+
+  it('is not silenced by one unsigned event naming a huge number', () => {
+    const a1 = sequenced('a1', 'A', 1);
+    const forged = sequenced('forged', 'A', 2 ** 40, {}, false);
+    const a3 = sequenced('a3', 'A', 3);
+    expect(notices([a1, forged, a3], CONTIGUOUS)).toEqual({ a3: 'missing' });
+  });
+
+  it('counts an event that cannot be read here once its signature verified', () => {
+    const a1 = sequenced('a1', 'A', 1);
+    const unreadable = markMessageKeyUnavailable(sequenced('a2', 'A', 2, {}, 'pending'), true);
+    expect(notices([a1, unreadable, sequenced('a3', 'A', 3)], CONTIGUOUS)).toEqual({});
   });
 
   it('lets an edit or a deletion whose check is pending fill its number', () => {
@@ -190,16 +204,31 @@ describe('the projection shows what the client noticed', () => {
   it('shows that the latest version is unknown when an edit in between was withheld', () => {
     const base = sequenced('m', 'A', 1, { content: 'v1' });
     const second = sequenced('e2', 'A', 3, { type: 'edit', ...editOf('m'), supersedes: 'key-e1', content: 'v3' });
-    const shown = projectOrderedMessageEvents([base, second], FORUM);
+    const shown = projectOrderedMessageEvents([base, second], CONTIGUOUS);
     expect(shown.map((message) => [message.content, message.editUncertain])).toEqual([['v1', true]]);
+  });
+
+  it('shows the newest held edit where the versions in between need not be held (a forum list)', () => {
+    const base = sequenced('m', 'A', 1, { content: 'v1' });
+    const second = sequenced('e2', 'A', 3, { type: 'edit', ...editOf('m'), supersedes: 'key-e1', content: 'v3' });
+    expect(projectOrderedMessageEvents([base, second], FORUM).map((message) => [message.content, message.editUncertain]))
+      .toEqual([['v3', undefined]]);
+    // In one run of events the version in between must be held.
+    expect(projectOrderedMessageEvents([base, second], CONTIGUOUS).map((message) => [message.content, message.editUncertain]))
+      .toEqual([['v1', true]]);
   });
 
   it('never puts back an older version: a second edit of a replaced version stays aside', () => {
     const base = sequenced('m', 'A', 1, { content: 'v1' });
     const first = sequenced('e1', 'A', 2, { type: 'edit', ...editOf('m'), supersedes: 'key-m', content: 'v2' });
     const rival = sequenced('e1b', 'B', 1, { type: 'edit', ...editOf('m'), supersedes: 'key-m', content: 'other v2' });
-    const shown = projectOrderedMessageEvents([base, first, rival], FORUM);
-    expect(shown.map((message) => [message.content, message.editUncertain])).toEqual([['v2', true]]);
+    for (const window of [CONTIGUOUS, FORUM]) {
+      for (const order of [[base, first, rival], [base, rival, first]]) {
+        const shown = projectOrderedMessageEvents(order, window);
+        expect(shown.map((message) => message.editUncertain)).toEqual([true]);
+      }
+    }
+    expect(projectOrderedMessageEvents([base, first, rival], FORUM)[0].content).toBe('v2');
   });
 
   it('keeps applying edits signed before v6 in the order served', () => {
@@ -249,9 +278,32 @@ describe('numbering this device\'s events', () => {
     expect(nextDeviceSequence(device, 'channel-2', [])).toBe(1);
   });
 
+  it('keeps the higher number another tab of the device stored', () => {
+    const stored = new Map<string, string>();
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => stored.get(key) ?? null,
+      setItem: (key: string, value: string) => void stored.set(key, value),
+    });
+    noteStoredSequence(device, 'channel-1', 3);
+    // Another tab stores 9 for the same device and channel.
+    stored.set([...stored.keys()][0], JSON.stringify({ 'channel-1': 9 }));
+    noteStoredSequence(device, 'channel-2', 1);
+    expect(JSON.parse([...stored.values()][0])['channel-1']).toBe(9);
+    expect(nextDeviceSequence(device, 'channel-1', [])).toBe(10);
+  });
+
+  it('ignores a server asking for a number far above any it stored', () => {
+    noteExpectedSequence(device, 'channel-1', 2 ** 31 - 1);
+    expect(nextDeviceSequence(device, 'channel-1', [])).toBe(1);
+  });
+
   it('names the newest verified event of another device as seen', () => {
     const events = [sequenced('b1', 'B', 1), sequenced('a1', 'A', 1), sequenced('c1', 'C', 1, {}, false), sequenced('b2', 'B', 2)];
     expect(seenHeadsOf(events, 'A')).toEqual([{ deviceId: 'B', deviceSeq: 2, idempotencyKey: 'key-b2' }]);
+    // Up to a limit, the newest of each other device, newest first.
+    const more = [...events, sequenced('d1', 'D', 1)];
+    expect(seenHeadsOf(more, 'A', 8).map((head) => head.deviceId)).toEqual(['D', 'B']);
+    expect(seenHeadsOf(more, 'A', 1).map((head) => head.deviceId)).toEqual(['D']);
     expect(seenHeadsOf([sequenced('a1', 'A', 1)], 'A')).toEqual([]);
   });
 });

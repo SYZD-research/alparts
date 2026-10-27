@@ -47,6 +47,7 @@ vi.mock('../services/local-state.service', () => ({
 
 vi.mock('./message.store', () => ({
   noteSequenceRefusal: () => false,
+  withChannelWrite: (_channelId: string, write: () => Promise<unknown>) => write(),
   useMessageStore: {
     getState: () => ({ sealMessage: messageState.sealMessage, sendSealedMessage: messageState.sendSealedMessage }),
   },

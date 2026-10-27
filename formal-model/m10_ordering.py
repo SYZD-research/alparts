@@ -10,7 +10,7 @@ forum's posts ('forum'). Signatures are assumed unforgeable, so every event
 that verifies is a genuine envelope (M9 covers what the server makes up).
 
 What v6 signs: each event's number among its device's events in the channel
-(the server takes only the next one), the newest event of another device it
+(the server refuses a number already used), the newest event of another device it
 had received (seenHeads), and for an edit the version it replaces. "X
 happened before Y" is the transitive closure of a lower number on the same
 device and a named head. The checks:
@@ -20,9 +20,12 @@ device and a named head. The checks:
              order against what happened (MO-order-complete);
   MO-drop    in a complete window, withholding an event that a served event
              happened after is noticed;
-  MO-edit    a message shows a served edit of it, or says it cannot;
+  MO-forged-number  unsigned events the server adds, claiming any number of
+             a device anywhere, do not hide what MO-drop notices;
+  MO-edit    a message shows the newest served edit of it, or says it cannot;
   MO-honest  an honest history is not flagged (complete), nor is its newest
-             page (MO-honest-suffix);
+             page (MO-honest-suffix), nor a forum list that holds a post and
+             its latest edit only (MO-honest-forum);
 and the limits the model must reach:
   MO-tail    withholding a device's newest events, that no served event came
              after, goes unnoticed (phase 2 narrows this);
@@ -43,7 +46,7 @@ from common import record
 from harness import HarnessError, run_harness
 
 PROPERTIES = (
-    'MO-honest', 'MO-honest-suffix', 'MO-order', 'MO-order-complete', 'MO-order-hidden', 'MO-drop', 'MO-edit', 'MO-tail',
+    'MO-honest', 'MO-honest-suffix', 'MO-honest-forum', 'MO-forged-number', 'MO-order', 'MO-order-complete', 'MO-order-hidden', 'MO-drop', 'MO-edit', 'MO-tail',
     'MO-suffix', 'MO-forum', 'MO-split', 'MO-split-seen',
 )
 RUNS = (('v6', None), ('split', 'split'), ('control', 'no-sequence'))
@@ -76,9 +79,13 @@ def run() -> None:
     check('MO-order-complete', v6['MO-order-complete'], 'events served out of the order they happened in are noticed '
                                                         '(whole channel loaded)', 'HOLDS')
     check('MO-drop', v6['MO-drop'], 'withholding an event that a served event came after is noticed (whole channel loaded)', 'HOLDS')
-    check('MO-edit', v6['MO-edit'], 'a message shows a served edit of it, or says that its latest version cannot be shown', 'HOLDS')
+    check('MO-forged-number', v6['MO-forged-number'], 'unsigned events claiming a device\'s numbers do not hide a withheld event',
+          'HOLDS')
+    check('MO-edit', v6['MO-edit'], 'a message shows the newest served edit of it, or something says otherwise', 'HOLDS')
     check('MO-honest', v6['MO-honest'], 'an honest history is shown with its latest edit and flagged nowhere', 'HOLDS')
     check('MO-honest-suffix', v6['MO-honest-suffix'], 'the newest page of an honest history is flagged nowhere', 'HOLDS')
+    check('MO-honest-forum', v6['MO-honest-forum'], 'a forum list (a post and its latest edit only) shows the latest edit, flagged nowhere',
+          'HOLDS')
     check('MO-split-seen', split['MO-split-seen'], 'a member served two events under one device number notices', 'HOLDS')
     check('MO-tail', v6['MO-tail'], 'withholding a device\'s newest events, that nothing served came after, goes unnoticed', 'LIMIT',
           'phase 1: noticed only when the device or someone who saw them writes again')

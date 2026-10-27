@@ -1,7 +1,7 @@
 -- Message protocol v6 numbers each device's events in a channel and lets an
 -- event name the newest events of other devices it was written after, and an
--- edit the version it replaces. The server accepts only a device's next
--- number, so clients can tell when an event was withheld or moved (R-058).
+-- edit the version it replaces. The server refuses a number a device already
+-- used, so clients can tell when an event was withheld or moved (R-058).
 -- Older events keep null in all three columns.
 ALTER TABLE "messages" ADD COLUMN "device_seq" integer;--> statement-breakpoint
 ALTER TABLE "messages" ADD COLUMN "seen_heads" jsonb;--> statement-breakpoint

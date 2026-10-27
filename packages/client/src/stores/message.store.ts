@@ -140,6 +140,12 @@ const messageDecryptWorkers = new CoalescedChannelWorker(MAX_RESIDENT_MESSAGE_CH
 const forumRetention = new Map<string, ForumRetention>();
 /** Channels whose held events start at the channel's first event (a page said there is nothing older). */
 const windowReachesStart = new Map<string, boolean>();
+/**
+ * The newest event a page of the channel brought. Live events after it may
+ * have holes (missed while offline), so a newer page joins the held events
+ * only if it reaches back to this one.
+ */
+const pageRunEnds = new Map<string, string>();
 /** The missing-event notices a channel was last reloaded for, so one gap reloads it once. */
 const gapReloads = new Map<string, string>();
 
@@ -232,6 +238,7 @@ function channelUpdate(state: MessageState, channelId: string, events: Message[]
     delete messagesByChannel[victim];
     channelEpochs.set(victim, currentChannelEpoch(victim) + 1);
     windowReachesStart.delete(victim);
+    pageRunEnds.delete(victim);
     gapReloads.delete(victim);
     nextLoadVersion(victim);
     initialLoadPromises.delete(victim);
@@ -370,6 +377,23 @@ export function noteSequenceRefusal(channelId: string, error: unknown): boolean 
   return true;
 }
 
+const channelWrites = new Map<string, Promise<unknown>>();
+
+/**
+ * Run this device's writes to a channel one at a time, from sealing to the
+ * server's answer: each takes the number after the one before it was stored,
+ * so two writes of this device never sign the same number.
+ */
+export function withChannelWrite<T>(channelId: string, write: () => Promise<T>): Promise<T> {
+  const previous = channelWrites.get(channelId) ?? Promise.resolve();
+  const next = previous.catch(() => undefined).then(write);
+  channelWrites.set(channelId, next);
+  void next.catch(() => undefined).finally(() => {
+    if (channelWrites.get(channelId) === next) channelWrites.delete(channelId);
+  });
+  return next;
+}
+
 /** Seal and send a write again (a few times) while the server asks for a later number. */
 async function retryOnSequenceRefusal<T>(channelId: string, write: () => Promise<T>): Promise<T> {
   for (let attempt = 0; ; attempt += 1) {
@@ -494,16 +518,21 @@ function sameWait(current: ChannelKeyWait | null | undefined, next: ChannelKeyWa
 
 /**
  * The events to hold after loading the channel's newest page. The page
- * joins the held events when they share an event (or the page reaches the
- * channel's start); otherwise events were written in between (for example
- * while offline) and the held ones are dropped, so the window stays one run
- * of consecutive events and a gap in it means an event was not delivered.
+ * joins the held events when it reaches back to the newest event an earlier
+ * page brought (or to the channel's start); otherwise events may have been
+ * written in between (for example while offline, when only the device's own
+ * sends and some live events arrived) and the held ones are dropped, so the
+ * window stays one run of consecutive events and a gap in it means an event
+ * was not delivered.
  */
 function newestPageWindow(held: Message[], page: { data: Message[]; hasMore: boolean }, channelId: string): Message[] {
-  const heldIds = new Set(held.map((event) => event.id));
-  const joins = held.length === 0 || !page.hasMore || page.data.some((event) => heldIds.has(event.id));
+  const runEnd = pageRunEnds.get(channelId);
+  const joins = held.length === 0 || !page.hasMore || (runEnd !== undefined && page.data.some((event) => event.id === runEnd));
   if (!page.hasMore) windowReachesStart.set(channelId, true);
   else if (!joins) windowReachesStart.set(channelId, false);
+  const ordered = mergeMessageEvents(page.data);
+  const newest = ordered[ordered.length - 1];
+  if (newest) pageRunEnds.set(channelId, newest.id);
   return joins ? mergeMessageEvents(held, page.data) : mergeMessageEvents(page.data);
 }
 
@@ -724,7 +753,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     const channelEpoch = currentChannelEpoch(channelId);
     set((state) => ({ operationErrors: { ...state.operationErrors, [channelId]: null } }));
     const idempotencyKey = fixedIdempotencyKey || crypto.randomUUID();
-    return retryOnSequenceRefusal(channelId, async () => {
+    return withChannelWrite(channelId, () => retryOnSequenceRefusal(channelId, async () => {
       let sealed: SealedMessage;
       try {
         sealed = await get().sealMessage(channelId, content, {
@@ -742,7 +771,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         throw error;
       }
       return get().sendSealedMessage(channelId, content, sealed);
-    });
+    }));
   },
 
   sealMessage: async (channelId, content, options = {}) => {
@@ -838,7 +867,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     try {
       if (!isForumChannel(channelId)) throw new Error(t('投稿を作成できませんでした'));
       const content = encodeForumPostContent({ title: post.title, body: post.body });
-      return await retryOnSequenceRefusal(channelId, async () => {
+      return await withChannelWrite(channelId, () => retryOnSequenceRefusal(channelId, async () => {
       const device = getActiveDevice();
       const channelKey = await ensureChannelKey(channelId, { purpose: 'write' });
       const broadcastMention = containsBroadcastMention(content);
@@ -888,7 +917,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       }
       get().addMessage(channelId, message);
       return { message, state: result.state };
-      });
+      }));
     } catch (error) {
       if (isMessageContextCurrent(channelId, generation, channelEpoch)) {
         set((state) => ({ operationErrors: { ...state.operationErrors, [channelId]: errorMessage(error, t('投稿を作成できませんでした')) } }));
@@ -945,7 +974,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     set((state) => ({ operationErrors: { ...state.operationErrors, [channelId]: null } }));
     const idempotencyKey = crypto.randomUUID();
     try {
-      await retryOnSequenceRefusal(channelId, async () => {
+      await withChannelWrite(channelId, () => retryOnSequenceRefusal(channelId, async () => {
       const postId = isForumChannel(channelId) ? forumPostIdOf(get(), channelId, messageId) : undefined;
       const device = getActiveDevice();
       const channelKey = await ensureChannelKey(channelId, { purpose: 'write' });
@@ -1000,7 +1029,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         ...requireLocallySignedMessageResponse(event, envelope, signature),
         content,
       } as Message);
-      });
+      }));
     } catch (error) {
       if (isMessageContextCurrent(channelId, generation, channelEpoch)) {
         const message = error instanceof ApiError && error.code === 'EDIT_CONFLICT'
@@ -1018,7 +1047,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     set((state) => ({ operationErrors: { ...state.operationErrors, [channelId]: null } }));
     const idempotencyKey = crypto.randomUUID();
     try {
-      await retryOnSequenceRefusal(channelId, async () => {
+      await withChannelWrite(channelId, () => retryOnSequenceRefusal(channelId, async () => {
       const postId = isForumChannel(channelId) ? forumPostIdOf(get(), channelId, messageId) : undefined;
       const device = getActiveDevice();
       const channelKey = await ensureChannelKey(channelId, { purpose: 'write' });
@@ -1067,7 +1096,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         throw new Error('Server returned a delete result for a different message');
       }
       get().addMessage(channelId, requireLocallySignedMessageResponse(result.event, envelope, signature));
-      });
+      }));
     } catch (error) {
       if (isMessageContextCurrent(channelId, generation, channelEpoch)) {
         set((state) => ({ operationErrors: { ...state.operationErrors, [channelId]: errorMessage(error, t('メッセージを削除できませんでした')) } }));
@@ -1299,6 +1328,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     residentChannelOrder.delete(channelId);
     forumRetention.delete(channelId);
     windowReachesStart.delete(channelId);
+    pageRunEnds.delete(channelId);
     gapReloads.delete(channelId);
     messageDecryptWorkers.cancel(channelId);
     set((state) => {
@@ -1333,6 +1363,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     residentChannelOrder.clear();
     forumRetention.clear();
     windowReachesStart.clear();
+    pageRunEnds.clear();
     gapReloads.clear();
     messageDecryptWorkers.reset();
     set({

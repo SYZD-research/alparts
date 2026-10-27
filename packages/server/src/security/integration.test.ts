@@ -4350,12 +4350,10 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     assert.equal(repeated.status, 201);
     assert.equal((await json<Served>(repeated)).id, firstEvent.id);
 
-    // Another event under a number already taken, or past the next one, is
-    // refused with the number the server takes next.
+    // Another event under a number already taken is refused with the number
+    // the server takes next: a device never has two events under one number.
     const reused = await ownerEvent({ type: 'message', refMessageId: null, refBinding: null, plaintext: 'again one', sequence: { deviceSeq: 1 } });
     assert.deepEqual(await refusal(await send(owner.cookie, reused.body)), [400, 'INVALID_MESSAGE', 'SEQUENCE_MISMATCH', 2]);
-    const skipped = await ownerEvent({ type: 'message', refMessageId: null, refBinding: null, plaintext: 'three', sequence: { deviceSeq: 3 } });
-    assert.deepEqual(await refusal(await send(owner.cookie, skipped.body)), [400, 'INVALID_MESSAGE', 'SEQUENCE_MISMATCH', 2]);
     // The number is signed: a body that names another one does not verify.
     const resigned = await ownerEvent({ type: 'message', refMessageId: null, refBinding: null, plaintext: 'two' });
     assert.deepEqual((await refusal(await send(owner.cookie, { ...resigned.body, deviceSeq: 3 }))).slice(0, 2), [400, 'INVALID_MESSAGE']);
@@ -4409,15 +4407,49 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
       method: 'PUT', cookie: owner.cookie, body: { ...withoutSupersedes, idempotencyKey: randomUUID() },
     })).status, 400);
 
-    // Every device's numbers run 1, 2, 3, … and the server's order keeps them.
+    // A message last edited before v6: clients show none of the edits signed
+    // in v3/v4, so the message itself, or such an edit, is a version an edit
+    // may replace, until the message has a v6 edit.
+    const longAgo = await ownerEvent({ type: 'message', refMessageId: null, refBinding: null, plaintext: 'edited long ago' });
+    const olderResponse = await send(owner.cookie, longAgo.body);
+    assert.equal(olderResponse.status, 201);
+    const olderEvent = await json<Served>(olderResponse);
+    const olderPair = { authorId: owner.user.id, idempotencyKey: longAgo.body.idempotencyKey };
+    const legacyEditKey = randomUUID();
+    sequencePool ??= new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 2 });
+    await sequencePool.query(
+      `insert into messages (channel_id, author_id, device_id, content, content_nonce, key_version, signature, broadcast_mention, type, ref_message_id, idempotency_key, created_at)
+       values ($1, $2, $3, 'bGVnYWN5LWVkaXQtY2lwaGVydGV4dA==', 'AAAAAAAAAAAAAAAA', 1, null, false, 'edit', $4, $5, now())`,
+      [general.id, owner.user.id, ownerDevice.id, olderEvent.id, `${owner.user.id}:${legacyEditKey}`],
+    );
+    const overBase = await ownerEvent({
+      type: 'edit', refMessageId: olderEvent.id, refBinding: olderPair, plaintext: 'edited now', sequence: { supersedes: longAgo.body.idempotencyKey },
+    });
+    assert.equal((await request(`/api/messages/${olderEvent.id}`, { method: 'PUT', cookie: owner.cookie, body: overBase.body })).status, 200);
+    const overLegacy = await ownerEvent({
+      type: 'edit', refMessageId: olderEvent.id, refBinding: olderPair, plaintext: 'edited again', sequence: { supersedes: legacyEditKey },
+    });
+    const overLegacyResponse = await request(`/api/messages/${olderEvent.id}`, { method: 'PUT', cookie: owner.cookie, body: overLegacy.body });
+    assert.deepEqual([overLegacyResponse.status, (await json<{ error: string }>(overLegacyResponse)).error], [409, 'EDIT_CONFLICT']);
+
+    // A device that remembers a higher number than the server holds (the
+    // server was restored from a backup) continues above it; members see the
+    // lost events as a gap. A number below it is still refused.
+    const ahead = await ownerEvent({ type: 'message', refMessageId: null, refBinding: null, plaintext: 'after a restore', sequence: { deviceSeq: 8 } });
+    assert.equal((await send(owner.cookie, ahead.body)).status, 201);
+    const behind = await ownerEvent({ type: 'message', refMessageId: null, refBinding: null, plaintext: 'six', sequence: { deviceSeq: 6 } });
+    assert.deepEqual(await refusal(await send(owner.cookie, behind.body)), [400, 'INVALID_MESSAGE', 'SEQUENCE_MISMATCH', 9]);
+
+    // Every device's numbers increase, and the server's order keeps them.
     const served = await json<{ data: Served[] }>(await request(`/api/channels/${general.id}/messages`, { cookie: owner.cookie }));
     const ordered = [...served.data].reverse();
     const byDevice = (deviceId: string) => ordered.filter((event) => (event as unknown as { deviceId: string }).deviceId === deviceId)
       .map((event) => event.deviceSeq);
-    assert.deepEqual(byDevice(ownerDevice.id), [1, 2, 3]);
+    assert.deepEqual(byDevice(ownerDevice.id).filter((seq) => seq !== null), [1, 2, 3, 4, 5, 8]);
     assert.deepEqual(byDevice(memberDevice.id), [1]);
-    for (let index = 1; index < ordered.length; index += 1) {
-      assert.ok(ordered[index].createdAt > ordered[index - 1].createdAt, 'times strictly increase in the channel');
+    const sequencedEvents = ordered.filter((event) => event.deviceSeq !== null);
+    for (let index = 1; index < sequencedEvents.length; index += 1) {
+      assert.ok(sequencedEvents[index].createdAt > sequencedEvents[index - 1].createdAt, 'times strictly increase in the channel');
     }
   });
 

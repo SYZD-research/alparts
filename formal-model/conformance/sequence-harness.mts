@@ -22,6 +22,7 @@
 //   C1  C message  #1  saw B1
 //   B2  B message  #2  saw A2
 //   A3  A message  #3  saw B2
+//   A4  A edit of A1 #4  saw C1  (replaces A2)
 // "X happened before Y" (hb) is the transitive closure of: same device with a
 // lower number, and Y names X (or a later event of X's device) as seen.
 //
@@ -48,6 +49,8 @@ interface Genuine {
   seq: number;
   type: 'message' | 'edit';
   refName: string | null;
+  /** An edit: the version it replaces. */
+  replaces?: string;
   seen: string | null;
   content: string;
 }
@@ -61,10 +64,11 @@ const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')
 const genuine: Genuine[] = [
   { name: 'A1', device: 'A', seq: 1, type: 'message', refName: null, seen: null, content: 'meet at 10' },
   { name: 'B1', device: 'B', seq: 1, type: 'message', refName: null, seen: 'A1', content: 'ok' },
-  { name: 'A2', device: 'A', seq: 2, type: 'edit', refName: 'A1', seen: 'B1', content: 'meet at 11' },
+  { name: 'A2', device: 'A', seq: 2, type: 'edit', refName: 'A1', replaces: 'A1', seen: 'B1', content: 'meet at 11' },
   { name: 'C1', device: 'C', seq: 1, type: 'message', refName: null, seen: 'B1', content: 'me too' },
   { name: 'B2', device: 'B', seq: 2, type: 'message', refName: null, seen: 'A2', content: '11 is fine' },
   { name: 'A3', device: 'A', seq: 3, type: 'message', refName: null, seen: 'B2', content: 'see you' },
+  { name: 'A4', device: 'A', seq: 4, type: 'edit', refName: 'A1', replaces: 'A2', seen: 'C1', content: 'meet at 11:30' },
 ];
 // The second event under A's number 2 (mutation 'split' only).
 const forkedA2: Genuine = { name: 'A2x', device: 'A', seq: 2, type: 'message', refName: null, seen: 'B1', content: 'cancelled' };
@@ -116,7 +120,7 @@ function envelopeOf(g: Genuine) {
     ...(unsequenced ? {} : {
       deviceSeq: g.seq,
       seenHeads: seen ? [{ deviceId: `device-${seen.device}`, deviceSeq: seen.seq, idempotencyKey: keyOf(seen.name) }] : [],
-      supersedes: g.type === 'edit' ? keyOf(g.refName!) : null,
+      supersedes: g.type === 'edit' ? keyOf(g.replaces!) : null,
     }),
   };
 }
@@ -155,7 +159,7 @@ function subsets<T>(items: T[]): T[][] {
 }
 
 const PROPERTIES = [
-  'MO-honest', 'MO-honest-suffix', 'MO-order', 'MO-order-complete', 'MO-order-hidden', 'MO-drop', 'MO-edit', 'MO-tail', 'MO-suffix',
+  'MO-honest', 'MO-honest-suffix', 'MO-honest-forum', 'MO-forged-number', 'MO-order', 'MO-order-complete', 'MO-order-hidden', 'MO-drop', 'MO-edit', 'MO-tail', 'MO-suffix',
   'MO-forum', 'MO-split', 'MO-split-seen',
 ];
 const results: Record<string, { violations: number; example: string[] | null }> = Object.fromEntries(
@@ -174,9 +178,23 @@ const WINDOWS: Record<Window, projectorWindow> = {
 };
 type projectorWindow = Parameters<typeof projector.projectOrderedMessageEvents>[1] & object;
 
+/**
+ * An event nobody signed that claims a number of a device: it fails the
+ * signature, so the client keeps it as a message it could not verify.
+ */
+function forgedClaim(device: 'A' | 'B' | 'C', deviceSeq: number, time: number): Message {
+  return projector.markMessageCryptoVerification({
+    id: id(200 + time), channelId: CHANNEL, authorId: `user-${device}`, author: { id: `user-${device}`, displayName: device },
+    deviceId: `device-${device}`, content: '[unverified]', encryptedContent: 'ct(forged)', contentNonce: 'n(forged)',
+    keyVersion: 1, signature: 'sig(forged)', broadcastMention: false, type: 'message', refMessageId: null, refBinding: null,
+    deviceSeq, seenHeads: [], supersedes: null, reactions: [], isPinned: false, idempotencyKey: `forged-${time}`,
+    createdAt: new Date(Date.UTC(2026, 9, 1, 0, 0, time)).toISOString(),
+  } as unknown as Message, false);
+}
+
 /** What the client shows of a served history in a window. */
-function show(order: Genuine[], window: Window) {
-  const events = order.map((g, i) => served(g, i + 1));
+function show(order: Genuine[], window: Window, extra: Message[] = []) {
+  const events = [...order.map((g, i) => served(g, i + 1)), ...extra];
   const merged = projector.mergeMessageEvents(events);
   // What MessageList shows: the messages with their notices, and the
   // channel's notice that no shown message carries.
@@ -249,18 +267,36 @@ if (input.mutation === 'split') {
           if (withheldPast.length && !noticed) {
             note('MO-drop', [...trace, `=> ${withheldPast.map((g) => g.name).join(', ')} withheld, and nothing says so`]);
           }
+          // MO-forged-number: unsigned events claiming numbers of a device,
+          // anywhere in the history, do not hide a withheld event.
+          if (withheldPast.length && noticed) {
+            for (const x of withheldPast) {
+              for (const claimed of [x.seq, x.seq + 1, 1_000_000]) {
+                for (let slot = 0; slot <= order.length; slot += 1) {
+                  histories++;
+                  // Placed between the served events by time.
+                  const forged = show(order, window, [forgedClaim(x.device, claimed, slot + 0.5)]);
+                  if (!forged.noticed) {
+                    note('MO-forged-number', [...describe(order, window, forged),
+                      `=> an unsigned event claiming ${x.device} #${claimed} at slot ${slot} hides that ${x.name} was withheld`]);
+                  }
+                }
+              }
+            }
+          }
           // MO-tail (limit): withholding what nothing served came after goes unnoticed.
           if (!withheldPast.length && withheldTail.length && !reordered && !noticed) {
             note('MO-tail', [...trace, `=> ${withheldTail.map((g) => g.name).join(', ')} withheld, and nothing could say so`]);
           }
-          // MO-edit: the message shows a served edit of it, or says it cannot.
+          // MO-edit: the message shows the newest served edit of it, or says it cannot.
           const a1 = shown.find((m) => m.id === honestId.get('A1'));
-          if (a1 && position.has('A2') && a1.content !== byName.get('A2')!.content && !a1.editUncertain && !noticed) {
-            note('MO-edit', [...trace, `=> A1 shows "${a1.content}" although its edit A2 was served, and nothing says so`]);
+          const newestEdit = order.filter((g) => g.type === 'edit' && g.refName === 'A1').sort((x, y) => y.seq - x.seq)[0];
+          if (a1 && newestEdit && a1.content !== newestEdit.content && !noticed) {
+            note('MO-edit', [...trace, `=> A1 shows "${a1.content}" although its edit ${newestEdit.name} was served, and nothing says so`]);
           }
-          // MO-honest: everything, in the order written: nothing is noticed and the edit shows.
+          // MO-honest: everything, in the order written: nothing is noticed and the latest edit shows.
           if (order.length === genuine.length && order.every((g, i) => g === honestOrder[i])) {
-            if (noticed || a1?.content !== byName.get('A2')!.content) note('MO-honest', [...trace, '=> an honest history is flagged or misshown']);
+            if (noticed || a1?.content !== byName.get('A4')!.content) note('MO-honest', [...trace, '=> an honest history is flagged or misshown']);
           }
         }
         if (window === 'suffix') {
@@ -270,6 +306,15 @@ if (input.mutation === 'split') {
           // MO-suffix (limit): in the newest page alone, a withheld event may pass for an older one.
           if (withheldPast.length && !reordered && !noticed) {
             note('MO-suffix', [...trace, `=> ${withheldPast.map((g) => g.name).join(', ')} withheld; the page cannot tell it from an older event`]);
+          }
+        }
+        // MO-honest-forum: a forum's list serves a post with its latest edit
+        // only (and posts in the order written): nothing is flagged and the
+        // latest edit shows.
+        if (window === 'forum' && order.map((g) => g.name).join() === 'A1,A4') {
+          const a1 = shown.find((m) => m.id === honestId.get('A1'));
+          if (noticed || a1?.content !== byName.get('A4')!.content) {
+            note('MO-honest-forum', [...trace, '=> a forum list of a post and its latest edit is flagged or misshown']);
           }
         }
         // MO-forum (limit): posts loaded one by one cannot show a gap.
