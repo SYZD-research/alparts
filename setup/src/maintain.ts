@@ -1,7 +1,7 @@
 import { basename, join } from 'node:path';
 import { Cancelled, SetupError, withCleanup, type Context } from './context.ts';
 import {
-  APP_IMAGE, appliedMigrations, ensureAppImage, ensureBackupToolsImage, migrate, prepareSecrets, provisionDatabase,
+  APP_IMAGE, appliedMigrations, ensureAppImage, ensureBackupToolsImage, migrate, prepareBackupFiles, prepareSecrets, provisionDatabase,
   restartRunning, seedProxyKey, sourceVersion, startDependencies, startServices, waitForApp, writeConfiguration, writePinsFile,
 } from './deployment.ts';
 import { requireSettings } from './install.ts';
@@ -33,6 +33,7 @@ async function checkBackupTools(context: Context): Promise<void> {
   // Tools and settings are checked before the app stops, not after.
   await ui.task(t('step.backupCheck'), async () => {
     try {
+      prepareBackupFiles(context.paths);
       await context.docker.runOnce('backup', [BACKUP, '--preflight'], { profiles: ['operations'] });
     } catch (error) {
       throw new SetupError('error.backup', {}, { cause: error });

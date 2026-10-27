@@ -2,9 +2,11 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { BACKUP_USER } from './files.ts';
 import { IMAGES } from './images.ts';
 import { repositoryRoot, systemPaths } from './paths.ts';
 import { appStartCommand, composeEnvironment, renderBackupUnits, renderCaddyfile, renderComposeOverride, renderEnvFile, renderPgHba } from './render.ts';
+import { secretMode, secretOwner, type SecretName } from './secrets.ts';
 import type { Settings } from './settings.ts';
 
 const paths = systemPaths('/', '/opt/alparts');
@@ -96,6 +98,19 @@ test('the services are split between the public edge and an internal backend', (
   }
   // Compose interpolates $ in the file; the generated scripts must not contain one.
   assert.doesNotMatch(JSON.stringify(override), /\$/);
+});
+
+test('backups run as an unprivileged user that can read their credentials and write their directories', () => {
+  const dockerfile = readFileSync(join(repositoryRoot(), 'setup', 'backup-tools', 'Dockerfile'), 'utf8');
+  assert.equal([...dockerfile.matchAll(/^USER\s+(\S+)\s*$/gm)].at(-1)?.[1], 'postgres');
+
+  const backup = JSON.parse(renderComposeOverride(settings(), paths, { appCommand: imageCommand, backupImage: 'tools:1' })).services.backup;
+  for (const name of backup.secrets as SecretName[]) {
+    assert.ok(secretOwner(name) === BACKUP_USER || (secretMode(name) & 0o004) !== 0, name);
+  }
+  // Host directories the setup hands to that user, not volumes that root would own.
+  assert.deepEqual(backup.volumes.slice(1), [`${paths.backupDir}:/backups`, `${paths.backupWorkDir}:/work`]);
+  assert.equal(backup.user, undefined);
 });
 
 test('the Caddyfile keeps the certificate key, buffers bodies and hides health checks', () => {

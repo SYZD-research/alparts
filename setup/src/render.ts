@@ -224,6 +224,7 @@ export function renderComposeOverride(settings: Settings, paths: Paths, options:
         security_opt: ['no-new-privileges:true'],
         logging: LOGGING,
       },
+      // Runs as the tools image's unprivileged user, which owns the files and directories below (prepareBackupFiles).
       backup: {
         image: options.backupImage,
         build: { context: join(paths.repo, 'setup', 'backup-tools') },
@@ -245,7 +246,7 @@ export function renderComposeOverride(settings: Settings, paths: Paths, options:
           TMPDIR: '/work',
         },
         secrets: ['internal_ca_certificate', 'backup_pg_service', 'storage_backup_access_key', 'storage_backup_secret_key', 'backup_age_recipient'],
-        volumes: [`${join(paths.repo, 'scripts')}:/opt/alparts/scripts:ro`, `${paths.backupDir}:/backups`, 'backup_work:/work'],
+        volumes: [`${join(paths.repo, 'scripts')}:/opt/alparts/scripts:ro`, `${paths.backupDir}:/backups`, `${paths.backupWorkDir}:/work`],
         security_opt: ['no-new-privileges:true'],
         networks: { backend: {} },
         logging: LOGGING,
@@ -261,7 +262,6 @@ export function renderComposeOverride(settings: Settings, paths: Paths, options:
       object_storage_data: {},
       proxy_data: {},
       proxy_config: {},
-      backup_work: {},
     },
     secrets: {
       internal_ca_certificate: secretFile('internal_ca_certificate'),

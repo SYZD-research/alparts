@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash, createHmac, X509Certificate } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -82,6 +82,17 @@ test('generated values are created once, private, and never replaced', () => {
     assert.ok(postgres.checkIssued(ca));
     assert.equal(postgres.checkHost('postgres'), 'postgres');
     assert.equal(store.read('empty'), '');
+    // The authority's certificate is public; everything else stays private.
+    assert.equal(statSync(store.path('internal_ca_certificate')).mode & 0o777, 0o444);
+    assert.equal(statSync(store.path('internal_ca_key')).mode & 0o777, 0o400);
+    assert.equal(statSync(store.path('backup_pg_service')).mode & 0o777, 0o400);
+
+    // Files an older setup left with other permissions get the current ones.
+    chmodSync(store.path('storage_backup_secret_key'), 0o644);
+    chmodSync(store.path('internal_ca_certificate'), 0o400);
+    store.enforcePermissions();
+    assert.equal(statSync(store.path('storage_backup_secret_key')).mode & 0o777, 0o400);
+    assert.equal(statSync(store.path('internal_ca_certificate')).mode & 0o777, 0o444);
 
     // A second run keeps the certificates that are still good.
     const before = readFileSync(store.path('storage_tls_certificate'), 'utf8');

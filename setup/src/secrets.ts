@@ -1,14 +1,16 @@
 import { createHash, createHmac, pbkdf2Sync, randomBytes, X509Certificate } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { APP_USER, ensureDirectory, ROOT, writeFileAtomic, writeFileIfChanged, type Owner } from './files.ts';
+import { APP_USER, BACKUP_USER, ensureDirectory, ROOT, setPermissions, writeFileAtomic, writeFileIfChanged, type Owner } from './files.ts';
 import type { Settings } from './settings.ts';
 import { createCertificateAuthority, daysUntilExpiry, generatePrivateKeyPem, issueServerCertificate } from './x509.ts';
 
 // Every credential lives in its own file under the secrets directory (mode
-// 0700). Files the app image reads belong to its user; the rest to root. All
-// are mode 0400. Generated values are created once and never replaced: the
-// password pepper and the audit key in particular must outlive the install.
+// 0700). Files the app image reads belong to its user, those the backup tools
+// read to theirs, and the rest to root. All are mode 0400 except the internal
+// authority's certificate, which is public. Generated values are created once
+// and never replaced: the password pepper and the audit key in particular must
+// outlive the install.
 
 const hex = (bytes: number) => () => randomBytes(bytes).toString('hex');
 
@@ -22,8 +24,8 @@ export const GENERATED_SECRETS = {
   storage_admin_secret_key: { owner: ROOT, generate: hex(32) },
   storage_app_access_key: { owner: APP_USER, generate: hex(16) },
   storage_app_secret_key: { owner: APP_USER, generate: hex(32) },
-  storage_backup_access_key: { owner: ROOT, generate: hex(16) },
-  storage_backup_secret_key: { owner: ROOT, generate: hex(32) },
+  storage_backup_access_key: { owner: BACKUP_USER, generate: hex(16) },
+  storage_backup_secret_key: { owner: BACKUP_USER, generate: hex(32) },
   jwt_secret: { owner: APP_USER, generate: hex(48) },
   password_pepper: { owner: APP_USER, generate: hex(48) },
   audit_integrity_key: { owner: APP_USER, generate: hex(48) },
@@ -40,11 +42,11 @@ export const DERIVED_SECRETS = {
   database_url: APP_USER,
   migration_database_url: APP_USER,
   storage_identities: ROOT,
-  backup_pg_service: ROOT,
-  backup_age_recipient: ROOT,
+  backup_pg_service: BACKUP_USER,
+  backup_age_recipient: BACKUP_USER,
   smtp_password: APP_USER,
   empty: APP_USER,
-  internal_ca_certificate: APP_USER,
+  internal_ca_certificate: ROOT,
   internal_ca_key: ROOT,
   postgres_tls_certificate: ROOT,
   postgres_tls_key: ROOT,
@@ -54,6 +56,18 @@ export const DERIVED_SECRETS = {
 
 export type DerivedSecret = keyof typeof DERIVED_SECRETS;
 export type SecretName = GeneratedSecret | DerivedSecret;
+
+const SECRET_NAMES = [...Object.keys(GENERATED_SECRETS), ...Object.keys(DERIVED_SECRETS)] as SecretName[];
+
+/** Who reads the file. */
+export function secretOwner(name: SecretName): Owner {
+  return Object.hasOwn(GENERATED_SECRETS, name) ? GENERATED_SECRETS[name as GeneratedSecret].owner : DERIVED_SECRETS[name as DerivedSecret];
+}
+
+/** Every container that checks the database's or the object store's certificate reads the authority's, whichever user it runs as. */
+export function secretMode(name: SecretName): number {
+  return name === 'internal_ca_certificate' ? 0o444 : 0o400;
+}
 
 export const DATABASE = {
   name: 'alparts',
@@ -124,7 +138,14 @@ export class SecretStore {
   private changed = new Set<SecretName>();
 
   private writeDerived(name: DerivedSecret, content: string): void {
-    if (writeFileIfChanged(this.path(name), content, 0o400, DERIVED_SECRETS[name])) this.changed.add(name);
+    if (writeFileIfChanged(this.path(name), content, secretMode(name), DERIVED_SECRETS[name])) this.changed.add(name);
+  }
+
+  /** Gives every file its owner and mode, which an older version of the setup may have set differently. */
+  enforcePermissions(): void {
+    for (const name of SECRET_NAMES) {
+      if (this.has(name)) setPermissions(this.path(name), secretMode(name), secretOwner(name));
+    }
   }
 
   /** The names written since the last call: services that mount them need a restart. */

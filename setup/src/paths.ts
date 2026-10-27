@@ -21,6 +21,8 @@ export interface Paths {
   emptyDir: string;
   stateDir: string;
   backupDir: string;
+  /** Where a backup gathers the data before encrypting it; backup.sh empties it when done. */
+  backupWorkDir: string;
   logDir: string;
   lockFile: string;
   systemdDir: string;
@@ -52,6 +54,7 @@ export function systemPaths(root = '/', repo = repositoryRoot()): Paths {
     emptyDir: join(configDir, 'empty'),
     stateDir,
     backupDir: join(stateDir, 'backups'),
+    backupWorkDir: join(stateDir, 'backup-work'),
     logDir: join(root, 'var', 'log', PROJECT_NAME),
     lockFile: join(root, 'run', `${PROJECT_NAME}-setup.lock`),
     systemdDir: join(root, 'etc', 'systemd', 'system'),

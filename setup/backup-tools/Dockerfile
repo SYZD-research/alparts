@@ -30,4 +30,7 @@ RUN set -eu; \
     rclone version | head -n 1; \
     age --version
 
+# The image's unprivileged postgres user (uid 70, BACKUP_USER in
+# setup/src/files.ts) owns the backup credentials and directories.
+USER postgres
 ENTRYPOINT []

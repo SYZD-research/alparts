@@ -132,12 +132,13 @@ The app and the migration step are defined by the repository's [compose.producti
 | Path | Holds |
 | --- | --- |
 | `/etc/alparts-production/setup.json` | The answers and the state of the installation |
-| `/etc/alparts-production/secrets/` | The credentials (only root can open the directory; each file is mode 0400, and those the app reads belong to the app's user) |
+| `/etc/alparts-production/secrets/` | The credentials (only root can open the directory; each file is mode 0400, those the app reads belong to the app's user and those the backups read to the backup user; only the internal certificate authority's certificate, which is public, is 0444) |
 | `/etc/alparts-production/compose.env`, `compose.json` | Generated files for Compose |
 | `/etc/alparts-production/proxy/Caddyfile` | The HTTPS proxy's settings |
 | `/etc/alparts-production/postgres/pg_hba.conf` | PostgreSQL's connection rules |
 | `/etc/alparts-production/transport-pins.json` | The pins file for the desktop and Android apps |
 | `/var/lib/alparts-production/backups/` | The encrypted backups |
+| `/var/lib/alparts-production/backup-work/` | Where a backup puts the data before encrypting it (empty once it finishes) |
 | `/var/log/alparts-production/` | A detailed record of each run (the newest 60) |
 | Docker volumes `alparts-production_*` | The database, files, certificates and the activity record's anchor |
 
@@ -159,7 +160,7 @@ sudo docker compose --project-name alparts-production --project-directory /opt/a
 - **HTTPS proxy** — Health checks and metrics are not served publicly. Request bodies are received whole before they are passed on. The proxy, at a fixed address, is the only source the app trusts for client addresses
 - **Activity record** — The audit checkpoint is created once, by the first installation. If it goes missing it may have been tampered with, so the setup does not recreate it and asks for the checks in the [operations guide](../docs/OPERATIONS.md)
 - **App container** — As compose.production.yml defines it: a read-only root, no capabilities, `no-new-privileges`, a non-root user, memory and CPU limits. Node.js's permission model (`--permission`) is left off: current Node.js releases (checked with 22.22 and 24.22) turn off `fsync` under it, so the audit checkpoint cannot be written and the app stops accepting writes after the first one. The other flags, such as `--disallow-code-generation-from-strings`, stay
-- **Backups** — Encrypted to an age public key. The secret key that restores them is never on the server
+- **Backups** — Encrypted to an age public key. The secret key that restores them is never on the server. The backup container runs as a user other than root (`postgres` of the PostgreSQL image, uid 70) with the read-only database role and storage key
 
 ## Updating
 

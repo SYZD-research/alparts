@@ -132,12 +132,13 @@ SMTP に接続できない場合は止まります。`--yes` を付けると、�
 | パス | 内容 |
 | --- | --- |
 | `/etc/alparts-production/setup.json` | 回答とインストールの状態 |
-| `/etc/alparts-production/secrets/` | 認証情報（ディレクトリは root だけが開けます。各ファイルはモード 0400 で、アプリが読むものはアプリのユーザーの所有） |
+| `/etc/alparts-production/secrets/` | 認証情報（ディレクトリは root だけが開けます。各ファイルはモード 0400 で、アプリが読むものはアプリのユーザー、バックアップが読むものはバックアップのユーザーの所有。内部の認証局の証明書だけは公開の情報のため 0444） |
 | `/etc/alparts-production/compose.env`、`compose.json` | Compose 用の生成ファイル |
 | `/etc/alparts-production/proxy/Caddyfile` | HTTPS の公開の設定 |
 | `/etc/alparts-production/postgres/pg_hba.conf` | PostgreSQL の接続規則 |
 | `/etc/alparts-production/transport-pins.json` | デスクトップ・Android アプリ用の pin ファイル |
 | `/var/lib/alparts-production/backups/` | 暗号化したバックアップ |
+| `/var/lib/alparts-production/backup-work/` | バックアップの作成中に、暗号化する前のデータを置く場所（終わると空になります） |
 | `/var/log/alparts-production/` | 実行ごとの詳しい記録（最新の 60 件） |
 | Docker のボリューム `alparts-production_*` | データベース、ファイル、証明書、操作履歴の基点 |
 
@@ -159,7 +160,7 @@ sudo docker compose --project-name alparts-production --project-directory /opt/a
 - **HTTPS の公開** — ヘルスチェックとメトリクスは外部に公開しません。リクエストの本文は受け取り終えてからアプリへ送ります。アプリが信頼するクライアントのアドレスの転送元は、固定のアドレスを持つ proxy だけです
 - **操作履歴** — 監査チェックポイントは初回のインストールで一度だけ作ります。失われた場合は改ざんの可能性があるため自動では作り直さず、[運用ガイド](../docs/OPERATIONS.ja.md)の手順での確認を求めます
 - **アプリのコンテナー** — compose.production.yml のとおり、読み取り専用のルート、capability なし、`no-new-privileges`、root 以外のユーザー、メモリーと CPU の上限で動かします。Node.js のパーミッションモデル（`--permission`）は外して起動します。現在の Node.js（22.22 と 24.22 で確認）は、パーミッションモデルを有効にすると `fsync` を使えなくなり、監査チェックポイントを書き込めずに、最初の書き込みのあとアプリが書き込みを受け付けなくなるためです。`--disallow-code-generation-from-strings` などほかの指定はそのまま使います
-- **バックアップ** — age の公開鍵に対して暗号化します。復元に必要な秘密鍵はサーバーに置きません
+- **バックアップ** — age の公開鍵に対して暗号化します。復元に必要な秘密鍵はサーバーに置きません。バックアップのコンテナーは root 以外のユーザー（PostgreSQL のイメージの `postgres`、uid 70）で動き、読み取りだけのデータベースのロールとストレージの鍵を使います
 
 ## 更新
 

@@ -7,8 +7,9 @@ import { connect as tlsConnect } from 'node:tls';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { SetupError, type Context } from './context.ts';
 import { APPLIED_MIGRATIONS_SQL, grantsSql, HAS_ACCOUNTS_SQL, provisionSql } from './database.ts';
-import { ensureDirectory, writeFileIfChanged } from './files.ts';
+import { BACKUP_USER, ensureDirectory, writeFileIfChanged } from './files.ts';
 import { backupToolsImage } from './images.ts';
+import type { Paths } from './paths.ts';
 import { composeEnvironment, renderBackupUnits, renderCaddyfile, renderComposeOverride, renderEnvFile, renderPgHba, BACKUP_UNIT } from './render.ts';
 import { DATABASE, scramSha256Verifier, SecretStore, type SecretName } from './secrets.ts';
 import { saveSettings, type Settings } from './settings.ts';
@@ -47,6 +48,7 @@ export function prepareSecrets(context: Context, settings: Settings, smtpPasswor
   store.ensureGenerated();
   if (smtpPassword !== null) store.writeSmtpPassword(smtpPassword);
   store.writeDerivedFiles(settings);
+  store.enforcePermissions();
   const users: Partial<Record<SecretName, string[]>> = {
     smtp_password: ['app'],
     internal_ca_certificate: ['app'],
@@ -81,6 +83,17 @@ export async function ensureBackupToolsImage(context: Context): Promise<'built' 
   return 'built';
 }
 
+/**
+ * The backup container runs as the tools image's unprivileged user: its
+ * credentials and directories are handed to that user, whatever an older
+ * version of the setup left.
+ */
+export function prepareBackupFiles(paths: Paths): void {
+  new SecretStore(paths.secretsDir).enforcePermissions();
+  ensureDirectory(paths.backupDir, 0o700, BACKUP_USER);
+  ensureDirectory(paths.backupWorkDir, 0o700, BACKUP_USER);
+}
+
 /** Writes the generated files; returns the services whose mounted configuration changed. */
 export async function writeConfiguration(context: Context, settings: Settings, imageTag: string): Promise<Set<string>> {
   const { paths, docker } = context;
@@ -89,7 +102,7 @@ export async function writeConfiguration(context: Context, settings: Settings, i
   ensureDirectory(paths.postgresConfigDir, 0o700);
   ensureDirectory(paths.emptyDir, 0o755);
   ensureDirectory(paths.stateDir, 0o700);
-  ensureDirectory(paths.backupDir, 0o700);
+  prepareBackupFiles(paths);
   const appCommand = await docker.imageCommand(APP_IMAGE(imageTag));
   writeFileIfChanged(paths.composeEnvFile, renderEnvFile(composeEnvironment(settings, paths, imageTag)), 0o600);
   writeFileIfChanged(paths.composeOverrideFile, renderComposeOverride(settings, paths, { appCommand, backupImage: backupToolsImage(paths.repo) }), 0o600);
