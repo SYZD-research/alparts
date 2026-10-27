@@ -91,7 +91,12 @@ export function rememberHeads(userId: string, channelId: string, events: readonl
   persist(userId, channels);
 }
 
-/** Drop what is held in memory (sign-out); the stored copy stays for the next session. */
+/**
+ * Drop what this tab holds in memory (sign-out). The copy kept in the browser
+ * stays on purpose, so the next session can still tell what was received:
+ * channel and device ids, numbers and the start of signed keys, nothing of
+ * the messages.
+ */
 export function resetChannelMemory(): void {
   memory.clear();
 }

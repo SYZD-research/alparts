@@ -1344,6 +1344,9 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     residentChannelOrder.delete(channelId);
     forumRetention.delete(channelId);
     windowReachesStart.delete(channelId);
+    // A write still in flight discards its result itself (context check); a
+    // new one need not wait for it, and the server keeps numbers apart.
+    channelWrites.delete(channelId);
     pageRunEnds.delete(channelId);
     gapReloads.delete(channelId);
     messageDecryptWorkers.cancel(channelId);
@@ -1379,6 +1382,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     residentChannelOrder.clear();
     forumRetention.clear();
     windowReachesStart.clear();
+    channelWrites.clear();
     pageRunEnds.clear();
     gapReloads.clear();
     messageDecryptWorkers.reset();

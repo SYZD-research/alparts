@@ -125,7 +125,12 @@ export function seenHeadsOf(events: readonly Message[], ownDeviceId: string, lim
   return heads;
 }
 
-/** Forget every device's numbers (sign-out). */
+/**
+ * Drop what this tab holds in memory (sign-out). The highest stored numbers
+ * kept in the browser stay on purpose: the device must not sign a number
+ * again after the next sign-in. They hold channel and device ids and
+ * counters only, nothing of the messages.
+ */
 export function resetDeviceSequences(): void {
   storedHigh.clear();
   serverExpected.clear();

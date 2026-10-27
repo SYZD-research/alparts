@@ -458,6 +458,9 @@ export function analyzeEventOrder(ordered: readonly Message[], window: EventWind
     if (notices.get(event.id) !== 'missing') notices.set(event.id, notice);
   };
   const positions = new Map<string, { index: number; idempotencyKey: string }>();
+  // Numbers held by events whose check is pending: held for gaps, but their
+  // keys are compared only once they verify.
+  const pendingHeld = new Set<string>();
   const lowestClaimed = new Map<string, number>();
   // Per device, the verified numbers held, with the last place each number up
   // to it is held at: whatever a head names, all of these must come before.
@@ -467,8 +470,11 @@ export function analyzeEventOrder(ordered: readonly Message[], window: EventWind
     if (seq === null || !trustsNumber(event)) return;
     const lowest = lowestClaimed.get(event.deviceId!);
     if (lowest === undefined || seq < lowest) lowestClaimed.set(event.deviceId!, seq);
-    if (!hasSequencedEnvelope(event)) return;
     const key = `${event.deviceId}\u0000${seq}`;
+    if (!hasSequencedEnvelope(event)) {
+      pendingHeld.add(key);
+      return;
+    }
     if (!positions.has(key)) positions.set(key, { index, idempotencyKey: event.idempotencyKey });
     verifiedByDevice.set(event.deviceId!, [...(verifiedByDevice.get(event.deviceId!) ?? []), { seq, index }]);
   });
@@ -499,11 +505,14 @@ export function analyzeEventOrder(ordered: readonly Message[], window: EventWind
       sequencedSeen = true;
       for (const head of event.seenHeads ?? []) {
         if (heldAfter(head.deviceId, head.deviceSeq, index)) note(event, 'order');
-        const seen = positions.get(`${head.deviceId}\u0000${head.deviceSeq}`);
+        const headKey = `${head.deviceId}\u0000${head.deviceSeq}`;
+        const seen = positions.get(headKey);
         if (seen) {
           if (seen.idempotencyKey !== head.idempotencyKey) note(event, 'order');
           continue;
         }
+        // Held by an event still being checked: compared once it verifies.
+        if (pendingHeld.has(headKey)) continue;
         // Not held: it should be when the window reaches back past it.
         const lowest = lowestClaimed.get(head.deviceId);
         if (window.contiguous && (window.complete || (lowest !== undefined && lowest < head.deviceSeq))) note(event, 'missing');

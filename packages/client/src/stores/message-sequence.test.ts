@@ -162,6 +162,17 @@ describe('what a client can tell from v6 events (formal model M10)', () => {
     expect(notices([a1, unreadable, sequenced('a3', 'A', 3)], CONTIGUOUS)).toEqual({});
   });
 
+  it('does not take a seen event still being checked for a missing one', () => {
+    const a1 = sequenced('a1', 'A', 1);
+    const pendingA2 = sequenced('a2', 'A', 2, {}, 'pending');
+    const b1 = sequenced('b1', 'B', 1, { seenHeads: [{ deviceId: 'A', deviceSeq: 2, idempotencyKey: 'key-a2' }] });
+    expect(notices([a1, pendingA2, b1], CONTIGUOUS)).toEqual({});
+    expect(notices([a1, pendingA2, b1], COMPLETE)).toEqual({});
+    // Once it verifies, its key is compared.
+    const otherA2 = sequenced('a2', 'A', 2, { idempotencyKey: 'key-other' });
+    expect(notices([a1, otherA2, b1], CONTIGUOUS)).toEqual({ b1: 'order' });
+  });
+
   it('lets an edit or a deletion whose check is pending fill its number', () => {
     const a1 = sequenced('a1', 'A', 1);
     const pendingEdit = sequenced('a2', 'A', 2, { type: 'edit', ...editOf('a1'), supersedes: 'key-a1' }, 'pending');

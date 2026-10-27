@@ -71,6 +71,7 @@
 ### Client local stateとoffline
 
 - Web版ではdevice private keyとdraft/outbox用AES-GCM keyをnon-extractable WebCrypto `CryptoKey`としてsame-origin IndexedDBへstructured clone保存する。Desktop版ではprivate JWK、channel key、draft/outbox keyをOS保護領域でwrapし、IndexedDBにはpublic identityまたはopaque pointerだけを置く。Linuxで保護されたsecret serviceを利用できない場合、desktopはfail closedで開始しない。
+- Message protocol v6の端末番号と受け取り済みの最新eventの番号・key先頭（本文なし）は、logout後もlocalStorageに平文で残る（ADR 0015）。
 - Web版ではdraft/outboxのciphertextとその復号keyが同じoriginのIndexedDBにある。Desktop版を含め、compromised client codeはkeyをexportできなくても正規process内で暗号操作へ利用できるため、client code侵害をOS保護領域だけで防ぐものではない。
 - Logout/user切替は復号済みmemory stateとkey cacheを消すが、同じ有効deviceで再開できるよう暗号化recordは残る。browser profile喪失後は保存済み復旧コードと暗号化済み履歴に限り復元できる。複数端末draft同期とService Workerによるfull offline history cacheはない。
 - Logout要求がserverに確認されない場合（offline、proxy error、rate limit、audit admission不可）、server側のsessionは再試行が成功するか最長7日の期限が来るまで有効なまま残る。公式clientはlogout保留の印を残し、次の起動で再試行して、その間は同じcookieのsessionを再開せずlogin画面を表示する。再試行は起動時だけで、その前に同じ端末で新たにloginすると新しいcookieが古いものを置き換え、古いsessionは期限まで残る（「ログイン中の端末」から終了できる）。Desktop版はlogout時にcookieも自身のsession storageから削除するが、cookieがHttpOnlyのWeb版とAndroid版では再試行が成功するまでcookie自体が残り、同じbrowser profileを使える人は手作業でAPIを呼べる。

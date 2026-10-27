@@ -2,7 +2,9 @@
 -- event name the newest events of other devices it was written after, and an
 -- edit the version it replaces. The server refuses a number a device already
 -- used, so clients can tell when an event was withheld or moved (R-058).
--- Older events keep null in all three columns.
+-- Older events keep null in all three columns, so the unique constraint
+-- finds no conflict in existing rows. It is built while writers are stopped,
+-- as every production migration is applied (docs/policies/CONTRIBUTING.md).
 ALTER TABLE "messages" ADD COLUMN "device_seq" integer;--> statement-breakpoint
 ALTER TABLE "messages" ADD COLUMN "seen_heads" jsonb;--> statement-breakpoint
 ALTER TABLE "messages" ADD COLUMN "supersedes" text;--> statement-breakpoint
