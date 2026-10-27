@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import {
   MAX_DIRECT_MENTION_RECIPIENTS_PER_MESSAGE,
   MAX_MESSAGE_LENGTH,
+  MAX_SEEN_HEADS,
   type Attachment,
   type Message,
   type Reaction,
@@ -42,6 +43,7 @@ import {
 import { useChannelStore } from './channel.store';
 import { signedEnvelopeCandidates } from './message-envelope';
 import { nextDeviceSequence, noteExpectedSequence, noteStoredSequence, seenHeadsOf } from './device-sequence';
+import { rememberedHeads, rememberHeads } from './channel-memory';
 import type { SealedMessage } from './sealed-message';
 import { encodeForumPostContent } from '../services/forum-post-model';
 import { TAMPERED_MESSAGE_MARKER, UNAVAILABLE_MESSAGE_MARKER, UNVERIFIED_MESSAGE_MARKER } from '../services/message-display';
@@ -182,6 +184,15 @@ function boundedChannelEvents(channelId: string, ordered: Message[]): Message[] 
   return mergeMessageEvents(older, recent);
 }
 
+/** The signed-in account, or null while there is none (memory is kept per account). */
+function activeUserId(): string | null {
+  try {
+    return getActiveDevice().userId;
+  } catch {
+    return null;
+  }
+}
+
 function cryptoVerificationState(message: Message): boolean | undefined {
   return getMessageCryptoVerificationState(message);
 }
@@ -219,7 +230,11 @@ function channelUpdate(state: MessageState, channelId: string, events: Message[]
     contiguous: !isForumChannel(channelId),
     complete: !isForumChannel(channelId) && windowReachesStart.get(channelId) === true,
   };
-  const projection = projectMessageWindow(merged, window);
+  // What this browser received of the channel before: events gone or swapped
+  // since show as a notice. Then what is held now is remembered.
+  const userId = activeUserId();
+  const projection = projectMessageWindow(merged, window, userId ? rememberedHeads(userId, channelId) : undefined);
+  if (userId) rememberHeads(userId, channelId, merged);
   const messagesByChannel = { ...state.messagesByChannel, [channelId]: projection.messages };
   const sequenceNotices = { ...state.sequenceNotices, [channelId]: projection.channelNotice };
   const evicted: string[] = [];
@@ -352,7 +367,8 @@ function sameReference(left: SignedEventReference | null | undefined, right: Sig
 
 /**
  * The v6 fields of this device's next event in the channel: its number and
- * the newest event of another device it has received. See device-sequence.
+ * the newest event it has received of each other device (up to
+ * MAX_SEEN_HEADS). See device-sequence.
  */
 function sequencedFields(
   state: Pick<MessageState, 'eventsByChannel'>,
@@ -362,7 +378,7 @@ function sequencedFields(
   const events = state.eventsByChannel[channelId] || [];
   return {
     deviceSeq: nextDeviceSequence(device, channelId, events),
-    seenHeads: seenHeadsOf(events, device.deviceId),
+    seenHeads: seenHeadsOf(events, device.deviceId, MAX_SEEN_HEADS),
   };
 }
 

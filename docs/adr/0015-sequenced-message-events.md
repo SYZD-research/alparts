@@ -1,0 +1,29 @@
+# ADR 0015: Each device numbers its events in a channel (message protocol v6)
+
+- **Status:** Implemented; independent security acceptance pending
+- **Date:** 2026-10-27
+- **Context source:** formal model M10 and the v6 runs of M9 ([formal-model/README.md](../../formal-model/README.md)), [RISK_REGISTER](../RISK_REGISTER.md) R-058
+
+## Context
+
+A message signed in v5 binds its own fields and what it references, but nothing about where it stands in the channel. The server alone chose which events a member received and in which order (`(createdAt, id)`, both assigned by the server), so a malicious or compromised server could withhold an event from some members, reorder events, or serve an older edit as the latest one, and no client could tell (M9 MI-latest was a documented limit). The same weakness was reported for LINE's end-to-end encryption in October 2026.
+
+## Decision
+
+Clients sign message protocol v6 for every new event. It is the only layout the server accepts for new events; v5 and older events stay readable in history.
+
+- **What is signed.** v5's bindings for every event (null where it names nothing), plus `deviceSeq` (the event's number among its device's events in the channel, 1, 2, 3, …), `seenHeads` (the newest event the device had received of each other device, at most eight, by device, number and signed idempotency key) and, for an edit, `supersedes` (the signed key of the version it replaces: the message itself or its previous edit). The layout never shares bytes with v5.
+- **Server.** Writes of one device in one channel take turns (an advisory lock taken after the workspace and device locks). A repeated request is answered as before. Otherwise the number must be above every number the device stored there; a number already used is refused with `SEQUENCE_MISMATCH` and the next number, so a device never has two stored events under one number. A number further ahead is accepted: a client takes the next number, and one that remembers more than the server holds (after a restore from backup) continues, which members then see as a gap. Every head must be stored in the channel under that device, number and key. An edit must replace the message's latest v6 edit (or, before it has one, the message or one of its older edits), else `EDIT_CONFLICT`; edits of one message take turns. Each new event gets a time later than every event of the channel. Migration 0027 adds the three columns and `unique(channel_id, device_id, device_seq)`.
+- **Client numbering.** The next number is above the highest the device knows was stored (its own verified events, the answers to its writes, and the highest kept in the browser across restarts and tabs), or the server's `SEQUENCE_MISMATCH` request if higher (a request far above any stored number is ignored). A device's writes to a channel take turns, from sealing to the answer. The outbox seals a message again on `SEQUENCE_MISMATCH`; messages sealed by an earlier version are sealed again in v6.
+- **Client checks.** The client verifies an event served with a number only in v6. On every window it checks (`analyzeEventOrder`): within one run of consecutive events (a text channel or a DM), a device's numbers must have no gaps, and in a window that reaches the channel's start they must start at 1; in any window, a device's events must come in increasing number, every event a head names (and every event of that device numbered up to it) must come before the event naming it, under the key named; an event in an older layout must not come after v6 events. Only events whose v6 signature verified, or whose check is pending, count. v6 edits apply only along their `supersedes` chain, whatever order the server chose. The browser also remembers, per channel, the newest number and key it received of each device: a device whose newest held event is below that, or an event held under a remembered number with another key, means the server took events away or swapped them.
+- **What the member sees.** A note on the message after a gap ("この前に表示されていないメッセージがあります"), on a message out of order, on a message whose latest edit cannot be placed, or for the whole channel when no message can carry it. The newest page joins the held events only if it reaches the end of the previous page, so the window stays one run; a gap at the live edge reloads the newest page once before it is shown.
+
+Read positions were not turned into published "read heads": that would show other members what each device has received and when. Heads travel inside the events a device writes instead, which reveals nothing a message does not already reveal.
+
+## Consequences
+
+Within the scenario of M10 (three devices, every subset and order of six events, plus unsigned events claiming numbers), every withheld event that a served event came after is noticed when the whole channel is loaded, every order against what the served events sign is noticed in any window, an edit is shown as the latest only if it is, and honest histories, their newest page and a forum list are flagged nowhere. M9 now also holds for v6, and MI-latest holds there.
+
+Remaining limits (M10 LIMIT checks, RISK_REGISTER R-058): the newest events of a device that nothing served came after (noticed once that device or someone who received them writes again, or by a member who received them before); in a newest page alone, or in a forum, a withheld event can pass for an older one; a server that claims to refuse an event it stored can make a device sign a second event under the same number and show different members different ones (noticed by a member who receives both, or whose device received one before); heads name at most eight devices. Reactions and pins remain unsigned.
+
+Clients from before v6 can no longer write; their sealed outbox messages are sealed again after the update.

@@ -10,6 +10,8 @@ import {
   type EventWindow,
 } from './message-projector';
 import { nextDeviceSequence, noteExpectedSequence, noteStoredSequence, resetDeviceSequences, seenHeadsOf } from './device-sequence';
+import { rememberedHeads, rememberHeads, resetChannelMemory } from './channel-memory';
+import { compareWithRemembered, projectMessageWindow } from './message-projector';
 
 const author: User = {
   id: 'user-1',
@@ -66,6 +68,7 @@ const notices = (events: Message[], window: EventWindow) => Object.fromEntries(a
 
 afterEach(() => {
   resetDeviceSequences();
+  resetChannelMemory();
   vi.unstubAllGlobals();
 });
 
@@ -305,5 +308,45 @@ describe('numbering this device\'s events', () => {
     expect(seenHeadsOf(more, 'A', 8).map((head) => head.deviceId)).toEqual(['D', 'B']);
     expect(seenHeadsOf(more, 'A', 1).map((head) => head.deviceId)).toEqual(['D']);
     expect(seenHeadsOf([sequenced('a1', 'A', 1)], 'A')).toEqual([]);
+  });
+});
+
+describe('what this browser received before (phase 2, formal model M10 MO-rollback)', () => {
+  const received = () => [sequenced('a1', 'A', 1), sequenced('b1', 'B', 1), sequenced('a2', 'A', 2), sequenced('b2', 'B', 2)];
+
+  it('remembers the newest verified event of each device, only going up', () => {
+    rememberHeads('user-1', 'channel-1', received());
+    rememberHeads('user-1', 'channel-1', [sequenced('a1', 'A', 1), sequenced('forged', 'A', 9, {}, false)]);
+    expect([...rememberedHeads('user-1', 'channel-1')]).toEqual([
+      ['A', { deviceSeq: 2, keyPrefix: 'key-a2' }],
+      ['B', { deviceSeq: 2, keyPrefix: 'key-b2' }],
+    ]);
+    expect(rememberedHeads('user-2', 'channel-1').size).toBe(0);
+  });
+
+  it('notices events taken away from a device\'s end, and an event swapped under a remembered number', () => {
+    rememberHeads('user-1', 'channel-1', received());
+    const remembered = rememberedHeads('user-1', 'channel-1');
+    expect(compareWithRemembered(received(), CONTIGUOUS, remembered)).toBeNull();
+    // B2 is gone: B's newest held event is below what was received.
+    expect(compareWithRemembered(received().slice(0, 3), CONTIGUOUS, remembered)).toBe('missing');
+    // A page that holds nothing of B: it may be older than the page.
+    expect(compareWithRemembered([sequenced('a2', 'A', 2)], CONTIGUOUS, remembered)).toBeNull();
+    expect(compareWithRemembered([sequenced('a2', 'A', 2)], COMPLETE, remembered)).toBe('missing');
+    // A2 served under another key.
+    const swapped = [...received().slice(0, 2), sequenced('a2-other', 'A', 2, { idempotencyKey: 'key-other' }), received()[3]];
+    expect(compareWithRemembered(swapped, FORUM, remembered)).toBe('order');
+    expect(projectMessageWindow(swapped, CONTIGUOUS, remembered).channelNotice).toBe('order');
+  });
+
+  it('keeps what was received across a restart', () => {
+    const stored = new Map<string, string>();
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => stored.get(key) ?? null,
+      setItem: (key: string, value: string) => void stored.set(key, value),
+    });
+    rememberHeads('user-1', 'channel-1', received());
+    resetChannelMemory();
+    expect(rememberedHeads('user-1', 'channel-1').get('B')).toEqual({ deviceSeq: 2, keyPrefix: 'key-b2' });
   });
 });

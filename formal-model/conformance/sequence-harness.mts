@@ -24,15 +24,23 @@
 //   A3  A message  #3  saw B2
 //   A4  A edit of A1 #4  saw C1  (replaces A2)
 // "X happened before Y" (hb) is the transitive closure of: same device with a
-// lower number, and Y names X (or a later event of X's device) as seen.
+// lower number, and Y's writer had received X ("seen" above, with everything
+// that happened before it). Each event names as heads the newest event of
+// every other device among what happened before it, as clients pick them
+// (up to eight devices; three here).
 //
 // Mutation 'no-sequence' is the client before v6 (the events carry no number,
 // heads or replaced version): the control for MO-order and MO-drop.
+// Mutation 'single-head' is the phase 1 client, which named only the one
+// event in "seen" as its head: the control for MO-order-hidden.
+// Mutation 'memory' is a member who received the whole honest history before
+// (its browser remembers each device's newest event, channel-memory.ts) and
+// is then served any subset in any order.
 // Mutation 'split' is the server that claimed to refuse an event it stored:
 // device A signed a second event A2x under number 2. Each member is served
 // one of the two (a split view); a member served both must notice.
 //
-// Input (stdin): { mutation?: 'no-sequence' | 'split' }
+// Input (stdin): { mutation?: 'no-sequence' | 'split' | 'single-head' | 'memory' }
 // Output: { histories, results: { [property]: { violations, example } } }
 import { readFileSync } from 'node:fs';
 
@@ -55,9 +63,13 @@ interface Genuine {
   content: string;
 }
 
-const input = JSON.parse(readFileSync(0, 'utf8')) as { mutation?: 'no-sequence' | 'split' };
-if (input.mutation !== undefined && !['no-sequence', 'split'].includes(input.mutation)) throw new Error(`unknown mutation ${input.mutation}`);
+const input = JSON.parse(readFileSync(0, 'utf8')) as { mutation?: 'no-sequence' | 'split' | 'single-head' | 'memory' };
+if (input.mutation !== undefined && !['no-sequence', 'split', 'single-head', 'memory'].includes(input.mutation)) {
+  throw new Error(`unknown mutation ${input.mutation}`);
+}
 const unsequenced = input.mutation === 'no-sequence';
+const singleHead = input.mutation === 'single-head';
+const channelMemory = await import('../../packages/client/src/stores/channel-memory.ts');
 const CHANNEL = '00000000-0000-4000-8000-0000000000c1';
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 
@@ -103,8 +115,23 @@ function happenedBefore(events: Genuine[]): Map<string, Set<string>> {
   return before;
 }
 
+/** What happened before each event (the fork A2x has its own past). */
+const pastOf = new Map<string, Set<string>>([
+  ...happenedBefore(genuine),
+  ['A2x', happenedBefore([...genuine.slice(0, 2), forkedA2]).get('A2x')!],
+]);
+
+/** The heads an event names: the newest event of each other device in its past (phase 1: only "seen"). */
+function headsOf(g: Genuine): Genuine[] {
+  if (singleHead) return g.seen ? [byName.get(g.seen)!] : [];
+  const past = [...pastOf.get(g.name)!].map((name) => byName.get(name)!).filter((x) => x.device !== g.device);
+  return (['A', 'B', 'C'] as const).flatMap((device) => {
+    const newest = past.filter((x) => x.device === device).sort((x, y) => y.seq - x.seq)[0];
+    return newest ? [newest] : [];
+  });
+}
+
 function envelopeOf(g: Genuine) {
-  const seen = g.seen ? byName.get(g.seen)! : null;
   return {
     type: g.type,
     channelId: CHANNEL,
@@ -119,7 +146,7 @@ function envelopeOf(g: Genuine) {
     refBinding: g.refName ? { authorId: authorOf(byName.get(g.refName)!), idempotencyKey: keyOf(g.refName) } : null,
     ...(unsequenced ? {} : {
       deviceSeq: g.seq,
-      seenHeads: seen ? [{ deviceId: `device-${seen.device}`, deviceSeq: seen.seq, idempotencyKey: keyOf(seen.name) }] : [],
+      seenHeads: headsOf(g).map((head) => ({ deviceId: `device-${head.device}`, deviceSeq: head.seq, idempotencyKey: keyOf(head.name) })),
       supersedes: g.type === 'edit' ? keyOf(g.replaces!) : null,
     }),
   };
@@ -158,9 +185,17 @@ function subsets<T>(items: T[]): T[][] {
   return items.reduce<T[][]>((out, item) => out.concat(out.map((s) => [...s, item])), [[]]);
 }
 
+/** What a member's browser remembers after receiving these events (the real channel-memory module). */
+let memorySerial = 0;
+function rememberedAfter(events: Genuine[]) {
+  const user = `member-${memorySerial++}`;
+  channelMemory.rememberHeads(user, CHANNEL, events.map((g, i) => served(g, i + 1)));
+  return channelMemory.rememberedHeads(user, CHANNEL);
+}
+
 const PROPERTIES = [
   'MO-honest', 'MO-honest-suffix', 'MO-honest-forum', 'MO-forged-number', 'MO-order', 'MO-order-complete', 'MO-order-hidden', 'MO-drop', 'MO-edit', 'MO-tail', 'MO-suffix',
-  'MO-forum', 'MO-split', 'MO-split-seen',
+  'MO-forum', 'MO-split', 'MO-split-seen', 'MO-split-named', 'MO-split-remembered', 'MO-rollback', 'MO-rollback-page',
 ];
 const results: Record<string, { violations: number; example: string[] | null }> = Object.fromEntries(
   PROPERTIES.map((property) => [property, { violations: 0, example: null }]),
@@ -193,12 +228,12 @@ function forgedClaim(device: 'A' | 'B' | 'C', deviceSeq: number, time: number): 
 }
 
 /** What the client shows of a served history in a window. */
-function show(order: Genuine[], window: Window, extra: Message[] = []) {
+function show(order: Genuine[], window: Window, extra: Message[] = [], remembered?: ReadonlyMap<string, { deviceSeq: number; keyPrefix: string }>) {
   const events = [...order.map((g, i) => served(g, i + 1)), ...extra];
   const merged = projector.mergeMessageEvents(events);
   // What MessageList shows: the messages with their notices, and the
   // channel's notice that no shown message carries.
-  const { messages: shown, channelNotice } = projector.projectMessageWindow(merged, WINDOWS[window]);
+  const { messages: shown, channelNotice } = projector.projectMessageWindow(merged, WINDOWS[window], remembered);
   const noticed = channelNotice !== null || shown.some((m) => m.sequenceNotice || m.editUncertain);
   return { shown, noticed, channelNotice };
 }
@@ -229,6 +264,45 @@ if (input.mutation === 'split') {
       if (!shownView.noticed) note('MO-split-seen', [...describe(order, window, shownView), '=> both events under A #2 are shown, and nothing says so']);
     }
   }
+  // Served the fork, and a later event whose writer received the other one
+  // (B2 names A #2 under A2's key): the member notices, in any order.
+  for (const order of permutations([genuine[0], genuine[1], forkedA2, byName.get('B2')!])) {
+    histories++;
+    for (const window of ['complete', 'suffix', 'forum'] as Window[]) {
+      const shownView = show(order, window);
+      if (!shownView.noticed) note('MO-split-named', [...describe(order, window, shownView), '=> a later event names the other A #2, and nothing says so']);
+    }
+  }
+  // A member who received A2 before is later served A2x in its place.
+  const remembered = rememberedAfter(genuine.slice(0, 3));
+  for (const window of ['complete', 'suffix', 'forum'] as Window[]) {
+    histories++;
+    const shownView = show(withFork, window, [], remembered);
+    if (!shownView.noticed) note('MO-split-remembered', [...describe(withFork, window, shownView), '=> A2 was received before, A2x is shown now, and nothing says so']);
+  }
+} else if (input.mutation === 'memory') {
+  // MO-rollback: a member who received everything before notices any event
+  // withheld later, whenever the window reaches the start or holds an
+  // earlier event of its device (so the withheld one cannot be older than
+  // the page); MO-rollback-page (limit): otherwise a page cannot tell.
+  const remembered = rememberedAfter(genuine);
+  for (const chosen of subsets(genuine)) {
+    const withheld = genuine.filter((g) => !chosen.includes(g));
+    if (withheld.length === 0) continue;
+    for (const order of permutations(chosen)) {
+      histories++;
+      for (const window of ['complete', 'suffix'] as Window[]) {
+        const shownView = show(order, window, [], remembered);
+        if (shownView.noticed) continue;
+        const traced = withheld.filter((x) => window === 'complete' || order.some((g) => g.device === x.device && g.seq < x.seq));
+        if (traced.length) {
+          note('MO-rollback', [...describe(order, window, shownView), `=> ${traced.map((g) => g.name).join(', ')} received before and withheld now, and nothing says so`]);
+        } else {
+          note('MO-rollback-page', [...describe(order, window, shownView), `=> ${withheld.map((g) => g.name).join(', ')} withheld; the page holds nothing of their devices before them`]);
+        }
+      }
+    }
+  }
 } else {
   for (const chosen of subsets(genuine)) {
     if (chosen.length === 0) continue;
@@ -242,7 +316,7 @@ if (input.mutation === 'split') {
       // device with a higher number, or one naming as seen an event of x's
       // device numbered x or later, is served before x.
       const signsAfter = (y: Genuine, x: Genuine) => (y.device === x.device && y.seq > x.seq)
-        || (y.seen !== null && byName.get(y.seen)!.device === x.device && byName.get(y.seen)!.seq >= x.seq);
+        || headsOf(y).some((head) => head.device === x.device && head.seq >= x.seq);
       const reorderedDirectly = order.some((y, i) => order.slice(i + 1).some((x) => signsAfter(y, x)));
       // A withheld event happened before a served one.
       const withheldPast = withheld.filter((x) => order.some((g) => hb.get(g.name)!.has(x.name)));

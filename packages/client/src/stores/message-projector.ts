@@ -359,6 +359,14 @@ export interface RememberedHead {
   keyPrefix: string;
 }
 
+/** Enough of a random idempotency key to tell two events apart. */
+const REMEMBERED_KEY_PREFIX_LENGTH = 12;
+
+/** The part of a signed key a browser remembers. */
+export function keyPrefixOf(idempotencyKey: string): string {
+  return idempotencyKey.slice(0, REMEMBERED_KEY_PREFIX_LENGTH);
+}
+
 /**
  * Check a window against what was received before (formal model M10,
  * MO-rollback). The server never removes an event, and a window holds the
@@ -388,7 +396,7 @@ export function compareWithRemembered(
   for (const [deviceId, head] of remembered) {
     const key = keys.get(`${deviceId}\u0000${head.deviceSeq}`);
     if (key !== undefined) {
-      if (!key.startsWith(head.keyPrefix)) notice ??= 'order';
+      if (keyPrefixOf(key) !== head.keyPrefix) notice ??= 'order';
       continue;
     }
     if (!window.contiguous) continue;
