@@ -9,7 +9,21 @@ export const FORUM_MESSAGE_CRYPTO_VERSION = 4;
  * references may keep v3/v4.
  */
 export const BOUND_MESSAGE_CRYPTO_VERSION = 5;
+/**
+ * Every event a current client signs: v5 plus where the event stands in the
+ * channel as its author's device saw it. Each device numbers its events in a
+ * channel 1, 2, 3, … (deviceSeq), names the newest events of other devices
+ * it had received (seenHeads), and an edit names the version it replaces
+ * (supersedes). A server can still withhold or reorder events, but a client
+ * can then tell (see SignedMessageEnvelope.deviceSeq). The only layout the
+ * server accepts for new events.
+ */
+export const SEQUENCED_MESSAGE_CRYPTO_VERSION = 6;
 const LEGACY_MESSAGE_CRYPTO_VERSION = 2;
+/** The most events of other devices one v6 event can name as received (seenHeads). */
+export const MAX_SEEN_HEADS = 8;
+/** deviceSeq stays within a PostgreSQL integer. */
+export const MAX_DEVICE_SEQUENCE = 2_147_483_647;
 
 /** Attachments are bound to their message's signed idempotency key (the unbound v2 layout is refused). */
 export const ATTACHMENT_CRYPTO_VERSION = 3;
@@ -141,12 +155,73 @@ export interface SignedMessageEnvelope {
   refBinding?: SignedEventReference | null;
   /** v5 forum events: the first message of the post postId names; null for that message itself. */
   postBinding?: SignedEventReference | null;
+  /**
+   * Present exactly in v6 envelopes: this event's number among the events
+   * its device wrote in the channel, from 1 with no gaps. The server refuses
+   * a number the device already used, so a client that holds a device's
+   * events n and n + 2 knows that n + 1 was not delivered, and one that
+   * holds them in another order knows they were reordered.
+   */
+  deviceSeq?: number;
+  /**
+   * v6: the newest event of other devices this device had received when it
+   * wrote the event, at most MAX_SEEN_HEADS devices, none its own. The event
+   * comes after each of them; a client holding the event but not one of
+   * them, or holding them in another order, can tell.
+   */
+  seenHeads?: SignedEventHead[];
+  /**
+   * v6: for an edit, the signed idempotency key of the version it replaces
+   * (the message itself or its previous edit); null for every other event.
+   * Only one edit can replace a version, so an older edit cannot be served
+   * as the latest one.
+   */
+  supersedes?: string | null;
   type: 'message' | 'edit' | 'delete';
 }
 
-/** Whether an envelope uses the v5 layout (references bound to what their authors signed). */
+/**
+ * One device's event in a channel, as v6 names it: the device, its number
+ * and the idempotency key its author signed. An honest device never gives
+ * two events the same number, so two different keys under one number mean
+ * that the server showed different events to different members.
+ */
+export interface SignedEventHead {
+  deviceId: string;
+  deviceSeq: number;
+  idempotencyKey: string;
+}
+
+/** Whether an envelope uses the v5 layout or later (references bound to what their authors signed). */
 export function isBoundMessageEnvelope(envelope: Pick<SignedMessageEnvelope, 'refBinding'>): boolean {
   return envelope.refBinding !== undefined;
+}
+
+/** Whether an envelope uses the v6 layout (numbered per device). */
+export function isSequencedMessageEnvelope(envelope: Pick<SignedMessageEnvelope, 'deviceSeq'>): boolean {
+  return envelope.deviceSeq !== undefined;
+}
+
+/** Whether a number can be a deviceSeq. */
+export function isDeviceSequence(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 1 && (value as number) <= MAX_DEVICE_SEQUENCE;
+}
+
+/**
+ * Whether seenHeads is well formed for an event of this device: at most
+ * MAX_SEEN_HEADS entries, one per device, none of them the event's own.
+ */
+export function isValidSeenHeads(heads: unknown, ownDeviceId: string): heads is SignedEventHead[] {
+  if (!Array.isArray(heads) || heads.length > MAX_SEEN_HEADS) return false;
+  const devices = new Set<string>();
+  for (const head of heads) {
+    if (!head || typeof head !== 'object') return false;
+    const { deviceId, deviceSeq, idempotencyKey } = head as Record<string, unknown>;
+    if (typeof deviceId !== 'string' || deviceId.length === 0 || deviceId === ownDeviceId || devices.has(deviceId)) return false;
+    if (!isDeviceSequence(deviceSeq) || typeof idempotencyKey !== 'string' || idempotencyKey.length === 0) return false;
+    devices.add(deviceId);
+  }
+  return true;
 }
 
 /**
@@ -197,8 +272,53 @@ function boundEnvelopeContext(envelope: Pick<
   ];
 }
 
+/**
+ * The signed context of a v6 envelope: everything but the ciphertext. Every
+ * v6 event carries its bindings (null when it names nothing), its number, the
+ * heads it saw and, for an edit, the version it replaces.
+ */
+function sequencedEnvelopeContext(envelope: Pick<
+  SignedMessageEnvelope,
+  'type' | 'channelId' | 'authorId' | 'deviceId' | 'keyVersion' | 'idempotencyKey' | 'refMessageId' | 'broadcastMention'
+  | 'postId' | 'refBinding' | 'postBinding' | 'deviceSeq' | 'seenHeads' | 'supersedes'
+>): unknown[] {
+  if (typeof envelope.broadcastMention !== 'boolean') throw new Error('INVALID_SEQUENCED_ENVELOPE');
+  if (envelope.refBinding === undefined) throw new Error('INVALID_SEQUENCED_ENVELOPE');
+  const forum = envelope.postId !== undefined;
+  if (forum) {
+    assertForumEnvelope(envelope);
+    if (envelope.postBinding === undefined) throw new Error('INVALID_SEQUENCED_ENVELOPE');
+  } else if (envelope.postBinding !== undefined && envelope.postBinding !== null) throw new Error('INVALID_SEQUENCED_ENVELOPE');
+  if (!isDeviceSequence(envelope.deviceSeq) || !isValidSeenHeads(envelope.seenHeads, envelope.deviceId)) {
+    throw new Error('INVALID_SEQUENCED_ENVELOPE');
+  }
+  if (envelope.type === 'edit'
+    ? typeof envelope.supersedes !== 'string' || envelope.supersedes.length === 0
+    : envelope.supersedes !== null) throw new Error('INVALID_SEQUENCED_ENVELOPE');
+  return [
+    SEQUENCED_MESSAGE_CRYPTO_VERSION,
+    forum ? 'forum' : 'text',
+    envelope.type,
+    envelope.channelId,
+    envelope.authorId,
+    envelope.deviceId,
+    envelope.keyVersion,
+    envelope.idempotencyKey,
+    boundReference(envelope.refMessageId, envelope.refBinding),
+    forum ? boundReference(envelope.postId, envelope.postBinding) : null,
+    envelope.broadcastMention,
+    envelope.deviceSeq,
+    envelope.seenHeads!.map((head) => [head.deviceId, head.deviceSeq, head.idempotencyKey]),
+    envelope.supersedes,
+  ];
+}
+
 /** A deterministic, protocol-versioned byte representation for message signatures. */
 export function serializeMessageEnvelope(envelope: SignedMessageEnvelope): string {
+  if (isSequencedMessageEnvelope(envelope)) {
+    return JSON.stringify([...sequencedEnvelopeContext(envelope), envelope.contentNonce, envelope.encryptedContent]);
+  }
+  if (envelope.seenHeads !== undefined || envelope.supersedes !== undefined) throw new Error('INVALID_SEQUENCED_ENVELOPE');
   if (isBoundMessageEnvelope(envelope)) {
     return JSON.stringify([...boundEnvelopeContext(envelope), envelope.contentNonce, envelope.encryptedContent]);
   }
@@ -251,8 +371,10 @@ export function serializeMessageEnvelope(envelope: SignedMessageEnvelope): strin
 export function serializeMessageAad(envelope: Pick<
   SignedMessageEnvelope,
   'type' | 'channelId' | 'authorId' | 'deviceId' | 'keyVersion' | 'idempotencyKey' | 'refMessageId' | 'broadcastMention' | 'postId'
-  | 'refBinding' | 'postBinding'
+  | 'refBinding' | 'postBinding' | 'deviceSeq' | 'seenHeads' | 'supersedes'
 >): string {
+  if (isSequencedMessageEnvelope(envelope)) return JSON.stringify(sequencedEnvelopeContext(envelope));
+  if (envelope.seenHeads !== undefined || envelope.supersedes !== undefined) throw new Error('INVALID_SEQUENCED_ENVELOPE');
   if (isBoundMessageEnvelope(envelope)) return JSON.stringify(boundEnvelopeContext(envelope));
   if (envelope.postId !== undefined) {
     assertForumEnvelope(envelope);

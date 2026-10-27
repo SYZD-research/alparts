@@ -15,7 +15,7 @@
 
 - Webおよびdesktopクライアントでworkspace/category/channel、private channel、基本的な暗号化text message、返信、編集、削除、reaction、pin、bookmarkを利用できる。
 - 1対1 DM/group DMのAPI、鍵受信者となるmember model、一覧・作成UIがある。
-- message eventはREST/Socketの耐久化後経路から取り込まれ（message/edit/delete以外の種別は捨てる）、client projectorが`(createdAt, id)`順序、重複排除、edit/delete stateを決定的に投影し、reaction/pinはserverが返すsnapshotを反映する。
+- message eventはREST/Socketの耐久化後経路から取り込まれ（message/edit/delete以外の種別は捨てる）、client projectorが`(createdAt, id)`順序、重複排除、edit/delete stateを決定的に投影し、reaction/pinはserverが返すsnapshotを反映する。v6 event（2026-10-27以降に書かれたもの）はdevice別の連番・seenHeads・supersedesを署名し、clientは抜き取り・並べ替え・古い編集の提示・以前受け取ったeventの消失を検出して注記を表示する（ADR 0015）。
 - workspace作成・一覧・member removal（最後の明示memberだった非DMのprivate channelはownerに引き継ぐ）、category/channel管理、private member管理、role CRUD/割当/変更preview/有効権限理由、session/device一覧と失効UIがある。
 - Category/channel role permission overrideはallow/deny/inherit、適用前preview、override・認可の両revision、実効権限理由、失権時のroom退出とrekey、公式clientの局所消去に対応する。
 - Attachmentはfile別key、暗号化filename、5 MiB chunk AEAD、中断再開、取消、短命予約、opaque download復号、危険形式警告に対応する。Desktop保存では平文をbounded native streamへ渡し、危険形式にWindows/macOSの隔離属性またはLinuxの非実行権限を付ける。Protocol-levelの複数chunk中断再開からdownload SHA一致を隔離PostgreSQL/MinIOで確認している。
@@ -66,11 +66,12 @@
 - 端末directoryは署名付き追記chainとlocal checkpointを照合し、group commitが運ぶdirectory headおよび任意の端末間確認でsplit viewを検出する。Serverがcommit履歴を端末ごとに分岐させた場合は、分岐したcommitが検証済みversionにつながらない時点で検出し、その会話の処理を止める（その時点まで検出できない）。初回はTOFUであり、互いに照合されないviewや初回anchorの偽装を独立witnessなしに検出できるとは主張しない。過去のmessage/attachment/key distributorの公開鍵は履歴検証に使える。
 - 移行前のgroup protocol 3のkey packageは、まだ読んでいないv3履歴を後で読めるように端末に残す。最後のv3 version（最初のgroupができる前のactive version）より後のversion用のpackageは、端末がgroupのない状態のchannelを見た時点、または最初にgroupを見た時点で削除する。ただし、最初のgroupが存在した間ずっとofflineで、その後fresh startで置き換わった後に初めてonlineになった端末は、最初のgroupの開始versionを知る手段がなく、置き換え後のgroupの開始versionより前のpackageを残す。悪意あるserverとそのchannelのmemberが共謀すると、そのpackageでv3 epochを偽造し、その端末だけに最初のgroupの期間のmessageを別の内容として表示させうる（ほかの端末への内容の漏えいはない）。
 - Group protocol 4のversionの鍵は端末が自分のgroupから導出し、commit logは1 page最大16 version・約4 MiBで取得する。一度group protocol 4のgroupを検証したchannelでは、それ以降のversionについてserverからの旧方式の配送を受け付けない（downgrade拒否）。それより前（v2/v3）の鍵の取得は`scope=current`を使い、履歴は1 request最大64 unique version、response最大864 deliveryで明示取得する。更新前tab向けのqueryなし経路は新しい順に最大16のactive/pending/retired epochだけを返しdeprecation headerを付けるため、長期間更新されないtabがそれより古い履歴を取得できる保証はない。
-- Server/operatorはuser/workspace/channel membership、device routing、message/attachment ID・時刻、ciphertext size、attachment MIME type・chunk count・upload/download timing、opaque storage keyを観測できる。完全なmetadata inventory/public disclosureはなく、配送拒否、削除、rollback、可用性妨害も可能である。正規受信者によるcopy、screenshot、外部撮影、受信済みdataの完全遠隔消去も防止できない。
+- Server/operatorはuser/workspace/channel membership、device routing、message/attachment ID・時刻、ciphertext size、attachment MIME type・chunk count・upload/download timing、opaque storage keyを観測できる。完全なmetadata inventory/public disclosureはなく、配送拒否、削除、rollback、可用性妨害も可能である。v6のeventでは、clientはこれを多くの場合に検出できるが防止はできない。検出できないのは、deviceの最新eventで後から誰も参照していないもの、最新ページだけ・フォーラムの範囲で古いeventに見せかけられた欠落、serverが拒否したと偽って同じ番号のeventを2つ署名させた場合に会員ごとに別のものを見せること（両方を受け取った会員、以前に片方を受け取った端末は検出する）、9台目以降のdeviceについての情報である。v5以前のeventには連番がない。正規受信者によるcopy、screenshot、外部撮影、受信済みdataの完全遠隔消去も防止できない。
 
 ### Client local stateとoffline
 
 - Web版ではdevice private keyとdraft/outbox用AES-GCM keyをnon-extractable WebCrypto `CryptoKey`としてsame-origin IndexedDBへstructured clone保存する。Desktop版ではprivate JWK、channel key、draft/outbox keyをOS保護領域でwrapし、IndexedDBにはpublic identityまたはopaque pointerだけを置く。Linuxで保護されたsecret serviceを利用できない場合、desktopはfail closedで開始しない。
+- Message protocol v6の端末番号と受け取り済みの最新eventの番号・key先頭（本文なし）は、logout後もlocalStorageに平文で残る（ADR 0015）。
 - Web版ではdraft/outboxのciphertextとその復号keyが同じoriginのIndexedDBにある。Desktop版を含め、compromised client codeはkeyをexportできなくても正規process内で暗号操作へ利用できるため、client code侵害をOS保護領域だけで防ぐものではない。
 - Logout/user切替は復号済みmemory stateとkey cacheを消すが、同じ有効deviceで再開できるよう暗号化recordは残る。browser profile喪失後は保存済み復旧コードと暗号化済み履歴に限り復元できる。複数端末draft同期とService Workerによるfull offline history cacheはない。
 - Logout要求がserverに確認されない場合（offline、proxy error、rate limit、audit admission不可）、server側のsessionは再試行が成功するか最長7日の期限が来るまで有効なまま残る。公式clientはlogout保留の印を残し、次の起動で再試行して、その間は同じcookieのsessionを再開せずlogin画面を表示する。再試行は起動時だけで、その前に同じ端末で新たにloginすると新しいcookieが古いものを置き換え、古いsessionは期限まで残る（「ログイン中の端末」から終了できる）。Desktop版はlogout時にcookieも自身のsession storageから削除するが、cookieがHttpOnlyのWeb版とAndroid版では再試行が成功するまでcookie自体が残り、同じbrowser profileを使える人は手作業でAPIを呼べる。

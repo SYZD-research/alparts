@@ -47,18 +47,19 @@ afterEach(() => {
   useChannelStore.setState({ channels: [] });
 });
 
-describe('envelope layouts (formal model M9)', () => {
-  it('signs a message without references in the v3 layout: it names no other message', async () => {
+describe('envelope layouts (formal models M9, M10)', () => {
+  it('signs a message without references in v6: it names no other message', async () => {
     const sealed = await useMessageStore.getState().sealMessage(textId, 'hello');
-    expect(sealed.envelope.refBinding).toBeUndefined();
-    expect(serializeMessageEnvelope(sealed.envelope)).toMatch(/^\[3,/);
+    expect(sealed.envelope.refBinding).toBeNull();
+    expect(serializeMessageEnvelope(sealed.envelope)).toMatch(/^\[6,"text","message",/);
+    expect(sealed.request).toMatchObject({ deviceSeq: sealed.envelope.deviceSeq, seenHeads: [] });
   });
 
-  it('signs a quote in v5, naming the quoted message by its author and key', async () => {
+  it('signs a quote in v6, naming the quoted message by its author and key', async () => {
     useMessageStore.setState({ eventsByChannel: { [textId]: [loaded(textId, 'quoted', 'k-quoted')] } });
     const sealed = await useMessageStore.getState().sealMessage(textId, 'ok', { refMessageId: 'quoted' });
     expect(sealed.envelope.refBinding).toEqual({ authorId: 'user-2', idempotencyKey: 'k-quoted' });
-    expect(serializeMessageEnvelope(sealed.envelope)).toMatch(/^\[5,"text","message",/);
+    expect(serializeMessageEnvelope(sealed.envelope)).toMatch(/^\[6,"text","message",/);
   });
 
   it('does not quote a message stored without a signed idempotency key (the older layout is refused)', async () => {
@@ -67,12 +68,12 @@ describe('envelope layouts (formal model M9)', () => {
       .rejects.toThrow(/編集・削除・引用・返信できません/);
   });
 
-  it('signs a forum reply in v5, naming the post by its first message', async () => {
+  it('signs a forum reply in v6, naming the post by its first message', async () => {
     useChannelStore.setState({ channels: [{ id: forumId, type: 'forum' } as Channel] });
     useMessageStore.setState({ eventsByChannel: { [forumId]: [loaded(forumId, postId, 'k-post')] } });
     const sealed = await useMessageStore.getState().sealMessage(forumId, 'answer', { postId });
     expect(sealed.envelope.postBinding).toEqual({ authorId: 'user-2', idempotencyKey: 'k-post' });
     expect(sealed.envelope.refBinding).toBeNull();
-    expect(serializeMessageEnvelope(sealed.envelope)).toMatch(/^\[5,"forum","message",/);
+    expect(serializeMessageEnvelope(sealed.envelope)).toMatch(/^\[6,"forum","message",/);
   });
 });

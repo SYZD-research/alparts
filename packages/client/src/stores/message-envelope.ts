@@ -31,14 +31,30 @@ export function signedEnvelopeLayouts(message: Message, forumChannel: boolean): 
 }
 
 /**
+ * The v6 envelope a served event would have been signed as: v5 plus its
+ * number, the heads it saw and the version an edit replaces, as served.
+ */
+export function sequencedEnvelopeLayout(message: Message, forumChannel: boolean): SignedMessageEnvelope {
+  return {
+    ...signedEnvelopeLayouts(message, forumChannel).bound,
+    deviceSeq: message.deviceSeq!,
+    seenHeads: message.seenHeads as SignedMessageEnvelope['seenHeads'],
+    supersedes: message.supersedes ?? null,
+  };
+}
+
+/**
  * The layouts a served event may verify in, in the order they are tried. An
+ * event served with a number verifies only in v6: dropping the number cannot
+ * make it verify in an older layout, which never shares bytes with v6. An
  * event that names another message (an edit, a deletion, a quote, or a forum
- * event inside a post) counts only in v5: the older layouts name the target
- * by server id only, which a server can serve another message under, so they
- * are refused (the server refuses them too). Other events are usually signed
- * in the older layout; the layouts never share bytes.
+ * event inside a post) counts only in v5 or v6: the older layouts name the
+ * target by server id only, which a server can serve another message under,
+ * so they are refused (the server refuses them too). Other events written
+ * before v6 are usually signed in the older layout.
  */
 export function signedEnvelopeCandidates(message: Message, forumChannel: boolean): SignedMessageEnvelope[] {
+  if (message.deviceSeq !== null && message.deviceSeq !== undefined) return [sequencedEnvelopeLayout(message, forumChannel)];
   const { older, bound } = signedEnvelopeLayouts(message, forumChannel);
   return referencesOtherMessages(older) ? [bound] : [older, bound];
 }

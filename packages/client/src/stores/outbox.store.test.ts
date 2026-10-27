@@ -46,6 +46,8 @@ vi.mock('../services/local-state.service', () => ({
 }));
 
 vi.mock('./message.store', () => ({
+  noteSequenceRefusal: () => false,
+  withChannelWrite: (_channelId: string, write: () => Promise<unknown>) => write(),
   useMessageStore: {
     getState: () => ({ sealMessage: messageState.sealMessage, sendSealedMessage: messageState.sendSealedMessage }),
   },
@@ -348,6 +350,10 @@ function sealedFor(sealedChannelId: string, idempotencyKey: string, content: str
       idempotencyKey,
       refMessageId: null,
       broadcastMention: false,
+      refBinding: null,
+      deviceSeq: 1,
+      seenHeads: [],
+      supersedes: null,
     },
     request: {
       encryptedContent: `sealed:${content}`,
@@ -357,6 +363,8 @@ function sealedFor(sealedChannelId: string, idempotencyKey: string, content: str
       idempotencyKey,
       signature: 'signature',
       broadcastMention: false,
+      deviceSeq: 1,
+      seenHeads: [],
     },
   };
 }

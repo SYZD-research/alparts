@@ -13,6 +13,8 @@ import { useAttachmentStore } from './attachment.store';
 import { useVoiceStore } from './voice.store';
 import { useAttentionStore } from './attention.store';
 import { clearAvatarCache } from './avatar-cache';
+import { resetDeviceSequences } from './device-sequence';
+import { resetChannelMemory } from './channel-memory';
 
 /** Remove all decrypted and authentication-scoped in-memory state. */
 export function resetAuthenticatedState(): void {
@@ -30,5 +32,7 @@ export function resetAuthenticatedState(): void {
   useWorkspaceStore.getState().reset();
   useUiStore.getState().reset();
   clearAvatarCache();
+  resetDeviceSequences();
+  resetChannelMemory();
   clearLocalStateSession();
 }

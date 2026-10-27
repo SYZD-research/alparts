@@ -479,6 +479,10 @@ describe('account security end to end', { skip: !enabled }, () => {
     options: { device?: GroupDevice; keyVersion?: number; rawKey?: Uint8Array } = {},
   ) {
     const device = options.device ?? firstMember();
+    // v6: the device's next number in the channel (the only one the server takes).
+    const { db } = await import('../db/index.js');
+    const { sql } = await import('drizzle-orm');
+    const next = await db.execute(sql`SELECT coalesce(max(device_seq), 0) + 1 AS next FROM messages WHERE channel_id = ${channelId} AND device_id = ${device.id}`);
     const envelope = {
       channelId,
       authorId: device.userId,
@@ -487,6 +491,10 @@ describe('account security end to end', { skip: !enabled }, () => {
       idempotencyKey: randomUUID(),
       refMessageId: null,
       broadcastMention: false,
+      refBinding: null,
+      deviceSeq: Number(next.rows[0].next),
+      seenHeads: [],
+      supersedes: null,
       type: 'message' as const,
     };
     const nonce = randomBytes(12);
@@ -516,6 +524,8 @@ describe('account security end to end', { skip: !enabled }, () => {
       channelId: _channel,
       type: _type,
       refMessageId: _reference,
+      refBinding: _binding,
+      supersedes: _supersedes,
       ...input
     } = body;
     return {
@@ -924,7 +934,7 @@ process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
     process.env.AUDIT_HEAD_OBJECT_KEY = `test-${randomUUID()}`;
     const database = await import('../db/index.js');
     closeDb = database.closeDb;
-    assert.equal(await database.checkDatabaseSchema(), 27);
+    assert.equal(await database.checkDatabaseSchema(), 28);
     const audit = await import('../middleware/audit.js');
     await audit.provisionAuditCheckpoint();
     const app = await import('../app.js');
@@ -2069,6 +2079,8 @@ process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
       authorId: userId,
       type: 'message',
       refMessageId: null,
+      refBinding: null,
+      supersedes: null,
     });
     const plain = await crypto.subtle.decrypt(
       {

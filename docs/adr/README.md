@@ -16,5 +16,6 @@
 | [0012](./0012-continuous-mls-groups.md) | One continuing MLS group per channel; server-ordered commits active on acceptance, replacing the all-recipient barrier | Implemented; assurance pending |
 | [0013](./0013-signed-message-references.md) | Edits, deletions, quotes and forum replies name the referenced message by its author and signed idempotency key (message protocol v5, the only layout accepted for them) | Implemented; assurance pending |
 | [0014](./0014-sfu-frame-encryption.md) | SFU calls encrypt every audio frame (SFrame) under per-call sender keys, wrapped and signed per device and replaced on every join and leave | Implemented; assurance pending |
+| [0015](./0015-sequenced-message-events.md) | Each device numbers its events in a channel and names what it had received; edits name the version they replace (message protocol v6, the only layout accepted for new events), so clients notice withheld, reordered or rolled-back events | Implemented; assurance pending |
 
 ADRs describe deliberate decisions, including their limits. They do not override current code, tests, risk register, or deployment acceptance evidence.
