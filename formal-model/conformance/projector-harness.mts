@@ -25,8 +25,11 @@
 // (ForumPostView), files open by attachment-crypto's binding (message id and
 // the message's signed idempotency key) on a verified message.
 //
-// Protocol: in 'v5', every event that references another message is signed
-// in v5, which also signs what its references name (the author and signed
+// Protocol: in 'v6' (what current clients sign), every event is signed in
+// v6: v5's bindings for every event (null where it names nothing) plus its
+// number among its device's events, the heads it saw (none here; M10 covers
+// them) and, for an edit, the version it replaces. In 'v5', every event that
+// references another message is signed in v5, which also signs what its references name (the author and signed
 // idempotency key of the edited, deleted or quoted message, and of the post's
 // first message); the server serves that pair with each event and the client
 // checks it (quotedMessage, belongsToPost, the projector's edit and delete
@@ -37,13 +40,13 @@
 // 'accept-older-layouts' is the client before that refusal: references verify
 // in the older layout too, and a v2 file opens for its message id.
 //
-// Input (stdin): { scenario: 'forum' | 'text', maxSecondDelivery: number, protocol: 'v5' | 'older', mutation? }
+// Input (stdin): { scenario: 'forum' | 'text', maxSecondDelivery: number, protocol: 'v6' | 'v5' | 'older', mutation? }
 // Output: { histories, results: { [property]: { violations, example } } }
 import { readFileSync } from 'node:fs';
 
 const projector = await import('../../packages/client/src/stores/message-projector.ts');
 const { signedEnvelopeCandidates, signedEnvelopeLayouts } = await import('../../packages/client/src/stores/message-envelope.ts');
-const { isBoundMessageEnvelope, serializeMessageEnvelope } = await import('../../packages/shared/src/security/index.ts');
+const { isBoundMessageEnvelope, isSequencedMessageEnvelope, serializeMessageEnvelope } = await import('../../packages/shared/src/security/index.ts');
 /** What decryptMessages puts in place of a message it cannot verify (services/message-display.ts). */
 const UNVERIFIED_MESSAGE_MARKER = '[メッセージを検証できませんでした]';
 
@@ -63,11 +66,12 @@ interface Genuine {
 const input = JSON.parse(readFileSync(0, 'utf8')) as {
   scenario: 'forum' | 'text';
   maxSecondDelivery: number;
-  protocol: 'v5' | 'older';
+  protocol: 'v6' | 'v5' | 'older';
   mutation?: 'accept-older-layouts';
 };
 if (input.mutation !== undefined && input.mutation !== 'accept-older-layouts') throw new Error(`unknown mutation ${input.mutation}`);
-const bound = input.protocol === 'v5';
+const sequenced = input.protocol === 'v6';
+const bound = input.protocol === 'v5' || sequenced;
 const acceptOlder = input.mutation === 'accept-older-layouts';
 const forum = input.scenario === 'forum';
 const CHANNEL = '00000000-0000-4000-8000-0000000000c1';
@@ -92,6 +96,8 @@ const genuine: Genuine[] = forum
   ];
 const honestId = new Map(genuine.map((g, i) => [g.name, id(i + 1)]));
 const byName = new Map(genuine.map((g) => [g.name, g]));
+// v6: each device numbers its events in the order they were written.
+const deviceSeqOf = new Map(genuine.map((g, i) => [g.name, genuine.slice(0, i + 1).filter((x) => x.authorId === g.authorId).length]));
 
 /** What a v5 envelope signs for a referenced event: its author and signed key. */
 function bindingOf(name: string | null) {
@@ -100,8 +106,12 @@ function bindingOf(name: string | null) {
   return { authorId: target.authorId, idempotencyKey: target.key };
 }
 
-/** Current clients sign v5 only for an event that references another message. */
-const signsBound = (g: Genuine) => bound && (g.refName !== null || (forum && g.postName !== null));
+/** In v5 clients signed bindings only for an event that references another message; in v6 for every event. */
+const signsBound = (g: Genuine) => sequenced || (bound && (g.refName !== null || (forum && g.postName !== null)));
+/** v6: the event's number, its heads and the version an edit replaces (its message: one edit each here). */
+const sequenceOf = (g: Genuine) => (sequenced
+  ? { deviceSeq: deviceSeqOf.get(g.name)!, seenHeads: [], supersedes: g.type === 'edit' ? byName.get(g.refName!)!.key : null }
+  : {});
 
 function envelopeOf(g: Genuine) {
   return {
@@ -117,6 +127,7 @@ function envelopeOf(g: Genuine) {
     contentNonce: g.type === 'delete' ? '' : `n(${g.name})`,
     ...(forum ? { postId: g.postName ? honestId.get(g.postName)! : null } : {}),
     ...(signsBound(g) ? { refBinding: bindingOf(g.refName), ...(forum ? { postBinding: bindingOf(g.postName) } : {}) } : {}),
+    ...sequenceOf(g),
   };
 }
 // The genuine signature is a function of the signed bytes only.
@@ -144,6 +155,7 @@ function wireEvent(g: Genuine, serverId: string, time: number): Message {
     // The server serves what a v5 event's references name; a different pair
     // fails the signature, so a verified v5 event carries the signed one.
     ...(signsBound(g) ? { refBinding: envelope.refBinding, ...(forum ? { postBinding: envelope.postBinding } : {}) } : {}),
+    ...sequenceOf(g),
     reactions: [],
     isPinned: false,
     idempotencyKey: g.key,
@@ -171,7 +183,7 @@ function decide(event: Message): Message | null {
       ? projector.markMessageCryptoVerification({ ...event, content: UNVERIFIED_MESSAGE_MARKER }, false)
       : null;
   }
-  return projector.markMessageCryptoVerification(event, true, isBoundMessageEnvelope(layout));
+  return projector.markMessageCryptoVerification(event, true, isBoundMessageEnvelope(layout), isSequencedMessageEnvelope(layout));
 }
 function served(g: Genuine, serverId: string, time: number): Message | null {
   return decide(wireEvent(g, serverId, time));

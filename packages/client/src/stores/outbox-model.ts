@@ -1,5 +1,5 @@
 import { MAX_DIRECT_MENTION_RECIPIENTS_PER_MESSAGE, type SignedEventReference } from '@alparts/shared';
-import { parseSealedMessage, type SealedMessage } from './sealed-message';
+import { isOutdatedSealedMessage, parseSealedMessage, type SealedMessage } from './sealed-message';
 
 export interface OutboxCommand {
   version: 1;
@@ -30,10 +30,12 @@ export const MAX_OUTBOX_COMMANDS_PER_DEVICE = 100;
 export const MAX_AUTOMATIC_RESEALS = 3;
 /** Refusals that a newer key resolves: the version moved on, or a removal is due first. */
 const RESEALABLE_REASONS = new Set(['KEY_VERSION_STALE', 'KEY_ROTATION_REQUIRED']);
+/** Another write of this device took the message's number; sealing again takes the next one. */
+const SEQUENCE_REFUSAL = 'SEQUENCE_MISMATCH';
 
 /** Whether a refused message is sealed again automatically. */
 export function shouldResealAutomatically(reason: string | null, resealCount = 0): boolean {
-  return isKeyRefusal(reason) && resealCount < MAX_AUTOMATIC_RESEALS;
+  return (isKeyRefusal(reason) || reason === SEQUENCE_REFUSAL) && resealCount < MAX_AUTOMATIC_RESEALS;
 }
 
 /** A refusal that a newer key on this device resolves. */
@@ -132,6 +134,12 @@ export function parseOutboxCommand(value: unknown): OutboxCommand | null {
     ))
   ) return null;
   if (candidate.sealed === undefined) return candidate as OutboxCommand;
+  // Sealed by an earlier version in a layout the server no longer accepts:
+  // keep the message and seal it again when it is sent.
+  if (isOutdatedSealedMessage(candidate.sealed)) {
+    const { sealed: _outdated, ...unsealed } = candidate;
+    return unsealed as OutboxCommand;
+  }
   const sealed = parseSealedMessage(candidate.sealed, {
     channelId: candidate.channelId,
     idempotencyKey: candidate.idempotencyKey,

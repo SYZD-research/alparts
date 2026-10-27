@@ -30,8 +30,9 @@ forum the server id of its post). It does not sign the event's own id or
 time, so a server can serve one message under another's id. v5 envelopes
 also sign what the target id and the post id name: the author and signed
 idempotency key of that event, which the server cannot give to another event.
-Each history is run with every event in v5 and with every event in the older
-layout (v3/v4). Since 2026-10-09 an event that names another message counts
+Each history is run with every event in v6 (what current clients sign: v5's
+bindings on every event, plus the device's number and, for an edit, the
+version it replaces), in v5, and in the older layout (v3/v4). Since 2026-10-09 an event that names another message counts
 only in v5: the server refuses the older layout for it, and so does the
 client's verification (message-envelope.ts), which the harness runs. Files
 sign the message id and the message's signed idempotency key; the unbound v2
@@ -47,7 +48,7 @@ PROPERTIES = (
     'MI-replay', 'MI-redate', 'MI-edit', 'MI-reply', 'MI-quote', 'MI-delete', 'MI-honest',
     'MI-file-v3', 'MI-file-v2', 'MI-latest', 'MI-forged', 'MI-unverified',
 )
-PROTOCOLS = ('v5', 'older')
+PROTOCOLS = ('v6', 'v5', 'older')
 SCENARIOS = ('forum', 'text')
 # (results key, protocol, mutation): the client as it is, then the older histories with the client before the refusal.
 RUNS = [(protocol, protocol, None) for protocol in PROTOCOLS] + [('control', 'older', 'accept-older-layouts')]
@@ -89,7 +90,7 @@ def run() -> None:
         record('M9', check_id, title, expect, hit['violations'] > 0,
                detail or (f'{hit["violations"]} histories' if hit['violations'] else ''), witness=hit['example'] or [])
 
-    v5, older, control = results['v5'], results['older'], results['control']
+    v6, v5, older, control = results['v6'], results['v5'], results['older'], results['control']
     check('MI-replay', merged('MI-replay'), 'one signed operation is shown at most once (a copy under another id is quarantined)', 'HOLDS')
     check('MI-redate', merged('MI-redate'), 'an event the client already holds, sent again under its id with another time, '
                                             'changes nothing the client shows', 'HOLDS')
@@ -99,13 +100,16 @@ def run() -> None:
                                             'changes nothing the client shows, and an unsigned message changes nothing about the others', 'HOLDS')
     check('MI-unverified', merged('MI-unverified'), 'a message that did not verify (or has not yet) shows no text, not even a verified '
                                                     'edit of it, no quote and no place under a post', 'HOLDS')
-    check('MI-edit', v5['MI-edit'], 'v5: edited text is shown on the message the edit was signed for', 'HOLDS')
-    check('MI-reply', v5['MI-reply'], 'v5: a forum reply is shown under the post it was signed for', 'HOLDS')
-    check('MI-quote', v5['MI-quote'], 'v5: a quote shows the message it was signed for, or that it cannot be shown', 'HOLDS')
-    check('MI-delete', v5['MI-delete'], 'v5: a deletion removes only the message it was signed for', 'HOLDS')
-    # Not vacuous: the checks above are not met by dropping events. Served
-    # honestly, every edit, deletion, quote and reply shows where it belongs.
-    check('MI-honest', v5['MI-honest'], 'served honestly, every edit, deletion, quote and reply is shown where it was signed for', 'HOLDS')
+    for name, layout in (('v6', v6), ('v5', v5)):
+        suffix = '' if name == 'v5' else '-v6'
+        check(f'MI-edit{suffix}', layout['MI-edit'], f'{name}: edited text is shown on the message the edit was signed for', 'HOLDS')
+        check(f'MI-reply{suffix}', layout['MI-reply'], f'{name}: a forum reply is shown under the post it was signed for', 'HOLDS')
+        check(f'MI-quote{suffix}', layout['MI-quote'], f'{name}: a quote shows the message it was signed for, or that it cannot be shown', 'HOLDS')
+        check(f'MI-delete{suffix}', layout['MI-delete'], f'{name}: a deletion removes only the message it was signed for', 'HOLDS')
+        # Not vacuous: the checks above are not met by dropping events. Served
+        # honestly, every edit, deletion, quote and reply shows where it belongs.
+        check(f'MI-honest{suffix}', layout['MI-honest'],
+              f'{name}: served honestly, every edit, deletion, quote and reply is shown where it was signed for', 'HOLDS')
     check('MI-edit-legacy', older['MI-edit'], 'older layout (v3/v4): an edit is never shown on another message (refused)', 'HOLDS')
     check('MI-reply-legacy', older['MI-reply'], 'older layout: a forum reply is never shown under another post (refused)', 'HOLDS')
     check('MI-quote-legacy', older['MI-quote'], 'older layout: a quote never shows another message (refused)', 'HOLDS')
@@ -118,9 +122,11 @@ def run() -> None:
           'CONTROL')
     check('MI-file-v2-ctl', control['MI-file-v2'], 'before the refusal: a v2 file could be moved to another message of the same author',
           'CONTROL')
-    check('MI-latest', v5['MI-latest'], 'served once in a server-chosen order, a message can show an older version '
-                                        '(reordering and omission are documented as undetected)', 'LIMIT',
-          'THREAT_MODEL: envelopes carry no per-sender sequence number')
+    check('MI-latest', v5['MI-latest'], 'v5: served once in a server-chosen order, a message can show an older version '
+                                        '(v5 envelopes carry no per-device number)', 'LIMIT',
+          'v5 events in history keep this limit; new events are signed in v6')
+    check('MI-latest-v6', v6['MI-latest'], 'v6: served once in any order, a message shows its latest edit '
+                                           '(an edit names the version it replaces; M10 covers withheld edits)', 'HOLDS')
 
 
 if __name__ == '__main__':

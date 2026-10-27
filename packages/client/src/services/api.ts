@@ -21,6 +21,7 @@ import type {
   NotificationLevel,
   ReadPosition,
   Reaction,
+  SignedEventHead,
   User,
   UserStatusType,
   Workspace,
@@ -62,6 +63,8 @@ interface ApiErrorPayload {
   /** Key-state reason of a refused write or group change. */
   code?: unknown;
   currentVersion?: unknown;
+  /** With SEQUENCE_MISMATCH: the device's next number in the channel. */
+  expectedSequence?: unknown;
 }
 
 const API_ERROR_MESSAGES_BY_CODE: Record<string, MessageKey> = {
@@ -107,13 +110,15 @@ export class ApiError extends Error {
   readonly reason: string | null;
   /** With KEY_VERSION_STALE: the version the server writes now. */
   readonly currentVersion: number | null;
+  /** With SEQUENCE_MISMATCH: the number the server takes next from this device in the channel. */
+  readonly expectedSequence: number | null;
 
   constructor(
     message: string,
     status: number,
     code?: string,
     readonly retryAfterSeconds?: number,
-    details: { reason?: string; currentVersion?: number } = {},
+    details: { reason?: string; currentVersion?: number; expectedSequence?: number } = {},
   ) {
     super(message);
     this.name = 'ApiError';
@@ -121,6 +126,7 @@ export class ApiError extends Error {
     this.code = code || null;
     this.reason = details.reason || null;
     this.currentVersion = details.currentVersion ?? null;
+    this.expectedSequence = details.expectedSequence ?? null;
   }
 }
 
@@ -657,6 +663,7 @@ class ApiService {
         {
           ...(typeof error.code === 'string' && /^[A-Z_]{1,64}$/.test(error.code) ? { reason: error.code } : {}),
           ...(Number.isSafeInteger(error.currentVersion) ? { currentVersion: error.currentVersion as number } : {}),
+          ...(Number.isSafeInteger(error.expectedSequence) ? { expectedSequence: error.expectedSequence as number } : {}),
         },
       );
     }
@@ -1099,6 +1106,8 @@ class ApiService {
     mentionedUserIds?: string[];
     refMessageId?: string;
     postId?: string;
+    deviceSeq: number;
+    seenHeads: SignedEventHead[];
   }) {
     return this.request<Message>(`/channels/${channelId}/messages`, {
       method: 'POST',
@@ -1115,6 +1124,9 @@ class ApiService {
     signature: string;
     broadcastMention: boolean;
     postId?: string;
+    deviceSeq: number;
+    seenHeads: SignedEventHead[];
+    supersedes: string;
   }) {
     return this.request<Message>(`/messages/${messageId}`, {
       method: 'PUT',
@@ -1128,6 +1140,8 @@ class ApiService {
     idempotencyKey: string;
     signature: string;
     postId?: string;
+    deviceSeq: number;
+    seenHeads: SignedEventHead[];
   }) {
     return this.request<{ messageId: string; channelId: string; event?: Message }>(`/messages/${messageId}`, { method: 'DELETE', body: JSON.stringify(data) });
   }
@@ -1154,6 +1168,8 @@ class ApiService {
     broadcastMention: boolean;
     mentionedUserIds?: string[];
     tagIds?: string[];
+    deviceSeq: number;
+    seenHeads: SignedEventHead[];
   }) {
     return this.request<{ message: Message; state: Omit<ForumPostState, 'unread'> }>(`/channels/${channelId}/forum/posts`, {
       method: 'POST',

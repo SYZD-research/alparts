@@ -22,6 +22,7 @@ import {
   broadcastMessageCreated,
 } from '../websocket/message.handler.js';
 import { canonicalUuid } from '../security/canonical-id.js';
+import { sequencedEventFields } from '../security/message-sequence.js';
 
 const router = Router();
 const uuid = canonicalUuid;
@@ -42,6 +43,7 @@ const createPostSchema = z.object({
   keyVersion: z.number().int().min(1).max(1_000_000),
   idempotencyKey: uuid,
   signature: z.string().length(88).regex(/^[A-Za-z0-9+/]{86}==$/),
+  ...sequencedEventFields,
 }).strict();
 const listPostsSchema = z.object({
   sort: z.enum(['activity', 'created']).default('activity'),
@@ -91,6 +93,9 @@ router.post('/channels/:id/forum/posts', authMiddleware, requireChannelPermissio
       signature: body.signature,
       broadcastMention: body.broadcastMention,
       postId: null,
+      deviceSeq: body.deviceSeq,
+      seenHeads: body.seenHeads,
+      supersedes: null,
     }, undefined, body.mentionedUserIds, { tagIds: body.tagIds });
     const io = getSocketServer(req);
     if (io && result.isNewEvent) broadcastMessageCreated(io, result.event, result.attentionRecipients, result.forumPost);
@@ -246,8 +251,15 @@ function sendForumError(res: Response, error: any): void {
     'INVALID_SIGNATURE',
     'INVALID_REFERENCE',
     'BROADCAST_MENTION_FORBIDDEN',
+    'SEQUENCE_MISMATCH',
   ].includes(code)) {
-    res.status(400).json({ error: 'INVALID_MESSAGE', message: 'Invalid encrypted message', statusCode: 400, ...keyWriteErrorDetails(error) });
+    res.status(400).json({
+      error: 'INVALID_MESSAGE',
+      message: 'Invalid encrypted message',
+      statusCode: 400,
+      ...keyWriteErrorDetails(error),
+      ...messageService.sequenceErrorDetails(error),
+    });
     return;
   }
   throw error;

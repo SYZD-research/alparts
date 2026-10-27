@@ -167,6 +167,15 @@ export interface Message {
    */
   refBinding?: { authorId: string; idempotencyKey: string } | null;
   postBinding?: { authorId: string; idempotencyKey: string } | null;
+  /**
+   * v6 events (null for older ones): the event's number among its device's
+   * events in the channel, the newest events of other devices it was written
+   * after, and for an edit the version it replaces. From the server; they
+   * mean something only once the v6 signature verified.
+   */
+  deviceSeq?: number | null;
+  seenHeads?: Array<{ deviceId: string; deviceSeq: number; idempotencyKey: string }> | null;
+  supersedes?: string | null;
   refMessage?: Message;
   reactions: Reaction[];
   isPinned: boolean;

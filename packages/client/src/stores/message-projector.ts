@@ -11,33 +11,63 @@ export type ProjectedMessage = Message & {
   deletedByDisplayName?: string;
   /** The idempotency key the message was sent with (an edit replaces idempotencyKey). */
   originIdempotencyKey?: string;
+  /**
+   * What the client can tell about the events around this message (v6):
+   * 'missing' when events written before it were not delivered, 'order'
+   * when it is not where its author's device saw it.
+   */
+  sequenceNotice?: SequenceNotice;
+  /** A later edit of this message was delivered but cannot be shown in order (v6). */
+  editUncertain?: true;
 };
+
+/** See ProjectedMessage.sequenceNotice. */
+export type SequenceNotice = 'missing' | 'order';
 
 const localVerificationState = Symbol('alparts.message.local-verification-state');
 /** The v5 signature verified: refBinding and postBinding are what the author signed. */
 const boundReferences = Symbol('alparts.message.bound-references');
+/**
+ * The v6 signature verified: deviceSeq, seenHeads and supersedes are what
+ * the author's device signed. Set even when the text cannot be read (no key)
+ * or did not decrypt, since the signature covers the ciphertext as sent.
+ */
+const sequencedEnvelope = Symbol('alparts.message.sequenced-envelope');
 const authenticatedEnvelopeConflict = Symbol('alparts.message.authenticated-envelope-conflict');
 const channelKeyUnavailable = Symbol('alparts.message.channel-key-unavailable');
 
 type LocallyVerifiedEvent = Message & {
   [localVerificationState]?: boolean;
   [boundReferences]?: true;
+  [sequencedEnvelope]?: true;
   [authenticatedEnvelopeConflict]?: true;
   [channelKeyUnavailable]?: true;
 };
 
 /**
  * Network JSON cannot manufacture these process-local Symbol markers. `bound`
- * records that the v5 signature verified, so the event's refBinding and
- * postBinding are what its author signed.
+ * records that the v5 (or v6) signature verified, so the event's refBinding
+ * and postBinding are what its author signed. `sequenced` records that the
+ * v6 signature verified, which holds for an event whose text did not decrypt.
  */
-export function markMessageCryptoVerification(message: Message, verified: boolean, bound = false): Message {
+export function markMessageCryptoVerification(message: Message, verified: boolean, bound = false, sequenced = false): Message {
   const {
     [channelKeyUnavailable]: _unavailable,
     [boundReferences]: _bound,
+    [sequencedEnvelope]: _sequenced,
     ...retryable
   } = withoutLegacyVerificationProperty(message) as LocallyVerifiedEvent;
-  return { ...retryable, [localVerificationState]: verified, ...(verified && bound ? { [boundReferences]: true } : {}) } as Message;
+  return {
+    ...retryable,
+    [localVerificationState]: verified,
+    ...(verified && bound ? { [boundReferences]: true } : {}),
+    ...(sequenced ? { [sequencedEnvelope]: true } : {}),
+  } as Message;
+}
+
+/** Whether the event's v6 signature verified: its number, heads and replaced version are its author's. */
+export function hasSequencedEnvelope(message: Message): boolean {
+  return (message as LocallyVerifiedEvent)[sequencedEnvelope] === true;
 }
 
 /** Whether the event was verified as v5: its references name events as their authors signed them. */
@@ -93,12 +123,15 @@ export function belongsToPost(message: Message, root: ProjectedMessage): boolean
     && namesEvent(message, root, message.postBinding);
 }
 
-export function markMessageKeyUnavailable(message: Message): Message {
+/** The event cannot be read on this device; `sequenced` keeps that its v6 signature verified. */
+export function markMessageKeyUnavailable(message: Message, sequenced = false): Message {
+  const { [sequencedEnvelope]: _sequenced, ...rest } = withoutLegacyVerificationProperty(message) as LocallyVerifiedEvent;
   return {
-    ...withoutLegacyVerificationProperty(message),
+    ...rest,
     content: '',
     [localVerificationState]: false,
     [channelKeyUnavailable]: true,
+    ...(sequenced ? { [sequencedEnvelope]: true } : {}),
   } as Message;
 }
 
@@ -110,6 +143,7 @@ export function retryMessageKeyVerification(message: Message): Message {
   const {
     [localVerificationState]: _verification,
     [channelKeyUnavailable]: _unavailable,
+    [sequencedEnvelope]: _sequenced,
     ...retryable
   } = withoutLegacyVerificationProperty(message) as LocallyVerifiedEvent;
   return retryable as Message;
@@ -165,6 +199,9 @@ function mergeDuplicateEvent(current: Message, incoming: Message): Message {
   const incomingVerification = getMessageCryptoVerificationState(incomingEvent);
   const bound = (currentVerification === true && hasBoundReferences(currentEvent))
     || (incomingVerification === true && hasBoundReferences(incomingEvent));
+  // Both copies carry the same signed envelope, so a v6 signature that
+  // verified on one verified for the other.
+  const sequenced = hasSequencedEnvelope(currentEvent) || hasSequencedEnvelope(incomingEvent);
   const verified = currentVerification === true || incomingVerification === true
     ? true
     : currentVerification === false || incomingVerification === false
@@ -199,6 +236,8 @@ function mergeDuplicateEvent(current: Message, incoming: Message): Message {
   if (verified !== undefined) merged[localVerificationState] = verified;
   if (bound) merged[boundReferences] = true;
   else delete merged[boundReferences];
+  if (sequenced) merged[sequencedEnvelope] = true;
+  else delete merged[sequencedEnvelope];
   return merged;
 }
 
@@ -223,7 +262,13 @@ function authenticatedEnvelope(message: Message): string | null {
     broadcastMention: message.broadcastMention,
     encryptedContent: message.encryptedContent,
     contentNonce: message.contentNonce,
-  })}\u0000${message.postId ?? ''}\u0000${JSON.stringify([message.refBinding ?? null, message.postBinding ?? null])}\u0000${message.signature}`;
+  })}\u0000${message.postId ?? ''}\u0000${JSON.stringify([
+    message.refBinding ?? null,
+    message.postBinding ?? null,
+    message.deviceSeq ?? null,
+    message.seenHeads ?? null,
+    message.supersedes ?? null,
+  ])}\u0000${message.signature}`;
 }
 
 function withoutLegacyVerificationProperty(message: Message): Message {
@@ -289,18 +334,278 @@ function quarantineReplayedEvents(ordered: Message[]): Message[] {
   return changed ? result : ordered;
 }
 
+/**
+ * What the projector may assume about the window it is given:
+ * `contiguous` when the events are every event of the channel from the
+ * oldest one held up to the newest (so a device's events between two held
+ * ones are held too); `complete` when the window also starts at the
+ * channel's first event. A forum window holds posts loaded one by one, so it
+ * is neither.
+ */
+export interface EventWindow {
+  contiguous: boolean;
+  complete: boolean;
+}
+
+const UNKNOWN_WINDOW: EventWindow = { contiguous: false, complete: false };
+
+/**
+ * What this browser received of a device's events in the channel before:
+ * the highest number that verified and the start of that event's signed
+ * key (see channel-memory.ts).
+ */
+export interface RememberedHead {
+  deviceSeq: number;
+  keyPrefix: string;
+}
+
+/** Enough of a random idempotency key to tell two events apart. */
+const REMEMBERED_KEY_PREFIX_LENGTH = 12;
+
+/** The part of a signed key a browser remembers. */
+export function keyPrefixOf(idempotencyKey: string): string {
+  return idempotencyKey.slice(0, REMEMBERED_KEY_PREFIX_LENGTH);
+}
+
+/**
+ * Check a window against what was received before (formal model M10,
+ * MO-rollback). The server never removes an event, and a window holds the
+ * channel's newest events, so 'missing' when a device's newest held event is
+ * below the number received before (or, in a complete window, the device has
+ * nothing held), and 'order' when the remembered number is held under
+ * another key (the server swapped the event).
+ */
+export function compareWithRemembered(
+  ordered: readonly Message[],
+  window: EventWindow,
+  remembered: ReadonlyMap<string, RememberedHead>,
+): SequenceNotice | null {
+  if (remembered.size === 0) return null;
+  const newest = new Map<string, number>();
+  const keys = new Map<string, string>();
+  for (const event of ordered) {
+    const seq = claimedSequence(event);
+    if (seq === null) continue;
+    // Events still being checked count, so they do not show as missing
+    // meanwhile; an unverified event's number is the server's word.
+    if (!trustsNumber(event)) continue;
+    if ((newest.get(event.deviceId!) ?? 0) < seq) newest.set(event.deviceId!, seq);
+    if (hasSequencedEnvelope(event)) keys.set(`${event.deviceId}\u0000${seq}`, event.idempotencyKey);
+  }
+  let notice: SequenceNotice | null = null;
+  for (const [deviceId, head] of remembered) {
+    const key = keys.get(`${deviceId}\u0000${head.deviceSeq}`);
+    if (key !== undefined) {
+      if (keyPrefixOf(key) !== head.keyPrefix) notice ??= 'order';
+      continue;
+    }
+    if (!window.contiguous) continue;
+    const held = newest.get(deviceId);
+    if (held === undefined ? window.complete : held < head.deviceSeq) return 'missing';
+  }
+  return notice;
+}
+
 /** Fold immutable wire events into the logical messages rendered by the UI. */
-export function projectMessageEvents(rawEvents: Message[]): ProjectedMessage[] {
-  return projectOrderedMessageEvents(mergeMessageEvents(rawEvents));
+export function projectMessageEvents(rawEvents: Message[], window: EventWindow = UNKNOWN_WINDOW): ProjectedMessage[] {
+  return projectOrderedMessageEvents(mergeMessageEvents(rawEvents), window);
+}
+
+/** The number an event claims, if it is a valid one (signed only once hasSequencedEnvelope holds). */
+function claimedSequence(event: Message): number | null {
+  const value = event.deviceSeq;
+  return event.deviceId && Number.isSafeInteger(value) && (value as number) >= 1 ? value as number : null;
+}
+
+/**
+ * Whether an event's number counts for gaps: once its v6 signature verified
+ * (even if its text cannot be read here), or while its check is pending
+ * (that ends soon, in a verdict). The number of an event whose signature did
+ * not verify is only the server's word, and such an event shows no text, so
+ * it holds no number: the gap it would fill is shown, and an unsigned event
+ * naming a huge number cannot hide every later gap (formal model M10,
+ * MO-forged-number).
+ */
+function trustsNumber(event: Message): boolean {
+  return hasSequencedEnvelope(event) || getMessageCryptoVerificationState(event) === undefined;
+}
+
+/**
+ * Check an ordered window against what v6 events signed (formal model M10).
+ * Returns, per event id, 'missing' when an event written before it is not in
+ * the window although it should be, or 'order' when the server put it where
+ * its author's device could not have written it:
+ *
+ * - A device numbers its events 1, 2, 3, … with no gaps. In a contiguous
+ *   window, a device's held events must have consecutive numbers ('missing'
+ *   otherwise); in a complete one its first must be 1. An event whose check
+ *   is pending counts; one whose signature did not verify does not (see
+ *   trustsNumber).
+ * - The verified events of one device must appear in increasing number
+ *   ('order' otherwise). The server takes no event in an older layout once
+ *   it takes v6 ones, and gives each new event a later time than every
+ *   event before it, so a verified event in an older layout after a
+ *   verified v6 one was moved there ('order').
+ * - Each event a v6 event names in seenHeads comes before it, and so does
+ *   every event of that device with a lower number ('order' otherwise), under
+ *   the same signed key ('order' otherwise: the server showed different
+ *   events under one number). If it is not held but must be in a contiguous
+ *   window, it is 'missing'.
+ */
+export function analyzeEventOrder(ordered: readonly Message[], window: EventWindow): Map<string, SequenceNotice> {
+  const notices = new Map<string, SequenceNotice>();
+  const note = (event: Message, notice: SequenceNotice) => {
+    if (notices.get(event.id) !== 'missing') notices.set(event.id, notice);
+  };
+  const positions = new Map<string, { index: number; idempotencyKey: string }>();
+  // Numbers held by events whose check is pending: held for gaps, but their
+  // keys are compared only once they verify.
+  const pendingHeld = new Set<string>();
+  const lowestClaimed = new Map<string, number>();
+  // Per device, the verified numbers held, with the last place each number up
+  // to it is held at: whatever a head names, all of these must come before.
+  const verifiedByDevice = new Map<string, Array<{ seq: number; index: number }>>();
+  ordered.forEach((event, index) => {
+    const seq = claimedSequence(event);
+    if (seq === null || !trustsNumber(event)) return;
+    const lowest = lowestClaimed.get(event.deviceId!);
+    if (lowest === undefined || seq < lowest) lowestClaimed.set(event.deviceId!, seq);
+    const key = `${event.deviceId}\u0000${seq}`;
+    if (!hasSequencedEnvelope(event)) {
+      pendingHeld.add(key);
+      return;
+    }
+    if (!positions.has(key)) positions.set(key, { index, idempotencyKey: event.idempotencyKey });
+    verifiedByDevice.set(event.deviceId!, [...(verifiedByDevice.get(event.deviceId!) ?? []), { seq, index }]);
+  });
+  /** Whether an event of this device numbered up to `seq` is held after `index`. */
+  const heldAfter = (deviceId: string, seq: number, index: number) => (verifiedByDevice.get(deviceId) ?? [])
+    .some((held) => held.seq <= seq && held.index > index);
+
+  const lastClaimed = new Map<string, number>();
+  const lastVerified = new Map<string, number>();
+  let sequencedSeen = false;
+  ordered.forEach((event, index) => {
+    const seq = claimedSequence(event);
+    const verified = getMessageCryptoVerificationState(event) === true;
+    const sequenced = hasSequencedEnvelope(event);
+    if (seq !== null) {
+      const device = event.deviceId!;
+      const previous = lastClaimed.get(device);
+      if (trustsNumber(event)) {
+        if (window.contiguous && (previous === undefined ? window.complete && seq > 1 : seq > previous + 1)) note(event, 'missing');
+        if (previous === undefined || seq > previous) lastClaimed.set(device, seq);
+      }
+    }
+    if (sequenced) {
+      const device = event.deviceId!;
+      const previous = lastVerified.get(device);
+      if (previous !== undefined && seq! <= previous) note(event, 'order');
+      else lastVerified.set(device, seq!);
+      sequencedSeen = true;
+      for (const head of event.seenHeads ?? []) {
+        if (heldAfter(head.deviceId, head.deviceSeq, index)) note(event, 'order');
+        const headKey = `${head.deviceId}\u0000${head.deviceSeq}`;
+        const seen = positions.get(headKey);
+        if (seen) {
+          if (seen.idempotencyKey !== head.idempotencyKey) note(event, 'order');
+          continue;
+        }
+        // Held by an event still being checked: compared once it verifies.
+        if (pendingHeld.has(headKey)) continue;
+        // Not held: it should be when the window reaches back past it.
+        const lowest = lowestClaimed.get(head.deviceId);
+        if (window.contiguous && (window.complete || (lowest !== undefined && lowest < head.deviceSeq))) note(event, 'missing');
+      }
+    } else if (verified && sequencedSeen) {
+      note(event, 'order');
+    }
+  });
+  return notices;
 }
 
 /** Internal projection of an already deduplicated, ordered event window. */
-export function projectOrderedMessageEvents(orderedEvents: Message[]): ProjectedMessage[] {
+export function projectOrderedMessageEvents(orderedEvents: Message[], window: EventWindow = UNKNOWN_WINDOW): ProjectedMessage[] {
+  return projectMessageWindow(orderedEvents, window).messages;
+}
+
+/**
+ * The messages of a window, and what the client noticed that no shown message
+ * can carry: events missing or out of order around an edit or a deletion of a
+ * message that is not shown (formal model M10, MO-drop and MO-order).
+ */
+export interface ProjectedWindow {
+  messages: ProjectedMessage[];
+  channelNotice: SequenceNotice | null;
+}
+
+export function projectMessageWindow(
+  orderedEvents: Message[],
+  window: EventWindow = UNKNOWN_WINDOW,
+  remembered: ReadonlyMap<string, RememberedHead> = new Map(),
+): ProjectedWindow {
   const projected = new Map<string, ProjectedMessage>();
+  let channelNotice: SequenceNotice | null = null;
+  const noteChannel = (notice: SequenceNotice) => {
+    if (channelNotice !== 'missing') channelNotice = notice;
+  };
+  // Events received before and gone now, or swapped, have no place to show.
+  const rememberedNotice = compareWithRemembered(orderedEvents, window, remembered);
+  if (rememberedNotice) noteChannel(rememberedNotice);
+  const notices = analyzeEventOrder(orderedEvents, window);
+  // v6 edits wait here until the version they replace is the one shown.
+  const waitingEdits = new Map<string, Message[]>();
+  // The versions each message was shown in (its own key, then each edit's).
+  const shownVersions = new Map<string, Set<string>>();
+  let missingCarried = false;
+  let lastBaseId: string | null = null;
+
+  const applyEdit = (event: Message, target: ProjectedMessage): ProjectedMessage => {
+    const edited: ProjectedMessage = {
+      ...target,
+      type: 'edit',
+      content: event.content,
+      encryptedContent: event.encryptedContent,
+      contentNonce: event.contentNonce,
+      deviceId: event.deviceId,
+      keyVersion: event.keyVersion,
+      signature: event.signature,
+      broadcastMention: event.broadcastMention ?? false,
+      idempotencyKey: event.idempotencyKey,
+      editedAt: event.createdAt,
+      refMessageId: target.refMessageId,
+    };
+    projected.set(target.id, edited);
+    shownVersions.get(target.id)?.add(event.idempotencyKey);
+    return edited;
+  };
+  // Whether an edit may change the message shown: the author's verified
+  // edit of a verified message, signed (in v5 or v6) for that very message.
+  const mayEdit = (event: Message, target: ProjectedMessage) => getMessageCryptoVerificationState(event) === true
+    && target.type !== 'delete'
+    && event.authorId === target.authorId
+    // The edited message keeps its base's references, which are the
+    // author's only if the base verified.
+    && getMessageCryptoVerificationState(target) === true
+    // A v5 edit applies only to the message it was signed for.
+    && namesEvent(event, target, event.refBinding);
+  // Apply the waiting v6 edits that now replace the shown version, in turn.
+  const applyWaitingEdits = (targetId: string) => {
+    for (;;) {
+      const target = projected.get(targetId);
+      const waiting = waitingEdits.get(targetId);
+      if (!target || target.type === 'delete' || !waiting?.length) return;
+      const next = waiting.findIndex((edit) => edit.supersedes === target.idempotencyKey && mayEdit(edit, target));
+      if (next < 0) return;
+      const [edit] = waiting.splice(next, 1);
+      applyEdit(edit, target);
+    }
+  };
 
   for (const event of orderedEvents) {
     // A window handed in directly is held to the store's rule: only signed events.
     if (!isAuthenticatedMessageEvent(event)) continue;
+    const notice = notices.get(event.id);
     if (event.type === 'message') {
       projected.set(event.id, {
         ...event,
@@ -309,45 +614,50 @@ export function projectOrderedMessageEvents(orderedEvents: Message[]): Projected
         content: getMessageCryptoVerificationState(event) !== true ? '' : event.content,
         reactions: [...(event.reactions || [])],
         originIdempotencyKey: event.idempotencyKey,
+        ...(notice === 'missing' || missingCarried ? { sequenceNotice: 'missing' as const } : notice ? { sequenceNotice: notice } : {}),
       });
+      shownVersions.set(event.id, new Set([event.idempotencyKey]));
+      missingCarried = false;
+      lastBaseId = event.id;
+      // A v6 edit served before its message applies once the message is here.
+      applyWaitingEdits(event.id);
       continue;
     }
+    // What is missing before an edit or a deletion is shown on the next message.
+    if (notice === 'missing') missingCarried = true;
 
     const targetId = event.refMessageId;
     if (!targetId) continue;
+    // A v6 edit replaces one version: it waits until that one is shown,
+    // even if the server served it before its message.
+    if (event.type === 'edit' && hasSequencedEnvelope(event) && getMessageCryptoVerificationState(event) === true) {
+      waitingEdits.set(targetId, [...(waitingEdits.get(targetId) ?? []), event]);
+    }
     const target = projected.get(targetId);
-    if (!target) continue;
+    if (!target) {
+      if (notice === 'order') noteChannel('order');
+      continue;
+    }
+    if (notice === 'order' && !target.sequenceNotice) projected.set(targetId, { ...target, sequenceNotice: 'order' });
 
     if (event.type === 'edit') {
-      if (getMessageCryptoVerificationState(event) !== true) continue;
-      if (target.type === 'delete' || event.authorId !== target.authorId) continue;
-      // The edited message keeps its base's references, which are the
-      // author's only if the base verified.
-      if (getMessageCryptoVerificationState(target) !== true) continue;
-      // A v5 edit applies only to the message it was signed for.
-      if (!namesEvent(event, target, event.refBinding)) continue;
-      projected.set(targetId, {
-        ...target,
-        type: 'edit',
-        content: event.content,
-        encryptedContent: event.encryptedContent,
-        contentNonce: event.contentNonce,
-        deviceId: event.deviceId,
-        keyVersion: event.keyVersion,
-        signature: event.signature,
-        broadcastMention: event.broadcastMention ?? false,
-        idempotencyKey: event.idempotencyKey,
-        editedAt: event.createdAt,
-        refMessageId: target.refMessageId,
-      });
+      const current = projected.get(targetId)!;
+      if (hasSequencedEnvelope(event)) {
+        applyWaitingEdits(targetId);
+        continue;
+      }
+      if (!mayEdit(event, current)) continue;
+      applyEdit(event, current);
+      applyWaitingEdits(targetId);
       continue;
     }
 
     if (event.type === 'delete') {
       if (getMessageCryptoVerificationState(event) !== true) continue;
       if (!namesEvent(event, target, event.refBinding)) continue;
+      const current = projected.get(targetId)!;
       projected.set(targetId, {
-        ...target,
+        ...current,
         type: 'delete',
         content: '',
         deletedByUserId: event.authorId,
@@ -355,7 +665,36 @@ export function projectOrderedMessageEvents(orderedEvents: Message[]): Projected
       });
     }
   }
+  if (missingCarried) {
+    if (lastBaseId) {
+      const last = projected.get(lastBaseId)!;
+      projected.set(lastBaseId, { ...last, sequenceNotice: 'missing' });
+    } else {
+      noteChannel('missing');
+    }
+  }
+  // A v6 edit of a message shown that never replaced the shown version: the
+  // version it replaces was not delivered, or another edit already replaced it.
+  for (const [targetId, waiting] of waitingEdits) {
+    const target = projected.get(targetId);
+    if (!target || target.type === 'delete') continue;
+    const pending = waiting.filter((edit) => mayEdit(edit, target));
+    if (pending.length === 0) continue;
+    // A window that is not one run of events (a forum's list holds a post and
+    // its latest edit only) need not hold the versions in between. Any edit is
+    // newer than the message, so one edit that no other replaces is the
+    // newest held; two of them, or a gap inside one run, cannot be placed.
+    const newest = pending.filter((edit) => !pending.some((other) => other.supersedes === edit.idempotencyKey));
+    // It must replace a version that is not held: one that is held was
+    // already replaced, so a second edit of it cannot be the newest.
+    const held = shownVersions.get(targetId)!;
+    if (!window.contiguous && newest.length === 1 && pending.every((edit) => !held.has(edit.supersedes ?? ''))) {
+      applyEdit(newest[0], target);
+      continue;
+    }
+    projected.set(targetId, { ...projected.get(targetId)!, editUncertain: true });
+  }
 
   // Replacing an edit/delete preserves the insertion position of its base.
-  return [...projected.values()];
+  return { messages: [...projected.values()], channelNotice };
 }

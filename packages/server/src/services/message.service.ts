@@ -3,8 +3,8 @@ import {
   MAX_DIRECT_MENTION_RECIPIENTS_PER_MESSAGE,
   Permissions,
   MESSAGES_PER_PAGE,
-  referencesOtherMessages,
   type AttentionNotificationKind,
+  type SignedEventHead,
   type SignedEventReference,
   type SignedMessageEnvelope,
 } from '@alparts/shared';
@@ -63,6 +63,12 @@ interface CryptoEventInput {
    * new post; otherwise the post this event belongs to.
    */
   postId?: string | null;
+  /** v6: the device's next number in the channel (the only one accepted). */
+  deviceSeq: number;
+  /** v6: the newest events of other devices the event was written after. */
+  seenHeads: SignedEventHead[];
+  /** v6: an edit's signed key of the version it replaces; null otherwise. */
+  supersedes: string | null;
 }
 
 interface ReactionRow {
@@ -246,7 +252,7 @@ export async function createMessage(
     if (post && reference && reference.id !== post.messageId && reference.postId !== post.messageId) {
       throw new Error('INVALID_REFERENCE');
     }
-    const stored = await insertCryptoEvent(transaction, channelId, authorId, input, 'message', refMessageId);
+    const stored = await insertCryptoEvent(transaction, channelId, authorId, input, 'message', refMessageId, authorization.sequence.notBefore);
     const forumPostId: string | null = isForum ? (creatingPost ? stored.event.id : post!.messageId) : null;
     if (forumPostId) {
       if (stored.isNewEvent) {
@@ -328,7 +334,8 @@ export async function editMessage(messageId: string, authorId: string, input: Cr
     const post = authorization.channelType === 'forum'
       ? await lockForumPost(transaction, location.postId ?? location.id, location.channelId, 'share')
       : null;
-    const original = await lockActiveBaseMessage(transaction, messageId, 'share');
+    // Edits of one message take turns, so each replaces the version before it.
+    const original = await lockActiveBaseMessage(transaction, messageId, 'update');
     if (original.channelId !== location.channelId || original.authorId !== authorId || original.type !== 'message') {
       throw new Error('NOT_AUTHORIZED');
     }
@@ -336,7 +343,20 @@ export async function editMessage(messageId: string, authorId: string, input: Cr
       if (!post || input.postId !== (original.postId ?? original.id) || post.messageId !== input.postId) throw new Error('INVALID_REFERENCE');
       if (post.deletedAt) throw new Error('MESSAGE_NOT_FOUND');
     }
-    const stored = await insertCryptoEvent(transaction, original.channelId, authorId, input, 'edit', messageId);
+    // A repeated request is answered by insertCryptoEvent; a new edit must
+    // replace the current version, not one an edit has already replaced.
+    if (!authorization.sequence.repeated && !await replacesCurrentVersion(transaction, original, input.supersedes)) {
+      throw new Error('EDIT_CONFLICT');
+    }
+    const stored = await insertCryptoEvent(
+      transaction,
+      original.channelId,
+      authorId,
+      input,
+      'edit',
+      messageId,
+      authorization.sequence.notBefore,
+    );
     return { ...stored, workspaceId: authorization.workspaceId };
   }, (result) => ({
     actorId: authorId,
@@ -383,7 +403,15 @@ export async function deleteMessage(messageId: string, userId: string, input: Cr
       const expectedKey = scopedIdempotencyKey(userId, deleteInput.idempotencyKey);
       if (priorDelete.idempotencyKey !== expectedKey) throw new Error('MESSAGE_NOT_FOUND');
     }
-    const storedEvent = await insertCryptoEvent(transaction, original.channelId, userId, deleteInput, 'delete', messageId);
+    const storedEvent = await insertCryptoEvent(
+      transaction,
+      original.channelId,
+      userId,
+      deleteInput,
+      'delete',
+      messageId,
+      authorization.sequence.notBefore,
+    );
     let releasedStorageKeys: string[] = [];
     if (storedEvent.isNewEvent) {
       await transaction.delete(messagePins).where(eq(messagePins.messageId, messageId));
@@ -638,13 +666,18 @@ async function insertCryptoEvent(
   authorId: string,
   input: CryptoEventInput,
   type: CryptoEventType,
-  refMessageId?: string,
+  refMessageId: string | undefined,
+  notBefore: Date | null,
 ) {
   const storedIdempotencyKey = scopedIdempotencyKey(authorId, input.idempotencyKey);
   // PostgreSQL timestamps may contain microseconds while JavaScript Date and
   // the wire format expose milliseconds. Persist millisecond precision so the
   // client and cursor can use the same deterministic (createdAt, id) order.
-  const createdAt = new Date();
+  // A v6 event comes after every event of the channel stored before it (and
+  // so after its own device's previous one and every event it saw), even if
+  // the clock went back.
+  const now = Date.now();
+  const createdAt = new Date(notBefore ? Math.max(now, notBefore.getTime() + 1) : now);
   const inserted = await store.insert(messages).values({
     channelId,
     authorId,
@@ -658,6 +691,9 @@ async function insertCryptoEvent(
     refMessageId: refMessageId || null,
     postId: input.postId ?? null,
     idempotencyKey: storedIdempotencyKey,
+    deviceSeq: input.deviceSeq,
+    seenHeads: input.seenHeads,
+    supersedes: input.supersedes,
     createdAt,
   }).onConflictDoNothing().returning();
 
@@ -691,7 +727,18 @@ function sameCryptoEvent(
     && event.broadcastMention === input.broadcastMention
     && event.type === type
     && event.refMessageId === (refMessageId || null)
-    && event.postId === (input.postId ?? null);
+    && event.postId === (input.postId ?? null)
+    && event.deviceSeq === input.deviceSeq
+    && sameSeenHeads(event.seenHeads, input.seenHeads)
+    && event.supersedes === input.supersedes;
+}
+
+function sameSeenHeads(stored: unknown, heads: SignedEventHead[]): boolean {
+  return Array.isArray(stored)
+    && stored.length === heads.length
+    && stored.every((head: any, index) => head?.deviceId === heads[index].deviceId
+      && head?.deviceSeq === heads[index].deviceSeq
+      && head?.idempotencyKey === heads[index].idempotencyKey);
 }
 
 async function lockAndAuthorizeCryptoWrite(
@@ -744,6 +791,17 @@ async function lockAndAuthorizeCryptoWrite(
     deviceId: input.deviceId,
     keyVersion: input.keyVersion,
   });
+  // Every new event is signed in v6, which binds what it references (as
+  // those messages' authors signed them), its number among this device's
+  // events in the channel, the events it was written after and, for an edit,
+  // the version it replaces. Older layouts are refused: a client that holds
+  // events without numbers cannot tell when one was withheld or moved.
+  const bindings = await loadEventBindings(store, [{ channelId, refMessageId, postId: input.postId }]);
+  const refBinding = bindingOf(bindings, channelId, refMessageId);
+  const postBinding = isForum ? bindingOf(bindings, channelId, input.postId) : null;
+  // A message stored without a signed idempotency key cannot be named.
+  if ((refMessageId && !refBinding) || (isForum && input.postId && !postBinding)) throw new Error('INVALID_REFERENCE');
+  if ((type === 'edit') !== (input.supersedes !== null)) throw new Error('INVALID_REFERENCE');
   const envelope: SignedMessageEnvelope = {
     channelId,
     authorId: userId,
@@ -754,28 +812,125 @@ async function lockAndAuthorizeCryptoWrite(
     idempotencyKey: input.idempotencyKey,
     refMessageId: refMessageId || null,
     broadcastMention: input.broadcastMention,
-    ...(isForum ? { postId: input.postId } : {}),
+    ...(isForum ? { postId: input.postId, postBinding } : {}),
+    refBinding,
+    deviceSeq: input.deviceSeq,
+    seenHeads: input.seenHeads,
+    supersedes: input.supersedes,
     type,
   };
-  // An event that names another message counts only in v5, which also signs
-  // what it names (as that message's author signed it). The older layouts
-  // name the target by server id only, so they are refused for such events;
-  // an event without references may keep its v3/v4 layout.
-  const bindings = await loadEventBindings(store, [{ channelId, refMessageId, postId: input.postId }]);
-  const refBinding = bindingOf(bindings, channelId, refMessageId);
-  const postBinding = isForum ? bindingOf(bindings, channelId, input.postId) : null;
-  const bound: SignedMessageEnvelope = { ...envelope, refBinding, ...(isForum ? { postBinding } : {}) };
-  if (referencesOtherMessages(envelope)) {
-    // A message stored without a signed idempotency key cannot be named.
-    if ((refMessageId && !refBinding) || (isForum && input.postId && !postBinding)) throw new Error('INVALID_REFERENCE');
-    if (!verifyMessageEnvelopeSignature(device.identityKey, bound, input.signature)) throw new Error('INVALID_SIGNATURE');
-  } else if (
-    !verifyMessageEnvelopeSignature(device.identityKey, envelope, input.signature)
-    && !verifyMessageEnvelopeSignature(device.identityKey, bound, input.signature)
-  ) {
-    throw new Error('INVALID_SIGNATURE');
+  let verified = false;
+  try {
+    verified = verifyMessageEnvelopeSignature(device.identityKey, envelope, input.signature);
+  } catch {
+    verified = false;
   }
-  return { ...authorization, channelType: channel.type as string };
+  if (!verified) throw new Error('INVALID_SIGNATURE');
+  const sequence = await admitSequencedEvent(store, channelId, userId, input);
+  return { ...authorization, channelType: channel.type as string, sequence };
+}
+
+/** A write whose deviceSeq the device already used; the body says which number is next. */
+class SequenceMismatchError extends Error {
+  constructor(readonly expectedSequence: number) {
+    super('SEQUENCE_MISMATCH');
+  }
+}
+
+/**
+ * Admit a v6 event's place in the channel. Writes of one device in one
+ * channel take turns (an advisory lock), so the number checked here is the
+ * one stored. A repeat of a stored request (same idempotency key) is left to
+ * insertCryptoEvent, which returns the stored event or refuses a different
+ * one. Otherwise the event must carry a number above every number the device
+ * has stored here: a number already used is refused with the next one, so a
+ * device never has two events under one number. A client takes the next
+ * number, so its events have no gaps; one that remembers a higher number
+ * than the server holds (after the server was restored from a backup)
+ * continues above it, and members then see the events that were lost as a
+ * gap. Every event it names as seen must be stored in this channel under
+ * that device, number and signed key. Its time is then later than every
+ * event of the channel, so an honest server orders events as their authors
+ * saw them.
+ */
+async function admitSequencedEvent(
+  store: any,
+  channelId: string,
+  authorId: string,
+  input: CryptoEventInput,
+): Promise<{ repeated: boolean; notBefore: Date | null }> {
+  await store.execute(
+    sql`select pg_advisory_xact_lock(hashtext(${`message-seq:${channelId}:${input.deviceId}`})::bigint)`,
+  );
+  const repeated = await store.query.messages.findFirst({
+    columns: { id: true },
+    where: and(eq(messages.channelId, channelId), eq(messages.idempotencyKey, scopedIdempotencyKey(authorId, input.idempotencyKey))),
+  });
+  if (repeated) return { repeated: true, notBefore: null };
+  const [last] = await store.select({ deviceSeq: sql<number | null>`max(${messages.deviceSeq})` })
+    .from(messages)
+    .where(and(eq(messages.channelId, channelId), eq(messages.deviceId, input.deviceId)));
+  const expected = Number(last?.deviceSeq ?? 0) + 1;
+  if (input.deviceSeq < expected) throw new SequenceMismatchError(expected);
+  let notBefore: Date | null = null;
+  if (input.seenHeads.length > 0) {
+    const rows = await store.select({
+      deviceId: messages.deviceId,
+      deviceSeq: messages.deviceSeq,
+      authorId: messages.authorId,
+      idempotencyKey: messages.idempotencyKey,
+      createdAt: messages.createdAt,
+    }).from(messages)
+      .where(and(
+        eq(messages.channelId, channelId),
+        or(...input.seenHeads.map((head) => and(eq(messages.deviceId, head.deviceId), eq(messages.deviceSeq, head.deviceSeq)))),
+      ))
+      .limit(input.seenHeads.length);
+    for (const head of input.seenHeads) {
+      const row = rows.find((candidate: any) => candidate.deviceId === head.deviceId && candidate.deviceSeq === head.deviceSeq);
+      if (!row || signedIdempotencyKey(row) !== head.idempotencyKey) throw new Error('INVALID_REFERENCE');
+      if (!notBefore || row.createdAt > notBefore) notBefore = row.createdAt;
+    }
+  }
+  const [latest] = await store.select({ createdAt: messages.createdAt })
+    .from(messages)
+    .where(eq(messages.channelId, channelId))
+    .orderBy(desc(messages.createdAt), desc(messages.id))
+    .limit(1);
+  if (latest && (!notBefore || latest.createdAt > notBefore)) notBefore = latest.createdAt;
+  return { repeated: false, notBefore };
+}
+
+/**
+ * Whether an edit may replace this version of the message. Once the message
+ * has a v6 edit, only its latest v6 edit may be replaced. Before that, the
+ * order of its edits was never signed (and clients show none signed in
+ * v3/v4), so the message itself or any of those edits may be the version a
+ * client shows. The base message is locked for update, so edits of one
+ * message take turns.
+ */
+async function replacesCurrentVersion(store: any, original: typeof messages.$inferSelect, supersedes: string | null): Promise<boolean> {
+  if (!supersedes) return false;
+  const edits = and(eq(messages.refMessageId, original.id), eq(messages.type, 'edit'), eq(messages.channelId, original.channelId));
+  const latest = await store.query.messages.findFirst({
+    columns: { authorId: true, idempotencyKey: true },
+    where: and(edits, isNotNull(messages.deviceSeq)),
+    orderBy: [desc(messages.createdAt), desc(messages.id)],
+  });
+  if (latest) return signedIdempotencyKey(latest) === supersedes;
+  if (signedIdempotencyKey(original) === supersedes) return true;
+  const older = await store.query.messages.findFirst({
+    columns: { id: true },
+    where: and(edits, isNull(messages.deviceSeq), eq(messages.idempotencyKey, scopedIdempotencyKey(original.authorId, supersedes))),
+  });
+  return Boolean(older);
+}
+
+/** The body fields a client needs to send a refused v6 event again with the right number. */
+export function sequenceErrorDetails(error: unknown): { code?: string; expectedSequence?: number } {
+  return error instanceof SequenceMismatchError
+    ? { code: error.message, expectedSequence: error.expectedSequence }
+    : {};
 }
 
 /**
@@ -935,11 +1090,19 @@ function formatMessage(
     postId: message.postId ?? null,
     refBinding: bindingOf(bindings, message.channelId, message.refMessageId),
     postBinding: bindingOf(bindings, message.channelId, message.postId),
+    deviceSeq: message.deviceSeq ?? null,
+    seenHeads: formatSeenHeads(message.seenHeads),
+    supersedes: message.supersedes ?? null,
     reactions: state?.reactions || [],
     isPinned: state?.isPinned || false,
     idempotencyKey,
     createdAt: message.createdAt.toISOString(),
   };
+}
+
+function formatSeenHeads(stored: unknown): SignedEventHead[] | null {
+  if (!Array.isArray(stored)) return null;
+  return stored.map((head: any) => ({ deviceId: head.deviceId, deviceSeq: head.deviceSeq, idempotencyKey: head.idempotencyKey }));
 }
 
 function summarizeReactions(reactions: ReactionRow[]) {
