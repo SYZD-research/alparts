@@ -43,6 +43,7 @@ README と、利用者・運用者向けのガイド（デスクトップ、Andr
 ## デプロイ
 
 - [デプロイガイド](./policies/DEPLOYMENT.ja.md)
+- [本番用セットアップ](../setup/README.ja.md)
 - [機能レベル](./deployment/CAPABILITY_LEVELS.md)（英語）
 - [単一ホスト本番用のCompose構成](../compose.production.yml)
 - [コンテナーのビルド](../Dockerfile)

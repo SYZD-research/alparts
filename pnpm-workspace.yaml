@@ -1,5 +1,6 @@
 packages:
   - 'packages/*'
+  - 'setup'
 allowBuilds:
   electron-winstaller: false
   esbuild: true

@@ -43,6 +43,7 @@ The README and the guides for users and operators (desktop, Android, operations,
 ## Deployment
 
 - [Deployment guide](./policies/DEPLOYMENT.md)
+- [Production setup](../setup/README.md)
 - [Capability levels](./deployment/CAPABILITY_LEVELS.md)
 - [Single-host production Compose](../compose.production.yml)
 - [Container build](../Dockerfile)

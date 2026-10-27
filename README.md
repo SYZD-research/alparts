@@ -141,6 +141,12 @@ In development environments created before 2026-09-30, `./dev.sh` stops and repo
 
 An Alparts server consists of **one application process, PostgreSQL 16, and S3-compatible object storage (SeaweedFS is recommended)**. The server also serves the web client. A [Dockerfile](Dockerfile) and [Compose configuration](compose.production.yml) are provided for containers, along with a [systemd unit](deploy/alparts.service) for Linux.
 
+To run Alparts in production on one server, the [production setup](setup/README.md) does the work: on a Linux server with Docker and Node.js, run the command below and answer a few questions, and it sets up the database, the storage, HTTPS, the call relay and daily encrypted backups.
+
+```bash
+sudo ./setup/alparts-setup
+```
+
 `docker-compose.yml` starts PostgreSQL and S3-compatible storage (SeaweedFS) for local development. `compose.production.yml` defines the application and the migration step; you provide the database, storage and HTTPS reverse proxy separately.
 
 - **Connections and credentials** — Serve the public web client and API over HTTPS, and set `CORS_ORIGINS` to the origins actually used. Credentials can be passed from protected files with `*_FILE`. See the [example environment](.env.example) for the settings.
