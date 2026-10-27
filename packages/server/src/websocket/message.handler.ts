@@ -1,6 +1,7 @@
 import type { Server as SocketServer } from 'socket.io';
 import { z } from 'zod';
 import { canonicalUuid } from '../security/canonical-id.js';
+import { sequencedEventFields, supersedesField } from '../security/message-sequence.js';
 import {
   MAX_DIRECT_MENTION_RECIPIENTS_PER_MESSAGE,
   MAX_MESSAGE_LENGTH,
@@ -23,6 +24,7 @@ const cryptoFields = {
   keyVersion: z.number().int().min(1).max(1_000_000),
   idempotencyKey: canonicalUuid,
   signature: z.string().length(88).regex(/^[A-Za-z0-9+/]{86}==$/),
+  ...sequencedEventFields,
 };
 const encryptedContent = z.string().min(24).max(ciphertextMax).regex(/^[A-Za-z0-9+/]+={0,2}$/);
 const contentNonce = z.string().length(16).regex(/^[A-Za-z0-9+/]+$/);
@@ -49,6 +51,7 @@ const editSchema = z.object({
   broadcastMention: z.boolean(),
   postId,
   ...cryptoFields,
+  ...supersedesField,
 }).strict();
 const deleteSchema = z.object({
   messageId: canonicalUuid,
@@ -127,7 +130,7 @@ export function handleMessageEvents(io: SocketServer, socket: AuthenticatedSocke
       const result = await messageService.createMessage(
         value.channelId,
         socket.userId!,
-        value,
+        { ...value, supersedes: null },
         value.refMessageId,
         value.mentionedUserIds,
       );
@@ -163,6 +166,7 @@ export function handleMessageEvents(io: SocketServer, socket: AuthenticatedSocke
         encryptedContent: '',
         contentNonce: '',
         broadcastMention: false,
+        supersedes: null,
       });
       if (result.isNewEvent) {
         broadcastMessageDeleted(io, {

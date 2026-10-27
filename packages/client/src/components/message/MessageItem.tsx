@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useMessageStore } from '../../stores/message.store';
-import { isMessageKeyUnavailable, quotedMessage } from '../../stores/message-projector';
+import { isMessageKeyUnavailable, quotedMessage, type ProjectedMessage } from '../../stores/message-projector';
 import { useAuthStore } from '../../stores/auth.store';
 import type { Message } from '@alparts/shared';
 import { useUserStateStore } from '../../stores/user-state.store';
@@ -125,6 +125,7 @@ export function MessageItem({ message, isFirst, onJumpToMessage, canPin = true }
   if (isDeleted) {
     return (
       <div id={`message-${message.id}`} tabIndex={-1} className="px-4 py-1 text-sm italic text-muted">
+        <SequenceNotices message={message} />
         <span>{t('メッセージが削除されました')}</span>
         <button
           type="button"
@@ -220,6 +221,7 @@ export function MessageItem({ message, isFirst, onJumpToMessage, canPin = true }
         )}
 
         <div className="flex-1 min-w-0">
+          <SequenceNotices message={message} />
           {message.refMessageId && (
             <button
               type="button"
@@ -403,6 +405,23 @@ export function MessageItem({ message, isFirst, onJumpToMessage, canPin = true }
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * What the client could tell about the events around a message: some were
+ * not delivered, it is out of place, or a later edit cannot be shown.
+ */
+function SequenceNotices({ message: shown }: { message: Message }) {
+  const t = useT();
+  const message = shown as ProjectedMessage;
+  if (!message.sequenceNotice && !message.editUncertain) return null;
+  return (
+    <div className="mb-0.5 space-y-0.5 text-xs not-italic text-warning">
+      {message.sequenceNotice === 'missing' && <p role="note">{t('この前に表示されていないメッセージがあります')}</p>}
+      {message.sequenceNotice === 'order' && <p role="note">{t('このメッセージは表示順が正しくない可能性があります')}</p>}
+      {message.editUncertain && <p role="note">{t('このメッセージの最新の内容を確認できません')}</p>}
     </div>
   );
 }

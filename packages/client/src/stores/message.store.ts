@@ -8,6 +8,7 @@ import {
   type SignedEventReference,
   type SignedMessageEnvelope,
   isBoundMessageEnvelope,
+  isSequencedMessageEnvelope,
 } from '@alparts/shared';
 import { api, ApiError } from '../services/api';
 import {
@@ -33,12 +34,14 @@ import {
   markMessageCryptoVerification,
   markMessageKeyUnavailable,
   mergeMessageEvents,
-  projectOrderedMessageEvents,
+  projectMessageWindow,
   retryMessageKeyVerification,
   type ProjectedMessage,
+  type SequenceNotice,
 } from './message-projector';
 import { useChannelStore } from './channel.store';
 import { signedEnvelopeCandidates } from './message-envelope';
+import { nextDeviceSequence, noteExpectedSequence, noteStoredSequence, seenHeadsOf } from './device-sequence';
 import type { SealedMessage } from './sealed-message';
 import { encodeForumPostContent } from '../services/forum-post-model';
 import { TAMPERED_MESSAGE_MARKER, UNAVAILABLE_MESSAGE_MARKER, UNVERIFIED_MESSAGE_MARKER } from '../services/message-display';
@@ -59,6 +62,11 @@ interface MessageState {
   hasMore: Record<string, boolean>;
   cursors: Record<string, string | null>;
   securityErrors: Record<string, string | null>;
+  /**
+   * What the client noticed about a channel's events that no shown message
+   * carries (see ProjectedWindow.channelNotice).
+   */
+  sequenceNotices: Record<string, SequenceNotice | null>;
   /** Why this device cannot write to a channel yet, if it cannot. */
   channelKeyPending: Record<string, ChannelKeyWait | null>;
   /** The device cannot read the channel yet: show the waiting screen instead of messages. */
@@ -130,6 +138,10 @@ const channelEpochs = new Map<string, number>();
 const residentChannelOrder = new Map<string, true>();
 const messageDecryptWorkers = new CoalescedChannelWorker(MAX_RESIDENT_MESSAGE_CHANNELS);
 const forumRetention = new Map<string, ForumRetention>();
+/** Channels whose held events start at the channel's first event (a page said there is nothing older). */
+const windowReachesStart = new Map<string, boolean>();
+/** The missing-event notices a channel was last reloaded for, so one gap reloads it once. */
+const gapReloads = new Map<string, string>();
 
 /** Forum posts that must stay in memory even when older than the channel window. */
 export interface ForumRetention {
@@ -187,12 +199,23 @@ function isMessageContextCurrent(channelId: string, generation: number, channelE
 }
 
 function channelUpdate(state: MessageState, channelId: string, events: Message[]) {
-  const merged = boundedChannelEvents(channelId, mergeMessageEvents(events));
+  const all = mergeMessageEvents(events);
+  const merged = boundedChannelEvents(channelId, all);
   const envelopeConflict = merged.some(hasAuthenticatedEnvelopeConflict);
   residentChannelOrder.delete(channelId);
   residentChannelOrder.set(channelId, true);
   const eventsByChannel = { ...state.eventsByChannel, [channelId]: merged };
-  const messagesByChannel = { ...state.messagesByChannel, [channelId]: projectOrderedMessageEvents(merged) };
+  if (merged.length < all.length) windowReachesStart.set(channelId, false);
+  // A text channel or a DM holds a run of the channel's newest events, so a
+  // device's events between two held ones are held too. A forum holds posts
+  // loaded one by one.
+  const window = {
+    contiguous: !isForumChannel(channelId),
+    complete: !isForumChannel(channelId) && windowReachesStart.get(channelId) === true,
+  };
+  const projection = projectMessageWindow(merged, window);
+  const messagesByChannel = { ...state.messagesByChannel, [channelId]: projection.messages };
+  const sequenceNotices = { ...state.sequenceNotices, [channelId]: projection.channelNotice };
   const evicted: string[] = [];
   let residentEvents = Object.values(eventsByChannel).reduce((total, entries) => total + entries.length, 0);
   while (
@@ -208,6 +231,8 @@ function channelUpdate(state: MessageState, channelId: string, events: Message[]
     delete eventsByChannel[victim];
     delete messagesByChannel[victim];
     channelEpochs.set(victim, currentChannelEpoch(victim) + 1);
+    windowReachesStart.delete(victim);
+    gapReloads.delete(victim);
     nextLoadVersion(victim);
     initialLoadPromises.delete(victim);
     messageDecryptWorkers.cancel(victim);
@@ -222,6 +247,7 @@ function channelUpdate(state: MessageState, channelId: string, events: Message[]
     return {
       eventsByChannel,
       messagesByChannel,
+      sequenceNotices: omitEvicted(sequenceNotices),
       loadingByChannel,
       loadingMoreByChannel: omitEvicted(state.loadingMoreByChannel),
       hasMore: omitEvicted(state.hasMore),
@@ -243,6 +269,7 @@ function channelUpdate(state: MessageState, channelId: string, events: Message[]
   const update: Partial<MessageState> = {
     eventsByChannel,
     messagesByChannel,
+    sequenceNotices,
   };
   if (envelopeConflict) {
     update.securityErrors = {
@@ -290,9 +317,8 @@ export function signedReferenceOf(
 }
 
 /**
- * The v5 fields of an envelope that references another message (the only
- * layout accepted for it). An envelope without references keeps the older
- * layout, which signs the same fields.
+ * The bindings of a v6 envelope: what refMessageId and (in a forum) postId
+ * name, as their authors signed them, or null where there is nothing.
  */
 function boundFields(
   forum: boolean,
@@ -302,7 +328,6 @@ function boundFields(
   postBinding: SignedEventReference | null,
 ): Pick<SignedMessageEnvelope, 'refBinding' | 'postBinding'> {
   const postReference = forum && Boolean(postId);
-  if (!refMessageId && !postReference) return {};
   if ((refMessageId && !refBinding) || (postReference && !postBinding)) {
     throw new Error(t('このメッセージは編集・削除・引用・返信できません'));
   }
@@ -316,6 +341,53 @@ function sameReference(left: SignedEventReference | null | undefined, right: Sig
   return (left ?? null) === null
     ? (right ?? null) === null
     : Boolean(right) && left!.authorId === right!.authorId && left!.idempotencyKey === right!.idempotencyKey;
+}
+
+/**
+ * The v6 fields of this device's next event in the channel: its number and
+ * the newest event of another device it has received. See device-sequence.
+ */
+function sequencedFields(
+  state: Pick<MessageState, 'eventsByChannel'>,
+  channelId: string,
+  device: { userId: string; deviceId: string },
+): Pick<SignedMessageEnvelope, 'deviceSeq' | 'seenHeads'> {
+  const events = state.eventsByChannel[channelId] || [];
+  return {
+    deviceSeq: nextDeviceSequence(device, channelId, events),
+    seenHeads: seenHeadsOf(events, device.deviceId),
+  };
+}
+
+/**
+ * Whether a write was refused because another write of this device took its
+ * number first. The refusal names the number the server takes next; it is
+ * noted so the write can be sealed again with a later one.
+ */
+export function noteSequenceRefusal(channelId: string, error: unknown): boolean {
+  if (!(error instanceof ApiError) || error.status !== 400 || error.reason !== 'SEQUENCE_MISMATCH') return false;
+  noteExpectedSequence(getActiveDevice(), channelId, error.expectedSequence);
+  return true;
+}
+
+/** Seal and send a write again (a few times) while the server asks for a later number. */
+async function retryOnSequenceRefusal<T>(channelId: string, write: () => Promise<T>): Promise<T> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await write();
+    } catch (error) {
+      if (attempt >= 2 || !noteSequenceRefusal(channelId, error)) throw error;
+    }
+  }
+}
+
+/** The signed key of the version an edit of this message replaces: the latest one shown. */
+function currentVersionOf(state: Pick<MessageState, 'messagesByChannel'>, channelId: string, messageId: string): string {
+  const shown = (state.messagesByChannel[channelId] || []).find((message) => message.id === messageId);
+  if (!shown || shown.type === 'delete' || !shown.idempotencyKey) {
+    throw new Error(t('メッセージを確認できませんでした。再読み込みしてお試しください。'));
+  }
+  return shown.idempotencyKey;
 }
 
 /** The post a verified forum message belongs to: its own id if it started the post. */
@@ -378,6 +450,11 @@ export function matchesLocallySignedMessageResponse(
     && (!isBoundMessageEnvelope(expected) || (
       sameReference(event.refBinding, expected.refBinding)
       && (expected.postId === undefined || sameReference(event.postBinding, expected.postBinding))
+    ))
+    && (!isSequencedMessageEnvelope(expected) || (
+      event.deviceSeq === expected.deviceSeq
+      && JSON.stringify(event.seenHeads ?? null) === JSON.stringify(expected.seenHeads)
+      && (event.supersedes ?? null) === expected.supersedes
     ));
 }
 
@@ -389,7 +466,9 @@ function requireLocallySignedMessageResponse(
   if (!matchesLocallySignedMessageResponse(event, expected, expectedSignature)) {
     throw new Error('Server returned a message event that does not match the signed request');
   }
-  return markMessageCryptoVerification(event, true, isBoundMessageEnvelope(expected));
+  const sequenced = isSequencedMessageEnvelope(expected);
+  if (sequenced) noteStoredSequence({ userId: expected.authorId, deviceId: expected.deviceId }, expected.channelId, expected.deviceSeq!);
+  return markMessageCryptoVerification(event, true, isBoundMessageEnvelope(expected), sequenced);
 }
 
 /**
@@ -413,6 +492,27 @@ function sameWait(current: ChannelKeyWait | null | undefined, next: ChannelKeyWa
     : next;
 }
 
+/**
+ * The events to hold after loading the channel's newest page. The page
+ * joins the held events when they share an event (or the page reaches the
+ * channel's start); otherwise events were written in between (for example
+ * while offline) and the held ones are dropped, so the window stays one run
+ * of consecutive events and a gap in it means an event was not delivered.
+ */
+function newestPageWindow(held: Message[], page: { data: Message[]; hasMore: boolean }, channelId: string): Message[] {
+  const heldIds = new Set(held.map((event) => event.id));
+  const joins = held.length === 0 || !page.hasMore || page.data.some((event) => heldIds.has(event.id));
+  if (!page.hasMore) windowReachesStart.set(channelId, true);
+  else if (!joins) windowReachesStart.set(channelId, false);
+  return joins ? mergeMessageEvents(held, page.data) : mergeMessageEvents(page.data);
+}
+
+/** Missing-event notices shown in a channel, as one value. */
+function missingNoticeKey(messages: readonly ProjectedMessage[] | undefined, channelNotice: SequenceNotice | null | undefined): string {
+  const ids = (messages || []).filter((message) => message.sequenceNotice === 'missing').map((message) => message.id);
+  return [...ids, ...(channelNotice === 'missing' ? ['channel'] : [])].join(',');
+}
+
 export const useMessageStore = create<MessageState>((set, get) => ({
   eventsByChannel: {},
   messagesByChannel: {},
@@ -422,6 +522,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
   hasMore: {},
   cursors: {},
   securityErrors: {},
+  sequenceNotices: {},
   channelKeyPending: {},
   channelRecoveryPending: {},
   operationErrors: {},
@@ -454,7 +555,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         const result = await api.getMessages(channelId);
         if (!isMessageContextCurrent(channelId, generation, channelEpoch) || loadVersions.get(channelId) !== loadVersion) return;
         set((state) => ({
-          ...channelUpdate(state, channelId, mergeMessageEvents(state.eventsByChannel[channelId] || [], result.data)),
+          ...channelUpdate(state, channelId, newestPageWindow(state.eventsByChannel[channelId] || [], result, channelId)),
           hasMore: { ...state.hasMore, [channelId]: result.hasMore },
           cursors: { ...state.cursors, [channelId]: result.cursor },
           securityErrors: { ...state.securityErrors, [channelId]: null },
@@ -509,6 +610,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     try {
       const result = await api.getMessages(channelId, cursor);
       if (!isMessageContextCurrent(channelId, generation, channelEpoch) || loadVersions.get(channelId) !== loadVersion) return;
+      if (!result.hasMore) windowReachesStart.set(channelId, true);
       set((current) => ({
         ...channelUpdate(current, channelId, mergeMessageEvents(current.eventsByChannel[channelId] || [], result.data)),
         hasMore: { ...current.hasMore, [channelId]: result.hasMore },
@@ -621,23 +723,26 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     const generation = messageStoreGeneration;
     const channelEpoch = currentChannelEpoch(channelId);
     set((state) => ({ operationErrors: { ...state.operationErrors, [channelId]: null } }));
-    let sealed: SealedMessage;
-    try {
-      sealed = await get().sealMessage(channelId, content, {
-        refMessageId,
-        idempotencyKey: fixedIdempotencyKey,
-        allowEmpty,
-        mentionedUserIds,
-        postId,
-      });
-      if (!isMessageContextCurrent(channelId, generation, channelEpoch)) throw new Error(t('チャンネルの認可が変更されたため送信を中止しました'));
-    } catch (error) {
-      if (isMessageContextCurrent(channelId, generation, channelEpoch)) {
-        set((state) => ({ operationErrors: { ...state.operationErrors, [channelId]: errorMessage(error, t('メッセージを送信できませんでした')) } }));
+    const idempotencyKey = fixedIdempotencyKey || crypto.randomUUID();
+    return retryOnSequenceRefusal(channelId, async () => {
+      let sealed: SealedMessage;
+      try {
+        sealed = await get().sealMessage(channelId, content, {
+          refMessageId,
+          idempotencyKey,
+          allowEmpty,
+          mentionedUserIds,
+          postId,
+        });
+        if (!isMessageContextCurrent(channelId, generation, channelEpoch)) throw new Error(t('チャンネルの認可が変更されたため送信を中止しました'));
+      } catch (error) {
+        if (isMessageContextCurrent(channelId, generation, channelEpoch)) {
+          set((state) => ({ operationErrors: { ...state.operationErrors, [channelId]: errorMessage(error, t('メッセージを送信できませんでした')) } }));
+        }
+        throw error;
       }
-      throw error;
-    }
-    return get().sendSealedMessage(channelId, content, sealed);
+      return get().sendSealedMessage(channelId, content, sealed);
+    });
   },
 
   sealMessage: async (channelId, content, options = {}) => {
@@ -666,6 +771,8 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       broadcastMention,
       ...(forum ? { postId: postId! } : {}),
       ...boundFields(forum, refMessageId, refBinding, postId, postBinding),
+      ...sequencedFields(get(), channelId, device),
+      supersedes: null,
     };
     const encrypted = await encryptMessage(content, channelKey.key, unsigned);
     const envelope: SignedMessageEnvelope = { ...unsigned, encryptedContent: encrypted.encrypted, contentNonce: encrypted.nonce };
@@ -683,6 +790,8 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         idempotencyKey: envelope.idempotencyKey,
         signature,
         broadcastMention,
+        deviceSeq: envelope.deviceSeq!,
+        seenHeads: envelope.seenHeads!,
         ...(notificationRecipientIds.length ? { mentionedUserIds: notificationRecipientIds } : {}),
         ...(refMessageId ? { refMessageId } : {}),
         ...(forum ? { postId } : {}),
@@ -725,9 +834,11 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     const generation = messageStoreGeneration;
     const channelEpoch = currentChannelEpoch(channelId);
     set((state) => ({ operationErrors: { ...state.operationErrors, [channelId]: null } }));
+    const idempotencyKey = crypto.randomUUID();
     try {
       if (!isForumChannel(channelId)) throw new Error(t('投稿を作成できませんでした'));
       const content = encodeForumPostContent({ title: post.title, body: post.body });
+      return await retryOnSequenceRefusal(channelId, async () => {
       const device = getActiveDevice();
       const channelKey = await ensureChannelKey(channelId, { purpose: 'write' });
       const broadcastMention = containsBroadcastMention(content);
@@ -737,10 +848,14 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         authorId: device.userId,
         deviceId: device.deviceId,
         keyVersion: channelKey.version,
-        idempotencyKey: crypto.randomUUID(),
+        idempotencyKey,
         refMessageId: null,
         broadcastMention,
         postId: null,
+        refBinding: null,
+        postBinding: null,
+        ...sequencedFields(get(), channelId, device),
+        supersedes: null,
       };
       const encrypted = await encryptMessage(content, channelKey.key, unsigned);
       const envelope: SignedMessageEnvelope = { ...unsigned, encryptedContent: encrypted.encrypted, contentNonce: encrypted.nonce };
@@ -754,6 +869,8 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         idempotencyKey: envelope.idempotencyKey,
         signature,
         broadcastMention,
+        deviceSeq: envelope.deviceSeq!,
+        seenHeads: envelope.seenHeads!,
         ...(mentionedUserIds.length ? { mentionedUserIds } : {}),
         ...(post.tagIds.length ? { tagIds: post.tagIds } : {}),
       };
@@ -771,6 +888,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       }
       get().addMessage(channelId, message);
       return { message, state: result.state };
+      });
     } catch (error) {
       if (isMessageContextCurrent(channelId, generation, channelEpoch)) {
         set((state) => ({ operationErrors: { ...state.operationErrors, [channelId]: errorMessage(error, t('投稿を作成できませんでした')) } }));
@@ -785,6 +903,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     const generation = messageStoreGeneration;
     const epoch = currentChannelEpoch(channelId);
     set((state) => channelUpdate(state, channelId, mergeMessageEvents(state.eventsByChannel[channelId] || [], messages)));
+    reloadAfterGap(channelId);
     if (messages.some((message) => message.type === 'message' || message.type === 'edit' || message.type === 'delete')) {
       void get().decryptMessages(channelId).catch((error) => {
         if (!isMessageContextCurrent(channelId, generation, epoch)) return;
@@ -824,11 +943,12 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     const generation = messageStoreGeneration;
     const channelEpoch = currentChannelEpoch(channelId);
     set((state) => ({ operationErrors: { ...state.operationErrors, [channelId]: null } }));
+    const idempotencyKey = crypto.randomUUID();
     try {
+      await retryOnSequenceRefusal(channelId, async () => {
       const postId = isForumChannel(channelId) ? forumPostIdOf(get(), channelId, messageId) : undefined;
       const device = getActiveDevice();
       const channelKey = await ensureChannelKey(channelId, { purpose: 'write' });
-      const idempotencyKey = crypto.randomUUID();
       const broadcastMention = containsBroadcastMention(content);
       const unsigned = {
         type: 'edit' as const,
@@ -847,6 +967,10 @@ export const useMessageStore = create<MessageState>((set, get) => ({
           postId,
           postId ? signedReferenceOf(get(), channelId, postId) : null,
         ),
+        ...sequencedFields(get(), channelId, device),
+        // The edit replaces the version shown now; if another edit got there
+        // first the server refuses this one.
+        supersedes: currentVersionOf(get(), channelId, messageId),
       };
       const encrypted = await encryptMessage(content, channelKey.key, unsigned);
       const envelope: SignedMessageEnvelope = { ...unsigned, encryptedContent: encrypted.encrypted, contentNonce: encrypted.nonce };
@@ -859,6 +983,9 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         idempotencyKey: envelope.idempotencyKey,
         signature,
         broadcastMention,
+        deviceSeq: envelope.deviceSeq!,
+        seenHeads: envelope.seenHeads!,
+        supersedes: envelope.supersedes!,
         ...(postId ? { postId } : {}),
       };
       const event = await retrySameEncryptedEnvelope(
@@ -873,9 +1000,13 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         ...requireLocallySignedMessageResponse(event, envelope, signature),
         content,
       } as Message);
+      });
     } catch (error) {
       if (isMessageContextCurrent(channelId, generation, channelEpoch)) {
-        set((state) => ({ operationErrors: { ...state.operationErrors, [channelId]: errorMessage(error, t('メッセージを編集できませんでした')) } }));
+        const message = error instanceof ApiError && error.code === 'EDIT_CONFLICT'
+          ? t('このメッセージは別の操作で更新されました。表示を更新してからもう一度編集してください。')
+          : errorMessage(error, t('メッセージを編集できませんでした'));
+        set((state) => ({ operationErrors: { ...state.operationErrors, [channelId]: message } }));
       }
       throw error;
     }
@@ -885,7 +1016,9 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     const generation = messageStoreGeneration;
     const channelEpoch = currentChannelEpoch(channelId);
     set((state) => ({ operationErrors: { ...state.operationErrors, [channelId]: null } }));
+    const idempotencyKey = crypto.randomUUID();
     try {
+      await retryOnSequenceRefusal(channelId, async () => {
       const postId = isForumChannel(channelId) ? forumPostIdOf(get(), channelId, messageId) : undefined;
       const device = getActiveDevice();
       const channelKey = await ensureChannelKey(channelId, { purpose: 'write' });
@@ -895,7 +1028,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         authorId: device.userId,
         deviceId: device.deviceId,
         keyVersion: channelKey.version,
-        idempotencyKey: crypto.randomUUID(),
+        idempotencyKey,
         refMessageId: messageId,
         broadcastMention: false,
         encryptedContent: '',
@@ -908,6 +1041,8 @@ export const useMessageStore = create<MessageState>((set, get) => ({
           postId,
           postId ? signedReferenceOf(get(), channelId, postId) : null,
         ),
+        ...sequencedFields(get(), channelId, device),
+        supersedes: null,
       };
       const signature = await signMessageEnvelope(envelope);
       const request = {
@@ -915,6 +1050,8 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         keyVersion: envelope.keyVersion,
         idempotencyKey: envelope.idempotencyKey,
         signature,
+        deviceSeq: envelope.deviceSeq!,
+        seenHeads: envelope.seenHeads!,
         ...(postId ? { postId } : {}),
       };
       const result = await retrySameEncryptedEnvelope(
@@ -930,6 +1067,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         throw new Error('Server returned a delete result for a different message');
       }
       get().addMessage(channelId, requireLocallySignedMessageResponse(result.event, envelope, signature));
+      });
     } catch (error) {
       if (isMessageContextCurrent(channelId, generation, channelEpoch)) {
         set((state) => ({ operationErrors: { ...state.operationErrors, [channelId]: errorMessage(error, t('メッセージを削除できませんでした')) } }));
@@ -1062,13 +1200,14 @@ export const useMessageStore = create<MessageState>((set, get) => ({
             return markMessageCryptoVerification({ ...message, content: UNVERIFIED_MESSAGE_MARKER }, false);
           }
           const isBound = isBoundMessageEnvelope(envelope);
-          if (message.type === 'delete') return markMessageCryptoVerification(message, true, isBound);
+          const sequenced = isSequencedMessageEnvelope(envelope);
+          if (message.type === 'delete') return markMessageCryptoVerification(message, true, isBound, sequenced);
           const key = keysByVersion.get(message.keyVersion) ?? null;
-          if (!key) return markMessageKeyUnavailable(message);
+          if (!key) return markMessageKeyUnavailable(message, sequenced);
           try {
-            return markMessageCryptoVerification({ ...message, content: await decryptMessage(envelope, key) }, true, isBound);
+            return markMessageCryptoVerification({ ...message, content: await decryptMessage(envelope, key) }, true, isBound, sequenced);
           } catch {
-            return markMessageCryptoVerification({ ...message, content: TAMPERED_MESSAGE_MARKER }, false);
+            return markMessageCryptoVerification({ ...message, content: TAMPERED_MESSAGE_MARKER }, false, false, sequenced);
           }
         }));
         if (signal.aborted) throw signal.reason;
@@ -1090,6 +1229,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
               return mergeMessageEvents([decryptedEvent], [event])[0];
             });
           const next = channelUpdate(state, channelId, merged);
+          queueMicrotask(() => reloadAfterGap(channelId));
           return quarantinedIds.size === 0 ? next : {
             ...next,
             securityErrors: {
@@ -1158,6 +1298,8 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     keyReconciliationPromises.delete(channelId);
     residentChannelOrder.delete(channelId);
     forumRetention.delete(channelId);
+    windowReachesStart.delete(channelId);
+    gapReloads.delete(channelId);
     messageDecryptWorkers.cancel(channelId);
     set((state) => {
       const eventsByChannel = withoutChannel(state.eventsByChannel, channelId);
@@ -1171,6 +1313,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         hasMore: withoutChannel(state.hasMore, channelId),
         cursors: withoutChannel(state.cursors, channelId),
         securityErrors: withoutChannel(state.securityErrors, channelId),
+        sequenceNotices: withoutChannel(state.sequenceNotices, channelId),
         channelKeyPending: withoutChannel(state.channelKeyPending, channelId),
         channelRecoveryPending: withoutChannel(state.channelRecoveryPending, channelId),
         operationErrors: withoutChannel(state.operationErrors, channelId),
@@ -1189,6 +1332,8 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     channelEpochs.clear();
     residentChannelOrder.clear();
     forumRetention.clear();
+    windowReachesStart.clear();
+    gapReloads.clear();
     messageDecryptWorkers.reset();
     set({
       eventsByChannel: {},
@@ -1199,6 +1344,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       hasMore: {},
       cursors: {},
       securityErrors: {},
+      sequenceNotices: {},
       channelKeyPending: {},
       channelRecoveryPending: {},
       operationErrors: {},
@@ -1217,4 +1363,21 @@ function withoutChannel<T>(record: Record<string, T>, channelId: string): Record
   const next = { ...record };
   delete next[channelId];
   return next;
+}
+
+/**
+ * A live event can arrive after one the socket never delivered, which shows
+ * as a gap. Reload the channel's newest events once for each new set of gaps;
+ * a gap that is still there afterwards stays shown.
+ */
+function reloadAfterGap(channelId: string): void {
+  const state = useMessageStore.getState();
+  const key = missingNoticeKey(state.messagesByChannel[channelId], state.sequenceNotices[channelId]);
+  if (!key) {
+    gapReloads.delete(channelId);
+    return;
+  }
+  if (gapReloads.get(channelId) === key || state.loadingByChannel[channelId]) return;
+  gapReloads.set(channelId, key);
+  void state.loadMessages(channelId);
 }

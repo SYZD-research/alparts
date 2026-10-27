@@ -487,9 +487,18 @@ export const messages = pgTable('messages', {
   // signed v4 envelope, so the server can index by it but not rewrite it.
   postId: uuid('post_id'),
   idempotencyKey: text('idempotency_key'),
+  // Message protocol v6 (null on older events): the event's number among its
+  // device's events in the channel, the newest events of other devices it was
+  // written after, and for an edit the signed key of the version it replaces.
+  // All three are signed; the server accepts only the device's next number.
+  deviceSeq: integer('device_seq'),
+  seenHeads: jsonb('seen_heads'),
+  supersedes: text('supersedes'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   uniqueChannelIdempotency: unique().on(t.channelId, t.idempotencyKey),
+  uniqueDeviceSequence: unique('messages_channel_device_seq_unique').on(t.channelId, t.deviceId, t.deviceSeq),
+  deviceSeqCheck: check('messages_device_seq_check', sql`${t.deviceSeq} is null or (${t.deviceSeq} > 0 and ${t.deviceId} is not null and ${t.seenHeads} is not null)`),
   postFk: foreignKey({
     name: 'messages_post_id_fk',
     columns: [t.postId],

@@ -27,6 +27,7 @@ export function MessageList({ channelId, visible: chatVisible = true }: Props) {
   const isLoading = useMessageStore((state) => Boolean(state.loadingByChannel[channelId]));
   const isLoadingMore = useMessageStore((state) => Boolean(state.loadingMoreByChannel[channelId]));
   const hasMore = useMessageStore((state) => Boolean(state.hasMore[channelId]));
+  const sequenceNotice = useMessageStore((state) => state.sequenceNotices[channelId] ?? null);
   const loadMoreMessages = useMessageStore((state) => state.loadMoreMessages);
   const loadMessageThroughHistory = useMessageStore((state) => state.loadMessageThroughHistory);
   const outboxItems = useOutboxStore((state) => state.items);
@@ -157,6 +158,14 @@ export function MessageList({ channelId, visible: chatVisible = true }: Props) {
         <div className="text-center py-2 text-muted text-sm">
           {t('さらに読み込み中...')}
         </div>
+      )}
+
+      {sequenceNotice && (
+        <p role="note" className="mx-4 mt-2 rounded-lg bg-warning/10 px-3 py-2 text-xs text-warning">
+          {sequenceNotice === 'missing'
+            ? t('このチャンネルには表示されていないメッセージがあります')
+            : t('このチャンネルのメッセージは表示順が正しくない可能性があります')}
+        </p>
       )}
 
       {jumpError && (

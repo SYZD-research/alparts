@@ -63,6 +63,7 @@ import {
   serializeMessageEnvelope,
   serializeVoiceSignalEnvelope,
   type SignedAttachmentEnvelope,
+  type SignedEventHead,
   type SignedEventReference,
   type SignedMessageEnvelope,
   type SignedVoiceSignalEnvelope,
@@ -109,7 +110,7 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     const auditModule = await import('../middleware/audit.js');
     const dbModule = await import('../db/index.js');
     closeDb = dbModule.closeDb;
-    assert.equal(await dbModule.checkDatabaseSchema(), 27);
+    assert.equal(await dbModule.checkDatabaseSchema(), 28);
     verifyAuditChain = auditModule.verifyAuditChain;
     await auditModule.provisionAuditCheckpoint();
     const startupAudit = await verifyAuditChain();
@@ -127,6 +128,7 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
   after(async () => {
     for (const socket of sockets) socket.disconnect();
     await new Promise<void>((resolve, reject) => httpServer.close((error) => error ? reject(error) : resolve()));
+    await closeSequencePool();
     await closeDb();
     await runtime?.close();
     if (auditCheckpointDirectory) await rm(auditCheckpointDirectory, { recursive: true, force: true });
@@ -1515,7 +1517,7 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     }))), [409, 'MLS_CONFLICT'], 'another member cannot replace an accepted version');
     assert.equal((await mainGroup.record(aliceMember, 1)).transcript, groupTranscript(mainGenesis.envelope));
 
-    const messageRequest = encryptedMessage(
+    const messageRequest = await encryptedMessage(
       channelId,
       alice.user.id,
       aliceDevice.id,
@@ -1546,7 +1548,7 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     aliceSocket.off('message:new', onReplayBroadcast);
     assert.equal(replayBroadcast, false);
 
-    const conflictingReplay = encryptedMessage(
+    const conflictingReplay = await encryptedMessage(
       channelId,
       alice.user.id,
       aliceDevice.id,
@@ -1607,14 +1609,14 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
 
     const bobMessageResponse = await request(`/api/channels/${channelId}/messages`, {
       method: 'POST', cookie: bob.cookie,
-      body: encryptedMessage(
+      body: (await encryptedMessage(
         channelId,
         bob.user.id,
         bobDevice.id,
         bobKeys.signingPrivateKey,
         rawChannelKey,
         'bob attachment authorization boundary',
-      ).body,
+      )).body,
     });
     assert.equal(bobMessageResponse.status, 201);
     const bobMessage = await json<{ id: string; idempotencyKey: string }>(bobMessageResponse);
@@ -1674,14 +1676,14 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     const privateMessageResponse = await request(`/api/channels/${privateChannel.id}/messages`, {
       method: 'POST',
       cookie: alice.cookie,
-      body: encryptedMessage(
+      body: (await encryptedMessage(
         privateChannel.id,
         alice.user.id,
         aliceDevice.id,
         aliceKeys.signingPrivateKey,
         rawPrivateChannelKey,
         'private boundary message',
-      ).body,
+      )).body,
     });
     assert.equal(privateMessageResponse.status, 201);
     const privateMessage = await json<{ id: string }>(privateMessageResponse);
@@ -1811,28 +1813,14 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     assert.equal(forgedType.status, 400);
 
     const messagePair = { authorId: alice.user.id, idempotencyKey: messageRequest.body.idempotencyKey };
-    const bobDeleteEnvelope: SignedMessageEnvelope = {
-      type: 'delete',
-      channelId,
-      authorId: bob.user.id,
-      deviceId: bobDevice.id,
-      keyVersion: 1,
-      idempotencyKey: randomUUID(),
-      refMessageId: message.id,
-      refBinding: messagePair,
-      encryptedContent: '',
-      contentNonce: '',
-      broadcastMention: false,
-    };
+    const bobDeleteEvent = await encryptedBoundEvent({
+      type: 'delete', channelId, refMessageId: message.id, refBinding: messagePair,
+      authorId: bob.user.id, deviceId: bobDevice.id, privateKey: bobKeys.signingPrivateKey, key: rawChannelKey, plaintext: '',
+    });
     const bobDelete = await request(`/api/messages/${message.id}`, {
       method: 'DELETE',
       cookie: bob.cookie,
-      body: {
-        deviceId: bobDevice.id,
-        keyVersion: 1,
-        idempotencyKey: bobDeleteEnvelope.idempotencyKey,
-        signature: signEnvelope(bobDeleteEnvelope, bobKeys.signingPrivateKey),
-      },
+      body: deletionBody(bobDeleteEvent),
     });
     assert.equal(bobDelete.status, 403);
 
@@ -2065,7 +2053,7 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
       assert.deepEqual(event.attachments, []);
     }
 
-    const newerMessageRequest = encryptedMessage(
+    const newerMessageRequest = await encryptedMessage(
       channelId,
       alice.user.id,
       aliceDevice.id,
@@ -2267,7 +2255,7 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
       method: 'PUT', cookie: alice.cookie, body: olderEdit.body,
     });
     assert.deepEqual([olderEditResponse.status, (await json<{ error: string }>(olderEditResponse)).error], [400, 'INVALID_MESSAGE']);
-    const editRequest = encryptedEdit(
+    const editRequest = await encryptedEdit(
       channelId,
       message.id,
       messagePair,
@@ -2297,30 +2285,15 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     assert.equal(deletedAttachmentChunks.length, attachmentChunkCount);
     const usageBeforeDelete = await fileService.getCiphertextUsage(integrationDb, workspace.id, channelId, alice.user.id);
 
-    const deleteEnvelope: SignedMessageEnvelope = {
-      type: 'delete',
-      channelId,
-      authorId: alice.user.id,
-      deviceId: aliceDevice.id,
-      keyVersion: 1,
-      idempotencyKey: randomUUID(),
-      refMessageId: message.id,
-      refBinding: messagePair,
-      encryptedContent: '',
-      contentNonce: '',
-      broadcastMention: false,
-    };
-    const deleteSignature = signEnvelope(deleteEnvelope, aliceKeys.signingPrivateKey);
+    const deleteEvent = await encryptedBoundEvent({
+      type: 'delete', channelId, refMessageId: message.id, refBinding: messagePair,
+      authorId: alice.user.id, deviceId: aliceDevice.id, privateKey: aliceKeys.signingPrivateKey, key: rawChannelKey, plaintext: '',
+    });
     const deletedRealtime = onceSocketEvent<Record<string, unknown>>(aliceSocket, 'message:deleted');
     const deleteResponse = await request(`/api/messages/${message.id}`, {
       method: 'DELETE',
       cookie: alice.cookie,
-      body: {
-        deviceId: aliceDevice.id,
-        keyVersion: 1,
-        idempotencyKey: deleteEnvelope.idempotencyKey,
-        signature: deleteSignature,
-      },
+      body: deletionBody(deleteEvent),
     });
     assert.equal(deleteResponse.status, 200);
     const deleteResult = await json<Record<string, unknown>>(deleteResponse);
@@ -2330,12 +2303,7 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     const deleteReplayResponse = await request(`/api/messages/${message.id}`, {
       method: 'DELETE',
       cookie: alice.cookie,
-      body: {
-        deviceId: aliceDevice.id,
-        keyVersion: 1,
-        idempotencyKey: deleteEnvelope.idempotencyKey,
-        signature: deleteSignature,
-      },
+      body: deletionBody(deleteEvent),
     });
     assert.equal(deleteReplayResponse.status, 200);
     assert.deepEqual(await json(deleteReplayResponse), deleteResult);
@@ -2419,7 +2387,7 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     assert.equal((await json<Array<{ messageId: string }>>(await request('/api/bookmarks', { cookie: alice.cookie })))
       .some((bookmark) => bookmark.messageId === message.id), false);
 
-    const unreadDeletedRequest = encryptedMessage(
+    const unreadDeletedRequest = await encryptedMessage(
       channelId,
       alice.user.id,
       aliceDevice.id,
@@ -2437,27 +2405,14 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     )).find((state) => state.channelId === channelId);
     assert.equal(unreadBeforeDelete?.unreadCount, 1);
     assert.equal(unreadBeforeDelete?.latestMessageId, unreadDeletedMessage.id);
-    const unreadDeleteEnvelope: SignedMessageEnvelope = {
-      type: 'delete',
-      channelId,
-      authorId: alice.user.id,
-      deviceId: aliceDevice.id,
-      keyVersion: 1,
-      idempotencyKey: randomUUID(),
-      refMessageId: unreadDeletedMessage.id,
+    const unreadDeleteEvent = await encryptedBoundEvent({
+      type: 'delete', channelId, refMessageId: unreadDeletedMessage.id,
       refBinding: { authorId: alice.user.id, idempotencyKey: unreadDeletedRequest.body.idempotencyKey },
-      encryptedContent: '',
-      contentNonce: '',
-      broadcastMention: false,
-    };
+      authorId: alice.user.id, deviceId: aliceDevice.id, privateKey: aliceKeys.signingPrivateKey, key: rawChannelKey, plaintext: '',
+    });
     assert.equal((await request(`/api/messages/${unreadDeletedMessage.id}`, {
       method: 'DELETE', cookie: alice.cookie,
-      body: {
-        deviceId: aliceDevice.id,
-        keyVersion: 1,
-        idempotencyKey: unreadDeleteEnvelope.idempotencyKey,
-        signature: signEnvelope(unreadDeleteEnvelope, aliceKeys.signingPrivateKey),
-      },
+      body: deletionBody(unreadDeleteEvent),
     })).status, 200);
     const unreadAfterDelete = (await json<Array<{ channelId: string; unreadCount: number; latestMessageId: string | null }>>(
       await request(`/api/workspaces/${workspace.id}/channel-state`, { cookie: alice.cookie }),
@@ -2956,7 +2911,7 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     const channelUpdateBody = await json<{ authorizationRevision: string }>(channelOverrideUpdate);
     const deniedSend = await request(`/api/channels/${channelId}/messages`, {
       method: 'POST', cookie: bob.cookie,
-      body: encryptedMessage(
+      body: (await encryptedMessage(
         channelId,
         bob.user.id,
         bobDevice.id,
@@ -2965,7 +2920,7 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
         'must be denied by channel override',
         undefined,
         3,
-      ).body,
+      )).body,
     });
     assert.equal(deniedSend.status, 403);
     assert.equal((await request('/api/files/uploads', {
@@ -3327,8 +3282,8 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     })).status, 400);
 
     // Starting a post needs the v4 envelope with no post; chat-style writes are refused.
-    const post = asMember({ type: 'message', refMessageId: null, postId: null, plaintext: 'Title\nBody that the server must not see' });
-    const legacyShape = encryptedMessage(forum.id, member.user.id, memberDevice.id, memberKeys.signingPrivateKey, forumKey, 'no post id');
+    const post = await asMember({ type: 'message', refMessageId: null, postId: null, plaintext: 'Title\nBody that the server must not see' });
+    const legacyShape = await encryptedMessage(forum.id, member.user.id, memberDevice.id, memberKeys.signingPrivateKey, forumKey, 'no post id');
     assert.equal((await request(`/api/channels/${forum.id}/messages`, {
       method: 'POST', cookie: member.cookie, body: legacyShape.body,
     })).status, 400);
@@ -3351,35 +3306,40 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
 
     // A reply is bound to its post: a signature for another post, or a
     // quote from another post, is rejected.
-    const secondPost = asOwner({ type: 'message', refMessageId: null, postId: null, plaintext: 'Other\npost' });
+    const secondPost = await asOwner({ type: 'message', refMessageId: null, postId: null, plaintext: 'Other\npost' });
     const secondResponse = await request(`/api/channels/${forum.id}/forum/posts`, {
       method: 'POST', cookie: owner.cookie, body: secondPost.body,
     });
     assert.equal(secondResponse.status, 201);
     const secondPostId = (await json<{ message: { id: string } }>(secondResponse)).message.id;
     const secondPostPair = { authorId: owner.user.id, idempotencyKey: secondPost.body.idempotencyKey };
-    const relocated = asOwner({ type: 'message', refMessageId: null, postId: secondPostId, postBinding: secondPostPair, plaintext: 'moved' });
+    const relocated = await asOwner({ type: 'message', refMessageId: null, postId: secondPostId, postBinding: secondPostPair, plaintext: 'moved' });
     assert.equal((await request(`/api/channels/${forum.id}/messages`, {
       method: 'POST', cookie: owner.cookie, body: { ...relocated.body, postId },
     })).status, 400);
-    const crossQuote = asOwner({
+    const crossQuote = await asOwner({
       type: 'message', refMessageId: secondPostId, refBinding: secondPostPair, postId, postBinding: postPair, plaintext: 'cross',
     });
     assert.equal((await request(`/api/channels/${forum.id}/messages`, {
       method: 'POST', cookie: owner.cookie, body: { ...crossQuote.body, refMessageId: secondPostId },
     })).status, 400);
-    // Inside a post only v5 counts: a reply in the older layout is refused.
-    const olderReply = encryptedForumEvent({
+    // Inside a post only v6 counts: a reply signed in the older layout (v4,
+    // naming its post by server id only) is refused, even with v6 fields.
+    const olderReply = await encryptedForumEvent({
       type: 'message', channelId: forum.id, refMessageId: null, postId: null, authorId: owner.user.id, deviceId: ownerDevice.id,
       privateKey: ownerKeys.signingPrivateKey, key: forumKey, plaintext: 'An answer',
     });
-    const olderReplyEnvelope: SignedMessageEnvelope = { ...olderReply.envelope, postId };
+    const {
+      refBinding: _olderRef, postBinding: _olderPost, deviceSeq: _olderSeq, seenHeads: _olderHeads, supersedes: _olderSupersedes,
+      ...olderLayout
+    } = olderReply.envelope;
+    const olderReplyEnvelope: SignedMessageEnvelope = { ...olderLayout, postId };
     const olderReplyResponse = await request(`/api/channels/${forum.id}/messages`, {
       method: 'POST', cookie: owner.cookie,
       body: { ...olderReply.body, postId, signature: signEnvelope(olderReplyEnvelope, ownerKeys.signingPrivateKey) },
     });
     assert.deepEqual([olderReplyResponse.status, (await json<{ error: string }>(olderReplyResponse)).error], [400, 'INVALID_MESSAGE']);
-    const reply = asOwner({ type: 'message', refMessageId: null, postId, postBinding: postPair, plaintext: 'An answer' });
+    const reply = await asOwner({ type: 'message', refMessageId: null, postId, postBinding: postPair, plaintext: 'An answer' });
     const replyResponse = await request(`/api/channels/${forum.id}/messages`, {
       method: 'POST', cookie: owner.cookie, body: reply.body,
     });
@@ -3406,11 +3366,11 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     )).find((channel) => channel.type === 'text');
     assert.ok(general);
     await assert.rejects(messageService.createMessage(general.id, owner.user.id, {
-      ...reply.body, postId,
+      ...reply.body, postId, supersedes: null,
     }), /INVALID_REFERENCE/);
     const { postId: _omitted, ...withoutPost } = reply.body;
     await assert.rejects(messageService.createMessage(forum.id, owner.user.id, {
-      ...withoutPost, idempotencyKey: randomUUID(),
+      ...withoutPost, idempotencyKey: randomUUID(), supersedes: null,
     }), /INVALID_REFERENCE/);
 
     // Listing reflects the reply; unread is per viewer and uses server time.
@@ -3466,14 +3426,14 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     assert.equal((await request(`/api/forum/posts/${postId}/lock`, {
       method: 'PUT', cookie: owner.cookie, body: { locked: true },
     })).status, 200);
-    const lockedReply = asMember({
+    const lockedReply = await asMember({
       type: 'message', refMessageId: replyEvent.id, refBinding: replyPair, postId, postBinding: postPair, plaintext: 'after lock',
     });
     const lockedResponse = await request(`/api/channels/${forum.id}/messages`, {
       method: 'POST', cookie: member.cookie, body: { ...lockedReply.body, refMessageId: replyEvent.id },
     });
     assert.equal(lockedResponse.status, 409);
-    const moderatorReply = asOwner({ type: 'message', refMessageId: null, postId, postBinding: postPair, plaintext: 'locked by moderator' });
+    const moderatorReply = await asOwner({ type: 'message', refMessageId: null, postId, postBinding: postPair, plaintext: 'locked by moderator' });
     assert.equal((await request(`/api/channels/${forum.id}/messages`, {
       method: 'POST', cookie: owner.cookie, body: moderatorReply.body,
     })).status, 201);
@@ -3511,11 +3471,11 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
       [deniedViewer.viewer.canCreatePosts, deniedViewer.viewer.canReply, deniedViewer.viewer.canManage],
       [false, true, false],
     );
-    const deniedPost = asMember({ type: 'message', refMessageId: null, postId: null, plaintext: 'denied\npost' });
+    const deniedPost = await asMember({ type: 'message', refMessageId: null, postId: null, plaintext: 'denied\npost' });
     assert.equal((await request(`/api/channels/${forum.id}/forum/posts`, {
       method: 'POST', cookie: member.cookie, body: deniedPost.body,
     })).status, 403);
-    const allowedReply = asMember({
+    const allowedReply = await asMember({
       type: 'message', refMessageId: null, postId: secondPostId, postBinding: secondPostPair, plaintext: 'still replying',
     });
     assert.equal((await request(`/api/channels/${forum.id}/messages`, {
@@ -3530,37 +3490,45 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     })).status, 404);
 
     // A quote-reply racing the deletion of the quoted reply must resolve to
-    // one order or the other, never a lock cycle.
+    // one order or the other, never a lock cycle. They come from two devices:
+    // writes of one device in a channel take turns (each takes its number).
+    // The member may reply only while the post is open.
+    assert.equal((await request(`/api/forum/posts/${postId}/lock`, {
+      method: 'PUT', cookie: owner.cookie, body: { locked: false },
+    })).status, 200);
     for (let round = 0; round < 5; round += 1) {
-      const target = asOwner({ type: 'message', refMessageId: null, postId, postBinding: postPair, plaintext: `race target ${round}` });
+      const target = await asOwner({ type: 'message', refMessageId: null, postId, postBinding: postPair, plaintext: `race target ${round}` });
       const targetEvent = await json<{ id: string }>(await request(`/api/channels/${forum.id}/messages`, {
         method: 'POST', cookie: owner.cookie, body: target.body,
       }));
       const targetPair = { authorId: owner.user.id, idempotencyKey: target.body.idempotencyKey };
-      const quote = asOwner({
+      const quote = await asMember({
         type: 'message', refMessageId: targetEvent.id, refBinding: targetPair, postId, postBinding: postPair, plaintext: `race quote ${round}`,
       });
-      const removal = asOwner({
+      const removal = await asOwner({
         type: 'delete', refMessageId: targetEvent.id, refBinding: targetPair, postId, postBinding: postPair, plaintext: '',
       });
       const [quoted, removed] = await Promise.all([
         request(`/api/channels/${forum.id}/messages`, {
-          method: 'POST', cookie: owner.cookie, body: { ...quote.body, refMessageId: targetEvent.id },
+          method: 'POST', cookie: member.cookie, body: { ...quote.body, refMessageId: targetEvent.id },
         }),
         request(`/api/messages/${targetEvent.id}`, {
           method: 'DELETE', cookie: owner.cookie,
-          body: { deviceId: ownerDevice.id, keyVersion: 1, idempotencyKey: removal.envelope.idempotencyKey, signature: removal.body.signature, postId },
+          body: deletionBody(removal),
         }),
       ]);
       assert.ok([201, 400].includes(quoted.status), `quote status ${quoted.status}`);
       assert.equal(removed.status, 200);
     }
+    assert.equal((await request(`/api/forum/posts/${postId}/lock`, {
+      method: 'PUT', cookie: owner.cookie, body: { locked: true },
+    })).status, 200);
 
     // Deleting the post removes it from the list and closes it for replies.
-    const deletion = asMember({ type: 'delete', refMessageId: postId, refBinding: postPair, postId, postBinding: postPair, plaintext: '' });
+    const deletion = await asMember({ type: 'delete', refMessageId: postId, refBinding: postPair, postId, postBinding: postPair, plaintext: '' });
     const deleted = await request(`/api/messages/${postId}`, {
       method: 'DELETE', cookie: member.cookie,
-      body: { deviceId: memberDevice.id, keyVersion: 1, idempotencyKey: deletion.envelope.idempotencyKey, signature: deletion.body.signature, postId },
+      body: deletionBody(deletion),
     });
     assert.equal(deleted.status, 200, await deleted.clone().text());
     assert.equal((await request(`/api/forum/posts/${postId}`, { cookie: member.cookie })).status, 404);
@@ -3568,7 +3536,7 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
       await request(`/api/channels/${forum.id}/forum/posts`, { cookie: member.cookie }),
     );
     assert.deepEqual(afterDelete.data.map((entry) => entry.state.postId), [secondPostId]);
-    const lateReply = asOwner({ type: 'message', refMessageId: null, postId, postBinding: postPair, plaintext: 'too late' });
+    const lateReply = await asOwner({ type: 'message', refMessageId: null, postId, postBinding: postPair, plaintext: 'too late' });
     assert.equal((await request(`/api/channels/${forum.id}/messages`, {
       method: 'POST', cookie: owner.cookie, body: lateReply.body,
     })).status, 400);
@@ -3576,12 +3544,13 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     assert.ok(stored?.deletedAt);
     // A reply deleted after its post sends no post state: one would put the
     // deleted post back into every client's list (formal model M7 FV1).
-    const lateRemoval = asOwner({
+    const lateRemoval = await asOwner({
       type: 'delete', refMessageId: replyEvent.id, refBinding: replyPair, postId, postBinding: postPair, plaintext: '',
     });
     const removedReply = await messageService.deleteMessage(replyEvent.id, owner.user.id, {
       deviceId: ownerDevice.id, keyVersion: 1, idempotencyKey: lateRemoval.envelope.idempotencyKey,
       signature: lateRemoval.body.signature, postId, encryptedContent: '', contentNonce: '', broadcastMention: false,
+      deviceSeq: lateRemoval.body.deviceSeq, seenHeads: lateRemoval.body.seenHeads, supersedes: null,
     });
     assert.equal(removedReply.isNewEvent, true);
     assert.equal(removedReply.forumPost, null);
@@ -4168,12 +4137,12 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     });
 
     // Two messages by the same author: one v5, one from an older client.
-    const first = ownerEvent({ type: 'message', refMessageId: null, refBinding: null, plaintext: 'first' });
+    const first = await ownerEvent({ type: 'message', refMessageId: null, refBinding: null, plaintext: 'first' });
     const firstResponse = await send(owner.cookie, first.body);
     assert.equal(firstResponse.status, 201, await firstResponse.clone().text());
     const firstEvent = await json<{ id: string; refBinding: SignedEventReference | null }>(firstResponse);
     assert.equal(firstEvent.refBinding, null);
-    const second = encryptedMessage(general.id, owner.user.id, ownerDevice.id, ownerKeys.signingPrivateKey, textKey, 'second');
+    const second = await encryptedMessage(general.id, owner.user.id, ownerDevice.id, ownerKeys.signingPrivateKey, textKey, 'second');
     const secondResponse = await send(owner.cookie, second.body);
     assert.equal(secondResponse.status, 201);
     const secondId = (await json<{ id: string }>(secondResponse)).id;
@@ -4182,12 +4151,14 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
 
     // An edit signed for the second message is refused under the first one's
     // id; signed for the first, it is accepted and served with what it names.
-    const misplacedEdit = ownerEvent({ type: 'edit', refMessageId: firstEvent.id, refBinding: secondSigned, plaintext: 'misplaced' });
+    const misplacedEdit = await ownerEvent({ type: 'edit', refMessageId: firstEvent.id, refBinding: secondSigned, plaintext: 'misplaced' });
     assert.equal((await request(`/api/messages/${firstEvent.id}`, {
       method: 'PUT', cookie: owner.cookie, body: misplacedEdit.body,
     })).status, 400);
-    await assert.rejects(messageService.editMessage(firstEvent.id, owner.user.id, misplacedEdit.body), /INVALID_SIGNATURE/);
-    const edit = ownerEvent({ type: 'edit', refMessageId: firstEvent.id, refBinding: firstSigned, plaintext: 'first, edited' });
+    await assert.rejects(messageService.editMessage(firstEvent.id, owner.user.id, {
+      ...misplacedEdit.body, supersedes: misplacedEdit.envelope.supersedes ?? null,
+    }), /INVALID_SIGNATURE/);
+    const edit = await ownerEvent({ type: 'edit', refMessageId: firstEvent.id, refBinding: firstSigned, plaintext: 'first, edited' });
     const editResponse = await request(`/api/messages/${firstEvent.id}`, {
       method: 'PUT', cookie: owner.cookie, body: edit.body,
     });
@@ -4196,9 +4167,9 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     assert.deepEqual(editEvent.refBinding, firstSigned);
 
     // A quote names the quoted message the same way.
-    const misplacedQuote = memberEvent({ type: 'message', refMessageId: firstEvent.id, refBinding: secondSigned, plaintext: 'quote' });
+    const misplacedQuote = await memberEvent({ type: 'message', refMessageId: firstEvent.id, refBinding: secondSigned, plaintext: 'quote' });
     assert.equal((await send(member.cookie, misplacedQuote.body)).status, 400);
-    const quote = memberEvent({ type: 'message', refMessageId: firstEvent.id, refBinding: firstSigned, plaintext: 'quote' });
+    const quote = await memberEvent({ type: 'message', refMessageId: firstEvent.id, refBinding: firstSigned, plaintext: 'quote' });
     const quoteResponse = await send(member.cookie, quote.body);
     assert.equal(quoteResponse.status, 201, await quoteResponse.clone().text());
     const quoteEvent = await json<{ id: string; refBinding: SignedEventReference | null }>(quoteResponse);
@@ -4227,14 +4198,12 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     assert.deepEqual([olderDeleteResponse.status, (await json<{ error: string }>(olderDeleteResponse)).error], [400, 'INVALID_MESSAGE']);
 
     // A deletion is bound like an edit.
-    const misplacedDelete = ownerEvent({ type: 'delete', refMessageId: secondId, refBinding: firstSigned, plaintext: '' });
-    const deleteBody = (sent: ReturnType<typeof ownerEvent>) => ({
-      deviceId: sent.body.deviceId, keyVersion: 1, idempotencyKey: sent.body.idempotencyKey, signature: sent.body.signature,
-    });
+    const misplacedDelete = await ownerEvent({ type: 'delete', refMessageId: secondId, refBinding: firstSigned, plaintext: '' });
+    const deleteBody = deletionBody;
     assert.equal((await request(`/api/messages/${secondId}`, {
       method: 'DELETE', cookie: owner.cookie, body: deleteBody(misplacedDelete),
     })).status, 400);
-    const removal = ownerEvent({ type: 'delete', refMessageId: secondId, refBinding: secondSigned, plaintext: '' });
+    const removal = await ownerEvent({ type: 'delete', refMessageId: secondId, refBinding: secondSigned, plaintext: '' });
     const removalResponse = await request(`/api/messages/${secondId}`, {
       method: 'DELETE', cookie: owner.cookie, body: deleteBody(removal),
     });
@@ -4268,25 +4237,25 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     ) => encryptedBoundEvent({ ...input, channelId: forum.id, authorId: account.user.id, deviceId: device.id, privateKey: keys.signingPrivateKey, key: forumKey });
     const ownerForumEvent = inForum(owner, ownerKeys, ownerDevice);
     const memberForumEvent = inForum(member, memberKeys, memberDevice);
-    const startPost = async (cookie: string, sent: ReturnType<typeof ownerForumEvent>) => {
+    const startPost = async (cookie: string, sent: Awaited<ReturnType<typeof ownerForumEvent>>) => {
       const response = await request(`/api/channels/${forum.id}/forum/posts`, { method: 'POST', cookie, body: sent.body });
       assert.equal(response.status, 201, await response.clone().text());
       return (await json<{ message: { id: string } }>(response)).message.id;
     };
-    const memberPost = memberForumEvent({ type: 'message', refMessageId: null, refBinding: null, post: { postId: null, postBinding: null }, plaintext: 'Question\nbody' });
+    const memberPost = await memberForumEvent({ type: 'message', refMessageId: null, refBinding: null, post: { postId: null, postBinding: null }, plaintext: 'Question\nbody' });
     const memberPostId = await startPost(member.cookie, memberPost);
-    const otherPost = memberForumEvent({ type: 'message', refMessageId: null, refBinding: null, post: { postId: null, postBinding: null }, plaintext: 'Other\nbody' });
+    const otherPost = await memberForumEvent({ type: 'message', refMessageId: null, refBinding: null, post: { postId: null, postBinding: null }, plaintext: 'Other\nbody' });
     const otherPostId = await startPost(member.cookie, otherPost);
     const memberPostSigned = signedBy(member, memberPost);
     const otherPostSigned = signedBy(member, otherPost);
     const sendInForum = async (cookie: string, body: Record<string, unknown>) => request(`/api/channels/${forum.id}/messages`, {
       method: 'POST', cookie, body,
     });
-    const misplacedReply = ownerForumEvent({
+    const misplacedReply = await ownerForumEvent({
       type: 'message', refMessageId: null, refBinding: null, post: { postId: memberPostId, postBinding: otherPostSigned }, plaintext: 'answer',
     });
     assert.equal((await sendInForum(owner.cookie, misplacedReply.body)).status, 400);
-    const reply = ownerForumEvent({
+    const reply = await ownerForumEvent({
       type: 'message', refMessageId: null, refBinding: null, post: { postId: memberPostId, postBinding: memberPostSigned }, plaintext: 'answer',
     });
     const replyResponse = await sendInForum(owner.cookie, reply.body);
@@ -4299,7 +4268,7 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     assert.deepEqual(thread.data.map((event) => [event.id, event.postBinding]), [[replyEvent.id, memberPostSigned]]);
 
     // Editing the post names it twice: as the edited message and as the post.
-    const postEdit = memberForumEvent({
+    const postEdit = await memberForumEvent({
       type: 'edit', refMessageId: memberPostId, refBinding: memberPostSigned,
       post: { postId: memberPostId, postBinding: memberPostSigned }, plaintext: 'Question\nedited',
     });
@@ -4310,7 +4279,7 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     );
     const listedEdit = listed.data.find((entry) => entry.state.postId === memberPostId)?.latestEdit;
     assert.deepEqual([listedEdit?.refBinding, listedEdit?.postBinding], [memberPostSigned, memberPostSigned]);
-    const misplacedPostEdit = memberForumEvent({
+    const misplacedPostEdit = await memberForumEvent({
       type: 'edit', refMessageId: memberPostId, refBinding: memberPostSigned,
       post: { postId: memberPostId, postBinding: otherPostSigned }, plaintext: 'Question\nmisplaced',
     });
@@ -4318,10 +4287,138 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
       method: 'PUT', cookie: member.cookie, body: misplacedPostEdit.body,
     })).status, 400);
     // Signed for the other post, the same kind of reply belongs there.
-    const otherReply = ownerForumEvent({
+    const otherReply = await ownerForumEvent({
       type: 'message', refMessageId: null, refBinding: null, post: { postId: otherPostId, postBinding: otherPostSigned }, plaintext: 'answer',
     });
     assert.equal((await sendInForum(owner.cookie, otherReply.body)).status, 201);
+  });
+
+  it('takes each device\'s events in a channel in order and refuses what would let a client miss one (formal model M10)', async () => {
+    const ownerLogin = await request('/api/auth/login', {
+      method: 'POST', body: { email: 'unbound@example.test', password: 'Correct-Horse-Battery-9!' },
+    });
+    assert.equal(ownerLogin.status, 200);
+    const owner = {
+      cookie: ownerLogin.headers.get('set-cookie')!.split(';', 1)[0],
+      user: (await json<{ user: { id: string } }>(ownerLogin)).user,
+      password: 'Correct-Horse-Battery-9!',
+    };
+    const ownerKeys = deviceFixture();
+    const ownerDevice = await registerDevice(owner, ownerKeys, 'Sequence owner device');
+    const workspace = await json<{ id: string }>(await request('/api/workspaces', {
+      method: 'POST', cookie: owner.cookie, body: { name: 'Sequenced events' },
+    }));
+    const invitation = await createWorkspaceInvitation(workspace.id, owner.cookie, 'sequence-member@example.test');
+    const member = await createAccount('sequence-member@example.test', 'Correct-Horse-Battery-34!', 'Sequence Member', invitation.token);
+    const memberKeys = deviceFixture();
+    const memberDevice = await registerDevice(member, memberKeys, 'Sequence member device');
+    const general = (await json<Array<{ id: string; type: string }>>(
+      await request(`/api/workspaces/${workspace.id}/channels`, { cookie: owner.cookie }),
+    )).find((channel) => channel.type === 'text');
+    assert.ok(general);
+    const group = new ChannelGroup(general.id);
+    assert.equal((await group.create(
+      asGroupMember(owner.cookie, owner.user.id, ownerKeys, ownerDevice),
+      [asGroupMember(member.cookie, member.user.id, memberKeys, memberDevice)],
+    )).response!.status, 201);
+    const key = group.key(1);
+    type EventInput = Omit<Parameters<typeof encryptedBoundEvent>[0], 'channelId' | 'authorId' | 'deviceId' | 'privateKey' | 'key'>;
+    const ownerEvent = (input: EventInput) => encryptedBoundEvent({
+      ...input, channelId: general.id, authorId: owner.user.id, deviceId: ownerDevice.id, privateKey: ownerKeys.signingPrivateKey, key,
+    });
+    const memberEvent = (input: EventInput) => encryptedBoundEvent({
+      ...input, channelId: general.id, authorId: member.user.id, deviceId: memberDevice.id, privateKey: memberKeys.signingPrivateKey, key,
+    });
+    const send = (cookie: string, body: Record<string, unknown>) => request(`/api/channels/${general.id}/messages`, {
+      method: 'POST', cookie, body,
+    });
+    type Served = { id: string; deviceSeq: number | null; seenHeads: SignedEventHead[] | null; supersedes: string | null; createdAt: string };
+    const refusal = async (response: Response) => {
+      const body = await json<{ error: string; code?: string; expectedSequence?: number }>(response);
+      return [response.status, body.error, body.code ?? null, body.expectedSequence ?? null];
+    };
+
+    // The first event of a device in the channel is number 1, served as signed.
+    const first = await ownerEvent({ type: 'message', refMessageId: null, refBinding: null, plaintext: 'one' });
+    assert.equal(first.body.deviceSeq, 1);
+    const firstResponse = await send(owner.cookie, first.body);
+    assert.equal(firstResponse.status, 201, await firstResponse.clone().text());
+    const firstEvent = await json<Served>(firstResponse);
+    assert.deepEqual([firstEvent.deviceSeq, firstEvent.seenHeads, firstEvent.supersedes], [1, [], null]);
+    // The same request again is the same event, not a second one.
+    const repeated = await send(owner.cookie, first.body);
+    assert.equal(repeated.status, 201);
+    assert.equal((await json<Served>(repeated)).id, firstEvent.id);
+
+    // Another event under a number already taken, or past the next one, is
+    // refused with the number the server takes next.
+    const reused = await ownerEvent({ type: 'message', refMessageId: null, refBinding: null, plaintext: 'again one', sequence: { deviceSeq: 1 } });
+    assert.deepEqual(await refusal(await send(owner.cookie, reused.body)), [400, 'INVALID_MESSAGE', 'SEQUENCE_MISMATCH', 2]);
+    const skipped = await ownerEvent({ type: 'message', refMessageId: null, refBinding: null, plaintext: 'three', sequence: { deviceSeq: 3 } });
+    assert.deepEqual(await refusal(await send(owner.cookie, skipped.body)), [400, 'INVALID_MESSAGE', 'SEQUENCE_MISMATCH', 2]);
+    // The number is signed: a body that names another one does not verify.
+    const resigned = await ownerEvent({ type: 'message', refMessageId: null, refBinding: null, plaintext: 'two' });
+    assert.deepEqual((await refusal(await send(owner.cookie, { ...resigned.body, deviceSeq: 3 }))).slice(0, 2), [400, 'INVALID_MESSAGE']);
+    // A layout older than v6 is refused for every new event.
+    const older = encryptedCryptoEvent('message', general.id, null, owner.user.id, ownerDevice.id, ownerKeys.signingPrivateKey, key, 'old');
+    assert.deepEqual((await refusal(await send(owner.cookie, older.body))).slice(0, 2), [400, 'INVALID_MESSAGE']);
+    assert.deepEqual((await refusal(await send(owner.cookie, { ...older.body, deviceSeq: 2, seenHeads: [] }))).slice(0, 2), [400, 'INVALID_MESSAGE']);
+
+    // An event names what it saw; it must be stored in this channel under
+    // that device, number and signed key, and never its own device.
+    const firstHead = { deviceId: ownerDevice.id, deviceSeq: 1, idempotencyKey: first.body.idempotencyKey };
+    for (const seenHeads of [
+      [{ ...firstHead, deviceSeq: 5 }],
+      [{ ...firstHead, idempotencyKey: randomUUID() }],
+    ]) {
+      const wrong = await memberEvent({ type: 'message', refMessageId: null, refBinding: null, plaintext: 'seen?', sequence: { seenHeads } });
+      assert.deepEqual((await refusal(await send(member.cookie, wrong.body))).slice(0, 2), [400, 'INVALID_MESSAGE']);
+    }
+    // No client can sign a head of its own device (the layout has no form
+    // for it), so a request that names one is refused as unsigned.
+    const ownHead = await memberEvent({ type: 'message', refMessageId: null, refBinding: null, plaintext: 'own head' });
+    assert.deepEqual((await refusal(await send(member.cookie, {
+      ...ownHead.body, seenHeads: [{ deviceId: memberDevice.id, deviceSeq: 1, idempotencyKey: randomUUID() }],
+    }))).slice(0, 2), [400, 'INVALID_MESSAGE']);
+    const answer = await memberEvent({ type: 'message', refMessageId: null, refBinding: null, plaintext: 'saw one', sequence: { seenHeads: [firstHead] } });
+    const answerResponse = await send(member.cookie, answer.body);
+    assert.equal(answerResponse.status, 201, await answerResponse.clone().text());
+    const answerEvent = await json<Served>(answerResponse);
+    assert.deepEqual([answerEvent.deviceSeq, answerEvent.seenHeads], [1, [firstHead]]);
+    assert.ok(answerEvent.createdAt > firstEvent.createdAt, 'an event comes after what it saw');
+
+    // An edit replaces one version; a second edit of the same version is
+    // refused, so an older edit cannot become the latest.
+    const firstPair = { authorId: owner.user.id, idempotencyKey: first.body.idempotencyKey };
+    const edit = await ownerEvent({ type: 'edit', refMessageId: firstEvent.id, refBinding: firstPair, plaintext: 'one, edited' });
+    assert.equal(edit.envelope.supersedes, first.body.idempotencyKey);
+    const editResponse = await request(`/api/messages/${firstEvent.id}`, { method: 'PUT', cookie: owner.cookie, body: edit.body });
+    assert.equal(editResponse.status, 200, await editResponse.clone().text());
+    assert.equal((await json<Served>(editResponse)).supersedes, first.body.idempotencyKey);
+    const stale = await ownerEvent({
+      type: 'edit', refMessageId: firstEvent.id, refBinding: firstPair, plaintext: 'one, edited elsewhere',
+      sequence: { supersedes: first.body.idempotencyKey },
+    });
+    const staleResponse = await request(`/api/messages/${firstEvent.id}`, { method: 'PUT', cookie: owner.cookie, body: stale.body });
+    assert.deepEqual([staleResponse.status, (await json<{ error: string }>(staleResponse)).error], [409, 'EDIT_CONFLICT']);
+    const later = await ownerEvent({ type: 'edit', refMessageId: firstEvent.id, refBinding: firstPair, plaintext: 'one, edited twice' });
+    assert.equal(later.envelope.supersedes, edit.body.idempotencyKey);
+    assert.equal((await request(`/api/messages/${firstEvent.id}`, { method: 'PUT', cookie: owner.cookie, body: later.body })).status, 200);
+    const { supersedes: _supersedes, ...withoutSupersedes } = later.body;
+    assert.equal((await request(`/api/messages/${firstEvent.id}`, {
+      method: 'PUT', cookie: owner.cookie, body: { ...withoutSupersedes, idempotencyKey: randomUUID() },
+    })).status, 400);
+
+    // Every device's numbers run 1, 2, 3, … and the server's order keeps them.
+    const served = await json<{ data: Served[] }>(await request(`/api/channels/${general.id}/messages`, { cookie: owner.cookie }));
+    const ordered = [...served.data].reverse();
+    const byDevice = (deviceId: string) => ordered.filter((event) => (event as unknown as { deviceId: string }).deviceId === deviceId)
+      .map((event) => event.deviceSeq);
+    assert.deepEqual(byDevice(ownerDevice.id), [1, 2, 3]);
+    assert.deepEqual(byDevice(memberDevice.id), [1]);
+    for (let index = 1; index < ordered.length; index += 1) {
+      assert.ok(ordered[index].createdAt > ordered[index - 1].createdAt, 'times strictly increase in the channel');
+    }
   });
 
   it('keeps deleted messages and channels a member lost out of the pin and bookmark quotas', async () => {
@@ -4350,7 +4447,7 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     const group = new ChannelGroup(general.id);
     assert.equal((await group.create(asGroupMember(owner.cookie, owner.user.id, ownerKeys, ownerDevice))).response!.status, 201);
     const send = async (plaintext: string) => {
-      const sent = encryptedBoundEvent({
+      const sent = await encryptedBoundEvent({
         type: 'message', channelId: general.id, refMessageId: null, refBinding: null,
         authorId: owner.user.id, deviceId: ownerDevice.id, privateKey: ownerKeys.signingPrivateKey, key: group.key(1), plaintext,
       });
@@ -4381,14 +4478,14 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     const pinsFull = await pin(waiting.id);
     assert.equal(pinsFull.status, 409);
     assert.equal((await json<{ error: string }>(pinsFull)).error, 'PIN_LIMIT_REACHED');
-    const removal = encryptedBoundEvent({
+    const removal = await encryptedBoundEvent({
       type: 'delete', channelId: general.id, refMessageId: pinned.id,
       refBinding: { authorId: owner.user.id, idempotencyKey: pinned.idempotencyKey },
       authorId: owner.user.id, deviceId: ownerDevice.id, privateKey: ownerKeys.signingPrivateKey, key: group.key(1), plaintext: '',
     });
     assert.equal((await request(`/api/messages/${pinned.id}`, {
       method: 'DELETE', cookie: owner.cookie,
-      body: { deviceId: ownerDevice.id, keyVersion: 1, idempotencyKey: removal.body.idempotencyKey, signature: removal.body.signature },
+      body: deletionBody(removal),
     })).status, 200);
     assert.equal((await pin(waiting.id)).status, 200);
 
@@ -5514,8 +5611,8 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
       });
     }
 
-    function postMessage(device: GroupDevice, channelId: string, key: Buffer, keyVersion: number) {
-      const { body } = encryptedMessage(channelId, device.userId, device.id, device.keys.signingPrivateKey, key, 'hello', undefined, keyVersion);
+    async function postMessage(device: GroupDevice, channelId: string, key: Buffer, keyVersion: number) {
+      const { body } = await encryptedMessage(channelId, device.userId, device.id, device.keys.signingPrivateKey, key, 'hello', undefined, keyVersion);
       return request(`/api/channels/${channelId}/messages`, { method: 'POST', cookie: device.account.cookie, body });
     }
 
@@ -5756,7 +5853,7 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
       await client.end();
     }
     const { checkDatabaseSchema } = await import('../db/index.js');
-    assert.equal(await checkDatabaseSchema(), 27);
+    assert.equal(await checkDatabaseSchema(), 28);
   });
 
   it('never re-signs a shortened audit chain after the external checkpoint anchor is deleted', async () => {
@@ -6420,11 +6517,11 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
   }
 
   /** A message write at a key version, as POST /messages takes it. */
-  function groupMessage(device: MemberDevice, channelId: string, key: Buffer, keyVersion: number, text = 'group message') {
+  async function groupMessage(device: MemberDevice, channelId: string, key: Buffer, keyVersion: number, text = 'group message') {
     return request(`/api/channels/${channelId}/messages`, {
       method: 'POST',
       cookie: device.cookie,
-      body: encryptedMessage(channelId, device.userId, device.id, device.keys.signingPrivateKey, key, text, undefined, keyVersion).body,
+      body: (await encryptedMessage(channelId, device.userId, device.id, device.keys.signingPrivateKey, key, text, undefined, keyVersion)).body,
     });
   }
 
@@ -6544,7 +6641,48 @@ function wrapKey(raw: Buffer, identityKey: string): string {
   return publicEncrypt({ key, padding: constants.RSA_PKCS1_OAEP_PADDING, oaepHash: 'sha256' }, raw).toString('base64');
 }
 
-function encryptedMessage(
+/** v6 fields a test overrides to build a write the server must refuse. */
+interface SequenceOverride {
+  deviceSeq?: number;
+  seenHeads?: SignedEventHead[];
+  supersedes?: string | null;
+}
+
+let sequencePool: pg.Pool | null = null;
+
+/**
+ * The v6 fields of the next write of this device in this channel, read from
+ * the database the way a client keeps them: the device's next number and,
+ * for an edit, the signed key of the version it replaces (the message's
+ * latest edit, or the message). Tests send each event right after building it.
+ */
+async function nextSequenced(channelId: string, deviceId: string, editOf?: string | null): Promise<Required<SequenceOverride>> {
+  sequencePool ??= new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 2 });
+  const { rows } = await sequencePool.query<{ next: string }>(
+    'select coalesce(max(device_seq), 0) + 1 as next from messages where channel_id = $1 and device_id = $2',
+    [channelId, deviceId],
+  );
+  let supersedes: string | null = null;
+  if (editOf) {
+    const latest = await sequencePool.query<{ author_id: string; idempotency_key: string }>(
+      `select author_id, idempotency_key from messages
+        where (ref_message_id = $1 and type = 'edit') or id = $1
+        order by (id = $1) asc, created_at desc, id desc limit 1`,
+      [editOf],
+    );
+    const row = latest.rows[0];
+    supersedes = row ? row.idempotency_key.slice(row.idempotency_key.startsWith(`${row.author_id}:`) ? row.author_id.length + 1 : 0) : null;
+  }
+  return { deviceSeq: Number(rows[0].next), seenHeads: [], supersedes };
+}
+
+async function closeSequencePool(): Promise<void> {
+  await sequencePool?.end();
+  sequencePool = null;
+}
+
+/** A v6 message that names no other message. */
+async function encryptedMessage(
   channelId: string,
   authorId: string,
   deviceId: string,
@@ -6553,12 +6691,16 @@ function encryptedMessage(
   plaintext: string,
   idempotencyKey?: string,
   keyVersion = 1,
+  sequence: SequenceOverride = {},
 ) {
-  return encryptedCryptoEvent('message', channelId, null, authorId, deviceId, privateKey, key, plaintext, idempotencyKey, keyVersion);
+  return await encryptedBoundEvent({
+    type: 'message', channelId, refMessageId: null, refBinding: null, authorId, deviceId, privateKey, key, plaintext,
+    idempotencyKey, keyVersion, sequence,
+  });
 }
 
-/** An edit (v5): the edited message is named by its author and the idempotency key it was sent with. */
-function encryptedEdit(
+/** An edit (v6): the edited message is named by its author and the idempotency key it was sent with. */
+async function encryptedEdit(
   channelId: string,
   messageId: string,
   target: SignedEventReference,
@@ -6567,12 +6709,17 @@ function encryptedEdit(
   privateKey: import('node:crypto').KeyObject,
   key: Buffer,
   plaintext: string,
+  sequence: SequenceOverride = {},
 ) {
-  return encryptedBoundEvent({
-    type: 'edit', channelId, refMessageId: messageId, refBinding: target, authorId, deviceId, privateKey, key, plaintext,
+  return await encryptedBoundEvent({
+    type: 'edit', channelId, refMessageId: messageId, refBinding: target, authorId, deviceId, privateKey, key, plaintext, sequence,
   });
 }
 
+/**
+ * An event in a layout older than v6 (v2/v3), which the server refuses for
+ * every new write. Kept to check that refusal.
+ */
 function encryptedCryptoEvent(
   type: 'message' | 'edit',
   channelId: string,
@@ -6616,12 +6763,11 @@ function encryptedCryptoEvent(
 }
 
 /**
- * A forum event. The first message of a post keeps the v4 layout; every
- * event inside a post is v5, so it also names its post (and what it quotes,
- * edits or deletes) by author and signed idempotency key. Deletes carry no
- * ciphertext, like other deletes.
+ * A forum event (v6). Every forum event names its post by author and signed
+ * idempotency key (null for the post's first message), and what it quotes,
+ * edits or deletes. Deletes carry no ciphertext, like other deletes.
  */
-function encryptedForumEvent(input: {
+async function encryptedForumEvent(input: {
   type: 'message' | 'edit' | 'delete';
   channelId: string;
   refMessageId: string | null;
@@ -6634,59 +6780,24 @@ function encryptedForumEvent(input: {
   privateKey: import('node:crypto').KeyObject;
   key: Buffer;
   plaintext: string;
+  sequence?: SequenceOverride;
 }) {
-  if (input.refMessageId !== null || input.postId !== null) {
-    if ((input.refMessageId !== null && !input.refBinding) || (input.postId !== null && !input.postBinding)) {
-      throw new Error('a forum event inside a post needs the signed pairs of what it names');
-    }
-    return encryptedBoundEvent({
-      ...input,
-      refBinding: input.refMessageId !== null ? input.refBinding! : null,
-      post: { postId: input.postId, postBinding: input.postId !== null ? input.postBinding! : null },
-    });
+  if ((input.refMessageId !== null && !input.refBinding) || (input.postId !== null && !input.postBinding)) {
+    throw new Error('a forum event inside a post needs the signed pairs of what it names');
   }
-  const idempotencyKey = randomUUID();
-  const unsigned = {
-    type: input.type,
-    channelId: input.channelId,
-    authorId: input.authorId,
-    deviceId: input.deviceId,
-    keyVersion: 1,
-    idempotencyKey,
-    refMessageId: input.refMessageId,
-    broadcastMention: false,
-    postId: input.postId,
-  };
-  let encryptedContent = '';
-  let contentNonce = '';
-  if (input.type !== 'delete') {
-    const nonce = randomBytes(12);
-    const cipher = createCipheriv('aes-256-gcm', input.key, nonce);
-    cipher.setAAD(Buffer.from(serializeMessageAad(unsigned)));
-    encryptedContent = Buffer.concat([cipher.update(input.plaintext, 'utf8'), cipher.final(), cipher.getAuthTag()]).toString('base64');
-    contentNonce = nonce.toString('base64');
-  }
-  const envelope: SignedMessageEnvelope = { ...unsigned, encryptedContent, contentNonce };
-  return {
-    envelope,
-    body: {
-      encryptedContent,
-      contentNonce,
-      deviceId: input.deviceId,
-      keyVersion: 1,
-      idempotencyKey,
-      broadcastMention: false,
-      signature: signEnvelope(envelope, input.privateKey),
-      ...(input.postId ? { postId: input.postId } : {}),
-    },
-  };
+  return await encryptedBoundEvent({
+    ...input,
+    refBinding: input.refMessageId !== null ? input.refBinding! : null,
+    post: { postId: input.postId, postBinding: input.postId !== null ? input.postBinding! : null },
+  });
 }
 
 /**
- * A v5 event: what refMessageId and (in a forum) postId name is signed as
- * those events' authors signed them. Deletes carry no ciphertext.
+ * A v6 event: what refMessageId and (in a forum) postId name is signed as
+ * those events' authors signed them, with the device's next number and, for
+ * an edit, the version it replaces. Deletes carry no ciphertext.
  */
-function encryptedBoundEvent(input: {
+async function encryptedBoundEvent(input: {
   type: 'message' | 'edit' | 'delete';
   channelId: string;
   refMessageId: string | null;
@@ -6698,19 +6809,30 @@ function encryptedBoundEvent(input: {
   privateKey: import('node:crypto').KeyObject;
   key: Buffer;
   plaintext: string;
+  idempotencyKey?: string;
+  keyVersion?: number;
+  sequence?: SequenceOverride;
 }) {
-  const idempotencyKey = randomUUID();
+  const idempotencyKey = input.idempotencyKey ?? randomUUID();
+  const keyVersion = input.keyVersion ?? 1;
+  const sequence = {
+    ...await nextSequenced(input.channelId, input.deviceId, input.type === 'edit' ? input.refMessageId : null),
+    ...input.sequence,
+  };
   const unsigned = {
     type: input.type,
     channelId: input.channelId,
     authorId: input.authorId,
     deviceId: input.deviceId,
-    keyVersion: 1,
+    keyVersion,
     idempotencyKey,
     refMessageId: input.refMessageId,
     broadcastMention: false,
     refBinding: input.refBinding,
     ...(input.post ? { postId: input.post.postId, postBinding: input.post.postBinding } : {}),
+    deviceSeq: sequence.deviceSeq,
+    seenHeads: sequence.seenHeads,
+    supersedes: sequence.supersedes,
   };
   let encryptedContent = '';
   let contentNonce = '';
@@ -6728,10 +6850,13 @@ function encryptedBoundEvent(input: {
       encryptedContent,
       contentNonce,
       deviceId: input.deviceId,
-      keyVersion: 1,
+      keyVersion,
       idempotencyKey,
       broadcastMention: false,
       signature: signEnvelope(envelope, input.privateKey),
+      deviceSeq: sequence.deviceSeq,
+      seenHeads: sequence.seenHeads,
+      ...(input.type === 'edit' ? { supersedes: sequence.supersedes } : {}),
       ...(input.type === 'message' && input.refMessageId ? { refMessageId: input.refMessageId } : {}),
       ...(input.post?.postId ? { postId: input.post.postId } : {}),
     },
@@ -6819,6 +6944,12 @@ function signedAttachmentFinalizeBody(input: {
 
 function pick(object: Record<string, unknown>, keys: string[]): Record<string, unknown> {
   return Object.fromEntries(keys.map((key) => [key, object[key]]));
+}
+
+/** The request body of a signed deletion (DELETE /messages/:id carries no ciphertext). */
+function deletionBody(event: Awaited<ReturnType<typeof encryptedBoundEvent>>) {
+  const { encryptedContent: _content, contentNonce: _nonce, broadcastMention: _mention, ...body } = event.body;
+  return body;
 }
 
 function signEnvelope(envelope: SignedMessageEnvelope, privateKey: import('node:crypto').KeyObject): string {

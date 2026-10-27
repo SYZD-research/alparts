@@ -11,7 +11,7 @@ import {
   type OutboxStorageContext,
 } from '../services/local-state.service';
 import { ApiError } from '../services/api';
-import { signedReferenceOf, useMessageStore } from './message.store';
+import { noteSequenceRefusal, signedReferenceOf, useMessageStore } from './message.store';
 import {
   createOutboxCommand,
   isKeyRefusal,
@@ -297,6 +297,8 @@ export const useOutboxStore = create<OutboxState>((set, get) => ({
           // of this message was stored, so it has been delivered.
           if (error instanceof ApiError && error.code === 'IDEMPOTENCY_CONFLICT') break;
           if (!(error instanceof ApiError && error.status === 400 && isOutboxLifecycleCurrent(lifecycle))) throw error;
+          // The number the server takes next from this device, if that was the refusal.
+          noteSequenceRefusal(current.channelId, error);
           // Refused as sent: seal it afresh. Only a refusal a newer key
           // resolves is sealed again at once, a few times; anything else
           // waits for the next retry.

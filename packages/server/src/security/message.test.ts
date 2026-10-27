@@ -259,6 +259,75 @@ describe('signed message envelopes', () => {
     }
   });
 
+  it('keeps the v6 serialization vectors stable and binds the event\'s number, heads and replaced version (formal model M10)', () => {
+    const keys = fixture();
+    const target = { authorId: '00000000-0000-4000-8000-000000000004', idempotencyKey: '00000000-0000-4000-8000-000000000006' };
+    const head = { deviceId: '00000000-0000-4000-8000-00000000000a', deviceSeq: 4, idempotencyKey: '00000000-0000-4000-8000-00000000000b' };
+    const edit: SignedMessageEnvelope = {
+      type: 'edit',
+      channelId: '00000000-0000-4000-8000-000000000001',
+      authorId: '00000000-0000-4000-8000-000000000004',
+      deviceId: '00000000-0000-4000-8000-000000000002',
+      encryptedContent: 'Y2lwaGVydGV4dA==',
+      contentNonce: 'AAAAAAAAAAAAAAAA',
+      keyVersion: 7,
+      idempotencyKey: '00000000-0000-4000-8000-000000000003',
+      refMessageId: '00000000-0000-4000-8000-000000000005',
+      broadcastMention: false,
+      refBinding: target,
+      deviceSeq: 12,
+      seenHeads: [head],
+      supersedes: '00000000-0000-4000-8000-000000000006',
+    };
+    assert.equal(
+      serializeMessageAad(edit),
+      '[6,"text","edit","00000000-0000-4000-8000-000000000001","00000000-0000-4000-8000-000000000004","00000000-0000-4000-8000-000000000002",7,"00000000-0000-4000-8000-000000000003",["00000000-0000-4000-8000-000000000005","00000000-0000-4000-8000-000000000004","00000000-0000-4000-8000-000000000006"],null,false,12,[["00000000-0000-4000-8000-00000000000a",4,"00000000-0000-4000-8000-00000000000b"]],"00000000-0000-4000-8000-000000000006"]',
+    );
+    assert.equal(
+      serializeMessageEnvelope(edit),
+      '[6,"text","edit","00000000-0000-4000-8000-000000000001","00000000-0000-4000-8000-000000000004","00000000-0000-4000-8000-000000000002",7,"00000000-0000-4000-8000-000000000003",["00000000-0000-4000-8000-000000000005","00000000-0000-4000-8000-000000000004","00000000-0000-4000-8000-000000000006"],null,false,12,[["00000000-0000-4000-8000-00000000000a",4,"00000000-0000-4000-8000-00000000000b"]],"00000000-0000-4000-8000-000000000006","AAAAAAAAAAAAAAAA","Y2lwaGVydGV4dA=="]',
+    );
+    const post: SignedMessageEnvelope = {
+      ...edit, type: 'message', refMessageId: null, refBinding: null, postId: null, postBinding: null, seenHeads: [], supersedes: null,
+    };
+    assert.equal(
+      serializeMessageAad(post),
+      '[6,"forum","message","00000000-0000-4000-8000-000000000001","00000000-0000-4000-8000-000000000004","00000000-0000-4000-8000-000000000002",7,"00000000-0000-4000-8000-000000000003",null,null,false,12,[],null]',
+    );
+
+    const signature = sign('sha256', Buffer.from(serializeMessageEnvelope(edit)), {
+      key: keys.signingPrivateKey,
+      dsaEncoding: 'ieee-p1363',
+    }).toString('base64');
+    assert.equal(verifyMessageEnvelopeSignature(keys.identityKey, edit, signature), true);
+    // Each v6 field is signed, the layout never shares bytes with v5, and a
+    // malformed field cannot be signed at all.
+    for (const tampered of [
+      { ...edit, deviceSeq: 13 },
+      { ...edit, seenHeads: [] },
+      { ...edit, seenHeads: [{ ...head, deviceSeq: 5 }] },
+      { ...edit, seenHeads: [{ ...head, idempotencyKey: '00000000-0000-4000-8000-000000000099' }] },
+      { ...edit, supersedes: '00000000-0000-4000-8000-000000000099' },
+      { ...edit, deviceSeq: undefined, seenHeads: undefined, supersedes: undefined },
+    ] satisfies SignedMessageEnvelope[]) {
+      assert.equal(verifyMessageEnvelopeSignature(keys.identityKey, tampered, signature), false);
+    }
+    for (const malformed of [
+      { ...edit, deviceSeq: 0 },
+      { ...edit, deviceSeq: 1.5 },
+      { ...edit, seenHeads: [{ ...head, deviceId: edit.deviceId }] },
+      { ...edit, seenHeads: [head, head] },
+      { ...edit, seenHeads: Array.from({ length: 9 }, (_, index) => ({ ...head, deviceId: `00000000-0000-4000-8000-0000000001${String(index).padStart(2, '0')}` })) },
+      { ...edit, supersedes: null },
+      { ...post, supersedes: '00000000-0000-4000-8000-000000000006' },
+      { ...edit, refBinding: undefined },
+      { ...post, postBinding: undefined },
+      { ...edit, deviceSeq: undefined },
+    ] satisfies SignedMessageEnvelope[]) {
+      assert.throws(() => serializeMessageEnvelope(malformed), /INVALID_(SEQUENCED|BOUND)_ENVELOPE/);
+    }
+  });
+
   it('rejects v5 envelopes whose references and bindings disagree', () => {
     const base: SignedMessageEnvelope = {
       type: 'edit',

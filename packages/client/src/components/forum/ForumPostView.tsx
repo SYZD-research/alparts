@@ -37,6 +37,7 @@ export function ForumPostView({ channelId, postId, sendDisabled }: Props) {
   const setResolved = useForumStore((state) => state.setResolved);
   const setPostTags = useForumStore((state) => state.setPostTags);
   const messages = useMessageStore((state) => state.messagesByChannel[channelId] || EMPTY_MESSAGES);
+  const sequenceNotice = useMessageStore((state) => state.sequenceNotices[channelId] ?? null);
   const baseRoot = useMessageStore((state) => state.eventsByChannel[channelId]?.find((event) => event.id === postId && event.type === 'message'));
   const editMessage = useMessageStore((state) => state.editMessage);
   const deleteMessage = useMessageStore((state) => state.deleteMessage);
@@ -240,6 +241,10 @@ export function ForumPostView({ channelId, postId, sendDisabled }: Props) {
                     <MessageContent content={display.body} members={members} currentUserId={currentUserId} authenticatedBroadcastMention={root?.broadcastMention === true} />
                   </div>
                 )}
+                {(root?.sequenceNotice === 'order' || sequenceNotice === 'order') && (
+                  <p role="note" className="mt-2 text-xs text-warning">{t('このチャンネルのメッセージは表示順が正しくない可能性があります')}</p>
+                )}
+                {root?.editUncertain && <p role="note" className="mt-2 text-xs text-warning">{t('このメッセージの最新の内容を確認できません')}</p>}
                 {root?.attachments?.map((attachment) => (
                   <AttachmentItem key={attachment.id} attachment={attachment} message={baseRoot || root} />
                 ))}

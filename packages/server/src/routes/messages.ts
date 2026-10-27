@@ -21,6 +21,7 @@ import {
 import { logError } from '../security/logger.js';
 import { keyWriteErrorDetails } from '../security/key-write-errors.js';
 import { canonicalUuid } from '../security/canonical-id.js';
+import { sequencedEventFields, supersedesField } from '../security/message-sequence.js';
 
 const router = Router();
 const ciphertextMax = Math.ceil((MAX_PADDED_MESSAGE_BYTES + 16) / 3) * 4;
@@ -32,6 +33,7 @@ const cryptoFields = {
   keyVersion: z.number().int().min(1).max(1_000_000),
   idempotencyKey: canonicalUuid,
   signature,
+  ...sequencedEventFields,
 };
 // Forum channels: the post a reply, edit or delete belongs to (signed in v4).
 // Posts themselves are started through the forum routes.
@@ -54,6 +56,7 @@ const editMessageSchema = z.object({
   broadcastMention: z.boolean(),
   postId,
   ...cryptoFields,
+  ...supersedesField,
 }).strict();
 const deleteMessageSchema = z.object({ ...cryptoFields, postId }).strict();
 const reactionSchema = z.object({ emoji: z.string().min(1).max(10) }).strict();
@@ -90,6 +93,9 @@ router.post('/channels/:id/messages', authMiddleware, requireChannelPermission(P
       signature: body.signature,
       broadcastMention: body.broadcastMention,
       postId: body.postId,
+      deviceSeq: body.deviceSeq,
+      seenHeads: body.seenHeads,
+      supersedes: null,
     }, body.refMessageId, body.mentionedUserIds);
     const io = getSocketServer(req);
     if (io && result.isNewEvent) broadcastMessageCreated(io, result.event, result.attentionRecipients, result.forumPost);
@@ -108,7 +114,7 @@ router.post('/channels/:id/messages', authMiddleware, requireChannelPermission(P
       return;
     }
     if (isInvalidCryptoRequest(error)) {
-      res.status(400).json({ error: 'INVALID_MESSAGE', message: 'Invalid encrypted message', statusCode: 400, ...keyWriteErrorDetails(error) });
+      res.status(400).json({ error: 'INVALID_MESSAGE', message: 'Invalid encrypted message', statusCode: 400, ...writeErrorDetails(error) });
       return;
     }
     throw error;
@@ -132,12 +138,16 @@ router.put('/messages/:id', authMiddleware, requireMessagePermission(Permissions
       res.status(403).json({ error: 'FORBIDDEN', message: 'Not authorized to edit this message', statusCode: 403 });
       return;
     }
+    if (error.message === 'EDIT_CONFLICT') {
+      res.status(409).json({ error: 'EDIT_CONFLICT', message: 'The message was edited in the meantime', statusCode: 409 });
+      return;
+    }
     if (error.message === 'IDEMPOTENCY_CONFLICT') {
       res.status(409).json({ error: 'IDEMPOTENCY_CONFLICT', message: 'Idempotency key was already used', statusCode: 409 });
       return;
     }
     if (isInvalidCryptoRequest(error)) {
-      res.status(400).json({ error: 'INVALID_MESSAGE', message: 'Invalid encrypted message', statusCode: 400, ...keyWriteErrorDetails(error) });
+      res.status(400).json({ error: 'INVALID_MESSAGE', message: 'Invalid encrypted message', statusCode: 400, ...writeErrorDetails(error) });
       return;
     }
     throw error;
@@ -153,6 +163,7 @@ router.delete('/messages/:id', authMiddleware, requireMessagePermission(Permissi
       encryptedContent: '',
       contentNonce: '',
       broadcastMention: false,
+      supersedes: null,
     });
     const payload = { messageId: result.messageId, channelId: result.channelId, event: result.event };
     const io = getSocketServer(req);
@@ -172,7 +183,7 @@ router.delete('/messages/:id', authMiddleware, requireMessagePermission(Permissi
       return;
     }
     if (isInvalidCryptoRequest(error)) {
-      res.status(400).json({ error: 'INVALID_MESSAGE', message: 'Invalid signed deletion', statusCode: 400, ...keyWriteErrorDetails(error) });
+      res.status(400).json({ error: 'INVALID_MESSAGE', message: 'Invalid signed deletion', statusCode: 400, ...writeErrorDetails(error) });
       return;
     }
     throw error;
@@ -274,7 +285,12 @@ function getSocketServer(req: AuthRequest): SocketServer | undefined {
   return req.app.get('io') as SocketServer | undefined;
 }
 
-function isInvalidCryptoRequest(error: any): boolean {
+/** Why an encrypted write was refused, when a client can act on it (key state or the device's next number). */
+export function writeErrorDetails(error: unknown) {
+  return { ...keyWriteErrorDetails(error), ...messageService.sequenceErrorDetails(error) };
+}
+
+export function isInvalidCryptoRequest(error: any): boolean {
   return error?.name === 'ZodError' || [
     'DEVICE_MISMATCH',
     'INVALID_DEVICE',
@@ -284,6 +300,7 @@ function isInvalidCryptoRequest(error: any): boolean {
     'INVALID_SIGNATURE',
     'INVALID_REFERENCE',
     'BROADCAST_MENTION_FORBIDDEN',
+    'SEQUENCE_MISMATCH',
   ].includes(error?.message);
 }
 

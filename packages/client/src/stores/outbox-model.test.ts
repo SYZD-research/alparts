@@ -74,14 +74,16 @@ describe('outbox command', () => {
 
 describe('stored signed request (SQ-23)', () => {
   const command = createOutboxCommand({ channelId: 'channel-1', content: 'hello' }, () => 'key-1', () => '2026-01-01T00:00:00.000Z');
+  const heads = [{ deviceId: 'other-device', deviceSeq: 4, idempotencyKey: 'seen-key' }];
   const sealed = {
     envelope: {
       type: 'message', channelId: 'channel-1', authorId: 'user', deviceId: 'device', encryptedContent: 'ciphertext',
       contentNonce: 'nonce', keyVersion: 2, idempotencyKey: 'key-1', refMessageId: null, broadcastMention: false,
+      refBinding: null, deviceSeq: 7, seenHeads: heads, supersedes: null,
     },
     request: {
       encryptedContent: 'ciphertext', contentNonce: 'nonce', deviceId: 'device', keyVersion: 2,
-      idempotencyKey: 'key-1', signature: 'signature', broadcastMention: false,
+      idempotencyKey: 'key-1', signature: 'signature', broadcastMention: false, deviceSeq: 7, seenHeads: heads,
     },
   };
 
@@ -94,9 +96,26 @@ describe('stored signed request (SQ-23)', () => {
     expect(parseOutboxCommand({ ...command, sealed: { ...sealed, envelope: { ...sealed.envelope, channelId: 'channel-2' } } })).toBeNull();
     expect(parseOutboxCommand({ ...command, sealed: { ...sealed, request: { ...sealed.request, encryptedContent: 'other' } } })).toBeNull();
     expect(parseOutboxCommand({ ...command, sealed: { ...sealed, request: { ...sealed.request, postId: 'post' } } })).toBeNull();
+    // The number and the heads are signed: a request that carries others does not match.
+    expect(parseOutboxCommand({ ...command, sealed: { ...sealed, request: { ...sealed.request, deviceSeq: 8 } } })).toBeNull();
+    expect(parseOutboxCommand({ ...command, sealed: { ...sealed, request: { ...sealed.request, seenHeads: [] } } })).toBeNull();
+    expect(parseOutboxCommand({ ...command, sealed: { ...sealed, envelope: { ...sealed.envelope, supersedes: 'k' } } })).toBeNull();
+    expect(parseOutboxCommand({
+      ...command,
+      sealed: { envelope: { ...sealed.envelope, seenHeads: [{ ...heads[0], deviceId: 'device' }] }, request: { ...sealed.request, seenHeads: [{ ...heads[0], deviceId: 'device' }] } },
+    })).toBeNull();
   });
 
-  it('keeps the quoted message as its author signed it, and only a well-formed v5 binding', () => {
+  it('keeps a message sealed by an earlier version and seals it again (the server refuses older layouts)', () => {
+    const { refBinding: _ref, deviceSeq: _seq, seenHeads: _heads, supersedes: _supersedes, ...olderEnvelope } = sealed.envelope;
+    const { deviceSeq: _requestSeq, seenHeads: _requestHeads, ...olderRequest } = sealed.request;
+    const parsed = parseOutboxCommand({ ...command, sealed: { envelope: olderEnvelope, request: olderRequest } });
+    expect(parsed).not.toBeNull();
+    expect(parsed!.sealed).toBeUndefined();
+    expect(parsed!.content).toBe('hello');
+  });
+
+  it('keeps the quoted message as its author signed it, and only a well-formed binding', () => {
     const target = '00000000-0000-4000-8000-000000000001';
     const refBinding = { authorId: 'author', idempotencyKey: 'target-key' };
     const quoting = createOutboxCommand({ channelId: 'channel-1', content: 'hi', refMessageId: target, refBinding },
@@ -110,7 +129,6 @@ describe('stored signed request (SQ-23)', () => {
     };
     expect(parseOutboxCommand({ ...quoting, sealed: bound })?.sealed).toEqual(bound);
     expect(parseOutboxCommand({ ...quoting, sealed: { ...bound, envelope: { ...bound.envelope, refBinding: null } } })).toBeNull();
-    expect(parseOutboxCommand({ ...command, sealed: { ...sealed, envelope: { ...sealed.envelope, refBinding: null } } })?.sealed)
-      .toEqual({ ...sealed, envelope: { ...sealed.envelope, refBinding: null } });
+    expect(parseOutboxCommand({ ...command, sealed: { ...sealed, envelope: { ...sealed.envelope, refBinding: refBinding } } })).toBeNull();
   });
 });

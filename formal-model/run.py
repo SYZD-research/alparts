@@ -30,6 +30,7 @@ MODELS = {
     'M7': ('m7_forums', 'forum posts, replies and moderation'),
     'M8': ('m8_voice', 'voice calls: room grants, call registries and the SFU'),
     'M9': ('m9_messages', 'message events from a malicious server'),
+    'M10': ('m10_ordering', 'withheld and reordered message events'),
 }
 
 
