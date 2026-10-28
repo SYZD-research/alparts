@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -13,9 +13,10 @@ const lockedBy = (pid: number) => (error: unknown) => error instanceof SetupErro
 test('a second run is refused while the first holds the lock, and admitted once it lets go', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'alparts-lock-'));
   try {
-    // The directory that holds the lock is made when it is missing.
+    // The directory that holds the lock is made when it is missing, and only its owner can enter it.
     const path = join(dir, 'run', 'setup.lock');
     const release = await acquireLock(path);
+    assert.equal(statSync(join(dir, 'run')).mode & 0o777, 0o700);
     await assert.rejects(acquireLock(path), lockedBy(process.pid));
     await release();
     await (await acquireLock(path))();

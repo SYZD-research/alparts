@@ -100,12 +100,15 @@ export async function checkSmtp(options: SmtpOptions): Promise<SmtpCheck> {
     if (options.security === 'tls') {
       socket = await new Promise<TLSSocket>((resolve, reject) => {
         const tls = tlsConnect(tlsOptions, () => resolve(tls));
+        // Set at once, so the timer can end a handshake that never finishes.
+        socket = tls;
         tls.once('error', (error) => reject(new Step(isCertificateError(error) ? 'tls' : 'connect', error.message)));
       });
       reader.attach(socket);
     } else {
       socket = await new Promise<Socket>((resolve, reject) => {
         const tcp = tcpConnect({ host: options.host, port: options.port }, () => resolve(tcp));
+        socket = tcp;
         tcp.once('error', (error) => reject(new Step('connect', error.message)));
       });
       reader.attach(socket);

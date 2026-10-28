@@ -56,7 +56,7 @@ export function systemPaths(root = '/', repo = repositoryRoot()): Paths {
     backupDir: join(stateDir, 'backups'),
     backupWorkDir: join(stateDir, 'backup-work'),
     logDir: join(root, 'var', 'log', PROJECT_NAME),
-    lockFile: join(root, 'run', `${PROJECT_NAME}-setup.lock`),
+    lockFile: join(root, 'run', PROJECT_NAME, 'setup.lock'),
     systemdDir: join(root, 'etc', 'systemd', 'system'),
   };
 }

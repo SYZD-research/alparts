@@ -179,17 +179,26 @@ export class Docker {
    */
   runOnce(service: string, command: string[], options: RunOptions & { profiles?: string[]; environment?: Record<string, string>; entrypoint?: string } = {}): Promise<RunResult> {
     if (this.stopped) return Promise.reject(new Error(`interrupted before ${service} could run`));
-    const { environment = {}, entrypoint, profiles, ...runOptions } = options;
+    const { environment = {}, entrypoint, profiles, timeoutMs, ...runOptions } = options;
     const container = `${PROJECT_NAME}-${service}-run-${randomBytes(6).toString('hex')}`;
     const flags = ['run', '--rm', '--no-deps', '-T', '--name', container, ...(entrypoint !== undefined ? ['--entrypoint', entrypoint] : [])];
     for (const [name, value] of Object.entries(environment)) flags.push('-e', `${name}=${value}`);
+    // At the time limit the container itself is stopped: told to stop, a client can leave it going, or wait on it.
+    const limit = timeoutMs ? setTimeout(() => void this.removeContainers([container]), timeoutMs) : null;
     // A command that fails, runs out of time or is cut short can leave its container going, which must not outlive it.
-    const running = this.compose([...flags, service, ...command], { ...runOptions, profiles }).then(
+    const running = this.compose([...flags, service, ...command], {
+      ...runOptions,
+      profiles,
+      // The last resort, for a client that does not end once its container is gone.
+      ...(timeoutMs ? { timeoutMs: timeoutMs + 120_000 } : {}),
+    }).then(
       async (result) => {
+        if (limit) clearTimeout(limit);
         if (result.code !== 0) await this.removeContainers([container]);
         return result;
       },
       async (error: unknown) => {
+        if (limit) clearTimeout(limit);
         await this.removeContainers([container]);
         throw error;
       },
@@ -202,8 +211,9 @@ export class Docker {
 
   /**
    * Stops and removes containers by name; the ones that are already gone are
-   * skipped. Each command has a time limit, so that a Docker that does not
-   * answer cannot hold an undo step or an interruption up.
+   * skipped. Both commands have time limits, so that a Docker that does not
+   * answer cannot keep a failed command or an interruption waiting here. The
+   * undo steps that follow (starting the app again) still wait on Docker.
    */
   private async removeContainers(names: string[]): Promise<void> {
     await this.run('docker', ['stop', '--time', '30', ...names], { check: false, timeoutMs: 60_000 }).catch(() => undefined);

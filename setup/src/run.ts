@@ -9,7 +9,10 @@ export interface RunOptions {
   /** Removed from the inherited environment. */
   clearEnv?: (name: string) => boolean;
   cwd?: string;
+  /** Asks the command to stop (SIGTERM) after this long. */
   timeoutMs?: number;
+  /** Once asked to stop, how long the command has before it is killed (default 10 seconds). */
+  graceMs?: number;
   /** Throw on a non-zero exit (default). */
   check?: boolean;
   /** Let the child use this terminal, for commands the operator watches (logs -f). */
@@ -72,13 +75,22 @@ export function createRunner(log: RunLog): Runner {
       child.stdin.on('error', () => undefined);
       child.stdin.end(options.input ?? '');
     }
-    const timer = options.timeoutMs ? setTimeout(() => child.kill('SIGTERM'), options.timeoutMs) : null;
-    child.on('error', (error) => {
+    let kill: ReturnType<typeof setTimeout> | null = null;
+    const timer = options.timeoutMs ? setTimeout(() => {
+      child.kill('SIGTERM');
+      // A command that ignores the request is killed, so that its caller does not wait for ever.
+      kill = setTimeout(() => child.kill('SIGKILL'), options.graceMs ?? 10_000);
+    }, options.timeoutMs) : null;
+    const clearTimers = () => {
       if (timer) clearTimeout(timer);
+      if (kill) clearTimeout(kill);
+    };
+    child.on('error', (error) => {
+      clearTimers();
       reject(error);
     });
     child.on('close', (code, signal) => {
-      if (timer) clearTimeout(timer);
+      clearTimers();
       const result = { code: code ?? (signal ? 128 : 1), stdout, stderr };
       log.event(`exit ${result.code}${signal ? ` (${signal})` : ''}`);
       if (result.code !== 0 && options.check !== false) reject(new CommandError(command, result));

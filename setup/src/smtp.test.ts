@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { createServer, type AddressInfo, type Socket } from 'node:net';
 import { test } from 'node:test';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { createServer as createTlsServer, TLSSocket } from 'node:tls';
 import { checkSmtp } from './smtp.ts';
 import { createCertificateAuthority, issueServerCertificate } from './x509.ts';
@@ -107,4 +108,25 @@ test('a closed port is reported as a connection problem', async () => {
   server.close();
   const result = await checkSmtp({ host: '127.0.0.1', port, security: 'starttls', user: null, password: null, timeoutMs: 2000 });
   assert.equal(!result.ok && result.reason, 'connect');
+});
+
+test('a server that takes the connection and never answers is given up on in time', async () => {
+  const held: Socket[] = [];
+  const server = createServer((socket) => void held.push(socket));
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const { port } = server.address() as AddressInfo;
+  try {
+    // With implicit TLS the handshake never ends; with STARTTLS the greeting never comes.
+    for (const security of ['tls', 'starttls'] as const) {
+      const check = checkSmtp({ host: '127.0.0.1', port, security, user: null, password: null, timeoutMs: 300 });
+      const result = await Promise.race([check, sleep(5000).then(() => 'still waiting' as const)]);
+      assert.notEqual(result, 'still waiting', security);
+      assert.equal(result !== 'still waiting' && !result.ok && result.reason, 'connect', security);
+    }
+  } finally {
+    // Ends a check that would otherwise wait for ever.
+    for (const socket of held) socket.destroy();
+    server.close();
+  }
 });

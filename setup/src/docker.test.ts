@@ -38,7 +38,11 @@ const nameOf = (call: string[]) => call[call.indexOf('--name') + 1]!;
 const removal = (name: string) => [['docker', 'stop', '--time', '30', name], ['docker', 'rm', '--force', name]];
 
 async function until(check: () => boolean): Promise<void> {
-  while (!check()) await new Promise((resolve) => setTimeout(resolve, 5));
+  const deadline = Date.now() + 5000;
+  while (!check()) {
+    if (Date.now() > deadline) throw new Error('what the test waits for never happened');
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
 }
 
 test('a one-off container whose command fails or runs out of time is stopped and removed', async () => {
@@ -79,4 +83,16 @@ test('an interruption stops the one-off containers of its own run, then starts n
   const count = ours.calls.length;
   await assert.rejects(ours.docker.runOnce('migrator', []), /interrupted/);
   assert.equal(ours.calls.length, count);
+});
+
+test('a one-off container is stopped at its time limit, even while its client does not end', async () => {
+  const { calls, limits, pending, docker } = fakeDocker();
+  const running = docker.runOnce('backup', ['/opt/alparts/scripts/backup.sh'], { timeoutMs: 20, check: false });
+  const name = nameOf(calls[0]!);
+  await until(() => calls.length >= 3);
+  assert.deepEqual(calls.slice(1, 3), removal(name));
+  // The client has its own, later limit, for when it does not end on its own.
+  assert.equal(limits[0], 120_020);
+  pending[0]!.resolve({ code: 137, stdout: '', stderr: '' });
+  assert.equal((await running).code, 137);
 });

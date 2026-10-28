@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import type { Socket } from 'node:net';
 import { dirname } from 'node:path';
 import type { Docker } from './docker.ts';
@@ -75,13 +75,16 @@ export class Cancelled extends Error {
 
 /**
  * Keeps two runs (an update and the nightly backup, say) from working on the
- * deployment at once. A `flock` child holds a kernel lock on the root-only
- * lock file for as long as this process lives: however this process ends, the
- * child's input closes, it exits, and the kernel releases the lock, so no
- * stale lock is ever left to take over. Release resolves once it is free.
+ * deployment at once. A `flock` child holds a kernel lock on the lock file for
+ * as long as this process lives: however this process ends, the child's input
+ * closes, it exits, and the kernel releases the lock, so no stale lock is ever
+ * left to take over. Release resolves once it is free.
  */
 export async function acquireLock(path: string): Promise<() => Promise<void>> {
-  mkdirSync(dirname(path), { recursive: true, mode: 0o755 });
+  // Any user who can open a file can lock it, so the file sits in a directory only its owner (root) can enter:
+  // otherwise another local user could hold the lock and keep the setup and the nightly backups from running.
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  chmodSync(dirname(path), 0o700);
   // In its own process group, so a Ctrl+C at the terminal leaves the lock held while this process undoes its steps.
   const holder = spawn('flock', ['--exclusive', '--nonblock', path, 'sh', '-c', 'echo locked; exec cat'], { stdio: ['pipe', 'pipe', 'ignore'], detached: true });
   const outcome = await new Promise<'locked' | 'busy' | Error>((resolve) => {
