@@ -1,10 +1,14 @@
 version: 2
+# This release is frozen: no version updates are proposed
+# (open-pull-requests-limit: 0). To turn them back on, remove the limits, or
+# raise the npm one back to 10. Security updates follow the repository's
+# Dependabot settings, not this file.
 updates:
   - package-ecosystem: npm
     directory: /
     schedule:
       interval: weekly
-    open-pull-requests-limit: 10
+    open-pull-requests-limit: 0
     groups:
       production-dependencies:
         dependency-type: production
@@ -14,6 +18,7 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    open-pull-requests-limit: 0
     groups:
       # init and analyze must run the same version, so update them together.
       codeql-action:
@@ -23,7 +28,9 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    open-pull-requests-limit: 0
   - package-ecosystem: gradle
     directory: /packages/android
     schedule:
       interval: weekly
+    open-pull-requests-limit: 0
