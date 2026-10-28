@@ -113,8 +113,8 @@ importers:
         specifier: 26.6.5
         version: 26.6.5
       electron:
-        specifier: 45.0.0
-        version: 45.0.0(supports-color@11.0.0)
+        specifier: 45.1.0
+        version: 45.1.0(supports-color@11.0.0)
       electron-builder:
         specifier: 26.18.0
         version: 26.18.0(electron-builder-squirrel-windows@26.18.0)(supports-color@11.0.0)
@@ -167,8 +167,8 @@ importers:
         specifier: ^9.0.2
         version: 9.0.3
       mediasoup:
-        specifier: ^3.30.0
-        version: 3.30.1
+        specifier: ^3.31.0
+        version: 3.31.0
       nodemailer:
         specifier: ^10.2.1
         version: 10.2.1
@@ -1825,8 +1825,8 @@ packages:
     resolution: {integrity: sha512-bO3y10YikuUwUuDUQRM4KfwNkKhnpVO7IPdbsrejwN9/AABJzzTQ4GeHwyzNSrVO+tEH3/Np255a3sVZpZDjvg==}
     engines: {node: '>=8.0.0'}
 
-  electron@45.0.0:
-    resolution: {integrity: sha512-yjz4uhMBcO6L5X7CWgRMobf2EMJPnb9j4zuf+nu/TU/6E4Sqfx7fn/a2eACo4qngjml/0JnsoZhxYroJLxLd2w==}
+  electron@45.1.0:
+    resolution: {integrity: sha512-i7qKVAh/KR5v1pf56NhGGX2QYHcdjvLgS7koL6ui50c+zUDGLRunR95nXcTpHPURKOQ4GDBG8BmXiDgOQ8DD0A==}
     engines: {node: '>= 22.12.0'}
     hasBin: true
 
@@ -2498,8 +2498,8 @@ packages:
     resolution: {integrity: sha512-an3eWWk0YvvO327H5+Edj9zIzdho7UJr1l0w7uyCsmzsSP6YQ41KmBTwgUdF49fGuiQFc4IZA5jLmKi62/uiLg==}
     engines: {node: '>=22'}
 
-  mediasoup@3.30.1:
-    resolution: {integrity: sha512-CsIglRdW2V2RnP2PpbSdPGnL0gVQF92BecJVfbYO3ZpsfoZnE4NCnaQWck8G3pYP+DDUm+R0QqDx/N4emlRmzQ==}
+  mediasoup@3.31.0:
+    resolution: {integrity: sha512-q0Vuw2ID+kxmgG7BtNcGVvkWxyUI2iAdVkgxLi/xOHsPaMYMijNiKfmjf5gd31Bhb58DeL9i5uclgmTH+V6m+Q==}
     engines: {node: '>=22'}
 
   merge-descriptors@2.0.0:
@@ -5143,7 +5143,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  electron@45.0.0(supports-color@11.0.0):
+  electron@45.1.0(supports-color@11.0.0):
     dependencies:
       '@electron-internal/extract-zip': 1.0.5
       '@electron/get': 5.1.0(supports-color@11.0.0)
@@ -5958,7 +5958,7 @@ snapshots:
       sdp-transform: 3.0.0
       supports-color: 11.0.0
 
-  mediasoup@3.30.1:
+  mediasoup@3.31.0:
     dependencies:
       debug: 4.4.3(supports-color@11.0.0)
       flatbuffers: 25.9.23

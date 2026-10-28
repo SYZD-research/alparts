@@ -9118,9 +9118,9 @@ ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 --------------------------------------------------------------------------------
 
-mediasoup 3.30.1
+mediasoup 3.31.0
 License: ISC
-Package: pkg:npm/mediasoup@3.30.1
+Package: pkg:npm/mediasoup@3.31.0
 
 ISC License
 
@@ -12831,9 +12831,9 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 Desktop runtime
 ================================================================================
 
-Electron 45.0.0
+Electron 45.1.0
 License: MIT
-Package: pkg:npm/electron@45.0.0
+Package: pkg:npm/electron@45.1.0
 
 Copyright (c) Electron contributors
 Copyright (c) 2013-2020 GitHub Inc.

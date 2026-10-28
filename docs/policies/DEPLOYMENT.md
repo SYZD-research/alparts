@@ -56,7 +56,7 @@ Never reinitialize a missing audit checkpoint merely to make readiness green. Ne
 
 ## Object storage
 
-Attachments, avatars and the durable audit head live in an S3-compatible object store. The recommended store is [SeaweedFS](https://github.com/seaweedfs/seaweedfs) (Apache-2.0); development and CI run SeaweedFS 4.47 pinned by digest (`docker-compose.yml`, `scripts/ci/start-object-storage.sh`). The server reaches any store through the AWS SDK for JavaScript v3 using path-style requests:
+Attachments, avatars and the durable audit head live in an S3-compatible object store. The recommended store is [SeaweedFS](https://github.com/seaweedfs/seaweedfs) (Apache-2.0); development and CI run SeaweedFS 4.51 pinned by digest (`docker-compose.yml`, `scripts/ci/start-object-storage.sh`). The server reaches any store through the AWS SDK for JavaScript v3 using path-style requests:
 
 | Setting | Meaning |
 |---|---|
