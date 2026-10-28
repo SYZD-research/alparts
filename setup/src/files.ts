@@ -29,10 +29,21 @@ export function ensureDirectory(path: string, mode: number, owner?: Owner): void
   else chmodSync(path, mode);
 }
 
+/** Makes the entries of a directory (a rename into it, say) last through a power cut. */
+function syncDirectory(path: string): void {
+  const descriptor = openSync(path, 'r');
+  try {
+    fsyncSync(descriptor);
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
 /**
  * Writes through a temporary file in the same directory and renames it into
  * place, so a reader never sees half a file and an interrupted run leaves the
- * old one. The mode and owner are set before the rename.
+ * old one. The mode and owner are set before the rename, and the directory is
+ * synced after it: a credential created once must not vanish in a power cut.
  */
 export function writeFileAtomic(path: string, content: string | Buffer, mode: number, owner: Owner = ROOT): void {
   const temporary = join(dirname(path), `.${basename(path)}.${randomBytes(6).toString('hex')}.tmp`);
@@ -51,6 +62,7 @@ export function writeFileAtomic(path: string, content: string | Buffer, mode: nu
     rmSync(temporary, { force: true });
     throw error;
   }
+  syncDirectory(dirname(path));
 }
 
 /** Writes only when the content differs, and reports whether it did. */

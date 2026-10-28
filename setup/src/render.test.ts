@@ -32,7 +32,9 @@ function settings(overrides: Partial<Settings> = {}): Settings {
 
 test('env files quote every value and refuse values that would break out', () => {
   assert.match(renderEnvFile({ A: 'x$y' }), /^A='x\$y'$/m);
-  assert.throws(() => renderEnvFile({ A: "it's" }));
+  // A single quote cannot be written inside single quotes: Compose reads these escapes in double quotes.
+  assert.match(renderEnvFile({ A: "o'brien@example.com" }), /^A="o'brien@example\.com"$/m);
+  assert.match(renderEnvFile({ A: `it's $HOME "x" \\` }), /^A="it's \\\$HOME \\"x\\" \\\\"$/m);
   assert.throws(() => renderEnvFile({ A: 'two\nlines' }));
   assert.throws(() => renderEnvFile({ lower: 'x' }));
 });

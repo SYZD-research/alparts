@@ -1,4 +1,7 @@
-import { closeSync, openSync, readFileSync, unlinkSync, writeSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import type { Socket } from 'node:net';
+import { dirname } from 'node:path';
 import type { Docker } from './docker.ts';
 import type { MessageKey, Translate } from './i18n.ts';
 import type { RunLog } from './log.ts';
@@ -70,49 +73,47 @@ export class Cancelled extends Error {
   }
 }
 
-function processAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === 'EPERM';
+/**
+ * Keeps two runs (an update and the nightly backup, say) from working on the
+ * deployment at once. A `flock` child holds a kernel lock on the root-only
+ * lock file for as long as this process lives: however this process ends, the
+ * child's input closes, it exits, and the kernel releases the lock, so no
+ * stale lock is ever left to take over. Release resolves once it is free.
+ */
+export async function acquireLock(path: string): Promise<() => Promise<void>> {
+  mkdirSync(dirname(path), { recursive: true, mode: 0o755 });
+  // In its own process group, so a Ctrl+C at the terminal leaves the lock held while this process undoes its steps.
+  const holder = spawn('flock', ['--exclusive', '--nonblock', path, 'sh', '-c', 'echo locked; exec cat'], { stdio: ['pipe', 'pipe', 'ignore'], detached: true });
+  const outcome = await new Promise<'locked' | 'busy' | Error>((resolve) => {
+    holder.stdout.once('data', () => resolve('locked'));
+    holder.once('error', resolve);
+    // flock exits with 1 when another process holds the lock.
+    holder.once('exit', (code) => resolve(code === 1 ? 'busy' : new Error(`flock exited with ${code}`)));
+  });
+  if (outcome === 'busy') throw new SetupError('error.locked', { pid: lockHolder(path) });
+  if (outcome instanceof Error) {
+    if ((outcome as NodeJS.ErrnoException).code === 'ENOENT') throw new SetupError('error.lockToolMissing', {}, { cause: outcome });
+    throw outcome;
   }
+  writeFileSync(path, `${process.pid}\n`);
+  holder.stdout.destroy();
+  // A run that never releases still exits; the child then sees its input close.
+  holder.unref();
+  (holder.stdin as Socket).unref();
+  return () => new Promise((resolve) => {
+    if (holder.exitCode !== null || holder.signalCode !== null) return resolve();
+    holder.ref();
+    holder.once('exit', () => resolve());
+    holder.stdin.end();
+  });
 }
 
-/**
- * Keeps two runs (an update and the nightly backup, say) from working on
- * the deployment at once. A lock left by a process that has gone is taken over.
- */
-export function acquireLock(path: string): () => void {
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    try {
-      const descriptor = openSync(path, 'wx', 0o600);
-      writeSync(descriptor, String(process.pid));
-      closeSync(descriptor);
-      return () => {
-        try {
-          if (readFileSync(path, 'utf8') === String(process.pid)) unlinkSync(path);
-        } catch {
-          // Already gone.
-        }
-      };
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-      let holder = 0;
-      try {
-        holder = Number(readFileSync(path, 'utf8').trim());
-      } catch {
-        continue;
-      }
-      if (Number.isSafeInteger(holder) && holder > 0 && holder !== process.pid && processAlive(holder)) {
-        throw new SetupError('error.locked', { pid: holder });
-      }
-      try {
-        unlinkSync(path);
-      } catch {
-        // Another run removed it first.
-      }
-    }
+/** The process ID the holder wrote into the lock file, for the message. */
+function lockHolder(path: string): string {
+  try {
+    const pid = readFileSync(path, 'utf8').trim();
+    return /^\d+$/.test(pid) ? pid : '?';
+  } catch {
+    return '?';
   }
-  throw new SetupError('error.locked', { pid: '?' });
 }

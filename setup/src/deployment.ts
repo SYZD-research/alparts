@@ -1,7 +1,6 @@
 import { createHash, X509Certificate } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { get as httpGet } from 'node:http';
-import { request as httpsRequest } from 'node:https';
 import { join } from 'node:path';
 import { connect as tlsConnect } from 'node:tls';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -124,9 +123,9 @@ export async function startDependencies(context: Context): Promise<void> {
 export async function provisionDatabase(context: Context): Promise<void> {
   const store = new SecretStore(context.paths.secretsDir);
   const sql = provisionSql({
-    [DATABASE.owner]: scramSha256Verifier(store.read('postgres_owner_password')),
-    [DATABASE.app]: scramSha256Verifier(store.read('postgres_app_password')),
-    [DATABASE.backup]: scramSha256Verifier(store.read('postgres_backup_password')),
+    owner: scramSha256Verifier(store.read('postgres_owner_password')),
+    app: scramSha256Verifier(store.read('postgres_app_password')),
+    backup: scramSha256Verifier(store.read('postgres_backup_password')),
   });
   try {
     await context.docker.psql(sql, 'postgres');
@@ -271,24 +270,42 @@ async function localAuthority(context: Context): Promise<string | undefined> {
   return result.code === 0 ? result.stdout : undefined;
 }
 
-/** Fetches the web app through the proxy on this host, as a browser would by the domain name. */
-function fetchThroughProxy(settings: Settings, ca: string | undefined): Promise<boolean> {
+export interface ProxyAnswer {
+  certificate: X509Certificate;
+  /** The status the app answered `GET /` with through the proxy, or null without an answer. */
+  status: number | null;
+}
+
+/**
+ * Connects to the proxy on this host as a browser would by the domain name.
+ * The certificate must verify for the domain: against the public authorities,
+ * or for `local` certificates against the proxy's own. The same connection
+ * then asks for `/`, which shows whether the app answers through the proxy.
+ */
+export async function probeProxy(context: Context, settings: Settings, port = 443): Promise<ProxyAnswer | null> {
+  const ca = settings.certificates === 'local' ? await localAuthority(context) : undefined;
+  if (settings.certificates === 'local' && !ca) return null;
   return new Promise((resolve) => {
-    const request = httpsRequest({
-      host: '127.0.0.1',
-      port: 443,
-      path: '/',
-      servername: settings.domain,
-      headers: { host: settings.domain },
-      timeout: 10_000,
-      ...(ca ? { ca } : {}),
-    }, (response) => {
-      response.resume();
-      resolve(response.statusCode === 200);
+    let certificate: X509Certificate | null = null;
+    let head = '';
+    const finish = (status: number | null) => {
+      resolve(certificate ? { certificate, status } : null);
+      socket.destroy();
+    };
+    const socket = tlsConnect({ host: '127.0.0.1', port, servername: settings.domain, timeout: 10_000, ...(ca ? { ca } : {}) }, () => {
+      certificate = socket.getPeerX509Certificate() ?? null;
+      socket.write(`GET / HTTP/1.1\r\nHost: ${settings.domain}\r\nConnection: close\r\n\r\n`);
     });
-    request.on('timeout', () => request.destroy());
-    request.on('error', () => resolve(false));
-    request.end();
+    socket.setEncoding('latin1');
+    socket.on('data', (chunk: string) => {
+      head += chunk;
+      const line = /^HTTP\/1\.[01] (\d{3})(?: |\r\n)/.exec(head);
+      if (line) finish(Number(line[1]));
+      else if (head.includes('\r\n') || head.length > 1024) finish(null);
+    });
+    socket.on('end', () => finish(null));
+    socket.on('timeout', () => finish(null));
+    socket.on('error', () => finish(null));
   });
 }
 
@@ -296,24 +313,10 @@ function fetchThroughProxy(settings: Settings, ca: string | undefined): Promise<
 export async function waitForCertificate(context: Context, settings: Settings, timeoutMs: number): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const ca = settings.certificates === 'local' ? await localAuthority(context) : undefined;
-    if ((settings.certificates === 'public' || ca) && await fetchThroughProxy(settings, ca)) return true;
+    if ((await probeProxy(context, settings))?.status === 200) return true;
     await sleep(3000);
   }
   return false;
-}
-
-/** The certificate the proxy serves for the domain, trusted or not. */
-export function servedCertificate(settings: Settings): Promise<X509Certificate | null> {
-  return new Promise((resolve) => {
-    const socket = tlsConnect({ host: '127.0.0.1', port: 443, servername: settings.domain, rejectUnauthorized: false, timeout: 10_000 }, () => {
-      const certificate = socket.getPeerX509Certificate() ?? null;
-      socket.end();
-      resolve(certificate);
-    });
-    socket.on('timeout', () => socket.destroy());
-    socket.on('error', () => resolve(null));
-  });
 }
 
 export function backupFiles(dir: string): Array<{ name: string; modified: Date }> {

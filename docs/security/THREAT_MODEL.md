@@ -1,6 +1,6 @@
 # Threat model
 
-Last reviewed: 2026-09-16
+Last reviewed: 2026-09-16; the single-host setup boundary added on 2026-10-28
 
 ## Scope
 
@@ -59,6 +59,7 @@ See [account/group security](ACCOUNT_AND_GROUP_SECURITY.md) for the updated devi
 10. **Audit DB ↔ checkpoint.** Independent truncation evidence exists only if checkpoint write/delete authority is separated from DB authority. The current process-local admission supports one app process.
 11. **Backup/restore.** Source read identities, encrypted artifact, offline age identity and empty unprivileged target are separate authorities. Recipient encryption does not authenticate who created an artifact.
 12. **Build/deploy.** The lockfile and pinned CI actions cross into OCI, Web, and desktop artifacts that can access endpoint plaintext. CI scanning and Electron fuse checks reduce but do not eliminate supply-chain compromise; signed releases/provenance are absent.
+13. **Single-host setup.** `setup/` runs as root and drives Docker, so the host's root and the Docker daemon hold every credential it generates. The credentials stay in a root-only directory, each file owned by the one container user that reads it; PostgreSQL and the object store are reachable only on an internal network without a route out, over TLS from the setup's own authority; the server runs without Node.js's permission model (R-059).
 
 ## Attack surfaces and controls
 
@@ -82,6 +83,7 @@ See [account/group security](ACCOUNT_AND_GROUP_SECURITY.md) for the updated devi
 | Migration/restore/admin | long lock, intact journal with altered catalog, production overwrite, archive traversal/bomb | fresh migration CI, exact journal + bounded PostgreSQL 16 catalog fingerprint, legacy preflight, quiesced encrypted backup, empty narrowly named unprivileged restore, path/type/logical-size/checksum gates |
 | CI/dependency | malicious package/action, leaked CI secret | frozen integrity lockfile, exact action SHAs, minimal checkout credentials, audit/CodeQL/Trivy/secret scan/SBOM; provenance signing residual |
 | Host/operator | public bind/TLS disable/root/world-write, accidental pruning | loopback defaults, production TLS validation, secret files, nonroot/read-only/cap-drop, narrow dry-run/ack retention, runbooks |
+| Single-host setup (`setup/`) | credential disclosure from the host or a container, the app changing the schema or reading the backup credentials, superuser login over the network, interception between containers, two runs interleaving an update and a backup, an untrusted certificate taken for the proxy's | root-only secrets directory with one owner per file (0400; the internal authority's certificate 0444), roles without privileges stored as SCRAM verifiers, the app limited to rows and the backup role to reading (integration test on a disposable server), superuser only through the local socket, internal network and verified TLS, storage identities per role, only the age recipient on the host, a kernel-held run lock, the proxy probe verifying the certificate for the domain |
 
 ## Abuse cases considered
 
@@ -105,6 +107,7 @@ See [account/group security](ACCOUNT_AND_GROUP_SECURITY.md) for the updated devi
 - A compromised server carries an SFU call. It ends DTLS-SRTP, but every audio frame is encrypted in the sender's browser (SFrame) under a key only the call's participants received, wrapped for each recipient device and signed by the sender device; it sees only headers, ciphertext, who is in the call and when each participant speaks. It cannot pass off one participant's stream as another's, and replayed frames are dropped. It can still give a key to a device it adds to the call (shown as a participant) or to a false directory entry, and help a participant pass off audio as another participant's, since every receiver holds the sender's symmetric frame key (ADR 0014).
 - A member posts a Markdown link such as `[https://accounts.example.com/verify](https://evil.example/phish)`. Desktop and Android show no address on hover, so the link looked like the trusted site and opened at once. The client now shows the host a link really opens beside its text (the host as the system opens it, so a look-alike letter appears in its encoded form) and the whole address in the tooltip, and asks before opening when the text reads like a different web or mail address, naming the real host. The question is a dialog in the client, so it covers web, desktop and Android; a link that asks has no address of its own, so middle click or a new window cannot skip it. The check reads how the text looks: it does not judge the site, only well-known endings count for a bare name (so file names such as README.md are not taken for addresses), and text that merely mentions a site (for example "bank login") is not caught, which is why the host is always shown.
 - A compromised server can serve malicious JavaScript to the Web client or a false device directory to every client. Desktop UI routes are replaced with packaged assets, but directory transparency and signed release distribution are still absent; these remain formal blockers.
+- A compromised app process under the single-host setup tries to alter the schema or the migration records, read the backup credentials, or reach the database as another role. Its role may only change rows, the backup credentials are never mounted into its container, and PostgreSQL admits the roles only over TLS with SCRAM; `setup/src/database.integration.test.ts` tries the role limits against a disposable server.
 - An operator uses backup/restore tooling against production by mistake. Exact acknowledgement, target naming, emptiness, nonprivileged owner and non-destructive restore behavior contain the common path, but DB/object administrators remain high privilege.
 
 ## Audit events and privacy
@@ -121,6 +124,7 @@ Important account/session/device, workspace/member/role/invite, channel/key, mes
 - Audit lacks an external append-only/WORM witness, multi-process CAS, retention pipeline and SIEM alerting.
 - No DM archive/reclaim, organization-wide retention/export, account/workspace deletion lifecycle, or legal hold.
 - Backup lacks PITR, automatic off-host/off-region copy, object versions/policy, scheduled restore and measured full-service RPO/RTO.
+- The single-host setup starts the server without Node.js's permission model, because current Node.js refuses `fsync` under it and the audit checkpoint needs it (R-059). Its backups stay on the server until the operator copies them elsewhere (R-003).
 - No malware scanner/sandbox; encrypted active files cannot be inspected server-side. Desktop adds quarantine/non-executable saves, while Web download defenses remain browser-dependent.
 - No signed release/update or generated provenance attestation; an SBOM workflow alone does not establish artifact authenticity.
 - External credential rotation for the removed tracked development account cannot be proven from this repository.

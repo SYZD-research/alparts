@@ -159,7 +159,7 @@ sudo docker compose --project-name alparts-production --project-directory /opt/a
 - **ストレージの権限** — バケットを作る管理者（アプリには渡しません）、2つのバケットだけを扱うアプリ、アプリのバケットを読むだけのバックアップ用に分けています
 - **HTTPS の公開** — ヘルスチェックとメトリクスは外部に公開しません。リクエストの本文は受け取り終えてからアプリへ送ります。アプリが信頼するクライアントのアドレスの転送元は、固定のアドレスを持つ proxy だけです
 - **操作履歴** — 監査チェックポイントは初回のインストールで一度だけ作ります。失われた場合は改ざんの可能性があるため自動では作り直さず、[運用ガイド](../docs/OPERATIONS.ja.md)の手順での確認を求めます
-- **アプリのコンテナー** — compose.production.yml のとおり、読み取り専用のルート、capability なし、`no-new-privileges`、root 以外のユーザー、メモリーと CPU の上限で動かします。Node.js のパーミッションモデル（`--permission`）は外して起動します。現在の Node.js（22.22 と 24.22 で確認）は、パーミッションモデルを有効にすると `fsync` を使えなくなり、監査チェックポイントを書き込めずに、最初の書き込みのあとアプリが書き込みを受け付けなくなるためです。`--disallow-code-generation-from-strings` などほかの指定はそのまま使います
+- **アプリのコンテナー** — compose.production.yml のとおり、読み取り専用のルート、capability なし、`no-new-privileges`、root 以外のユーザー、メモリーと CPU の上限で動かします。Node.js のパーミッションモデル（`--permission`）は外して起動します。現在の Node.js（22.22 と 24.22 で確認）は、パーミッションモデルを有効にすると `fsync` を使えなくなり、監査チェックポイントを書き込めずに、最初の書き込みのあとアプリが書き込みを受け付けなくなるためです。`--disallow-code-generation-from-strings` などほかの指定はそのまま使います（リスク登録簿の R-059）
 - **バックアップ** — age の公開鍵に対して暗号化します。復元に必要な秘密鍵はサーバーに置きません。バックアップのコンテナーは root 以外のユーザー（PostgreSQL のイメージの `postgres`、uid 70）で動き、読み取りだけのデータベースのロールとストレージの鍵を使います
 
 ## 更新
@@ -226,4 +226,14 @@ pnpm --filter @alparts/setup typecheck
 pnpm --filter @alparts/setup test
 ```
 
-テストは Node.js の標準のテストランナーで動き、Docker を使いません。
+単体テストは Node.js の標準のテストランナーで動き、Docker を使いません。
+
+データベースのロールと権限には、使い捨ての PostgreSQL 16 で確かめる統合テストがあります（CI の integration ジョブで実行します）。サーバーの移行を実際に適用してから、各ロールでできるべき操作とできてはならない操作を試します。サーバーをビルドし、`psql` と `pg_dump` がある環境で実行します。一意の名前のデータベースとロールを作り、終わると削除しますが、本番のサーバーには向けないでください。
+
+```bash
+pnpm --filter @alparts/server build
+export SETUP_TEST_DATABASE_URL='…'  # 使い捨ての PostgreSQL 16 の、スーパーユーザーの接続 URL
+pnpm --filter @alparts/setup test:integration
+```
+
+Docker を使う全体の流れ（install、update とその巻き戻し、backup、中断からの再開）には自動テストがありません。これらを変えたときは、使い捨ての Linux サーバー（Docker と Node.js があるもの）に、回答ファイルとローカルの証明書（`"certificates": "local"`）でインストールし、各コマンドを実行して確かめてください。バックアップからの復元は、[scripts/restore-verify.sh](../scripts/restore-verify.sh) で空の使い捨ての環境に対して確かめます。

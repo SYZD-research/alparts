@@ -123,6 +123,10 @@ async function main(argv: string[]): Promise<number> {
     ui.failure(t('error.unknownService', { name: positionals[1], services: LOG_SERVICES.join(language === 'ja' ? '、' : ', ') }));
     return 2;
   }
+  if (process.platform !== 'linux') {
+    ui.failure(t('error.notLinux'));
+    return 1;
+  }
   if (process.getuid?.() !== 0) {
     ui.failure(t('error.notRoot', { command: [command, ...argv].join(' ') }));
     return 1;
@@ -142,7 +146,7 @@ async function main(argv: string[]): Promise<number> {
   };
   const context: Context = { language, t, ui, log, run, docker: new Docker(run, paths), paths, command, options, cleanups: [] };
 
-  let release: (() => void) | null = null;
+  let release: (() => Promise<void>) | null = null;
   // A second signal while the undo steps run ends the process at once (the handlers fire once).
   const interrupt = () => {
     ui.close();
@@ -154,14 +158,14 @@ async function main(argv: string[]): Promise<number> {
           log.event(`cleanup failed: ${(error as Error).message}`);
         }
       }
-      release?.();
+      await release?.();
       process.exit(report(t, ui, log, new Interrupted(), name === 'install'));
     })();
   };
   process.once('SIGINT', interrupt);
   process.once('SIGTERM', interrupt);
   try {
-    if (COMMANDS[name].lock) release = acquireLock(paths.lockFile);
+    if (COMMANDS[name].lock) release = await acquireLock(paths.lockFile);
     switch (name) {
       case 'install': await install(context); break;
       case 'configure': await configure(context); break;
@@ -182,7 +186,7 @@ async function main(argv: string[]): Promise<number> {
     return report(t, ui, log, error);
   } finally {
     ui.close();
-    release?.();
+    await release?.();
   }
 }
 

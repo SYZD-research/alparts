@@ -1,7 +1,7 @@
 import { Cancelled, SetupError, type Context } from './context.ts';
 import {
-  appReady, backupFiles, ensureBackupToolsImage, hasAccounts, installBackupSchedule, prepareSecrets, readInviteCode, removeBackupSchedule,
-  restartRunning, seedProxyKey, servedCertificate, startDependencies, startServices, transportPins, waitForApp, waitForCertificate,
+  appReady, backupFiles, ensureBackupToolsImage, hasAccounts, installBackupSchedule, prepareSecrets, probeProxy, readInviteCode,
+  removeBackupSchedule, restartRunning, seedProxyKey, startDependencies, startServices, transportPins, waitForApp, waitForCertificate,
   writeConfiguration, writePinsFile,
 } from './deployment.ts';
 import { checkAnswers, printReview, requireSettings, scheduleBackups, settingsFromAnswers } from './install.ts';
@@ -81,7 +81,7 @@ export async function status(context: Context): Promise<void> {
     if (entry.health === 'unhealthy') return t('status.unhealthy');
     return t('status.running');
   };
-  const certificate = await servedCertificate(settings);
+  const certificate = (await probeProxy(context, settings))?.certificate;
   const backups = backupFiles(paths.backupDir);
   const email = settings.email;
   const rows: Array<[string, string]> = [
@@ -204,7 +204,7 @@ export async function pins(context: Context): Promise<void> {
   const settings = requireSettings(context);
   if (context.options.rotate) await rotateCertificateKey(context, settings);
   const file = writePinsFile(context, settings);
-  const served = await servedCertificate(settings);
+  const served = (await probeProxy(context, settings))?.certificate;
   if (!served) ui.warning(t('pins.notServing'));
   else if (spkiPin(served.toString()) !== transportPins(context).current) ui.warning(t('pins.mismatch', { command: context.command }));
   ui.success(t('pins.written', { file }));

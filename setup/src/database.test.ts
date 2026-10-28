@@ -5,15 +5,17 @@ import { scramSha256Verifier } from './secrets.ts';
 
 test('role provisioning takes verifiers only and keeps every role unprivileged', () => {
   const sql = provisionSql({
-    alparts_owner: scramSha256Verifier('a'),
-    alparts_app: scramSha256Verifier('b'),
-    alparts_backup: scramSha256Verifier('c'),
+    owner: scramSha256Verifier('a'),
+    app: scramSha256Verifier('b'),
+    backup: scramSha256Verifier('c'),
   });
   assert.equal(sql.match(/NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD 'SCRAM-SHA-256\$4096:/g)?.length, 3);
   assert.match(sql, /CREATE DATABASE alparts OWNER alparts_owner/);
   assert.match(sql, /REVOKE ALL ON DATABASE alparts FROM PUBLIC;/);
   assert.doesNotMatch(sql, /GRANT [^;]*(CREATE|TRUNCATE|REFERENCES|TRIGGER)[^;]* TO alparts_(app|backup)/);
-  assert.throws(() => provisionSql({ alparts_owner: "x'; DROP", alparts_app: 'x', alparts_backup: 'x' }));
+  assert.throws(() => provisionSql({ owner: "x'; DROP", app: 'x', backup: 'x' }));
+  assert.throws(() => provisionSql({ owner: 'x', app: 'x', backup: 'x' }, { name: 'db; DROP', owner: 'o', app: 'a', backup: 'b' }));
+  assert.match(provisionSql({ owner: 'x', app: 'x', backup: 'x' }, { name: 'it_db', owner: 'it_o', app: 'it_a', backup: 'it_b' }), /^GRANT CONNECT ON DATABASE it_db TO it_a, it_b;$/m);
 });
 
 test('after migrations the app may only change rows and the backup role only read', () => {

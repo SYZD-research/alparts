@@ -50,8 +50,9 @@ test('saved settings read back, and edits that would break the deployment are re
     assert.equal(statSync(join(dir, 'config')).mode & 0o777, 0o700);
     assert.deepEqual(loadSettings(file), valid);
 
-    writeFileSync(file, JSON.stringify({ ...valid, domain: 'not a domain' }));
-    assert.throws(() => loadSettings(file), /domain/);
+    const edited = join(dir, 'edited.json');
+    writeFileSync(edited, JSON.stringify({ ...valid, domain: 'not a domain' }));
+    assert.throws(() => loadSettings(edited), /domain/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

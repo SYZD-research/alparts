@@ -159,7 +159,7 @@ sudo docker compose --project-name alparts-production --project-directory /opt/a
 - **Storage permissions** — Separate identities: an administrator that creates buckets (never given to the app), the app with its two buckets, and a backup identity that only reads the app's bucket
 - **HTTPS proxy** — Health checks and metrics are not served publicly. Request bodies are received whole before they are passed on. The proxy, at a fixed address, is the only source the app trusts for client addresses
 - **Activity record** — The audit checkpoint is created once, by the first installation. If it goes missing it may have been tampered with, so the setup does not recreate it and asks for the checks in the [operations guide](../docs/OPERATIONS.md)
-- **App container** — As compose.production.yml defines it: a read-only root, no capabilities, `no-new-privileges`, a non-root user, memory and CPU limits. Node.js's permission model (`--permission`) is left off: current Node.js releases (checked with 22.22 and 24.22) turn off `fsync` under it, so the audit checkpoint cannot be written and the app stops accepting writes after the first one. The other flags, such as `--disallow-code-generation-from-strings`, stay
+- **App container** — As compose.production.yml defines it: a read-only root, no capabilities, `no-new-privileges`, a non-root user, memory and CPU limits. Node.js's permission model (`--permission`) is left off: current Node.js releases (checked with 22.22 and 24.22) turn off `fsync` under it, so the audit checkpoint cannot be written and the app stops accepting writes after the first one. The other flags, such as `--disallow-code-generation-from-strings`, stay (risk register R-059)
 - **Backups** — Encrypted to an age public key. The secret key that restores them is never on the server. The backup container runs as a user other than root (`postgres` of the PostgreSQL image, uid 70) with the read-only database role and storage key
 
 ## Updating
@@ -226,4 +226,14 @@ pnpm --filter @alparts/setup typecheck
 pnpm --filter @alparts/setup test
 ```
 
-The tests run on Node.js's own test runner and do not use Docker.
+The unit tests run on Node.js's own test runner and do not use Docker.
+
+The database roles and grants have an integration test on a disposable PostgreSQL 16 server (CI runs it in the integration job). It applies the server's migrations, then tries what each role must and must not be able to do. Build the server and run it where `psql` and `pg_dump` are available. It creates a database and roles with unique names and drops them at the end, but never point it at a production server.
+
+```bash
+pnpm --filter @alparts/server build
+export SETUP_TEST_DATABASE_URL='…'  # a superuser connection URL of a disposable PostgreSQL 16 server
+pnpm --filter @alparts/setup test:integration
+```
+
+The flows that use Docker (install, update and its rollback, backup, resuming after an interruption) have no automated test. After changing them, install on a disposable Linux server with Docker and Node.js, from an answers file with local certificates (`"certificates": "local"`), and run each command. Check a restore from a backup in empty, disposable targets with [scripts/restore-verify.sh](../scripts/restore-verify.sh).
