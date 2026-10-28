@@ -1,6 +1,7 @@
+import type { X509Certificate } from 'node:crypto';
 import { Cancelled, SetupError, type Context } from './context.ts';
 import {
-  APP_IMAGE, ensureAppImage, ensureAuditCheckpoint, ensureBackupToolsImage, hasAccounts, installBackupSchedule,
+  APP_IMAGE, carriesCurrentPin, ensureAppImage, ensureAuditCheckpoint, ensureBackupToolsImage, hasAccounts, installBackupSchedule,
   migrate, prepareSecrets, provisionDatabase, readInviteCode, restartRunning, seedProxyKey, sourceVersion, startDependencies, startServices,
   waitForApp, waitForCertificate, writeConfiguration, writePinsFile,
 } from './deployment.ts';
@@ -132,12 +133,28 @@ export async function scheduleBackups(context: Context, settings: Settings): Pro
     try {
       await ensureBackupToolsImage(context);
       await installBackupSchedule(context, settings);
-      return true;
+      return null;
     } catch (error) {
       context.log.event(`backup schedule: ${(error as Error).message}`);
-      return false;
+      // The reasons the operator can act on are shown as they are; anything else is in the log.
+      if (error instanceof SetupError && (error.key === 'error.noSystemd' || error.key === 'error.scheduleUnsafe')) return t(error.key, error.values);
+      return t('warning.backupSchedule', { command: context.command });
     }
-  }, (scheduled) => (scheduled ? t('step.scheduleDone', { time }) : { warning: t('warning.backupSchedule', { command: context.command }) }));
+  }, (problem) => (problem === null ? t('step.scheduleDone', { time }) : { warning: problem }));
+}
+
+/** Apps built with the pins file connect only when the certificate being served carries the key it names. */
+export function warnIfKeyDiffers(context: Context, served: X509Certificate | null): void {
+  if (served && !carriesCurrentPin(context, served)) context.ui.warning(context.t('pins.mismatch', { command: context.command }));
+}
+
+/** Waits for the certificate for the domain, then compares its key with the pins file. */
+export async function awaitCertificate(context: Context, settings: Settings): Promise<void> {
+  const { t, ui } = context;
+  const url = `https://${settings.domain}`;
+  const served = await ui.task(t('step.certificate'), () => waitForCertificate(context, settings, 180_000),
+    (certificate) => (certificate ? t('step.certificateDone', { url }) : { warning: t('warning.certificatePending') }));
+  warnIfKeyDiffers(context, served);
 }
 
 export async function install(context: Context): Promise<void> {
@@ -191,9 +208,7 @@ export async function install(context: Context): Promise<void> {
     }
   }, () => t('step.startDone'));
 
-  const url = `https://${settings.domain}`;
-  await ui.task(t('step.certificate'), () => waitForCertificate(context, settings, 180_000),
-    (served) => (served ? t('step.certificateDone', { url }) : { warning: t('warning.certificatePending') }));
+  await awaitCertificate(context, settings);
 
   if (settings.backup) await scheduleBackups(context, settings);
   writePinsFile(context, settings);

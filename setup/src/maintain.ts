@@ -1,10 +1,11 @@
 import { basename, join } from 'node:path';
 import { Cancelled, SetupError, withCleanup, type Context } from './context.ts';
 import {
-  APP_IMAGE, appliedMigrations, ensureAppImage, ensureBackupToolsImage, migrate, prepareBackupFiles, prepareSecrets, provisionDatabase,
-  restartRunning, seedProxyKey, sourceVersion, startDependencies, startServices, waitForApp, writeConfiguration, writePinsFile,
+  APP_IMAGE, appliedMigrations, ensureAppImage, ensureBackupToolsImage, migrate, prepareBackupFiles, prepareSecrets, probeProxy,
+  provisionDatabase, restartRunning, seedProxyKey, sourceVersion, startDependencies, startServices, waitForApp, writeConfiguration,
+  writePinsFile,
 } from './deployment.ts';
-import { requireSettings } from './install.ts';
+import { requireSettings, warnIfKeyDiffers } from './install.ts';
 import { applyAndStart } from './operate.ts';
 import { checkHost } from './preflight.ts';
 import { saveSettings, type Settings } from './settings.ts';
@@ -173,6 +174,7 @@ export async function update(context: Context): Promise<void> {
     }
   });
   writePinsFile(context, next);
+  warnIfKeyDiffers(context, (await probeProxy(context, next))?.certificate ?? null);
   if (older && older !== current && older !== version.tag) await docker.removeImage(APP_IMAGE(older));
   ui.line(t('update.done', { version: version.tag }));
 }

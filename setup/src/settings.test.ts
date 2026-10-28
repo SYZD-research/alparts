@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { isAgeRecipient, isEmailAddress, isPrivateIPv4, loadSettings, normalizeDomain, normalizeTime, parseSettings, saveSettings, type Settings } from './settings.ts';
+import { isAcmeEmail, isAgeRecipient, isEmailAddress, isPrivateIPv4, loadSettings, normalizeDomain, normalizeTime, parseSettings, saveSettings, type Settings } from './settings.ts';
 
 const valid: Settings = {
   version: 1,
@@ -31,6 +31,9 @@ test('domain names are normalized to lower-case ASCII and malformed ones refused
 test('addresses, keys and times are checked the way the server and backup scripts check them', () => {
   assert.ok(isEmailAddress('no-reply@example.com'));
   assert.ok(!isEmailAddress('Alparts <no-reply@example.com>'));
+  // The ACME contact goes into the Caddyfile: braces would expand there, and backslashes escape.
+  assert.ok(isAcmeEmail('#ops@example.com') && isAcmeEmail("o'brien@example.com"));
+  assert.ok(!isAcmeEmail('{$HOME}@example.com') && !isAcmeEmail('a\\b@example.com'));
   assert.ok(isPrivateIPv4('192.168.1.10') && isPrivateIPv4('10.0.0.1') && isPrivateIPv4('100.64.1.1'));
   assert.ok(!isPrivateIPv4('203.0.113.10'));
   assert.ok(isAgeRecipient('age1pq1qyqszqgpqyqszqgpqyqszqgp'));

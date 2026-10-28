@@ -1,16 +1,15 @@
 import { Cancelled, SetupError, type Context } from './context.ts';
 import {
-  appReady, backupFiles, ensureBackupToolsImage, hasAccounts, installBackupSchedule, prepareSecrets, probeProxy, readInviteCode,
-  removeBackupSchedule, restartRunning, seedProxyKey, startDependencies, startServices, transportPins, waitForApp, waitForCertificate,
+  appReady, backupFiles, backupScheduled, ensureBackupToolsImage, hasAccounts, installBackupSchedule, prepareSecrets, probeProxy,
+  readInviteCode, removeBackupSchedule, restartRunning, seedProxyKey, startDependencies, startServices, waitForApp, waitForCertificate,
   writeConfiguration, writePinsFile,
 } from './deployment.ts';
-import { checkAnswers, printReview, requireSettings, scheduleBackups, settingsFromAnswers } from './install.ts';
+import { awaitCertificate, checkAnswers, printReview, requireSettings, scheduleBackups, settingsFromAnswers, warnIfKeyDiffers } from './install.ts';
 import { voicePortRange } from './render.ts';
 import { SecretStore } from './secrets.ts';
 import { saveSettings, type Settings } from './settings.ts';
 import { answersFromSettings, askBackup, askQuestions, parseAnswersFile } from './wizard.ts';
 import { alignRows } from './ui.ts';
-import { spkiPin } from './x509.ts';
 
 function imageTagOf(context: Context, settings: Settings): string {
   if (!settings.image.tag || !settings.state.completed) throw new SetupError('error.notInstalled', { command: context.command });
@@ -98,13 +97,16 @@ export async function status(context: Context): Promise<void> {
     [t('status.email'), email.mode === 'smtp' ? t('confirm.emailSmtp', { from: email.from, host: email.host, port: email.port }) : t('confirm.emailDisabled')],
     [t('status.backup'), !settings.backup
       ? t('status.backupOff')
-      : backups.length > 0
+      : !backupScheduled(context)
+        ? t('status.backupUnscheduled', { command: context.command })
+        : backups.length > 0
         ? t('status.backupLatest', { time: settings.backup.time, date: formatDate(backups.at(-1)!.modified, context.language), count: backups.length })
         : t('status.backupNever', { time: settings.backup.time })],
   ];
   ui.title(t('status.title'));
   for (const line of alignRows(rows)) ui.line(`  ${line}`);
   ui.line();
+  warnIfKeyDiffers(context, certificate ?? null);
   if (await appReady(settings)) ui.success(t('status.ready'));
   else ui.warning(t('status.notReady'));
 }
@@ -139,6 +141,7 @@ export async function configure(context: Context): Promise<void> {
   saveSettings(context.paths.settingsFile, updated);
   ui.section(t('section.configure'));
   await ui.task(t('step.start'), () => applyAndStart(context, updated, smtpPassword), () => t('step.startDone'));
+  await awaitCertificate(context, updated);
   if (updated.backup) await scheduleBackups(context, updated);
   else await removeBackupSchedule(context);
   writePinsFile(context, updated);
@@ -206,14 +209,15 @@ export async function pins(context: Context): Promise<void> {
   const file = writePinsFile(context, settings);
   const served = (await probeProxy(context, settings))?.certificate;
   if (!served) ui.warning(t('pins.notServing'));
-  else if (spkiPin(served.toString()) !== transportPins(context).current) ui.warning(t('pins.mismatch', { command: context.command }));
+  else warnIfKeyDiffers(context, served);
   ui.success(t('pins.written', { file }));
   ui.line();
   ui.note(t('pins.explain'));
   ui.line();
   ui.note(t('pins.build'));
-  ui.line(`    ALPARTS_TRANSPORT_PINS_FILE=${file} pnpm desktop:dist`);
-  ui.line(`    cd packages/android && ./gradlew -PalpartsTransportPinsFile=${file} assembleRelease`);
+  ui.line(`    sudo cat ${file} > $HOME/alparts-transport-pins.json`);
+  ui.line('    ALPARTS_TRANSPORT_PINS_FILE=$HOME/alparts-transport-pins.json pnpm desktop:dist');
+  ui.line('    cd packages/android && ./gradlew -PalpartsTransportPinsFile=$HOME/alparts-transport-pins.json assembleRelease');
   ui.line();
   ui.note(t('pins.compromised'));
 }

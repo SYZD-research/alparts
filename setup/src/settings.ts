@@ -77,6 +77,11 @@ export function isEmailAddress(input: string): boolean {
   return input.length <= 254 && /^[^\s@<>"(),;:]+@[^\s@<>"(),;:]+\.[^\s@<>"(),;:]+$/.test(input);
 }
 
+/** The ACME contact also goes into the Caddyfile, in quotes, where braces and backslashes mean something of their own. */
+export function isAcmeEmail(input: string): boolean {
+  return isEmailAddress(input) && !/[{}\\]/.test(input);
+}
+
 export function isHostName(input: string): boolean {
   return isIPv4(input) || normalizeDomain(input) === input || /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(input);
 }
@@ -138,7 +143,7 @@ export function parseSettings(raw: unknown): Settings {
   const domain = text(root.domain, 'domain');
   if (normalizeDomain(domain) !== domain) fail('domain');
   const acmeEmail = nullableText(root.acmeEmail, 'acmeEmail');
-  if (acmeEmail !== null && !isEmailAddress(acmeEmail)) fail('acmeEmail');
+  if (acmeEmail !== null && !isAcmeEmail(acmeEmail)) fail('acmeEmail');
   const certificates = root.certificates === 'public' || root.certificates === 'local' ? root.certificates : fail('certificates');
 
   const emailRoot = object(root.email, 'email');

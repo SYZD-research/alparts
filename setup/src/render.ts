@@ -293,7 +293,7 @@ export function renderComposeOverride(settings: Settings, paths: Paths, options:
 export function renderCaddyfile(settings: Settings): string {
   const local = settings.certificates === 'local';
   const globals = [
-    ...(settings.acmeEmail ? [`\temail ${settings.acmeEmail}`] : []),
+    ...(settings.acmeEmail ? [`\temail "${settings.acmeEmail}"`] : []),
     // The local authority's root stays in the proxy's storage instead of this host's trust store.
     ...(local ? ['\tskip_install_trust'] : []),
   ];

@@ -1,10 +1,14 @@
 import assert from 'node:assert/strict';
+import { X509Certificate } from 'node:crypto';
 import { once } from 'node:events';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import type { AddressInfo } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 import { createServer as createTlsServer } from 'node:tls';
 import type { Context } from './context.ts';
-import { probeProxy } from './deployment.ts';
+import { carriesCurrentPin, changeableByOthers, probeProxy, stableNodePath } from './deployment.ts';
 import type { Settings } from './settings.ts';
 import { createCertificateAuthority, issueServerCertificate, type IssuedCertificate } from './x509.ts';
 
@@ -78,4 +82,55 @@ test('the proxy check verifies the certificate for the domain before it asks for
   await withProxy(wrongAuthority, ok, async (port) => {
     assert.equal(await probeProxy(proxyHolding(authority.certificatePem), settings('local'), port), null);
   });
+});
+
+test('a certificate passes for the pins file only with the current key', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'alparts-pins-'));
+  try {
+    const authority = createCertificateAuthority('Caddy Local Authority', 30);
+    const [current, spare, other] = [0, 1, 2].map(() => issueServerCertificate(authority, { commonName: domain, dnsNames: [domain], validDays: 30 }));
+    writeFileSync(join(dir, 'proxy_tls_current_key'), current!.privateKeyPem);
+    writeFileSync(join(dir, 'proxy_tls_spare_key'), spare!.privateKeyPem);
+    const context = { paths: { secretsDir: dir } } as unknown as Context;
+    assert.ok(carriesCurrentPin(context, new X509Certificate(current!.certificatePem)));
+    // The spare is for after a switch: until then the proxy serves the current key.
+    assert.ok(!carriesCurrentPin(context, new X509Certificate(spare!.certificatePem)));
+    assert.ok(!carriesCurrentPin(context, new X509Certificate(other!.certificatePem)));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('the backup timer names a Node.js that a snap refresh keeps', () => {
+  assert.equal(stableNodePath('/snap/node/10251/bin/node'), '/snap/node/current/bin/node');
+  assert.equal(stableNodePath('/snap/node/x2/bin/node'), '/snap/node/current/bin/node');
+  assert.equal(stableNodePath('/usr/bin/node'), '/usr/bin/node');
+});
+
+test('what the root timer runs must be out of reach of other users', () => {
+  // System files and every directory above them belong to root.
+  assert.equal(changeableByOthers(['/usr/bin/env'], []), null);
+  const dir = mkdtempSync(join(tmpdir(), 'alparts-tree-'));
+  try {
+    const open = join(dir, 'open');
+    writeFileSync(open, '');
+    chmodSync(open, 0o666);
+    assert.equal(changeableByOthers([open], []), open);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a tree is refused for a symbolic link anywhere in it, but not in node_modules', { skip: process.getuid?.() !== 0 && 'needs files owned by root' }, () => {
+  const dir = mkdtempSync(join(tmpdir(), 'alparts-tree-'));
+  try {
+    mkdirSync(join(dir, 'src', 'node_modules'), { recursive: true });
+    writeFileSync(join(dir, 'src', 'main.ts'), '');
+    symlinkSync('/tmp', join(dir, 'src', 'node_modules', 'link'));
+    assert.equal(changeableByOthers([], [dir]), null);
+    symlinkSync('/tmp', join(dir, 'src', 'link'));
+    assert.equal(changeableByOthers([], [dir]), join(dir, 'src', 'link'));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

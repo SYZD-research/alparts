@@ -46,6 +46,16 @@ test('the SMTP password may come from its own file', () => {
       assert.equal(answers.smtpPassword, 'from-file');
       assert.deepEqual(answers.backup, { recipient: 'age1pq1qyqszqgp', time: '03:30' });
     });
+    // Read as root: only a regular file of at most 1 KiB, so no device, directory or large file is read and sent.
+    writeFileSync(join(dir, 'large'), 'x'.repeat(1025));
+    for (const passwordFile of [join(dir, 'large'), dir, '/dev/zero']) {
+      withFile({
+        domain: 'chat.example.com',
+        email: { mode: 'smtp', host: 'smtp.example.com', from: 'no-reply@example.com', user: 'mailer', passwordFile },
+      }, (path) => {
+        assert.throws(() => parseAnswersFile(path), (error: unknown) => error instanceof SetupError && error.values.field === 'email.passwordFile', passwordFile);
+      });
+    }
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

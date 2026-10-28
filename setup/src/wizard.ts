@@ -1,9 +1,9 @@
-import { readFileSync } from 'node:fs';
+import { closeSync, fstatSync, openSync, readFileSync } from 'node:fs';
 import { isIPv4 } from 'node:net';
 import { SetupError, type Context } from './context.ts';
 import { localAddresses, reachesThisHost, resolveDomain } from './network.ts';
 import { voicePortRange } from './render.ts';
-import { isAgeRecipient, isEmailAddress, isHostName, isPort, isPrivateIPv4, normalizeDomain, normalizeTime, type BackupSettings, type EmailSettings, type Settings } from './settings.ts';
+import { isAcmeEmail, isAgeRecipient, isEmailAddress, isHostName, isPort, isPrivateIPv4, normalizeDomain, normalizeTime, type BackupSettings, type EmailSettings, type Settings } from './settings.ts';
 import { checkSmtp } from './smtp.ts';
 
 /** What each reason a mail server check fails means to the operator. */
@@ -34,6 +34,27 @@ function invalid(field: string): never {
 }
 
 /**
+ * The SMTP password from a file of its own, read as root: only a regular
+ * file of at most 1 KiB, without its final line break.
+ */
+function readPasswordFile(path: string): string | null {
+  let descriptor: number;
+  try {
+    descriptor = openSync(path, 'r');
+  } catch {
+    return null;
+  }
+  try {
+    const stats = fstatSync(descriptor);
+    return stats.isFile() && stats.size <= 1024 ? readFileSync(descriptor, 'utf8').replace(/\r?\n$/, '') : null;
+  } catch {
+    return null;
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+/**
  * Reads an answers file for unattended installs. The same rules apply as to
  * typed answers; the SMTP password may come from a separate file.
  */
@@ -48,7 +69,7 @@ export function parseAnswersFile(path: string): Answers {
 
   const domain = normalizeDomain(String(raw.domain ?? '')) ?? invalid('domain');
   const acmeEmail = raw.acmeEmail === undefined || raw.acmeEmail === null ? null : String(raw.acmeEmail);
-  if (acmeEmail !== null && !isEmailAddress(acmeEmail)) invalid('acmeEmail');
+  if (acmeEmail !== null && !isAcmeEmail(acmeEmail)) invalid('acmeEmail');
   const certificates = raw.certificates === undefined ? 'public' : raw.certificates;
   if (certificates !== 'public' && certificates !== 'local') invalid('certificates');
 
@@ -70,11 +91,7 @@ export function parseAnswersFile(path: string): Answers {
     if (user !== null && /[\r\n]/.test(user)) invalid('email.user');
     if (user !== null) {
       if (typeof emailRaw.passwordFile === 'string') {
-        try {
-          smtpPassword = readFileSync(emailRaw.passwordFile, 'utf8').replace(/\r?\n$/, '');
-        } catch {
-          invalid('email.passwordFile');
-        }
+        smtpPassword = readPasswordFile(emailRaw.passwordFile) ?? invalid('email.passwordFile');
       } else if (typeof emailRaw.password === 'string') {
         smtpPassword = emailRaw.password;
       }

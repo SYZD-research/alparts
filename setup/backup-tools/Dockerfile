@@ -7,6 +7,10 @@
 FROM postgres:16.15-alpine3.23@sha256:731499cca67dd6cbb34bbffbf489bda72aa31252b14bcc0eafdccbb92c4b2446
 
 ARG TARGETARCH
+# These Alpine packages are not pinned: a build takes the current fixes of the
+# 3.23 branch, whose old versions the repository does not keep. The image tag
+# names this file, not the package versions, so builds of one tag on two hosts
+# can differ in them; the base image, rclone and age cannot.
 RUN apk add --no-cache bash coreutils diffutils findutils gawk grep jq sed tar unzip
 
 RUN set -eu; \

@@ -33,6 +33,7 @@ const ja = {
   'error.nodeTooOld': 'Node.js {version} 以上が必要です（今は {current}）。',
   'error.locked': '別のセットアップがすでに実行中です（プロセス {pid}）。終わってから、もう一度実行してください。',
   'error.lockToolMissing': 'このサーバーに flock コマンドがありません。util-linux パッケージをインストールしてから、もう一度実行してください。',
+  'error.scheduleUnsafe': '毎日のバックアップは Node.js とリポジトリを root として実行するため、root 以外のユーザーが書き換えられる場所にあると設定できません（{path}）。root が所有する Node.js と、root が所有する場所（/opt など）のリポジトリを使ってください。',
   'error.interrupted': '中断しました。',
   'error.interruptedResume': 'もう一度実行すると、続きから再開します。',
   'error.unexpected': '予期しない問題で止まりました。',
@@ -211,6 +212,7 @@ const ja = {
   'status.backupLatest': '毎日 {time}・最新 {date}（{count} 件）',
   'status.backupNever': '毎日 {time}・まだ作成されていません',
   'status.backupOff': '設定されていません',
+  'status.backupUnscheduled': '毎日の実行が設定されていません（sudo {command} backup-setup で設定）',
   'status.ready': 'アプリは利用できる状態です。',
   'status.notReady': 'アプリは今、利用できない状態です。',
 
@@ -260,7 +262,7 @@ const ja = {
 
   'pins.written': 'デスクトップ・Android アプリ用の接続先の設定を書き出しました: {file}',
   'pins.explain': '配布用のアプリを作るときに、このファイルを指定します。アプリは、このサーバーの証明書の鍵が、ファイルに記録された 2 つの鍵のどちらかと一致するときだけ接続します。ファイルには、今使っている鍵と、将来切り替えるための予備の鍵が記録されています。',
-  'pins.build': 'アプリの作り方（docs/DESKTOP.ja.md、docs/ANDROID.ja.md も参照）:',
+  'pins.build': 'アプリの作り方（docs/DESKTOP.ja.md、docs/ANDROID.ja.md も参照）。このファイルは秘密の情報を含みません。root だけが開ける場所にあるため、ビルドするユーザーの手元に写してから使います:',
   'pins.notServing': '証明書をまだ取得していないため、公開中の鍵と照合できませんでした。証明書を取得したあとで、もう一度実行してください。',
   'pins.mismatch': '公開中の証明書の鍵が、保存されている鍵と一致しません。sudo {command} restart を実行してから、もう一度確認してください。',
   'pins.rotateExplain': '証明書の鍵を予備の鍵に切り替え、新しい予備の鍵を作ります。今の接続先の設定ファイルで作ったアプリはそのまま接続できますが、それより前の設定ファイルで作ったアプリは接続できなくなります。',
@@ -305,6 +307,7 @@ Options:
   'error.nodeTooOld': 'Node.js {version} or later is required (this is {current}).',
   'error.locked': 'Another run of the setup is in progress (process {pid}). Wait for it to finish, then try again.',
   'error.lockToolMissing': 'This server has no flock command. Install the util-linux package, then try again.',
+  'error.scheduleUnsafe': 'Daily backups run Node.js and the repository as root, so they cannot be set up while a user other than root can change them ({path}). Use a Node.js and a repository checkout that root owns (in /opt, for example).',
   'error.interrupted': 'Stopped.',
   'error.interruptedResume': 'Run the setup again to continue where it left off.',
   'error.unexpected': 'The setup stopped on an unexpected problem.',
@@ -483,6 +486,7 @@ Options:
   'status.backupLatest': 'daily at {time}, latest {date} ({count} kept)',
   'status.backupNever': 'daily at {time}, none made yet',
   'status.backupOff': 'not set up',
+  'status.backupUnscheduled': 'not run daily (set it up with sudo {command} backup-setup)',
   'status.ready': 'The app is available.',
   'status.notReady': 'The app is not available right now.',
 
@@ -532,7 +536,7 @@ Options:
 
   'pins.written': 'Wrote the server settings for the desktop and Android apps: {file}',
   'pins.explain': 'Give this file when building the apps for distribution. The apps connect only when this server\'s certificate key matches one of the two keys in it: the key in use now, and a spare to switch to later.',
-  'pins.build': 'To build the apps (see also docs/DESKTOP.md and docs/ANDROID.md):',
+  'pins.build': 'To build the apps (see also docs/DESKTOP.md and docs/ANDROID.md). The file holds nothing secret; it sits where only root can open it, so copy it to the user who builds first:',
   'pins.notServing': 'No certificate yet, so the key being served could not be compared. Run this again once the certificate is issued.',
   'pins.mismatch': 'The key of the certificate being served differs from the saved key. Run sudo {command} restart, then check again.',
   'pins.rotateExplain': 'This switches the certificate to the spare key and makes a new spare. Apps built with the current pins file keep connecting; apps built with an older one stop connecting.',

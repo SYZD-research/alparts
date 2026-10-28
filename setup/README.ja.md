@@ -38,7 +38,7 @@ cd /opt/alparts
 sudo ./setup/alparts-setup
 ```
 
-`sudo` を付けずに実行すると、自分の Node.js を使い、必要なときに管理者のパスワードを求めます（nvm などで入れた Node.js を使う場合はこちら）。
+`sudo` を付けずに実行すると、自分の Node.js を使い、必要なときに管理者のパスワードを求めます（nvm などで入れた Node.js を使う場合はこちら）。ただし毎日のバックアップは、Node.js とリポジトリを毎晩 root として実行するため、root が所有する Node.js（パッケージや snap で入れたもの）と、root が所有する場所（上の `/opt/alparts` など）のリポジトリでないと設定しません。root 以外のユーザーが書き換えられると、そのユーザーが sudo なしで root としてコードを実行できてしまうためです。
 
 質問は次の4つです。答えたあとで内容を確認してからインストールします。
 
@@ -91,6 +91,8 @@ sudo ./setup/alparts-setup install --answers answers.json
 | `certificates` | `public`（既定、Let's Encrypt）。`local` は公開の DNS がない試験用で、ブラウザーは警告を出します |
 
 SMTP に接続できない場合は止まります。`--yes` を付けると、警告を出して続けます。
+
+回答ファイルと `passwordFile`（1 KiB までの通常のファイル）は root として読み、パスワードは回答ファイルに書いた SMTP サーバーに送ります。このセットアップを実行できる人は root と同じことができるため、sudoers などで root 以外の人に実行させないでください。
 
 ## コマンド
 
@@ -184,9 +186,12 @@ sudo ./setup/alparts-setup update
 
 ```bash
 sudo ./setup/alparts-setup pins
-ALPARTS_TRANSPORT_PINS_FILE=/etc/alparts-production/transport-pins.json pnpm desktop:dist
-cd packages/android && ./gradlew -PalpartsTransportPinsFile=/etc/alparts-production/transport-pins.json assembleRelease
+sudo cat /etc/alparts-production/transport-pins.json > $HOME/alparts-transport-pins.json
+ALPARTS_TRANSPORT_PINS_FILE=$HOME/alparts-transport-pins.json pnpm desktop:dist
+cd packages/android && ./gradlew -PalpartsTransportPinsFile=$HOME/alparts-transport-pins.json assembleRelease
 ```
+
+pin ファイルは秘密の情報を含みませんが、root だけが開けるディレクトリにあるため、ビルドするユーザーの手元に写してから使います（別のマシンでビルドする場合も、このファイルを写します）。
 
 pin ファイルには、今の鍵と予備の鍵の2つが入っています。`pins --rotate` で予備の鍵に切り替え、新しい予備の鍵を作ります。切り替える前のファイルで作ったアプリは、予備の鍵を知っているためそのまま接続できます。切り替えたあとは、新しいファイルでアプリを作り直してください。サーバーが不正に操作された場合は、予備の鍵も漏れたものとして扱います。
 
@@ -226,7 +231,7 @@ pnpm --filter @alparts/setup typecheck
 pnpm --filter @alparts/setup test
 ```
 
-単体テストは Node.js の標準のテストランナーで動き、Docker を使いません。
+単体テストは Node.js の標準のテストランナーで動き、Docker を使いません。update は、Docker の代わりの偽物に対して、バックアップと移行の順序と、新しいバージョンが起動しないときの巻き戻し（移行の前と後）を確かめます。
 
 データベースのロールと権限には、使い捨ての PostgreSQL 16 で確かめる統合テストがあります（CI の integration ジョブで実行します）。サーバーの移行を実際に適用してから、各ロールでできるべき操作とできてはならない操作を試します。サーバーをビルドし、`psql` と `pg_dump` がある環境で実行します。一意の名前のデータベースとロールを作り、終わると削除しますが、本番のサーバーには向けないでください。
 
@@ -236,4 +241,4 @@ export SETUP_TEST_DATABASE_URL='…'  # 使い捨ての PostgreSQL 16 の、ス�
 pnpm --filter @alparts/setup test:integration
 ```
 
-Docker を使う全体の流れ（install、update とその巻き戻し、backup、中断からの再開）には自動テストがありません。これらを変えたときは、使い捨ての Linux サーバー（Docker と Node.js があるもの）に、回答ファイルとローカルの証明書（`"certificates": "local"`）でインストールし、各コマンドを実行して確かめてください。バックアップからの復元は、[scripts/restore-verify.sh](../scripts/restore-verify.sh) で空の使い捨ての環境に対して確かめます。
+実際の Docker を使う全体の流れ（install、update、backup、中断からの再開）には自動テストがありません。これらを変えたときは、使い捨ての Linux サーバー（Docker と Node.js があるもの）に、回答ファイルとローカルの証明書（`"certificates": "local"`）でインストールし、各コマンドを実行して確かめてください。バックアップからの復元は、[scripts/restore-verify.sh](../scripts/restore-verify.sh) で空の使い捨ての環境に対して確かめます。

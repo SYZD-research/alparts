@@ -38,7 +38,7 @@ cd /opt/alparts
 sudo ./setup/alparts-setup
 ```
 
-Run without `sudo`, it uses your own Node.js and asks for the administrator password when needed (the way to go with a Node.js from nvm and the like).
+Run without `sudo`, it uses your own Node.js and asks for the administrator password when needed (the way to go with a Node.js from nvm and the like). Daily backups, however, run Node.js and the repository as root every night, so they are only set up with a Node.js that root owns (from a package or a snap) and a checkout in a place root owns (`/opt/alparts` above, say): a user who could change either would run code as root without sudo.
 
 There are four questions, and the answers are shown for review before anything is installed:
 
@@ -91,6 +91,8 @@ sudo ./setup/alparts-setup install --answers answers.json
 | `certificates` | `public` (the default, Let's Encrypt). `local` is for trials without public DNS; browsers warn about its certificate |
 
 When the mail server cannot be reached the setup stops; with `--yes` it warns and continues.
+
+The answers file and `passwordFile` (a regular file of at most 1 KiB) are read as root, and the password goes to the SMTP server the answers file names. Whoever can run this setup can do what root can, so never let anyone else run it through sudoers or the like.
 
 ## Commands
 
@@ -184,9 +186,12 @@ Release builds of the desktop and Android apps carry the server's certificate ke
 
 ```bash
 sudo ./setup/alparts-setup pins
-ALPARTS_TRANSPORT_PINS_FILE=/etc/alparts-production/transport-pins.json pnpm desktop:dist
-cd packages/android && ./gradlew -PalpartsTransportPinsFile=/etc/alparts-production/transport-pins.json assembleRelease
+sudo cat /etc/alparts-production/transport-pins.json > $HOME/alparts-transport-pins.json
+ALPARTS_TRANSPORT_PINS_FILE=$HOME/alparts-transport-pins.json pnpm desktop:dist
+cd packages/android && ./gradlew -PalpartsTransportPinsFile=$HOME/alparts-transport-pins.json assembleRelease
 ```
+
+The pins file holds nothing secret, but it sits in a directory only root can open, so copy it to the user who builds first (or to the machine that builds).
 
 The pins file lists two keys: the current one and a spare. `pins --rotate` switches to the spare and makes a new spare. Apps built with the file from before the switch keep connecting, since they know the spare; build them again with the new file afterwards. If the server is ever compromised, treat the spare as exposed too.
 
@@ -226,7 +231,7 @@ pnpm --filter @alparts/setup typecheck
 pnpm --filter @alparts/setup test
 ```
 
-The unit tests run on Node.js's own test runner and do not use Docker.
+The unit tests run on Node.js's own test runner and do not use Docker. Against a stand-in for Docker, they check that an update backs up before it migrates, and that a new version that does not start is rolled back before a migration and not after one.
 
 The database roles and grants have an integration test on a disposable PostgreSQL 16 server (CI runs it in the integration job). It applies the server's migrations, then tries what each role must and must not be able to do. Build the server and run it where `psql` and `pg_dump` are available. It creates a database and roles with unique names and drops them at the end, but never point it at a production server.
 
@@ -236,4 +241,4 @@ export SETUP_TEST_DATABASE_URL='…'  # a superuser connection URL of a disposab
 pnpm --filter @alparts/setup test:integration
 ```
 
-The flows that use Docker (install, update and its rollback, backup, resuming after an interruption) have no automated test. After changing them, install on a disposable Linux server with Docker and Node.js, from an answers file with local certificates (`"certificates": "local"`), and run each command. Check a restore from a backup in empty, disposable targets with [scripts/restore-verify.sh](../scripts/restore-verify.sh).
+The flows against a real Docker (install, update, backup, resuming after an interruption) have no automated test. After changing them, install on a disposable Linux server with Docker and Node.js, from an answers file with local certificates (`"certificates": "local"`), and run each command. Check a restore from a backup in empty, disposable targets with [scripts/restore-verify.sh](../scripts/restore-verify.sh).

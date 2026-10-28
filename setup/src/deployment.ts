@@ -1,7 +1,7 @@
 import { createHash, X509Certificate } from 'node:crypto';
-import { existsSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, type Stats } from 'node:fs';
 import { get as httpGet } from 'node:http';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { connect as tlsConnect } from 'node:tls';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { SetupError, type Context } from './context.ts';
@@ -309,14 +309,15 @@ export async function probeProxy(context: Context, settings: Settings, port = 44
   });
 }
 
-/** Waits until the proxy serves the app with a valid certificate for the domain. */
-export async function waitForCertificate(context: Context, settings: Settings, timeoutMs: number): Promise<boolean> {
+/** Waits until the proxy serves the app with a valid certificate for the domain, and returns that certificate. */
+export async function waitForCertificate(context: Context, settings: Settings, timeoutMs: number): Promise<X509Certificate | null> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if ((await probeProxy(context, settings))?.status === 200) return true;
+    const answer = await probeProxy(context, settings);
+    if (answer?.status === 200) return answer.certificate;
     await sleep(3000);
   }
-  return false;
+  return null;
 }
 
 export function backupFiles(dir: string): Array<{ name: string; modified: Date }> {
@@ -331,9 +332,47 @@ export async function systemdAvailable(context: Context): Promise<boolean> {
   return existsSync('/run/systemd/system') && (await context.run('systemctl', ['--version'], { check: false }).catch(() => null))?.code === 0;
 }
 
+/** A snap's Node.js runs from the directory of its revision, which a refresh removes; `current` follows the refreshes. */
+export function stableNodePath(execPath: string): string {
+  return execPath.replace(/^\/snap\/([^/]+)\/x?\d+\//, '/snap/$1/current/');
+}
+
+function changeable(stats: Stats): boolean {
+  return stats.uid !== 0 || (stats.mode & 0o022) !== 0;
+}
+
+/**
+ * The first path a user other than root could change: one of `files` or a
+ * directory above it, or anything in `trees` (whose `node_modules` the setup
+ * never loads). A symbolic link in a tree counts too, wherever it points.
+ */
+export function changeableByOthers(files: string[], trees: string[]): string | null {
+  for (const file of files) {
+    for (let path = realpathSync(file); ; path = dirname(path)) {
+      if (changeable(statSync(path))) return path;
+      if (dirname(path) === path) break;
+    }
+  }
+  const pending = [...trees];
+  while (pending.length > 0) {
+    const path = pending.pop()!;
+    const stats = lstatSync(path);
+    if (stats.isSymbolicLink() || changeable(stats)) return path;
+    if (stats.isDirectory()) {
+      for (const name of readdirSync(path)) if (name !== 'node_modules') pending.push(join(path, name));
+    }
+  }
+  return null;
+}
+
 export async function installBackupSchedule(context: Context, settings: Settings): Promise<void> {
   if (!(await systemdAvailable(context))) throw new SetupError('error.noSystemd');
-  const units = renderBackupUnits(settings, context.paths, process.execPath);
+  // The timer runs this Node.js and this checkout as root every night: whoever could change them would run code as root without sudo.
+  const node = stableNodePath(process.execPath);
+  const repo = context.paths.repo;
+  const exposed = changeableByOthers([node, join(repo, 'compose.production.yml')], [join(repo, 'setup'), join(repo, 'scripts')]);
+  if (exposed) throw new SetupError('error.scheduleUnsafe', { path: exposed });
+  const units = renderBackupUnits(settings, context.paths, node);
   ensureDirectory(context.paths.systemdDir, 0o755);
   writeFileIfChanged(join(context.paths.systemdDir, `${BACKUP_UNIT}.service`), units.service, 0o644);
   writeFileIfChanged(join(context.paths.systemdDir, `${BACKUP_UNIT}.timer`), units.timer, 0o644);
@@ -341,6 +380,11 @@ export async function installBackupSchedule(context: Context, settings: Settings
   await context.run('systemctl', ['enable', '--now', `${BACKUP_UNIT}.timer`]);
   // A timer whose schedule changed keeps its old next run until restarted.
   await context.run('systemctl', ['restart', `${BACKUP_UNIT}.timer`]);
+}
+
+/** Whether the daily timer is in place: the settings keep the backup key and time when it could not be set up. */
+export function backupScheduled(context: Context): boolean {
+  return existsSync(join(context.paths.systemdDir, `${BACKUP_UNIT}.timer`));
 }
 
 export async function removeBackupSchedule(context: Context): Promise<void> {
@@ -358,6 +402,11 @@ export function transportPins(context: Context): Pins {
     throw new SetupError('error.noCertificateKey', { command: context.command });
   }
   return { current: spkiPin(store.read('proxy_tls_current_key')), spare: spkiPin(store.read('proxy_tls_spare_key')) };
+}
+
+/** Whether a certificate carries the key the pins file names as current, the one the apps expect now. */
+export function carriesCurrentPin(context: Context, certificate: X509Certificate): boolean {
+  return spkiPin(certificate.toString()) === transportPins(context).current;
 }
 
 /** The file the desktop and Android release builds take as ALPARTS_TRANSPORT_PINS_FILE. */

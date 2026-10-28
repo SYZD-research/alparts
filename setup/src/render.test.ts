@@ -123,7 +123,8 @@ test('the Caddyfile keeps the certificate key, buffers bodies and hides health c
   assert.match(caddyfile, /request_buffers 4MiB/);
   assert.match(caddyfile, /@private path \/health \/health\/\* \/metrics \/metrics\/\*/);
   assert.match(renderCaddyfile(settings({ certificates: 'local' })), /^\ttls internal \{$/m);
-  assert.match(renderCaddyfile(settings({ acmeEmail: 'ops@example.com' })), /^\temail ops@example\.com$/m);
+  // Quoted, so an address such as #ops@example.com is not read as a comment.
+  assert.match(renderCaddyfile(settings({ acmeEmail: '#ops@example.com' })), /^\temail "#ops@example\.com"$/m);
 });
 
 test('PostgreSQL admits the superuser locally only and the roles over TLS only', () => {
