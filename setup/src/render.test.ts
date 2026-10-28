@@ -138,6 +138,8 @@ test('PostgreSQL admits the superuser locally only and the roles over TLS only',
 test('the backup timer runs the setup with quoted paths', () => {
   const { service, timer } = renderBackupUnits(settings(), systemPaths('/', '/srv/my alparts'), '/usr/bin/node');
   assert.match(service, /^ExecStart="\/usr\/bin\/node" "\/srv\/my alparts\/setup\/src\/main\.ts" backup --scheduled --lang ja$/m);
+  // Stopped, the run stops its backup and starts the app again, which takes longer than systemd's default wait.
+  assert.match(service, /^TimeoutStopSec=5min$/m);
   assert.match(timer, /^OnCalendar=\*-\*-\* 04:00:00$/m);
 });
 

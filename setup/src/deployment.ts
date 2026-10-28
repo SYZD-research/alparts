@@ -1,5 +1,7 @@
 import { createHash, X509Certificate } from 'node:crypto';
-import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, type Stats } from 'node:fs';
+import {
+  closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, type Stats,
+} from 'node:fs';
 import { get as httpGet } from 'node:http';
 import { dirname, join } from 'node:path';
 import { connect as tlsConnect } from 'node:tls';
@@ -22,8 +24,32 @@ export const APP_IMAGE = (tag: string) => `alparts:${tag}`;
 const AUDIT_CHECKPOINT = '/var/lib/alparts-audit/checkpoint.json';
 
 /**
+ * What an untracked file adds to the source digest: the bytes of a regular
+ * file, the target of a symbolic link, and nothing for anything else.
+ */
+function untrackedContent(path: string): Buffer | string {
+  let descriptor: number;
+  try {
+    // Not followed, a link counts as itself; a pipe opens without waiting for a writer.
+    descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  } catch {
+    try {
+      return `link ${readlinkSync(path)}`;
+    } catch {
+      return '';
+    }
+  }
+  try {
+    return fstatSync(descriptor).isFile() ? readFileSync(descriptor) : '';
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+/**
  * The image tag for the checked-out source: the commit, plus a digest of
- * uncommitted changes when there are any, so the same source reuses its image.
+ * uncommitted changes and untracked files when there are any, so the same
+ * source reuses its image and changed source never does.
  */
 export async function sourceVersion(context: Context): Promise<{ tag: string; dirty: boolean }> {
   // Read-only: as root, git must not rewrite the checkout owner's index (--no-optional-locks).
@@ -37,8 +63,13 @@ export async function sourceVersion(context: Context): Promise<{ tag: string; di
   const status = await git(['status', '--porcelain']);
   if (!status.stdout.trim()) return { tag: commit, dirty: false };
   const diff = await git(['diff', 'HEAD', '--binary']);
-  const digest = createHash('sha256').update(status.stdout).update(diff.stdout).digest('hex').slice(0, 8);
-  return { tag: `${commit}-local-${digest}`, dirty: true };
+  const digest = createHash('sha256').update(status.stdout).update(diff.stdout);
+  // The diff leaves untracked files out, so their contents are added here.
+  const untracked = await git(['ls-files', '--others', '--exclude-standard', '-z']);
+  for (const file of untracked.stdout.split('\0').filter(Boolean)) {
+    digest.update(`\0${file}\0`).update(untrackedContent(join(context.paths.repo, file)));
+  }
+  return { tag: `${commit}-local-${digest.digest('hex').slice(0, 8)}`, dirty: true };
 }
 
 /** Creates what is missing among the generated credentials and rewrites the derived files; returns the services to restart. */
@@ -320,10 +351,13 @@ export async function waitForCertificate(context: Context, settings: Settings, t
   return null;
 }
 
+/** The name scripts/backup.sh gives a backup: the UTC time of the run and 12 random hex digits. */
+export const BACKUP_FILE_NAME = /^alparts-backup-\d{8}T\d{6}Z-[0-9a-f]{12}\.tar\.age$/;
+
 export function backupFiles(dir: string): Array<{ name: string; modified: Date }> {
   if (!existsSync(dir)) return [];
   return readdirSync(dir)
-    .filter((name) => /^alparts-backup-\d{8}T\d{6}Z-[0-9a-f]{12}\.tar\.age$/.test(name))
+    .filter((name) => BACKUP_FILE_NAME.test(name))
     .map((name) => ({ name, modified: statSync(join(dir, name)).mtime }))
     .sort((a, b) => a.modified.getTime() - b.modified.getTime());
 }
@@ -382,9 +416,16 @@ export async function installBackupSchedule(context: Context, settings: Settings
   await context.run('systemctl', ['restart', `${BACKUP_UNIT}.timer`]);
 }
 
-/** Whether the daily timer is in place: the settings keep the backup key and time when it could not be set up. */
-export function backupScheduled(context: Context): boolean {
-  return existsSync(join(context.paths.systemdDir, `${BACKUP_UNIT}.timer`));
+/**
+ * Whether the daily timer is in place, enabled and running. The settings keep
+ * the backup key and time when it could not be set up, and the unit files
+ * stay when systemd could not enable them.
+ */
+export async function backupScheduled(context: Context): Promise<boolean> {
+  if (!existsSync(join(context.paths.systemdDir, `${BACKUP_UNIT}.timer`))) return false;
+  const holds = (check: string) => context.run('systemctl', [check, '--quiet', `${BACKUP_UNIT}.timer`], { check: false })
+    .then((result) => result.code === 0, () => false);
+  return (await holds('is-enabled')) && (await holds('is-active'));
 }
 
 export async function removeBackupSchedule(context: Context): Promise<void> {

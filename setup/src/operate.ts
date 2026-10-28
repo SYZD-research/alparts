@@ -82,6 +82,7 @@ export async function status(context: Context): Promise<void> {
   };
   const certificate = (await probeProxy(context, settings))?.certificate;
   const backups = backupFiles(paths.backupDir);
+  const scheduled = await backupScheduled(context);
   const email = settings.email;
   const rows: Array<[string, string]> = [
     [t('status.address'), `https://${settings.domain}`],
@@ -97,7 +98,7 @@ export async function status(context: Context): Promise<void> {
     [t('status.email'), email.mode === 'smtp' ? t('confirm.emailSmtp', { from: email.from, host: email.host, port: email.port }) : t('confirm.emailDisabled')],
     [t('status.backup'), !settings.backup
       ? t('status.backupOff')
-      : !backupScheduled(context)
+      : !scheduled
         ? t('status.backupUnscheduled', { command: context.command })
         : backups.length > 0
         ? t('status.backupLatest', { time: settings.backup.time, date: formatDate(backups.at(-1)!.modified, context.language), count: backups.length })

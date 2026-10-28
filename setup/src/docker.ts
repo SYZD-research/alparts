@@ -1,5 +1,7 @@
+import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { parseCidr, type Cidr } from './network.ts';
 import { PROJECT_NAME, type Paths } from './paths.ts';
 import type { RunOptions, RunResult, Runner } from './run.ts';
@@ -56,6 +58,12 @@ export function parseComposePs(output: string): ServiceState[] {
 export class Docker {
   private readonly run: Runner;
   private readonly paths: Paths;
+  /** Marks the one-off containers this run starts, so that an interruption can stop the ones still running. */
+  private readonly runLabel = `alparts-setup.run=${randomBytes(8).toString('hex')}`;
+  /** The one-off commands still going. */
+  private readonly oneOffs = new Set<Promise<RunResult>>();
+  /** Set once the run is interrupted: no one-off container starts after that. */
+  private stopped = false;
 
   constructor(run: Runner, paths: Paths) {
     this.run = run;
@@ -172,10 +180,35 @@ export class Docker {
    * secret: they appear in the command line.
    */
   runOnce(service: string, command: string[], options: RunOptions & { profiles?: string[]; environment?: Record<string, string>; entrypoint?: string } = {}): Promise<RunResult> {
+    if (this.stopped) return Promise.reject(new Error(`interrupted before ${service} could run`));
     const { environment = {}, entrypoint, profiles, ...runOptions } = options;
-    const flags = ['run', '--rm', '--no-deps', '-T', ...(entrypoint !== undefined ? ['--entrypoint', entrypoint] : [])];
+    const flags = ['run', '--rm', '--no-deps', '-T', '--label', this.runLabel, ...(entrypoint !== undefined ? ['--entrypoint', entrypoint] : [])];
     for (const [name, value] of Object.entries(environment)) flags.push('-e', `${name}=${value}`);
-    return this.compose([...flags, service, ...command], { ...runOptions, profiles });
+    const running = this.compose([...flags, service, ...command], { ...runOptions, profiles });
+    this.oneOffs.add(running);
+    const settled = () => void this.oneOffs.delete(running);
+    running.then(settled, settled);
+    return running;
+  }
+
+  /**
+   * Stops and removes the one-off containers of this run, and starts no more.
+   * An interruption can end the commands that started them while the
+   * containers go on, and a backup or a migration must not outlive the run.
+   */
+  async stopOneOffs(): Promise<void> {
+    this.stopped = true;
+    // A container still being created is not listed yet: look again until every one-off command has ended.
+    for (;;) {
+      const listed = await this.run('docker', ['ps', '--all', '--quiet', '--filter', `label=${this.runLabel}`], { check: false });
+      const ids = listed.stdout.split('\n').filter(Boolean);
+      if (ids.length > 0) {
+        await this.run('docker', ['stop', '--time', '30', ...ids], { check: false });
+        await this.run('docker', ['rm', ...ids], { check: false });
+      }
+      if (this.oneOffs.size === 0) return;
+      await Promise.race([Promise.allSettled(this.oneOffs), sleep(1000)]);
+    }
   }
 
   exec(service: string, command: string[], options: RunOptions & { user?: string } = {}): Promise<RunResult> {

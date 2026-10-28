@@ -350,6 +350,8 @@ export function renderBackupUnits(settings: Settings, paths: Paths, nodePath: st
     'Type=oneshot',
     `ExecStart=${systemdArgument(nodePath)} ${systemdArgument(main)} backup --scheduled --lang ${settings.language}`,
     'TimeoutStartSec=6h',
+    // On stop the run ends its backup and starts the app again before it exits.
+    'TimeoutStopSec=5min',
     'Nice=10',
     'IOSchedulingClass=best-effort',
     'IOSchedulingPriority=7',

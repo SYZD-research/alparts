@@ -77,7 +77,8 @@ async function runUpdate(scenario: Scenario) {
       runOnce: async (service: string, command: string[]) => {
         calls.push(`run ${service} ${command.join(' ')}`.trim());
         if (service === 'migrator' && scenario.migrates) migrations += 1;
-        return service === 'backup' && !command.includes('--preflight') ? ok('/backups/alparts-backup-20261028T000000Z-0123456789ab.tar.age\n') : ok();
+        // A line after the file's name does not take its place.
+        return service === 'backup' && !command.includes('--preflight') ? ok('/backups/alparts-backup-20261028T000000Z-0123456789ab.tar.age\nWARN shutting down\n') : ok();
       },
       psql: async (sql: string) => ok(sql.includes('__drizzle_migrations') ? `${migrations}\n` : ''),
     });

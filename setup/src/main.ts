@@ -151,6 +151,8 @@ async function main(argv: string[]): Promise<number> {
   const interrupt = () => {
     ui.close();
     void (async () => {
+      // A backup or a migration this run started stops first, so that the undo steps do not run beside it.
+      await context.docker.stopOneOffs().catch((error: unknown) => log.event(`stopping one-off containers failed: ${(error as Error).message}`));
       for (const cleanup of context.cleanups.splice(0).reverse()) {
         try {
           await cleanup();

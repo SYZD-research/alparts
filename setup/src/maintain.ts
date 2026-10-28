@@ -1,7 +1,7 @@
 import { basename, join } from 'node:path';
 import { Cancelled, SetupError, withCleanup, type Context } from './context.ts';
 import {
-  APP_IMAGE, appliedMigrations, ensureAppImage, ensureBackupToolsImage, migrate, prepareBackupFiles, prepareSecrets, probeProxy,
+  APP_IMAGE, appliedMigrations, BACKUP_FILE_NAME, ensureAppImage, ensureBackupToolsImage, migrate, prepareBackupFiles, prepareSecrets, probeProxy,
   provisionDatabase, restartRunning, seedProxyKey, sourceVersion, startDependencies, startServices, waitForApp, writeConfiguration,
   writePinsFile,
 } from './deployment.ts';
@@ -21,8 +21,10 @@ async function makeBackup(context: Context, reason: string): Promise<string> {
       environment: { ALPARTS_BACKUP_QUIESCED: 'YES_WRITES_ARE_STOPPED', BACKUP_REASON: reason },
       timeoutMs: 6 * 60 * 60 * 1000,
     });
-    const written = result.stdout.trim().split('\n').at(-1) ?? '';
-    return join(context.paths.backupDir, basename(written));
+    // backup.sh prints the file once it is published. Stopped by a signal it can end with 0 and no file, which is no backup.
+    const written = result.stdout.split('\n').map((line) => basename(line.trim())).filter((name) => BACKUP_FILE_NAME.test(name)).at(-1);
+    if (!written) throw new Error('backup.sh named no backup file');
+    return join(context.paths.backupDir, written);
   } catch (error) {
     throw new SetupError('error.backup', {}, { cause: error });
   }
@@ -174,7 +176,7 @@ export async function update(context: Context): Promise<void> {
     }
   });
   writePinsFile(context, next);
-  warnIfKeyDiffers(context, (await probeProxy(context, next))?.certificate ?? null);
   if (older && older !== current && older !== version.tag) await docker.removeImage(APP_IMAGE(older));
   ui.line(t('update.done', { version: version.tag }));
+  warnIfKeyDiffers(context, (await probeProxy(context, next))?.certificate ?? null);
 }

@@ -8,7 +8,10 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { createServer as createTlsServer } from 'node:tls';
 import type { Context } from './context.ts';
-import { carriesCurrentPin, changeableByOthers, probeProxy, stableNodePath } from './deployment.ts';
+import { backupScheduled, carriesCurrentPin, changeableByOthers, probeProxy, sourceVersion, stableNodePath } from './deployment.ts';
+import { RunLog } from './log.ts';
+import { systemPaths } from './paths.ts';
+import { createRunner, type RunResult } from './run.ts';
 import type { Settings } from './settings.ts';
 import { createCertificateAuthority, issueServerCertificate, type IssuedCertificate } from './x509.ts';
 
@@ -98,6 +101,54 @@ test('a certificate passes for the pins file only with the current key', () => {
     assert.ok(!carriesCurrentPin(context, new X509Certificate(other!.certificatePem)));
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('the image tag changes with untracked files, and stays for the same source', async () => {
+  const repo = mkdtempSync(join(tmpdir(), 'alparts-source-'));
+  try {
+    const run = createRunner(new RunLog(null, 'test'));
+    const git = (...args: string[]) => run('git', ['-C', repo, '-c', 'user.name=Test', '-c', 'user.email=test@example.com', '-c', 'commit.gpgsign=false', ...args]);
+    await git('init', '--quiet');
+    writeFileSync(join(repo, 'tracked.txt'), 'one');
+    await git('add', 'tracked.txt');
+    await git('commit', '--quiet', '-m', 'first');
+    const context = { run, paths: { repo } } as unknown as Context;
+    const commit = (await sourceVersion(context)).tag;
+    assert.match(commit, /^[0-9a-f]{12}$/);
+
+    const added = join(repo, 'added.txt');
+    writeFileSync(added, 'first');
+    const first = await sourceVersion(context);
+    writeFileSync(added, 'second');
+    const second = await sourceVersion(context);
+    assert.ok(first.dirty && second.dirty);
+    assert.ok(first.tag.startsWith(`${commit}-local-`));
+    assert.notEqual(first.tag, second.tag);
+    assert.equal((await sourceVersion(context)).tag, second.tag);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('the daily backups count as scheduled only while systemd has the timer enabled and running', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'alparts-units-'));
+  try {
+    const paths = systemPaths(root, '/opt/alparts');
+    const answers = new Map<string, number>([['is-enabled', 0], ['is-active', 0]]);
+    const run = async (command: string, args: string[]): Promise<RunResult> => ({ code: command === 'systemctl' ? answers.get(args[0]!) ?? 1 : 1, stdout: '', stderr: '' });
+    const context = { run, paths } as unknown as Context;
+    assert.equal(await backupScheduled(context), false);
+    mkdirSync(paths.systemdDir, { recursive: true });
+    writeFileSync(join(paths.systemdDir, 'alparts-production-backup.timer'), '');
+    assert.equal(await backupScheduled(context), true);
+    // The unit files stay when enabling them failed.
+    answers.set('is-enabled', 1);
+    assert.equal(await backupScheduled(context), false);
+    answers.set('is-enabled', 0).set('is-active', 3);
+    assert.equal(await backupScheduled(context), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });
 
