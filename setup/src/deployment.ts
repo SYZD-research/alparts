@@ -196,6 +196,9 @@ export async function hasAccounts(context: Context): Promise<boolean | null> {
 /** Applies the image's migrations as the schema owner (the app must be stopped), then grants on what they created. */
 export async function migrate(context: Context, imageTag: string): Promise<void> {
   try {
+    // The tag goes into Compose's own environment, not the container's (-e): Compose takes a variable from its
+    // environment before the env file, so during an update the migrator runs the new image while compose.env
+    // still names the running one.
     await context.docker.runOnce('migrator', [], { profiles: ['operations'], env: { ALPARTS_IMAGE_TAG: imageTag } });
     await context.docker.psql(grantsSql(), DATABASE.name);
   } catch (error) {

@@ -85,6 +85,17 @@ test('an interruption stops the one-off containers of its own run, then starts n
   assert.equal(ours.calls.length, count);
 });
 
+test('a variable for Compose itself goes into its environment, not into the container', async () => {
+  const seen: Array<{ args: string[]; env?: Record<string, string> }> = [];
+  const run: Runner = async (_command, args, options) => {
+    seen.push({ args, env: options?.env });
+    return { code: 0, stdout: '', stderr: '' };
+  };
+  await new Docker(run, systemPaths('/', '/opt/alparts')).runOnce('migrator', [], { env: { ALPARTS_IMAGE_TAG: 'v2' } });
+  assert.equal(seen[0]!.env?.ALPARTS_IMAGE_TAG, 'v2');
+  assert.ok(!seen[0]!.args.includes('-e'));
+});
+
 test('a one-off container is stopped at its time limit, even while its client does not end', async () => {
   const { calls, limits, pending, docker } = fakeDocker();
   const running = docker.runOnce('backup', ['/opt/alparts/scripts/backup.sh'], { timeoutMs: 20, check: false });

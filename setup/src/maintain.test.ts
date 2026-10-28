@@ -56,6 +56,7 @@ async function runUpdate(scenario: Scenario) {
     };
     const configuredTag = () => /^ALPARTS_IMAGE_TAG='([^']*)'$/m.exec(readFileSync(paths.composeEnvFile, 'utf8'))?.[1];
     const calls: string[] = [];
+    const migratorTags: Array<string | undefined> = [];
     let migrations = 27;
     const docker = new Docker(async (command, args) => {
       throw new Error(`unexpected: ${command} ${args.join(' ')}`);
@@ -74,8 +75,9 @@ async function runUpdate(scenario: Scenario) {
       stop: async (services: string[] = []) => void calls.push(`stop ${services.join(',')}`),
       restart: async (services: string[]) => void calls.push(`restart ${services.join(',')}`),
       exec: async () => ok(),
-      runOnce: async (service: string, command: string[]) => {
+      runOnce: async (service: string, command: string[], options?: { env?: Record<string, string> }) => {
         calls.push(`run ${service} ${command.join(' ')}`.trim());
+        if (service === 'migrator') migratorTags.push(options?.env?.ALPARTS_IMAGE_TAG);
         if (service === 'migrator' && scenario.migrates) migrations += 1;
         // A line after the file's name does not take its place.
         return service === 'backup' && !command.includes('--preflight') ? ok('/backups/alparts-backup-20261028T000000Z-0123456789ab.tar.age\nWARN shutting down\n') : ok();
@@ -106,7 +108,7 @@ async function runUpdate(scenario: Scenario) {
     await writeConfiguration(context, settings, 'v1');
 
     const outcome = await update(context).then(() => null, (error: unknown) => error);
-    return { outcome, calls, saved: loadSettings(paths.settingsFile)!, configured: configuredTag(), pins: existsSync(paths.pinsFile), paths };
+    return { outcome, calls, migratorTags, saved: loadSettings(paths.settingsFile)!, configured: configuredTag(), pins: existsSync(paths.pinsFile), paths };
   } finally {
     app.close();
     rmSync(root, { recursive: true, force: true });
@@ -116,8 +118,10 @@ async function runUpdate(scenario: Scenario) {
 const linux = process.platform === 'linux' ? false : 'the setup runs on Linux only';
 
 test('an update backs up before it migrates, then runs the new version and drops the image before last', { skip: linux }, async () => {
-  const { outcome, calls, saved, configured, pins } = await runUpdate({ starts: true, migrates: true });
+  const { outcome, calls, migratorTags, saved, configured, pins } = await runUpdate({ starts: true, migrates: true });
   assert.equal(outcome, null);
+  // The migrations come from the new image, although compose.env still names v1 while they run.
+  assert.deepEqual(migratorTags, ['v2']);
   assert.deepEqual(saved.image, { tag: 'v2', previousTag: 'v1' });
   assert.equal(configured, 'v2');
   assert.ok(pins);
