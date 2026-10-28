@@ -127,7 +127,7 @@ Important account/session/device, workspace/member/role/invite, channel/key, mes
 - No DM archive/reclaim, organization-wide retention/export, account/workspace deletion lifecycle, or legal hold.
 - Backup lacks PITR, automatic off-host/off-region copy, object versions/policy, scheduled restore and measured full-service RPO/RTO.
 - The single-host setup starts the server without Node.js's permission model, because current Node.js refuses `fsync` under it and the audit checkpoint needs it (R-059). Its backups stay on the server until the operator copies them elsewhere (R-003).
-- Third-party code with known advisories and no fixed release: the media worker's own OpenSSL 3.0.10, which image scanners do not see (R-061), and an HTTP/2 denial of service in the proxy image, Caddy 2.11.7 (R-062).
+- Third-party code with known advisories and no fixed release: the media worker's own OpenSSL 3.0.10, which image scanners do not see (R-061), and Go advisories in the proxy image, Caddy 2.11.7, whose HTTP/2 denial of service the setup avoids by serving only HTTP/1.1 and HTTP/3 (R-062).
 - No malware scanner/sandbox; encrypted active files cannot be inspected server-side. Desktop adds quarantine/non-executable saves, while Web download defenses remain browser-dependent.
 - No signed release/update or generated provenance attestation; an SBOM workflow alone does not establish artifact authenticity.
 - External credential rotation for the removed tracked development account cannot be proven from this repository.

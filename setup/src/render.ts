@@ -296,10 +296,17 @@ export function renderCaddyfile(settings: Settings): string {
     ...(settings.acmeEmail ? [`\temail "${settings.acmeEmail}"`] : []),
     // The local authority's root stays in the proxy's storage instead of this host's trust store.
     ...(local ? ['\tskip_install_trust'] : []),
+    // HTTP/1.1 and HTTP/3 only: the Go in Caddy 2.11.7 has an HTTP/2 denial of service (CVE-2026-78669, risk register R-062).
+    '\tservers {',
+    '\t\tprotocols h1 h3',
+    '\t}',
   ];
   return [
     `# ${GENERATED_HEADER}`,
-    ...(globals.length > 0 ? ['{', ...globals, '}', ''] : []),
+    '{',
+    ...globals,
+    '}',
+    '',
     `${settings.domain} {`,
     `\t${local ? 'tls internal {' : 'tls {'}`,
     '\t\tkey_type p256',
@@ -314,6 +321,12 @@ export function renderCaddyfile(settings: Settings): string {
     '\treverse_proxy app:3000 {',
     '\t\trequest_buffers 4MiB',
     '\t}',
+    '}',
+    '',
+    // Caddy would otherwise make this server itself, with HTTP/2 on and without the options above.
+    '# Port 80 only redirects to HTTPS.',
+    'http:// {',
+    '\tredir https://{host}{uri} 308',
     '}',
     '',
   ].join('\n');
