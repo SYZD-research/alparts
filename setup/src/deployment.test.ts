@@ -126,6 +126,13 @@ test('the image tag changes with untracked files, and stays for the same source'
     assert.ok(first.tag.startsWith(`${commit}-local-`));
     assert.notEqual(first.tag, second.tag);
     assert.equal((await sourceVersion(context)).tag, second.tag);
+
+    // A tracked file counts by what it holds now, however large.
+    const tracked = join(repo, 'tracked.txt');
+    writeFileSync(tracked, `a${'x'.repeat(5 * 1024 * 1024)}`);
+    const third = await sourceVersion(context);
+    writeFileSync(tracked, `b${'x'.repeat(5 * 1024 * 1024)}`);
+    assert.notEqual((await sourceVersion(context)).tag, third.tag);
   } finally {
     rmSync(repo, { recursive: true, force: true });
   }

@@ -1,6 +1,7 @@
-import { createHash, X509Certificate } from 'node:crypto';
+import { createHash, X509Certificate, type Hash } from 'node:crypto';
 import {
-  closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, type Stats,
+  closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync, rmSync, statSync,
+  type Stats,
 } from 'node:fs';
 import { get as httpGet } from 'node:http';
 import { dirname, join } from 'node:path';
@@ -24,32 +25,39 @@ export const APP_IMAGE = (tag: string) => `alparts:${tag}`;
 const AUDIT_CHECKPOINT = '/var/lib/alparts-audit/checkpoint.json';
 
 /**
- * What an untracked file adds to the source digest: the bytes of a regular
- * file, the target of a symbolic link, and nothing for anything else.
+ * Adds what a changed or untracked path holds now to the source digest, as
+ * the image build reads it: the mode and bytes of a regular file, the target
+ * of a symbolic link, and nothing for anything else or a path that is gone.
  */
-function untrackedContent(path: string): Buffer | string {
+function addWorkingContent(digest: Hash, path: string): void {
   let descriptor: number;
   try {
     // Not followed, a link counts as itself; a pipe opens without waiting for a writer.
     descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   } catch {
     try {
-      return `link ${readlinkSync(path)}`;
+      digest.update(`link ${readlinkSync(path)}`);
     } catch {
-      return '';
+      // Gone, as the status line says.
     }
+    return;
   }
   try {
-    return fstatSync(descriptor).isFile() ? readFileSync(descriptor) : '';
+    const stats = fstatSync(descriptor);
+    if (!stats.isFile()) return;
+    digest.update(`file ${stats.mode & 0o777} `);
+    // In pieces, so that a large file need not fit in memory.
+    const buffer = Buffer.alloc(1 << 20);
+    for (let read = readSync(descriptor, buffer); read > 0; read = readSync(descriptor, buffer)) digest.update(buffer.subarray(0, read));
   } finally {
     closeSync(descriptor);
   }
 }
 
 /**
- * The image tag for the checked-out source: the commit, plus a digest of
- * uncommitted changes and untracked files when there are any, so the same
- * source reuses its image and changed source never does.
+ * The image tag for the checked-out source: the commit, plus a digest of the
+ * changed and untracked files when there are any, so the same source reuses
+ * its image and changed source never does.
  */
 export async function sourceVersion(context: Context): Promise<{ tag: string; dirty: boolean }> {
   // Read-only: as root, git must not rewrite the checkout owner's index (--no-optional-locks).
@@ -60,14 +68,20 @@ export async function sourceVersion(context: Context): Promise<{ tag: string; di
     return { tag: `local-${new Date().toISOString().replace(/[^0-9]/g, '').slice(0, 14)}`, dirty: true };
   }
   const commit = head.stdout.trim();
-  const status = await git(['status', '--porcelain']);
-  if (!status.stdout.trim()) return { tag: commit, dirty: false };
-  const diff = await git(['diff', 'HEAD', '--binary']);
-  const digest = createHash('sha256').update(status.stdout).update(diff.stdout);
-  // The diff leaves untracked files out, so their contents are added here.
-  const untracked = await git(['ls-files', '--others', '--exclude-standard', '-z']);
-  for (const file of untracked.stdout.split('\0').filter(Boolean)) {
-    digest.update(`\0${file}\0`).update(untrackedContent(join(context.paths.repo, file)));
+  const status = await git(['status', '--porcelain', '-z', '--untracked-files=all']);
+  if (!status.stdout) return { tag: commit, dirty: false };
+  // The build reads the working tree, so each changed or untracked path is read from there, not from a diff, whose
+  // captured output has a size limit.
+  const digest = createHash('sha256').update(status.stdout);
+  const entries = status.stdout.split('\0');
+  for (let index = 0; index < entries.length; index += 1) {
+    const entry = entries[index]!;
+    if (entry.length < 4) continue;
+    // A rename or a copy names the original path next.
+    if (/[RC]/.test(entry.slice(0, 2))) index += 1;
+    const path = entry.slice(3);
+    digest.update(`\0${path}\0`);
+    addWorkingContent(digest, join(context.paths.repo, path));
   }
   return { tag: `${commit}-local-${digest.digest('hex').slice(0, 8)}`, dirty: true };
 }
