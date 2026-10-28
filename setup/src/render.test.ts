@@ -115,8 +115,11 @@ test('backups run as an unprivileged user that can read their credentials and wr
   assert.equal(backup.user, undefined);
 });
 
-test('the Caddyfile keeps the certificate key, buffers bodies and hides health checks', () => {
+test('the Caddyfile keeps the certificate key, buffers bodies, hides health checks and turns HTTP/2 off', () => {
   const caddyfile = renderCaddyfile(settings());
+  assert.match(caddyfile, /^\{\n(?:\t.*\n)*\tservers \{\n\t\tprotocols h1 h3\n\t\}\n\}$/m);
+  // Port 80 is a site of its own, so the same options reach it.
+  assert.match(caddyfile, /^http:\/\/ \{\n\tredir https:\/\/\{host\}\{uri\} 308\n\}$/m);
   assert.match(caddyfile, /^chat\.example\.com \{$/m);
   assert.match(caddyfile, /^\ttls \{$/m);
   assert.match(caddyfile, /reuse_private_keys/);
