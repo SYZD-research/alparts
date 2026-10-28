@@ -200,10 +200,14 @@ export class Docker {
     return running;
   }
 
-  /** Stops and removes containers by name; the ones that are already gone are skipped. */
+  /**
+   * Stops and removes containers by name; the ones that are already gone are
+   * skipped. Each command has a time limit, so that a Docker that does not
+   * answer cannot hold an undo step or an interruption up.
+   */
   private async removeContainers(names: string[]): Promise<void> {
-    await this.run('docker', ['stop', '--time', '30', ...names], { check: false }).catch(() => undefined);
-    await this.run('docker', ['rm', '--force', ...names], { check: false }).catch(() => undefined);
+    await this.run('docker', ['stop', '--time', '30', ...names], { check: false, timeoutMs: 60_000 }).catch(() => undefined);
+    await this.run('docker', ['rm', '--force', ...names], { check: false, timeoutMs: 30_000 }).catch(() => undefined);
   }
 
   /**

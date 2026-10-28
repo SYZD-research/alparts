@@ -23,13 +23,15 @@ test('compose ps output is read in both the line and the array form', () => {
 /** A stand-in for the docker command: `compose run` waits until the test ends it, anything else answers at once. */
 function fakeDocker() {
   const calls: string[][] = [];
+  const limits: Array<number | undefined> = [];
   const pending: Array<{ resolve: (result: RunResult) => void; reject: (error: Error) => void }> = [];
-  const run: Runner = (command, args) => {
+  const run: Runner = (command, args, options) => {
     calls.push([command, ...args]);
+    limits.push(options?.timeoutMs);
     if (args.includes('run')) return new Promise((resolve, reject) => pending.push({ resolve, reject }));
     return Promise.resolve({ code: 0, stdout: '', stderr: '' });
   };
-  return { calls, pending, docker: new Docker(run, systemPaths('/', '/opt/alparts')) };
+  return { calls, limits, pending, docker: new Docker(run, systemPaths('/', '/opt/alparts')) };
 }
 
 const nameOf = (call: string[]) => call[call.indexOf('--name') + 1]!;
@@ -40,7 +42,7 @@ async function until(check: () => boolean): Promise<void> {
 }
 
 test('a one-off container whose command fails or runs out of time is stopped and removed', async () => {
-  const { calls, pending, docker } = fakeDocker();
+  const { calls, limits, pending, docker } = fakeDocker();
   const timedOut = docker.runOnce('backup', ['/opt/alparts/scripts/backup.sh'], { check: false });
   const name = nameOf(calls[0]!);
   assert.match(name, /^alparts-production-backup-run-[0-9a-f]{12}$/);
@@ -48,6 +50,8 @@ test('a one-off container whose command fails or runs out of time is stopped and
   pending[0]!.resolve({ code: 143, stdout: '', stderr: '' });
   assert.equal((await timedOut).code, 143);
   assert.deepEqual(calls.slice(1), removal(name));
+  // A Docker that does not answer holds nothing up: stopping and removing have time limits.
+  assert.deepEqual(limits.slice(1), [60_000, 30_000]);
 
   calls.length = 0;
   const failed = docker.runOnce('migrator', []);
