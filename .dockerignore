@@ -29,6 +29,7 @@ resume.sh
 docs
 deploy
 scripts
+setup
 dev.sh
 *.md
 packages/android

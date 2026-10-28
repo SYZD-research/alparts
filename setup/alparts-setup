@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Starts the Alparts production setup (src/main.ts) with Node.js 22.18 or
+# later, as root. Run it from anywhere: sudo /path/to/alparts/setup/alparts-setup
+set -euo pipefail
+
+setup_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+case "${LC_ALL:-${LC_MESSAGES:-${LANG:-}}}" in
+  ja*) japanese=1 ;;
+  *) japanese=0 ;;
+esac
+say() {
+  if [ "$japanese" = 1 ]; then printf '%s\n' "$1" >&2; else printf '%s\n' "$2" >&2; fi
+}
+
+node_bin="${ALPARTS_SETUP_NODE:-$(command -v node || true)}"
+if [ -z "$node_bin" ]; then
+  if [ -n "${SUDO_USER:-}" ]; then
+    say "管理者の環境で Node.js が見つかりません。sudo を付けずに実行すると、あなたの Node.js を使って、必要なときに管理者のパスワードを求めます。" \
+      "Node.js was not found for root. Run this without sudo: it uses your Node.js and asks for the administrator password when needed."
+  fi
+  say "Node.js 22.18 以上（推奨は 24）が必要です。例えば Ubuntu では sudo snap install node --classic --channel=24 で入ります。ほかの方法: https://nodejs.org/ja/download" \
+    "Node.js 22.18 or later (24 recommended) is required. On Ubuntu, for example: sudo snap install node --classic --channel=24. Other ways: https://nodejs.org/en/download"
+  exit 1
+fi
+node_bin="$(command -v -- "$node_bin")"
+
+version="$("$node_bin" -p 'process.versions.node' 2>/dev/null || echo 0.0.0)"
+IFS=. read -r major minor _ <<< "$version"
+# TypeScript runs without flags from Node.js 22.18 and 23.6.
+if [ "$major" -lt 22 ] || { [ "$major" -eq 22 ] && [ "$minor" -lt 18 ]; } || { [ "$major" -eq 23 ] && [ "$minor" -lt 6 ]; }; then
+  say "Node.js 22.18 以上（推奨は 24）が必要です（今は ${version}）。" \
+    "Node.js 22.18 or later (24 recommended) is required (this is ${version})."
+  exit 1
+fi
+
+run=("$node_bin" --disable-warning=ExperimentalWarning "$setup_dir/src/main.ts" "$@")
+environment=(ALPARTS_SETUP_COMMAND="$0" LANG="${LANG:-}" LC_ALL="${LC_ALL:-}" LC_MESSAGES="${LC_MESSAGES:-}" NO_COLOR="${NO_COLOR:-}")
+if [ "$(id -u)" -ne 0 ]; then
+  exec sudo -- env "${environment[@]}" "${run[@]}"
+fi
+exec env "${environment[@]}" "${run[@]}"

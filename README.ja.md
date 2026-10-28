@@ -141,6 +141,12 @@ WebとAPIは実行中のターミナルで`Ctrl+C`を押すと停止します。
 
 Alpartsのサーバーは、**1つのアプリケーションプロセス、PostgreSQL 16、S3互換オブジェクトストレージ（推奨はSeaweedFS）**で構成します。Webクライアントの配信もサーバーに含まれます。コンテナー向けの[Dockerfile](Dockerfile)・[Compose構成](compose.production.yml)と、Linux向けの[systemdユニット](deploy/alparts.service)を用意しています。
 
+1台のサーバーで本番運用を始める場合は、[本番用セットアップ](setup/README.ja.md)を使うと、DockerとNode.jsがあるLinuxサーバーで次のコマンドを実行し、いくつかの質問に答えるだけで、データベース・ストレージ・HTTPSでの公開・音声通話の中継・毎日の暗号化バックアップまでを自動で設定できます。
+
+```bash
+sudo ./setup/alparts-setup
+```
+
 `docker-compose.yml`はローカル開発用のPostgreSQLとS3互換ストレージ（SeaweedFS）を起動します。`compose.production.yml`ではアプリケーションと移行処理を定義しており、データベース・ストレージ・HTTPSのリバースプロキシは別途用意します。
 
 - **接続と認証情報** — 公開するWeb/APIにはHTTPSを使い、`CORS_ORIGINS`に実際の接続元を設定します。認証情報は保護されたファイルから`*_FILE`で渡せます。設定項目は[環境変数の例](.env.example)を参照してください。

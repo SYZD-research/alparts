@@ -1,0 +1,480 @@
+import { createHash, X509Certificate, type Hash } from 'node:crypto';
+import {
+  closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync, rmSync, statSync,
+  type Stats,
+} from 'node:fs';
+import { get as httpGet } from 'node:http';
+import { dirname, join } from 'node:path';
+import { connect as tlsConnect } from 'node:tls';
+import { setTimeout as sleep } from 'node:timers/promises';
+import { SetupError, type Context } from './context.ts';
+import { APPLIED_MIGRATIONS_SQL, grantsSql, HAS_ACCOUNTS_SQL, provisionSql } from './database.ts';
+import { BACKUP_USER, ensureDirectory, writeFileIfChanged } from './files.ts';
+import { backupToolsImage } from './images.ts';
+import type { Paths } from './paths.ts';
+import { composeEnvironment, renderBackupUnits, renderCaddyfile, renderComposeOverride, renderEnvFile, renderPgHba, BACKUP_UNIT } from './render.ts';
+import { DATABASE, scramSha256Verifier, SecretStore, type SecretName } from './secrets.ts';
+import { saveSettings, type Settings } from './settings.ts';
+import { spkiPin } from './x509.ts';
+
+// The steps that build and run the deployment. Each converges on the same
+// state when run again, so an interrupted install or update resumes by
+// running them in order once more.
+
+export const APP_IMAGE = (tag: string) => `alparts:${tag}`;
+const AUDIT_CHECKPOINT = '/var/lib/alparts-audit/checkpoint.json';
+
+/**
+ * Adds what a changed or untracked path holds now to the source digest, as
+ * the image build reads it: the mode and bytes of a regular file, the target
+ * of a symbolic link, and nothing for anything else or a path that is gone.
+ */
+function addWorkingContent(digest: Hash, path: string): void {
+  let descriptor: number;
+  try {
+    // Not followed, a link counts as itself; a pipe opens without waiting for a writer.
+    descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  } catch {
+    try {
+      digest.update(`link ${readlinkSync(path)}`);
+    } catch {
+      // Gone, as the status line says.
+    }
+    return;
+  }
+  try {
+    const stats = fstatSync(descriptor);
+    if (!stats.isFile()) return;
+    digest.update(`file ${stats.mode & 0o777} `);
+    // In pieces, so that a large file need not fit in memory.
+    const buffer = Buffer.alloc(1 << 20);
+    for (let read = readSync(descriptor, buffer); read > 0; read = readSync(descriptor, buffer)) digest.update(buffer.subarray(0, read));
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+/**
+ * The image tag for the checked-out source: the commit, plus a digest of the
+ * changed and untracked files when there are any, so the same source reuses
+ * its image and changed source never does.
+ */
+export async function sourceVersion(context: Context): Promise<{ tag: string; dirty: boolean }> {
+  // Read-only: as root, git must not rewrite the checkout owner's index (--no-optional-locks).
+  const git = (args: string[]) => context.run('git', ['-c', `safe.directory=${context.paths.repo}`, '--no-optional-locks', '-C', context.paths.repo, ...args], { check: false })
+    .catch(() => ({ code: 1, stdout: '', stderr: '' }));
+  const head = await git(['rev-parse', '--short=12', 'HEAD']);
+  if (head.code !== 0) {
+    return { tag: `local-${new Date().toISOString().replace(/[^0-9]/g, '').slice(0, 14)}`, dirty: true };
+  }
+  const commit = head.stdout.trim();
+  const status = await git(['status', '--porcelain', '-z', '--untracked-files=all']);
+  if (!status.stdout) return { tag: commit, dirty: false };
+  // The build reads the working tree, so each changed or untracked path is read from there, not from a diff, whose
+  // captured output has a size limit.
+  const digest = createHash('sha256').update(status.stdout);
+  const entries = status.stdout.split('\0');
+  for (let index = 0; index < entries.length; index += 1) {
+    const entry = entries[index]!;
+    if (entry.length < 4) continue;
+    // A rename or a copy names the original path next.
+    if (/[RC]/.test(entry.slice(0, 2))) index += 1;
+    const path = entry.slice(3);
+    digest.update(`\0${path}\0`);
+    addWorkingContent(digest, join(context.paths.repo, path));
+  }
+  return { tag: `${commit}-local-${digest.digest('hex').slice(0, 8)}`, dirty: true };
+}
+
+/** Creates what is missing among the generated credentials and rewrites the derived files; returns the services to restart. */
+export function prepareSecrets(context: Context, settings: Settings, smtpPassword: string | null): Set<string> {
+  const store = new SecretStore(context.paths.secretsDir);
+  store.ensureGenerated();
+  if (smtpPassword !== null) store.writeSmtpPassword(smtpPassword);
+  store.writeDerivedFiles(settings);
+  store.enforcePermissions();
+  const users: Partial<Record<SecretName, string[]>> = {
+    smtp_password: ['app'],
+    internal_ca_certificate: ['app'],
+    postgres_tls_certificate: ['postgres'],
+    postgres_tls_key: ['postgres'],
+    storage_identities: ['object-storage'],
+    storage_tls_certificate: ['object-storage'],
+    storage_tls_key: ['object-storage'],
+  };
+  return new Set(store.takeChanged().flatMap((name) => users[name] ?? []));
+}
+
+export async function ensureAppImage(context: Context, tag: string): Promise<'built' | 'present'> {
+  if (await context.docker.imageExists(APP_IMAGE(tag))) return 'present';
+  if (context.options.imageTag) throw new SetupError('error.imageMissing', { image: APP_IMAGE(tag) });
+  try {
+    await context.run('docker', ['build', '--pull', '--progress', 'plain', '--tag', APP_IMAGE(tag), context.paths.repo], { timeoutMs: 2 * 60 * 60 * 1000 });
+  } catch (error) {
+    throw new SetupError('error.build', {}, { cause: error });
+  }
+  return 'built';
+}
+
+export async function ensureBackupToolsImage(context: Context): Promise<'built' | 'present'> {
+  const image = backupToolsImage(context.paths.repo);
+  if (await context.docker.imageExists(image)) return 'present';
+  try {
+    await context.run('docker', ['build', '--pull', '--progress', 'plain', '--tag', image, join(context.paths.repo, 'setup', 'backup-tools')], { timeoutMs: 30 * 60 * 1000 });
+  } catch (error) {
+    throw new SetupError('error.backup', {}, { cause: error });
+  }
+  return 'built';
+}
+
+/**
+ * The backup container runs as the tools image's unprivileged user: its
+ * credentials and directories are handed to that user, whatever an older
+ * version of the setup left.
+ */
+export function prepareBackupFiles(paths: Paths): void {
+  new SecretStore(paths.secretsDir).enforcePermissions();
+  ensureDirectory(paths.backupDir, 0o700, BACKUP_USER);
+  ensureDirectory(paths.backupWorkDir, 0o700, BACKUP_USER);
+}
+
+/** Writes the generated files; returns the services whose mounted configuration changed. */
+export async function writeConfiguration(context: Context, settings: Settings, imageTag: string): Promise<Set<string>> {
+  const { paths, docker } = context;
+  ensureDirectory(paths.configDir, 0o700);
+  ensureDirectory(paths.proxyConfigDir, 0o700);
+  ensureDirectory(paths.postgresConfigDir, 0o700);
+  ensureDirectory(paths.emptyDir, 0o755);
+  ensureDirectory(paths.stateDir, 0o700);
+  prepareBackupFiles(paths);
+  const appCommand = await docker.imageCommand(APP_IMAGE(imageTag));
+  writeFileIfChanged(paths.composeEnvFile, renderEnvFile(composeEnvironment(settings, paths, imageTag)), 0o600);
+  writeFileIfChanged(paths.composeOverrideFile, renderComposeOverride(settings, paths, { appCommand, backupImage: backupToolsImage(paths.repo) }), 0o600);
+  const changed = new Set<string>();
+  if (writeFileIfChanged(paths.caddyfile, renderCaddyfile(settings), 0o444)) changed.add('proxy');
+  if (writeFileIfChanged(paths.pgHbaFile, renderPgHba(), 0o444)) changed.add('postgres');
+  return changed;
+}
+
+export async function startDependencies(context: Context): Promise<void> {
+  try {
+    await context.docker.up(['postgres', 'object-storage'], { waitSeconds: 300 });
+  } catch (error) {
+    throw new SetupError('error.dependencies', {}, { cause: error });
+  }
+}
+
+/** Roles, passwords and the database, through the superuser's local socket. */
+export async function provisionDatabase(context: Context): Promise<void> {
+  const store = new SecretStore(context.paths.secretsDir);
+  const sql = provisionSql({
+    owner: scramSha256Verifier(store.read('postgres_owner_password')),
+    app: scramSha256Verifier(store.read('postgres_app_password')),
+    backup: scramSha256Verifier(store.read('postgres_backup_password')),
+  });
+  try {
+    await context.docker.psql(sql, 'postgres');
+  } catch (error) {
+    throw new SetupError('error.database', {}, { cause: error });
+  }
+}
+
+export async function appliedMigrations(context: Context): Promise<number> {
+  const result = await context.docker.psql(`${APPLIED_MIGRATIONS_SQL};\n`, DATABASE.name, { tuplesOnly: true });
+  return Number.parseInt(result.stdout.trim(), 10) || 0;
+}
+
+export async function hasAccounts(context: Context): Promise<boolean | null> {
+  try {
+    const result = await context.docker.psql(`${HAS_ACCOUNTS_SQL};\n`, DATABASE.name, { tuplesOnly: true });
+    return result.stdout.trim() === 't';
+  } catch {
+    return null;
+  }
+}
+
+/** Applies the image's migrations as the schema owner (the app must be stopped), then grants on what they created. */
+export async function migrate(context: Context, imageTag: string): Promise<void> {
+  try {
+    // The tag goes into Compose's own environment, not the container's (-e): Compose takes a variable from its
+    // environment before the env file, so during an update the migrator runs the new image while compose.env
+    // still names the running one.
+    await context.docker.runOnce('migrator', [], { profiles: ['operations'], env: { ALPARTS_IMAGE_TAG: imageTag } });
+    await context.docker.psql(grantsSql(), DATABASE.name);
+  } catch (error) {
+    throw new SetupError('error.database', {}, { cause: error });
+  }
+}
+
+async function checkpointExists(context: Context): Promise<boolean> {
+  const result = await context.docker.runOnce('app', ['-c', `test -f ${AUDIT_CHECKPOINT}`], { entrypoint: '/bin/sh', check: false });
+  return result.code === 0;
+}
+
+/**
+ * The audit checkpoint is created once, by the first install. A run that
+ * stopped after marking it pending finishes the job; a checkpoint that
+ * existed and went missing is never re-created (docs/OPERATIONS.md).
+ */
+export async function ensureAuditCheckpoint(context: Context, settings: Settings): Promise<void> {
+  if (settings.state.audit === 'initialized') {
+    if (!(await checkpointExists(context))) throw new SetupError('error.auditMissing');
+    return;
+  }
+  settings.state.audit = 'pending';
+  saveSettings(context.paths.settingsFile, settings);
+  if (!(await checkpointExists(context))) {
+    try {
+      await context.docker.runOnce('app', ['node', 'packages/server/dist/scripts/initialize-audit-checkpoint.js']);
+    } catch (error) {
+      throw new SetupError('error.database', {}, { cause: error });
+    }
+  }
+  settings.state.audit = 'initialized';
+  saveSettings(context.paths.settingsFile, settings);
+}
+
+/** Where the proxy's certificate storage keeps the key for each certificate authority it may use. */
+export function proxyKeyIssuers(settings: Settings): string[] {
+  return settings.certificates === 'local'
+    ? ['local']
+    : ['acme-v02.api.letsencrypt.org-directory', 'acme.zerossl.com-v2-DV90'];
+}
+
+const SEED_PROXY_KEY = [
+  'set -eu',
+  'umask 077',
+  'key="$(cat)"',
+  'domain="$1"',
+  'shift',
+  'for issuer in "$@"; do',
+  '  dir="/data/caddy/certificates/$issuer/$domain"',
+  '  mkdir -p "$dir"',
+  '  if [ -f "$dir/$domain.key" ] && [ "$(cat "$dir/$domain.key")" = "$key" ]; then continue; fi',
+  // A certificate for another key would be served until renewal; remove it so the next start obtains one for this key.
+  '  rm -f "$dir/$domain.crt" "$dir/$domain.json"',
+  '  printf "%s\\n" "$key" > "$dir/$domain.key"',
+  '  echo changed',
+  'done',
+].join('\n');
+
+/**
+ * Places the certificate key the apps pin into the proxy's storage. With
+ * reuse_private_keys the proxy then requests and renews every certificate
+ * for this key instead of generating its own. Returns whether it changed.
+ */
+export async function seedProxyKey(context: Context, settings: Settings): Promise<boolean> {
+  const store = new SecretStore(context.paths.secretsDir);
+  const input = `${store.read('proxy_tls_current_key')}\n`;
+  const args = ['-c', SEED_PROXY_KEY, 'seed', settings.domain, ...proxyKeyIssuers(settings)];
+  // A one-off container would take the proxy's fixed address, so a running proxy is entered instead.
+  const running = (await context.docker.services()).some((service) => service.service === 'proxy' && service.state === 'running');
+  const result = running
+    ? await context.docker.exec('proxy', ['/bin/sh', ...args], { input })
+    : await context.docker.runOnce('proxy', args, { entrypoint: '/bin/sh', input });
+  return result.stdout.includes('changed');
+}
+
+export async function startServices(context: Context, services: string[]): Promise<void> {
+  try {
+    await context.docker.up(services, { waitSeconds: 300 });
+  } catch (error) {
+    throw new SetupError('error.start', {}, { cause: error, hint: { key: 'error.startHint', values: { command: context.command } } });
+  }
+}
+
+/** Restarts the running services among `services`; stopped ones pick the change up when they start. */
+export async function restartRunning(context: Context, services: Set<string>): Promise<void> {
+  if (services.size === 0) return;
+  const running = new Set((await context.docker.services()).filter((service) => service.state === 'running').map((service) => service.service));
+  const targets = [...services].filter((service) => running.has(service));
+  if (targets.length > 0) await context.docker.restart(targets);
+}
+
+/** The app's readiness, asked on the loopback port it is published on for this host. */
+export function appReady(settings: Settings): Promise<boolean> {
+  return new Promise((resolve) => {
+    const request = httpGet({ host: '127.0.0.1', port: settings.network.appPort, path: '/health/ready', timeout: 5000 }, (response) => {
+      response.resume();
+      resolve(response.statusCode === 200);
+    });
+    request.on('timeout', () => request.destroy());
+    request.on('error', () => resolve(false));
+  });
+}
+
+export async function waitForApp(settings: Settings, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await appReady(settings)) return true;
+    await sleep(2000);
+  }
+  return false;
+}
+
+/** The authority behind a `local` certificate, which no browser trusts by default. */
+async function localAuthority(context: Context): Promise<string | undefined> {
+  const result = await context.docker.exec('proxy', ['cat', '/data/caddy/pki/authorities/local/root.crt'], { check: false });
+  return result.code === 0 ? result.stdout : undefined;
+}
+
+export interface ProxyAnswer {
+  certificate: X509Certificate;
+  /** The status the app answered `GET /` with through the proxy, or null without an answer. */
+  status: number | null;
+}
+
+/**
+ * Connects to the proxy on this host as a browser would by the domain name.
+ * The certificate must verify for the domain: against the public authorities,
+ * or for `local` certificates against the proxy's own. The same connection
+ * then asks for `/`, which shows whether the app answers through the proxy.
+ */
+export async function probeProxy(context: Context, settings: Settings, port = 443): Promise<ProxyAnswer | null> {
+  const ca = settings.certificates === 'local' ? await localAuthority(context) : undefined;
+  if (settings.certificates === 'local' && !ca) return null;
+  return new Promise((resolve) => {
+    let certificate: X509Certificate | null = null;
+    let head = '';
+    const finish = (status: number | null) => {
+      resolve(certificate ? { certificate, status } : null);
+      socket.destroy();
+    };
+    const socket = tlsConnect({ host: '127.0.0.1', port, servername: settings.domain, timeout: 10_000, ...(ca ? { ca } : {}) }, () => {
+      certificate = socket.getPeerX509Certificate() ?? null;
+      socket.write(`GET / HTTP/1.1\r\nHost: ${settings.domain}\r\nConnection: close\r\n\r\n`);
+    });
+    socket.setEncoding('latin1');
+    socket.on('data', (chunk: string) => {
+      head += chunk;
+      const line = /^HTTP\/1\.[01] (\d{3})(?: |\r\n)/.exec(head);
+      if (line) finish(Number(line[1]));
+      else if (head.includes('\r\n') || head.length > 1024) finish(null);
+    });
+    socket.on('end', () => finish(null));
+    socket.on('timeout', () => finish(null));
+    socket.on('error', () => finish(null));
+  });
+}
+
+/** Waits until the proxy serves the app with a valid certificate for the domain, and returns that certificate. */
+export async function waitForCertificate(context: Context, settings: Settings, timeoutMs: number): Promise<X509Certificate | null> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const answer = await probeProxy(context, settings);
+    if (answer?.status === 200) return answer.certificate;
+    await sleep(3000);
+  }
+  return null;
+}
+
+/** The name scripts/backup.sh gives a backup: the UTC time of the run and 12 random hex digits. */
+export const BACKUP_FILE_NAME = /^alparts-backup-\d{8}T\d{6}Z-[0-9a-f]{12}\.tar\.age$/;
+
+export function backupFiles(dir: string): Array<{ name: string; modified: Date }> {
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir)
+    .filter((name) => BACKUP_FILE_NAME.test(name))
+    .map((name) => ({ name, modified: statSync(join(dir, name)).mtime }))
+    .sort((a, b) => a.modified.getTime() - b.modified.getTime());
+}
+
+export async function systemdAvailable(context: Context): Promise<boolean> {
+  return existsSync('/run/systemd/system') && (await context.run('systemctl', ['--version'], { check: false }).catch(() => null))?.code === 0;
+}
+
+/** A snap's Node.js runs from the directory of its revision, which a refresh removes; `current` follows the refreshes. */
+export function stableNodePath(execPath: string): string {
+  return execPath.replace(/^\/snap\/([^/]+)\/x?\d+\//, '/snap/$1/current/');
+}
+
+function changeable(stats: Stats): boolean {
+  return stats.uid !== 0 || (stats.mode & 0o022) !== 0;
+}
+
+/**
+ * The first path a user other than root could change: one of `files` or a
+ * directory above it, or anything in `trees` (whose `node_modules` the setup
+ * never loads). A symbolic link in a tree counts too, wherever it points.
+ */
+export function changeableByOthers(files: string[], trees: string[]): string | null {
+  for (const file of files) {
+    for (let path = realpathSync(file); ; path = dirname(path)) {
+      if (changeable(statSync(path))) return path;
+      if (dirname(path) === path) break;
+    }
+  }
+  const pending = [...trees];
+  while (pending.length > 0) {
+    const path = pending.pop()!;
+    const stats = lstatSync(path);
+    if (stats.isSymbolicLink() || changeable(stats)) return path;
+    if (stats.isDirectory()) {
+      for (const name of readdirSync(path)) if (name !== 'node_modules') pending.push(join(path, name));
+    }
+  }
+  return null;
+}
+
+export async function installBackupSchedule(context: Context, settings: Settings): Promise<void> {
+  if (!(await systemdAvailable(context))) throw new SetupError('error.noSystemd');
+  // The timer runs this Node.js and this checkout as root every night: whoever could change them would run code as root without sudo.
+  const node = stableNodePath(process.execPath);
+  const repo = context.paths.repo;
+  const exposed = changeableByOthers([node, join(repo, 'compose.production.yml')], [join(repo, 'setup'), join(repo, 'scripts')]);
+  if (exposed) throw new SetupError('error.scheduleUnsafe', { path: exposed });
+  const units = renderBackupUnits(settings, context.paths, node);
+  ensureDirectory(context.paths.systemdDir, 0o755);
+  writeFileIfChanged(join(context.paths.systemdDir, `${BACKUP_UNIT}.service`), units.service, 0o644);
+  writeFileIfChanged(join(context.paths.systemdDir, `${BACKUP_UNIT}.timer`), units.timer, 0o644);
+  await context.run('systemctl', ['daemon-reload']);
+  await context.run('systemctl', ['enable', '--now', `${BACKUP_UNIT}.timer`]);
+  // A timer whose schedule changed keeps its old next run until restarted.
+  await context.run('systemctl', ['restart', `${BACKUP_UNIT}.timer`]);
+}
+
+/**
+ * Whether the daily timer is in place, enabled and running. The settings keep
+ * the backup key and time when it could not be set up, and the unit files
+ * stay when systemd could not enable them.
+ */
+export async function backupScheduled(context: Context): Promise<boolean> {
+  if (!existsSync(join(context.paths.systemdDir, `${BACKUP_UNIT}.timer`))) return false;
+  const holds = (check: string) => context.run('systemctl', [check, '--quiet', `${BACKUP_UNIT}.timer`], { check: false })
+    .then((result) => result.code === 0, () => false);
+  return (await holds('is-enabled')) && (await holds('is-active'));
+}
+
+export async function removeBackupSchedule(context: Context): Promise<void> {
+  if (!(await systemdAvailable(context))) return;
+  await context.run('systemctl', ['disable', '--now', `${BACKUP_UNIT}.timer`], { check: false });
+  for (const suffix of ['service', 'timer']) rmSync(join(context.paths.systemdDir, `${BACKUP_UNIT}.${suffix}`), { force: true });
+  await context.run('systemctl', ['daemon-reload'], { check: false });
+}
+
+export interface Pins { current: string; spare: string }
+
+export function transportPins(context: Context): Pins {
+  const store = new SecretStore(context.paths.secretsDir);
+  if (!store.has('proxy_tls_current_key') || !store.has('proxy_tls_spare_key')) {
+    throw new SetupError('error.noCertificateKey', { command: context.command });
+  }
+  return { current: spkiPin(store.read('proxy_tls_current_key')), spare: spkiPin(store.read('proxy_tls_spare_key')) };
+}
+
+/** Whether a certificate carries the key the pins file names as current, the one the apps expect now. */
+export function carriesCurrentPin(context: Context, certificate: X509Certificate): boolean {
+  return spkiPin(certificate.toString()) === transportPins(context).current;
+}
+
+/** The file the desktop and Android release builds take as ALPARTS_TRANSPORT_PINS_FILE. */
+export function writePinsFile(context: Context, settings: Settings): string {
+  const pins = transportPins(context);
+  const content = `${JSON.stringify({ version: 1, hosts: { [settings.domain]: [pins.current, pins.spare] } }, null, 2)}\n`;
+  writeFileIfChanged(context.paths.pinsFile, content, 0o644);
+  return context.paths.pinsFile;
+}
+
+export function readInviteCode(context: Context): string {
+  return readFileSync(join(context.paths.secretsDir, 'registration_invite_secret'), 'utf8').trim();
+}

@@ -93,6 +93,10 @@ For a production SeaweedFS:
 
 Development authentication and TLS settings must never be copied into production. Public registration remains disabled unless an explicit bootstrap invite secret is configured.
 
+## Single-host production with the setup program
+
+The [production setup](../../setup/README.md) (`setup/alparts-setup`) builds `compose.production.yml` plus PostgreSQL 16, SeaweedFS and Caddy on one server. It generates the credentials and does internal TLS from its own certificate authority, least-privilege roles, migrations, audit checkpoint provisioning, HTTPS certificates, the call relay and daily encrypted backups, and provides commands for updates and backups. See [setup/README.md](../../setup/README.md) for the steps and the design.
+
 ## Single-host production with systemd
 
 Requirements:
