@@ -37,7 +37,7 @@ async function checkBackupTools(context: Context): Promise<void> {
   await ui.task(t('step.backupCheck'), async () => {
     try {
       prepareBackupFiles(context.paths);
-      await context.docker.runOnce('backup', [BACKUP, '--preflight'], { profiles: ['operations'] });
+      await context.docker.runOnce('backup', [BACKUP, '--preflight'], { profiles: ['operations'], timeoutMs: 10 * 60 * 1000 });
     } catch (error) {
       throw new SetupError('error.backup', {}, { cause: error });
     }
@@ -89,6 +89,7 @@ export async function backup(context: Context): Promise<void> {
     const result = await context.docker.runOnce('backup', [PRUNE, '--apply'], {
       profiles: ['operations'],
       environment: { BACKUP_PRUNE_ACK: 'DELETE_EXPIRED_ENCRYPTED_BACKUPS' },
+      timeoutMs: 30 * 60 * 1000,
     });
     return result.stdout.split('\n').filter((line) => line.startsWith('deleted ')).length;
   }, (count) => (count > 0 ? t('step.pruneDone', { count }) : t('step.pruneNothing')));

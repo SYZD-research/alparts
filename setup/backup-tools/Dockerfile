@@ -2,8 +2,9 @@
 # backups the setup runs in a container: the PostgreSQL 16 client from the same
 # image as the database (pg_dump must match the server's major version), GNU
 # userland, and rclone and age, whose Alpine packages are older than the
-# versions backup.sh requires (rclone 1.75.1, age 1.3.0). Their official
-# release files are pinned by checksum.
+# versions backup.sh requires (rclone 1.75.1 or later, and age 1.3.0 or later
+# for its hybrid recipients). The official release files of rclone 1.75.1 and
+# age 1.3.2 are pinned by checksum.
 FROM postgres:16.15-alpine3.23@sha256:731499cca67dd6cbb34bbffbf489bda72aa31252b14bcc0eafdccbb92c4b2446
 
 ARG TARGETARCH
