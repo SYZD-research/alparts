@@ -56,7 +56,7 @@ readinessを成功させるためだけに、欠けた監査チェックポイ�
 
 ## オブジェクトストレージ
 
-添付ファイル、プロフィール画像、永続的な監査のheadは、S3互換のオブジェクトストアに保存します。推奨するストアは [SeaweedFS](https://github.com/seaweedfs/seaweedfs)（Apache-2.0）です。開発とCIでは、ダイジェストで固定したSeaweedFS 4.47を動かします（`docker-compose.yml`、`scripts/ci/start-object-storage.sh`）。サーバーは、どのストアにも、AWS SDK for JavaScript v3を使い、パス形式のリクエストで接続します。
+添付ファイル、プロフィール画像、永続的な監査のheadは、S3互換のオブジェクトストアに保存します。推奨するストアは [SeaweedFS](https://github.com/seaweedfs/seaweedfs)（Apache-2.0）です。開発とCIでは、ダイジェストで固定したSeaweedFS 4.51を動かします（`docker-compose.yml`、`scripts/ci/start-object-storage.sh`）。サーバーは、どのストアにも、AWS SDK for JavaScript v3を使い、パス形式のリクエストで接続します。
 
 | 設定 | 意味 |
 |---|---|
