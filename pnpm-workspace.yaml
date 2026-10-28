@@ -5,6 +5,11 @@ allowBuilds:
   electron-winstaller: false
   esbuild: true
   mediasoup: true
+# Taken within a day of its release, by decision for the frozen release: it
+# brings Node.js 24.22.1 (a security release) and a Chromium fix to the
+# desktop app. Remove once it is older than the minimum release age.
+minimumReleaseAgeExclude:
+  - electron@45.1.0
 overrides:
   esbuild: ^0.28.2
   qs: 6.16.1
