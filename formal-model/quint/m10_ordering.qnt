@@ -70,6 +70,9 @@ module m10 {
   val UNSEQUENCED = MUTATION == "noSequence"
   val SINGLE_HEAD = MUTATION == "singleHead"
   val ALL: List[G] = if (MUTATION == "split") HISTORY.append(FORK) else HISTORY
+  // What the server may serve: the split server serves A1, B1, A2, A2x and B2.
+  val SERVABLE: List[str] =
+    if (MUTATION == "split") ["A1", "B1", "A2", "A2x", "B2"] else HISTORY.foldl([], (l, g) => l.append(g.name))
 
   pure def inList(l: List[str], x: str): bool = l.foldl(false, (acc, y) => acc or y == x)
   pure def genuine(name: str, among: List[G]): G = among.select(g => g.name == name)[0]
@@ -320,7 +323,7 @@ module m10 {
     // MO-forged-number: an unsigned event claiming the number of a withheld
     // event, the next one or a huge one, at every place in the history.
     val past = withheldPast(o)
-    val trials = if (MUTATION == "v6" and past.length() > 0 and c.noticed)
+    val trials = if (MUTATION != "split" and MUTATION != "memory" and past.length() > 0 and c.noticed)
       past.foldl(Set(), (s, x) => s.union(Set(x.seq, x.seq + 1, 1000000).map(n =>
         range(0, o.length() + 1).foldl(Set(), (t, k) => t.union(Set({ device: x.device, claimed: n, slot: k })))).flatten()))
       else Set()
@@ -352,7 +355,7 @@ module m10 {
   action start = all { not(ready), ready' = true, order' = order, view' = viewOf(order) }
 
   action serve = {
-    nondet name = ALL.foldl(Set(), (s, g) => if (inList(order, g.name)) s else s.union(Set(g.name))).oneOf()
+    nondet name = SERVABLE.foldl(Set(), (s, n) => if (inList(order, n)) s else s.union(Set(n))).oneOf()
     val longer = order.append(name)
     all { ready, ready' = true, order' = longer, view' = viewOf(longer) }
   }

@@ -78,13 +78,15 @@ class Run:
     complete: bool                 # the whole reachable state space was explored
     violated: str | None = None    # the property (Quint name) TLC found violated
     trace: list[tuple[str, dict]] = field(default_factory=list)  # (action, state) from the initial state on
+    dumped: list[dict] = field(default_factory=list)  # with dump=True: every reachable state
 
 
 def check(spec: str, main: str, invariants: list[str] = (), *, keep: list[str] = (), workers: int | None = None,
-          timeout: int = 3600) -> Run:
+          timeout: int = 3600, dump: bool = False) -> Run:
     """Explore `main` with TLC; stop at the first state that violates one of `invariants`.
 
     `keep` lists every property the callers check on `main`, so that one compilation serves them all.
+    With `dump`, every reachable state is returned too (as {variable: value}).
     """
     invariants = list(invariants)
     tla = compile_tla(spec, main, sorted(set(invariants) | set(keep)))
@@ -105,6 +107,8 @@ def check(spec: str, main: str, invariants: list[str] = (), *, keep: list[str] =
                    f'-Djava.io.tmpdir={tmp}', '-cp', str(jar), 'tlc2.TLC', '-deadlock', '-nowarning',
                    '-workers', str(workers), '-metadir', str(tmp / 'meta'),
                    '-dumpTrace', 'json', str(tmp / 'trace.json'), '-config', f'{main}.cfg', f'{main}.tla']
+        if dump:
+            command[-3:-3] = ['-dump', str(tmp / 'states')]
         try:
             result = subprocess.run(command, capture_output=True, text=True, cwd=tmp, timeout=timeout)
         except (OSError, subprocess.SubprocessError) as error:
@@ -115,7 +119,12 @@ def check(spec: str, main: str, invariants: list[str] = (), *, keep: list[str] =
             raise HarnessError(f'TLC {spec} {main}: no state count in the output: {out.strip()[-800:]}')
         states = int(counts[-1].replace(',', ''))
         if result.returncode == 0 and 'Model checking completed. No error has been found.' in out:
-            return Run(states, True)
+            if not dump:
+                return Run(states, True)
+            dumped = _dumped((tmp / 'states.dump').read_text(), main)
+            if len(dumped) != states:
+                raise HarnessError(f'TLC {spec} {main}: {len(dumped)} states dumped of {states}')
+            return Run(states, True, dumped=dumped)
         violation = re.search(r'^Error: Invariant (\w+) is violated\.', out, re.M)
         if result.returncode == 12 and violation and violation.group(1) in names:
             trace_file = tmp / 'trace.json'
@@ -138,6 +147,67 @@ def _trace(data: dict, main: str) -> list[tuple[str, dict]]:
     for before, action, after in steps:
         trace.append((prefix.sub('', action['name']), state(after)))
     return trace
+
+
+_TOKEN = re.compile(r'\s*(<<|>>|\|->|"(?:[^"\\]|\\.)*"|-?\d+|TRUE|FALSE|[A-Za-z_]\w*|[\[\]{},])')
+
+
+def _value(text: str):
+    """A TLA+ value as TLC prints it: records, sequences, sets, strings, integers, booleans."""
+    tokens, at = [], 0
+    while text[at:].strip():
+        match = _TOKEN.match(text, at)
+        if match is None:
+            raise HarnessError(f'TLC printed a value that cannot be read: {text[at:at + 200]}')
+        tokens.append(match.group(1))
+        at = match.end()
+    position = 0
+
+    def parse():
+        nonlocal position
+        token = tokens[position]
+        position += 1
+        if token in ('<<', '{', '['):
+            close = {'<<': '>>', '{': '}', '[': ']'}[token]
+            items, record = [], {}
+            while tokens[position] != close:
+                if token == '[':
+                    name = tokens[position]
+                    if tokens[position + 1] != '|->':
+                        raise HarnessError(f'TLC printed a function that is not a record: {text[:200]}')
+                    position += 2
+                    record[name] = parse()
+                else:
+                    items.append(parse())
+                if tokens[position] == ',':
+                    position += 1
+            position += 1
+            return record if token == '[' else items
+        if token.startswith('"'):
+            return json.loads(token)
+        if token in ('TRUE', 'FALSE'):
+            return token == 'TRUE'
+        if re.fullmatch(r'-?\d+', token):
+            return int(token)
+        raise HarnessError(f'TLC printed an unexpected token {token!r}')
+
+    value = parse()
+    if position != len(tokens):
+        raise HarnessError(f'TLC printed a value with trailing text: {text[:200]}')
+    return value
+
+
+def _dumped(text: str, main: str) -> list[dict]:
+    prefix = re.compile(rf'^{re.escape(main)}_[a-z0-9]+_')
+    states = []
+    for block in re.split(r'^State \d+:\s*$', text, flags=re.M)[1:]:
+        state = {}
+        for part in re.split(r'^/\\ ', block.strip(), flags=re.M):
+            if part.strip():
+                name, value = part.split(' = ', 1)
+                state[prefix.sub('', name.strip())] = _value(value)
+        states.append(state)
+    return states
 
 
 def describe(trace: list[tuple[str, dict]], flatten: str | None = None) -> list[str]:

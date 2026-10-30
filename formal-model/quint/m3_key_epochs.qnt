@@ -441,3 +441,11 @@ module rejoinEnded {
             FORMER_MEMBER_LOG = true, LEAVE_ENDED_UNREADABLE = false, IDLE_FRESH_START = true,
             MALICIOUS_SERVER = false, PURGE_ON_LOSS = true, VIEW_USERS = Set(0, 1, 2)).*
 }
+
+// Larger than m3_key_epochs.py runs: the second-device run with one more version.
+module secondDeviceLarge {
+  import m3(MAX_LOG = 6, POISON_BUDGET = 0, SECOND_DEVICE = true, LOSE_DEVICE = false, MAX_VIEWER_CHANGES = 0,
+            MAX_DEVICE_CHANGES = 2, GATE_REMOVAL = true, CAS = true, REJOIN = true, FRESH_START = true,
+            FORMER_MEMBER_LOG = true, LEAVE_ENDED_UNREADABLE = true, IDLE_FRESH_START = true,
+            MALICIOUS_SERVER = false, PURGE_ON_LOSS = true, VIEW_USERS = Set(0, 1, 2)).*
+}
