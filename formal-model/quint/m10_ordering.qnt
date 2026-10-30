@@ -35,6 +35,19 @@ module m10data {
     { name: "A3", device: "A", seq: 3, kind: "message", ref: "", replaces: "", seen: "B2" },
     { name: "A4", device: "A", seq: 4, kind: "edit", ref: "A1", replaces: "A2", seen: "C1" },
   ]
+
+  // Larger than sequence-harness.mts: a fourth device D writes between C1
+  // and B2, and the last edit was written after receiving it.
+  pure val GENUINE8: List[G] = [
+    { name: "A1", device: "A", seq: 1, kind: "message", ref: "", replaces: "", seen: "" },
+    { name: "B1", device: "B", seq: 1, kind: "message", ref: "", replaces: "", seen: "A1" },
+    { name: "A2", device: "A", seq: 2, kind: "edit", ref: "A1", replaces: "A1", seen: "B1" },
+    { name: "C1", device: "C", seq: 1, kind: "message", ref: "", replaces: "", seen: "B1" },
+    { name: "D1", device: "D", seq: 1, kind: "message", ref: "", replaces: "", seen: "C1" },
+    { name: "B2", device: "B", seq: 2, kind: "message", ref: "", replaces: "", seen: "A2" },
+    { name: "A3", device: "A", seq: 3, kind: "message", ref: "", replaces: "", seen: "B2" },
+    { name: "A4", device: "A", seq: 4, kind: "edit", ref: "A1", replaces: "A2", seen: "D1" },
+  ]
 }
 
 module m10 {
@@ -438,4 +451,9 @@ module singleHead {
 module noSequence {
   import m10data.*
   import m10(MUTATION = "noSequence", HISTORY = GENUINE7).*
+}
+
+module v6Large {
+  import m10data.*
+  import m10(MUTATION = "v6", HISTORY = GENUINE8).*
 }

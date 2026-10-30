@@ -16,6 +16,10 @@ TLC checks invariants and temporal properties under fairness, not this kind of
 reachability: under fairness the bounded number of versions is used up by
 other commits, so a fairness formulation fails for reasons of the bounds, not
 the design. Those checks stay in m3_key_epochs.py (M3).
+
+The check `large` explores the second-device run with six versions instead of
+five (about 6.2 million states, beyond what the Python runs explore); set
+M3Q_LARGE=0 to skip it.
 """
 from __future__ import annotations
 
@@ -42,6 +46,7 @@ CONTROLS = {
     'currentMemberLog': py.Variant(former_member_log=False, **SMALL),
     'rejoinEnded': py.Variant(leave_ended_unreadable=False, max_log=5, max_viewer_changes=1, max_device_changes=1),
 }
+LARGE = py.Variant(max_log=6, poison_budget=0, second_device=True, max_viewer_changes=0)
 
 
 def mask(items, shift=lambda x: x) -> int:
@@ -136,6 +141,16 @@ def run() -> None:
                     mismatches.append(f'{main} {prop}: shortest counterexample {len(labels)} steps in TLC, '
                                       f'{len(g.trace(expected[0], v))} in Python')
                 controls[main, prop] = labels if got.violated else None
+
+        # Beyond the Python runs: the second-device run with six versions (about 6.2 million
+        # states, 25 minutes with two workers). Skipped with M3Q_LARGE=0.
+        large = None
+        if os.environ.get('M3Q_LARGE', '1') != '0':
+            t0 = time.time()
+            large = tlc.check(SPEC, 'secondDeviceLarge', list(HOLDS), keep=PROPERTIES, workers=workers,
+                              timeout=8 * 3600)
+            print(f'     secondDeviceLarge: TLC {large.states:,} states ({time.time() - t0:.0f}s)')
+            large_witness = ['[secondDeviceLarge]'] + replay(large.trace, LARGE) if large.violated else []
     except HarnessError as error:
         record('M3Q', 'tools', 'Quint and TLC ran, and their counterexamples replay in Python', 'HOLDS', False,
                str(error), incomplete=True)
@@ -179,6 +194,10 @@ def run() -> None:
     control('KA-rejoin-ctl', 'asking to be added again when an envelope of an already ended membership cannot be '
                              'read leaves the device out of the membership that added it (client before the fix)',
             'CONTROL', 'rejoinEnded', 'KA')
+    if large is not None:
+        record('M3Q', 'large', 'KC, KC-dev, KI and KA also hold in the second-device run with six versions '
+                               '(beyond the Python runs)', 'HOLDS', large.violated is not None,
+               f'violated: {large.violated}' if large.violated else '', witness=large_witness)
 
 
 if __name__ == '__main__':

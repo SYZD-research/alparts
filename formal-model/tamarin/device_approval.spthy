@@ -43,7 +43,14 @@ begin
  * a property proved here holds for every view. Every honest device starts
  * from a pinned anchor of the account (the first device): first contact is
  * TOFU, modelled separately (-D=TOFU). Revocation and `expire` are not
- * modelled: they only remove approvals.
+ * modelled: they only remove approvals. Honest devices approve and set up
+ * recovery whether or not they are approved themselves (the verifier still
+ * requires an approved actor); this only adds behaviour, so the proofs of the
+ * HOLDS lemmas stay sound, and it keeps Tamarin from unfolding how each
+ * honest approver was approved. For the same reason a restoring device does
+ * not look the recovery key up in its directory: the encrypted secret it can
+ * open binds that key (AES-GCM associated data), so the check adds nothing
+ * here.
  *
  * Variants (tamarin-prover -D=FLAG):
  *   TRICKED                 the user approves without comparing the codes (M4 D4)
@@ -119,7 +126,7 @@ rule Verify_RecoveryConfig:
 rule Verify_Recovery:
     [ In(<'recovery', U, did, pkT, gen, sign(<'alparts-device-decision', U, 'recovery', did, pkT, gen>, kr)>),
       !VRec(U, gen, pk(kr)), !VReg(U, did, pkT) ]
-  --[ Accepted(U, pkT) ]->
+  --[ Accepted(U, pkT), AcceptedByRecovery(U, pkT) ]->
     [ !VAcc(U, pkT) ]
 
 #ifdef TOFU
@@ -136,12 +143,12 @@ rule Verify_FirstContact:
 // user saw the same confirmation code on one of their own devices.
 #ifdef CTL_NO_IDENTITY
 rule Approve_ComparedCode:
-    [ !Dev(U, didA, ka), !VAcc(U, pk(ka)), In(<did, pkT>), !Shows(U, h(pkT)) ]
+    [ !Dev(U, didA, ka), In(<did, pkT>), !Shows(U, h(pkT)) ]
   --[ Neq(pkT, pk(ka)), UserApproved(U, pkT) ]->
     [ Out(<'approve', U, did, pkT, pk(ka), sign(<'alparts-device-decision', U, 'approve', did, pk(ka)>, ka)>) ]
 #else
 rule Approve_ComparedCode:
-    [ !Dev(U, didA, ka), !VAcc(U, pk(ka)), In(<did, pkT>), !Shows(U, h(pkT)) ]
+    [ !Dev(U, didA, ka), In(<did, pkT>), !Shows(U, h(pkT)) ]
   --[ Neq(pkT, pk(ka)), UserApproved(U, pkT) ]->
     [ Out(<'approve', U, did, pkT, pk(ka), sign(<'alparts-device-decision', U, 'approve', did, pkT, pk(ka)>, ka)>) ]
 #endif
@@ -149,7 +156,7 @@ rule Approve_ComparedCode:
 #ifdef TRICKED
 // The user approves without comparing the codes.
 rule Approve_Unchecked:
-    [ !Dev(U, didA, ka), !VAcc(U, pk(ka)), In(<did, pkT>) ]
+    [ !Dev(U, didA, ka), In(<did, pkT>) ]
   --[ Neq(pkT, pk(ka)), Tricked(U) ]->
     [ Out(<'approve', U, did, pkT, pk(ka), sign(<'alparts-device-decision', U, 'approve', did, pkT, pk(ka)>, ka)>) ]
 #endif
@@ -166,7 +173,7 @@ macros: TOKEN(raw, U, gen) = hkdf(raw, <U, gen>, 'retrieval')
 // An approved device sets up recovery: a fresh code, a recovery signing key
 // sealed under the code, and the signed recovery-config entry.
 rule Recovery_Configure:
-    [ !Dev(U, didA, ka), !VAcc(U, pk(ka)), Fr(~raw), Fr(~kr), Fr(~gen) ]
+    [ !Dev(U, didA, ka), Fr(~raw), Fr(~kr), Fr(~gen) ]
   --[ RecoveryConfigured(U, ~gen) ]->
     [ !Code(U, ~gen, ~raw),
       Out(<'recovery-config', U, ~gen, pk(~kr), pk(ka),
@@ -195,7 +202,7 @@ rule History_Backup:
 
 // A new device of the user restores with the code the user types in.
 rule Restore_WithCode:
-    [ !Dev(U, did, sk), !Code(U, gen, raw), !VRec(U, gen, pk(kr)),
+    [ !Dev(U, did, sk), !Code(U, gen, raw),
       In(senc(<'secret', U, gen, pk(kr), kr>, raw)) ]
   --[ RestoredWithCode(U, pk(sk)) ]->
     [ Out(TOKEN(raw, U, gen)),
@@ -203,7 +210,7 @@ rule Restore_WithCode:
 
 // A new device of the user restores with the passkey instead of the code.
 rule Restore_WithPasskey:
-    [ !Dev(U, did, sk), !Passkey(U, cred), !VRec(U, gen, pk(kr)),
+    [ !Dev(U, did, sk), !Passkey(U, cred),
       In(<'wrap', U, gen, salt, senc(<'passkey-master', U, gen, salt, raw>, hkdf(prf(cred, salt), <U, gen, salt>, 'wrap'))>),
       In(senc(<'secret', U, gen, pk(kr), kr>, raw)) ]
   --[ RestoredWithPasskey(U, pk(sk)) ]->
@@ -249,8 +256,7 @@ lemma HS:
 // approves a new device when the recovery plan is wrapped with it.
 lemma passkey_alone_approves:
   exists-trace
-  "Ex U pk #i #r. Accepted(U, pk) @ #i & RevealPasskey(U) @ #r
-     & not (Ex did #j. HonestDevice(U, did, pk) @ #j)
+  "Ex U k #i #r #s. AcceptedByRecovery(U, pk(k)) @ #i & RevealPasskey(U) @ #r & K(k) @ #s
      & not (Ex #j. RevealDevice(U) @ #j) & not (Ex #j. RevealCode(U) @ #j)"
 
 // Non-vacuity: every honest path is reachable without any compromise.

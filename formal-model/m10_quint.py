@@ -14,6 +14,8 @@ disagreement, or a harness that cannot run, is reported as MODEL-GAP.
 """
 from __future__ import annotations
 
+import os
+
 import tlc
 from common import record
 from harness import HarnessError, run_harness
@@ -64,6 +66,9 @@ CHECKS = (
     ('MO-order-ctl', 'noSequence', 'MO_order_complete', 'CONTROL', 'before v6: events served out of order go unnoticed', ''),
     ('MO-drop-ctl', 'noSequence', 'MO_drop', 'CONTROL', 'before v6: withheld events go unnoticed', ''),
 )
+# Larger than sequence-harness.mts (a fourth device, eight events; about 18 minutes on 3 workers): M10Q_LARGE=1.
+LARGE = tuple((f'{check_id}-large', 'v6Large', prop, 'HOLDS', f'{title} (four devices, eight events)', '')
+              for check_id, main, prop, expect, title, _ in CHECKS if main == 'v6' and expect == 'HOLDS')
 # The windows of a harness verdict -> the view fields of the Quint state.
 VIEWS = {'complete': 'c', 'suffix': 's', 'forum': 'f',
          'complete+remembered': 'cr', 'suffix+remembered': 'sr', 'forum+remembered': 'fr'}
@@ -71,14 +76,14 @@ VIEWS = {'complete': 'c', 'suffix': 's', 'forum': 'f',
 MEMORY_VIEWS = {'complete+remembered': 'c', 'suffix+remembered': 's'}
 
 
-def explore(main: str):
-    """Check the properties of `main`; returns ({property: Run}, the complete run with every state dumped)."""
-    keep = sorted({prop for _, m, prop, _, _, _ in CHECKS if m == main})
-    holds = [prop for _, m, prop, expect, _, _ in CHECKS if m == main and expect == 'HOLDS']
+def explore(main: str, checks=CHECKS, dump: bool = True):
+    """Check the properties of `main`; returns ({property: Run}, the complete run, with every state if `dump`)."""
+    keep = sorted({prop for _, m, prop, _, _, _ in checks if m == main})
+    holds = [prop for _, m, prop, expect, _, _ in checks if m == main and expect == 'HOLDS']
     runs = {}
     # The HOLDS properties together: a violated one is set aside and the rest checked again.
     while True:
-        got = tlc.check(SPEC, main, holds, keep=keep, workers=2, dump=True)
+        got = tlc.check(SPEC, main, holds, keep=keep, workers=2 if dump else 3, dump=dump, timeout=7200)
         if got.violated is None:
             full = got
             for prop in holds:
@@ -86,7 +91,7 @@ def explore(main: str):
             break
         runs[got.violated] = got
         holds.remove(got.violated)
-    for _, m, prop, expect, _, _ in CHECKS:
+    for _, m, prop, expect, _, _ in checks:
         if m == main and expect != 'HOLDS':
             runs[prop] = tlc.check(SPEC, main, [prop], keep=keep, workers=2)
     return runs, full
@@ -161,6 +166,21 @@ def run() -> None:
 
     for check_id, main, prop, expect, title, detail in CHECKS:
         got = explored[main][0][prop]
+        record('M10Q', check_id, title, expect, got.violated == prop, detail,
+               witness=witness(main, got) if got.violated == prop else [])
+
+    if os.environ.get('M10Q_LARGE') != '1':
+        print('  M10Q four devices, eight events: not run (set M10Q_LARGE=1)')
+        return
+    try:
+        runs, full = explore('v6Large', LARGE, dump=False)
+    except HarnessError as error:
+        record('M10Q', 'large', 'Quint and TLC ran on four devices and eight events', 'HOLDS', False, str(error),
+               incomplete=True)
+        return
+    print(f'  M10Q v6Large: {full.states:,} states')
+    for check_id, main, prop, expect, title, detail in LARGE:
+        got = runs[prop]
         record('M10Q', check_id, title, expect, got.violated == prop, detail,
                witness=witness(main, got) if got.violated == prop else [])
 

@@ -122,7 +122,8 @@ def check(spec: str, main: str, invariants: list[str] = (), *, keep: list[str] =
         out = result.stdout
         counts = re.findall(r'^(?:\d+ states generated, )?([\d,]+) distinct states found', out, re.M)
         if not counts:
-            raise HarnessError(f'TLC {spec} {main}: no state count in the output: {out.strip()[-800:]}')
+            raise HarnessError(f'TLC {spec} {main} (exit {result.returncode}): no state count in the output: '
+                              f'{(out + result.stderr).strip()[-800:]}')
         states = int(counts[-1].replace(',', ''))
         if result.returncode == 0 and 'Model checking completed. No error has been found.' in out:
             if not dump:

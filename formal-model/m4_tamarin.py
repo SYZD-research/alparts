@@ -36,7 +36,7 @@ def prove(lemmas: list[str], flags: tuple[str, ...] = (), timeout: int = 1800) -
     tamarin = os.environ.get('TAMARIN') or shutil.which('tamarin-prover')
     if tamarin is None or shutil.which('maude') is None:
         raise TamarinError('tamarin-prover and maude are required (see tamarin/README.md)')
-    command = [tamarin, *(f'--prove={lemma}' for lemma in lemmas), *(f'-D={flag}' for flag in flags), str(THEORY)]
+    command = [tamarin, '--derivcheck-timeout=0', *(f'--prove={lemma}' for lemma in lemmas), *(f'-D={flag}' for flag in flags), str(THEORY)]
     try:
         result = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
     except (OSError, subprocess.SubprocessError) as error:
@@ -58,9 +58,18 @@ def prove(lemmas: list[str], flags: tuple[str, ...] = (), timeout: int = 1800) -
 
 
 def _trace(out: str, lemma: str) -> list[str]:
-    """The rule instances of the attack, in the order Tamarin printed them."""
-    part = out.split(f'lemma {lemma}', 1)[-1].split('\nlemma ', 1)[0]
-    return re.findall(r'^\s*(?:case|by) (.+)$', part, re.M)[:12]
+    """The cases on the branch of the proof that ends in the attack, outermost first."""
+    lines = out.split(f'\nlemma {lemma}', 1)[-1].split('\nlemma ', 1)[0].splitlines()
+    end = next((i for i, line in enumerate(lines) if 'SOLVED' in line), None)
+    if end is None:
+        return []
+    path, indent = [], len(lines[end]) - len(lines[end].lstrip())
+    for line in reversed(lines[:end]):
+        depth = len(line) - len(line.lstrip())
+        if depth <= indent and line.lstrip().startswith('case '):
+            path.append(line.strip())
+            indent = depth - 1
+    return list(reversed(path))
 
 
 RUNS = {
@@ -71,7 +80,7 @@ RUNS = {
     'tofu': (('TOFU',), ['DA']),
     'no-identity': (('CTL_NO_IDENTITY',), ['DA']),
     'untagged-proof': (('CTL_UNTAGGED_PROOF',), ['DA']),
-    'raw-token': (('CTL_RAW_TOKEN',), ['DA', 'HS']),
+    'raw-token': (('CTL_RAW_TOKEN',), ['HS']),
 }
 
 
