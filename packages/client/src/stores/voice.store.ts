@@ -27,6 +27,7 @@ import {
 } from '../services/voice-signal-model';
 import { VoiceFrameKeys, type VoiceKeyIdentity } from '../services/voice-frame-keys';
 import { VoiceSfuSession, supportsFrameEncryption } from '../services/voice-sfu';
+import { playVoiceCue, type VoiceCue } from '../services/voice-sounds';
 import { isSfuResetNotice, parseSfuProducerNotice, parseVoiceKeyMessage } from '../services/voice-sfu-model';
 import { t } from '../i18n';
 
@@ -238,6 +239,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
         quality: joined.participants.length > 0 ? 'connecting' : 'good',
         error: null,
       });
+      cue('self-join');
       await get().refreshDevices();
       if (generation !== callGeneration) return;
       startLocalLevelMonitoring(generation);
@@ -274,10 +276,14 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
     }
   },
 
-  leave: () => teardownVoiceRuntime(true),
+  leave: () => {
+    if (get().status === 'connected') cue('self-leave');
+    teardownVoiceRuntime(true);
+  },
 
   setMuted: (muted) => {
     if (get().status !== 'connected') return;
+    if (muted !== get().muted) cue(muted ? 'mute' : 'unmute');
     set({ muted, speaking: muted ? false : get().speaking });
     applyTransmissionState();
     updateSelfProjection();
@@ -633,6 +639,7 @@ function attachVoiceListeners(socket: Socket, generation: number, channelId: str
       participantsByChannel: { ...state.participantsByChannel, [channelId]: participants },
       quality: 'connecting',
     });
+    if (!existing) cue('peer-join');
     // A newcomer gets a new key from us, never one used before it joined.
     if (!existing) void frameKeys?.participantJoined(currentPeers()).catch(() => undefined);
   };
@@ -651,6 +658,7 @@ function attachVoiceListeners(socket: Socket, generation: number, channelId: str
   };
   const left = (value: unknown) => {
     if (!isParticipantLeft(value, channelId) || generation !== callGeneration) return;
+    if (useVoiceStore.getState().participants.some((entry) => entry.participantId === value.participantId)) cue('peer-leave');
     removePeer(value.participantId);
     sfu?.removeParticipant(value.participantId);
     useVoiceStore.setState((state) => {
@@ -1144,6 +1152,11 @@ function removePeer(participantId: string): void {
   incomingSequences.remove(participantId);
   pendingIce.delete(participantId);
   if (remoteStreams.delete(participantId)) bumpRemoteStreamRevision();
+}
+
+/** A call sound, on the speaker chosen for the call. */
+function cue(name: VoiceCue): void {
+  playVoiceCue(name, useVoiceStore.getState().selectedOutputId);
 }
 
 function bumpRemoteStreamRevision(): void {
