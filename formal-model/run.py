@@ -22,6 +22,7 @@ MODELS = {
     'M3': ('m3_key_epochs', 'channel key epochs'),
     'M3s': ('m3s_stall', 'the fresh-start stall rule over time'),
     'M3r': ('m3r_own_commit', 'own group commits with lost answers'),
+    'M3rQ': ('m3r_quint', 'M3r in Quint, checked by TLC against the Python explorer'),
     'M4': ('m4_devices', 'devices and sessions'),
     'M4s': ('m4s_sessions', 'credentials, sessions and sockets under concurrent requests'),
     'M5': ('m5_audit', 'audit chain'),
