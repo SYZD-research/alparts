@@ -122,7 +122,6 @@ module m10 {
   // trustsNumber: every event here has a verdict, so only a v6 signature counts.
   pure def trusts(e: E): bool = e.sequenced
   pure def note(current: str, notice: str): str = if (current == "missing") current else notice
-  pure def anyIndex(ord: List[E], p: (int) => bool): bool = ord.indices().exists(p)
 
   // analyzeEventOrder: a notice ("" | "missing" | "order") for each place.
   pure def analyze(ord: List[E], w: W): List[str] = {
@@ -338,13 +337,27 @@ module m10 {
     }
   }
 
-  action init = all { order' = [], view' = viewOf([]) }
+  // The first step computes the view of the empty history: Quint's TLA+
+  // output walks every definition init reaches, once per path, which the
+  // projection makes too many. So the run starts one state earlier, with no
+  // view yet (`ready` false), and every property holds there.
+  var ready: bool
+  val BLANK: V = { noticed: false, a1: "" }
 
-  action step = {
+  action init = all {
+    order' = [], ready' = false,
+    view' = { c: BLANK, s: BLANK, f: BLANK, cr: BLANK, sr: BLANK, fr: BLANK, forgedMissed: Set(), forgedTrials: 0 },
+  }
+
+  action start = all { not(ready), ready' = true, order' = order, view' = viewOf(order) }
+
+  action serve = {
     nondet name = ALL.foldl(Set(), (s, g) => if (inList(order, g.name)) s else s.union(Set(g.name))).oneOf()
     val longer = order.append(name)
-    all { order' = longer, view' = viewOf(longer) }
+    all { ready, ready' = true, order' = longer, view' = viewOf(longer) }
   }
+
+  action step = any { start, serve }
 
   // ---- the ground truth the checks compare with (as sequence-harness.mts) ----
 
@@ -368,34 +381,34 @@ module m10 {
   def sameSet(names: List[str]): bool = order.length() == names.length() and names.foldl(true, (acc, n) => acc and inList(order, n))
 
   // v6, single-head and pre-v6 runs (each property: no state violates it).
-  val MO_order = not(SERVED and reorderedDirectly) or (view.c.noticed and view.s.noticed and view.f.noticed)
-  val MO_order_complete = not(SERVED and reordered) or view.c.noticed
-  val MO_order_hidden = not(SERVED and reordered and not(reorderedDirectly)) or (view.s.noticed and view.f.noticed)
-  val MO_drop = not(SERVED and WITHHELD_PAST.length() > 0) or view.c.noticed
-  val MO_forged_number = view.forgedMissed.size() == 0
-  val MO_edit = not(SERVED and view.c.a1 != "none" and newestEdit != "" and view.c.a1 != newestEdit and not(view.c.noticed))
-  val MO_honest = order != NAMES or (not(view.c.noticed) and view.c.a1 == LAST)
-  val MO_honest_suffix = not(SERVED and honestRun and order[order.length() - 1] == LAST) or not(view.s.noticed)
-  val MO_honest_forum = order != ["A1", "A4"] or (not(view.f.noticed) and view.f.a1 == "A4")
+  val MO_order = not(ready) or not(SERVED and reorderedDirectly) or (view.c.noticed and view.s.noticed and view.f.noticed)
+  val MO_order_complete = not(ready) or not(SERVED and reordered) or view.c.noticed
+  val MO_order_hidden = not(ready) or not(SERVED and reordered and not(reorderedDirectly)) or (view.s.noticed and view.f.noticed)
+  val MO_drop = not(ready) or not(SERVED and WITHHELD_PAST.length() > 0) or view.c.noticed
+  val MO_forged_number = not(ready) or view.forgedMissed.size() == 0
+  val MO_edit = not(ready) or not(SERVED and view.c.a1 != "none" and newestEdit != "" and view.c.a1 != newestEdit and not(view.c.noticed))
+  val MO_honest = not(ready) or order != NAMES or (not(view.c.noticed) and view.c.a1 == LAST)
+  val MO_honest_suffix = not(ready) or not(SERVED and honestRun and order[order.length() - 1] == LAST) or not(view.s.noticed)
+  val MO_honest_forum = not(ready) or order != ["A1", "A4"] or (not(view.f.noticed) and view.f.a1 == "A4")
   // Limits: the state that shows the limit must be reachable (the invariant breaks).
-  val MO_tail = not(SERVED and WITHHELD_PAST.length() == 0 and WITHHELD_TAIL.length() > 0 and not(reordered)
+  val MO_tail = not(ready) or not(SERVED and WITHHELD_PAST.length() == 0 and WITHHELD_TAIL.length() > 0 and not(reordered)
                     and not(view.c.noticed))
-  val MO_suffix = not(SERVED and WITHHELD_PAST.length() > 0 and not(reordered) and not(view.s.noticed))
-  val MO_forum = not(SERVED and WITHHELD_PAST.length() > 0 and not(reordered) and not(view.f.noticed))
+  val MO_suffix = not(ready) or not(SERVED and WITHHELD_PAST.length() > 0 and not(reordered) and not(view.s.noticed))
+  val MO_forum = not(ready) or not(SERVED and WITHHELD_PAST.length() > 0 and not(reordered) and not(view.f.noticed))
 
   // memory run: a member who received the whole history before.
   def traced(complete: bool): bool = withheldOf(order).foldl(false, (acc, x) => acc or complete
     or order.foldl(false, (b, n) => b or (genuine(n, ALL).device == x.device and genuine(n, ALL).seq < x.seq)))
   val WITHHELD = order.length() < HISTORY.length()
-  val MO_rollback = not(WITHHELD) or ((view.c.noticed or not(traced(true))) and (view.s.noticed or not(traced(false))))
-  val MO_rollback_page = not(WITHHELD) or ((view.c.noticed or traced(true)) and (view.s.noticed or traced(false)))
+  val MO_rollback = not(ready) or not(WITHHELD) or ((view.c.noticed or not(traced(true))) and (view.s.noticed or not(traced(false))))
+  val MO_rollback_page = not(ready) or not(WITHHELD) or ((view.c.noticed or traced(true)) and (view.s.noticed or traced(false)))
 
   // split run: device A signed A2 and A2x under number 2.
   def allNoticed(v: View): bool = v.c.noticed and v.s.noticed and v.f.noticed
-  val MO_split = not(order == ["A1", "B1", "A2"] or order == ["A1", "B1", "A2x"]) or view.c.noticed
-  val MO_split_seen = not(sameSet(["A1", "B1", "A2", "A2x"])) or allNoticed(view)
-  val MO_split_named = not(sameSet(["A1", "B1", "A2x", "B2"])) or allNoticed(view)
-  val MO_split_remembered = order != ["A1", "B1", "A2x"] or (view.cr.noticed and view.sr.noticed and view.fr.noticed)
+  val MO_split = not(ready) or not(order == ["A1", "B1", "A2"] or order == ["A1", "B1", "A2x"]) or view.c.noticed
+  val MO_split_seen = not(ready) or not(sameSet(["A1", "B1", "A2", "A2x"])) or allNoticed(view)
+  val MO_split_named = not(ready) or not(sameSet(["A1", "B1", "A2x", "B2"])) or allNoticed(view)
+  val MO_split_remembered = not(ready) or order != ["A1", "B1", "A2x"] or (view.cr.noticed and view.sr.noticed and view.fr.noticed)
 }
 
 
