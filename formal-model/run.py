@@ -2,7 +2,7 @@
 """Run every model and print a verdict table.
 
   python3 run.py            all models (M3 about 7 minutes and ~0.9 GB, M8 about an hour on 4 cores,
-                            M3Q about an hour, M4T about 7 minutes)
+                            M3Q about an hour, M4T about 4 minutes)
   python3 run.py M1 M4      selected models only
 
 Exit status: 0 when every check has its expected outcome, 1 when a design

@@ -40,6 +40,6 @@ python3 formal-model/run.py M4T
 tamarin-prover --prove -D=TRICKED formal-model/tamarin/device_approval.spthy   # 1つの変種を直接
 ```
 
-Tamarin 1.10 以降と Maude（3.2 以降）が PATH に必要です。全変種で約7分かかります。Tamarin はリリースのバイナリ、Homebrew（`brew install tamarin-prover/tap/tamarin-prover`）、Nix（`nix-env -iA nixpkgs.tamarin-prover`）のいずれかで入れます。環境変数 `TAMARIN` で実行ファイルを指定できます。ツールがない、整形式の警告が出る、解析が終わらない場合は MODEL-GAP です。
+Tamarin 1.10 以降と Maude（3.2 以降）が PATH に必要です。全変種で約4分かかります。Tamarin はリリースのバイナリ、Homebrew（`brew install tamarin-prover/tap/tamarin-prover`）、Nix（`nix-env -iA nixpkgs.tamarin-prover`）のいずれかで入れます。環境変数 `TAMARIN` で実行ファイルを指定できます。ツールがない、整形式の警告が出る、解析が終わらない場合は MODEL-GAP です。
 
 リリースのバイナリが使えない環境では、ソース（タグ 1.12.0）から cabal でビルドできます。リポジトリ直下に `lib/` の各パッケージを並べた `cabal.project` を置き、`LANG=C.UTF-8` で `cabal build exe:tamarin-prover` を実行します。GHC 9.4 では `--allow-newer=base,template-haskell,...` と `constraints: crypton <1.0` が必要でした。
