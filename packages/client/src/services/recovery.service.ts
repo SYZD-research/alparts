@@ -8,7 +8,7 @@ import {
   exportHistoryKey,
 } from './crypto.service';
 import { verifiedDirectory } from './directory.service';
-import { deriveArchiveKey, wrapMasterSeed, unwrapMasterSeed, parsePasskeyWrap, type PasskeyWrap } from './passkey-vault';
+import { deriveArchiveKey, wrapArchiveKey, unwrapArchiveKey, parsePasskeyWrap, type PasskeyWrap } from './passkey-vault';
 import {
   readSecurityState,
   writeSecurityState,
@@ -102,8 +102,10 @@ export async function createRecoveryPlan(onPasskeyPrompt?: () => void) {
     const options = await api.securityRequest<{ rpId: string }>('/auth/passkeys/vault');
     let passkeyWrap: PasskeyWrap | undefined;
     if (passkeys.length > 0) {
+      // The passkey keeps only the history key; approving a device takes the code.
+      const archive = await deriveArchiveKey(raw, owner.userId, generation);
       try {
-        passkeyWrap = await wrapMasterSeed(raw, owner.userId, generation, passkeys.map((key) => key.id), options.rpId, onPasskeyPrompt);
+        passkeyWrap = await wrapArchiveKey(archive, owner.userId, generation, passkeys.map((key) => key.id), options.rpId, onPasskeyPrompt);
       } catch (error) {
         // A passkey that cannot be used, or one the user declines, must not
         // block a plan that the code alone restores.
@@ -111,6 +113,8 @@ export async function createRecoveryPlan(onPasskeyPrompt?: () => void) {
           !(error instanceof Error && error.message === 'PASSKEY_VAULT_UNAVAILABLE')
           && !(error instanceof DOMException && error.name === 'NotAllowedError')
         ) throw error;
+      } finally {
+        archive.fill(0);
       }
     }
     assertRecoveryOwner(owner);
@@ -389,7 +393,104 @@ async function openHistoryRecord(
   return null;
 }
 /** How many keys were restored, and how many records could not be. */
-export async function restoreHistory(code?: string): Promise<{ restored: number; failed: number }> {
+/** Restores every record of the archive with its key, then keeps the key for later backups. */
+async function restoreRecords(
+  owner: { userId: string; deviceId: string },
+  generation: string,
+  archiveBytes: Uint8Array,
+): Promise<{ restored: number; failed: number }> {
+  const key = await aes(archiveBytes);
+  let cursor: Cursor | null = null;
+  let restored = 0;
+  let failed = 0;
+  for (let page = 0; page < 1563; page++) {
+    const result: { keys: RecoveryRecord[]; cursor: Cursor | null } = await recoveryPage(
+      `/recovery/keys${cursor ? `?channelId=${encodeURIComponent(cursor.channelId)}&version=${encodeURIComponent(String(cursor.version))}` : ''}`,
+    );
+    if (result.keys.length > 64) throw new Error('RECOVERY_LIMIT');
+    assertRecoveryOwner(owner);
+    for (const record of result.keys) {
+      const plain = await openHistoryRecord(key, owner.userId, generation, record);
+      if (!plain) {
+        failed++;
+        continue;
+      }
+      try {
+        assertRecoveryOwner(owner);
+        // A channel this device may no longer use must not abort the rest
+        // of an otherwise valid archive; the archive itself was verified.
+        if (await saveRecoveredChannelKeyIfAllowed(record.channelId, record.version, plain)) restored++;
+      } finally {
+        plain.fill(0);
+      }
+    }
+    cursor = result.cursor;
+    if (!cursor) {
+      await writeSecurityState(owner, 'recovery', {
+        generation,
+        key: toBase64(archiveBytes),
+      });
+      return { restored, failed };
+    }
+  }
+  throw new Error('RECOVERY_LIMIT');
+}
+/**
+ * Restores history on this device, already approved, with the passkey the
+ * history key was wrapped with. The passkey cannot approve a device.
+ */
+export async function restoreHistoryWithPasskey(): Promise<{ restored: number; failed: number }> {
+  const owner = getActiveDevice();
+  if (!owner.approved) throw new Error('RECOVERY_CODE_REQUIRED');
+  const metadata = await api.securityRequest<Pick<RecoveryConfig, 'generation' | 'signingKey' | 'passkeyWrap'> | null>(
+    '/recovery/metadata',
+  );
+  if (!metadata) throw new Error('RECOVERY_NOT_CONFIGURED');
+  const directory = await verifiedDirectory(owner.userId);
+  if (
+    directory.recovery?.generation !== metadata.generation ||
+    directory.recovery.signingKey !== metadata.signingKey
+  )
+    throw new Error('DIRECTORY_INVALID');
+  const archiveBytes = await unwrapArchiveKey(metadata.passkeyWrap, owner.userId, metadata.generation);
+  try {
+    return await restoreRecords(owner, metadata.generation, archiveBytes);
+  } finally {
+    archiveBytes.fill(0);
+  }
+}
+/**
+ * Wraps the history key this device keeps for the current plan with a
+ * passkey, so that approved devices can restore history with it.
+ */
+export async function protectHistoryWithPasskey(onPasskeyPrompt?: () => void) {
+  const owner = getActiveDevice();
+  const local = await readSecurityState<LocalRecovery>(owner, 'recovery');
+  const config = await api.securityRequest<RecoveryConfig | null>('/recovery');
+  const directory = await verifiedDirectory(owner.userId);
+  if (
+    !config ||
+    directory.recovery?.generation !== config.generation ||
+    directory.recovery.signingKey !== config.signingKey
+  )
+    throw new Error('DIRECTORY_INVALID');
+  // Before the archive key existed, the archive was sealed with the code itself.
+  if (!local || local.generation !== config.generation || !config.encryptedSecret.startsWith('{'))
+    throw new Error('RECOVERY_CODE_REQUIRED');
+  const passkeys = await api.securityRequest<Array<{ id: string }>>('/auth/passkeys');
+  const options = await api.securityRequest<{ rpId: string }>('/auth/passkeys/vault');
+  if (!passkeys.length) throw new Error('PASSKEY_VAULT_UNAVAILABLE');
+  const archive = fromBase64(local.key);
+  try {
+    const passkeyWrap = await wrapArchiveKey(archive, owner.userId, config.generation, passkeys.map((key) => key.id), options.rpId, onPasskeyPrompt);
+    assertRecoveryOwner(owner);
+    await api.securityRequest('/recovery/passkey', { generation: config.generation, passkeyWrap });
+  } finally {
+    archive.fill(0);
+  }
+}
+/** Restores history with the recovery code, approving this device first if it is not yet approved. */
+export async function restoreHistory(code: string): Promise<{ restored: number; failed: number }> {
   const owner = getActiveDevice();
   const metadata = await api.securityRequest<Pick<
     RecoveryConfig,
@@ -402,7 +503,7 @@ export async function restoreHistory(code?: string): Promise<{ restored: number;
     directory.recovery.signingKey !== metadata.signingKey
   )
     throw new Error('DIRECTORY_INVALID');
-  const raw = code === undefined ? await unwrapMasterSeed(metadata.passkeyWrap, owner.userId, metadata.generation) : decodeCode(code);
+  const raw = decodeCode(code);
   let privateBytes: Uint8Array | undefined;
   let archiveBytes: Uint8Array | undefined;
   try {
@@ -427,7 +528,6 @@ export async function restoreHistory(code?: string): Promise<{ restored: number;
       codeSecret = secret.codeSecret;
       archiveBytes = await deriveArchiveKey(raw, owner.userId, config.generation);
     } else archiveBytes = new Uint8Array(raw);
-    const key = await aes(archiveBytes);
     privateBytes = await open(
       await aes(raw),
       codeSecret,
@@ -473,40 +573,7 @@ export async function restoreHistory(code?: string): Promise<{ restored: number;
       assertRecoveryOwner(owner);
       owner.approved = true;
     }
-    let cursor: Cursor | null = null;
-    let restored = 0;
-    let failed = 0;
-    for (let page = 0; page < 1563; page++) {
-      const result: { keys: RecoveryRecord[]; cursor: Cursor | null } = await recoveryPage(
-        `/recovery/keys${cursor ? `?channelId=${encodeURIComponent(cursor.channelId)}&version=${encodeURIComponent(String(cursor.version))}` : ''}`,
-      );
-      if (result.keys.length > 64) throw new Error('RECOVERY_LIMIT');
-      assertRecoveryOwner(owner);
-      for (const record of result.keys) {
-        const plain = await openHistoryRecord(key, owner.userId, config.generation, record);
-        if (!plain) {
-          failed++;
-          continue;
-        }
-        try {
-          assertRecoveryOwner(owner);
-          // A channel this device may no longer use must not abort the rest
-          // of an otherwise valid archive; the archive itself was verified.
-          if (await saveRecoveredChannelKeyIfAllowed(record.channelId, record.version, plain)) restored++;
-        } finally {
-          plain.fill(0);
-        }
-      }
-      cursor = result.cursor;
-      if (!cursor) {
-        await writeSecurityState(owner, 'recovery', {
-          generation: config.generation,
-          key: toBase64(archiveBytes),
-        });
-        return { restored, failed };
-      }
-    }
-    throw new Error('RECOVERY_LIMIT');
+    return await restoreRecords(owner, config.generation, archiveBytes);
   } finally {
     raw.fill(0);
     privateBytes?.fill(0);

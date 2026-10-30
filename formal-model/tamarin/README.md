@@ -11,7 +11,7 @@ M4・M4s は「署名・確認コードの照合・復旧データの暗号化�
 | 承認・復旧設定・復旧の決定への署名 | shared `serializeDeviceDecision`、client `directory.service.ts` `deviceDecision` |
 | ディレクトリの検証（register / approve / recovery-config / recovery） | client `directory-verifier.ts` `verifyDirectoryEntries` |
 | 復旧コード（復旧署名鍵の暗号化、取り出しトークン、履歴アーカイブ鍵） | client `recovery.service.ts`、`recovery-crypto.ts` |
-| パスキーの PRF で包んだ復旧コード | client `passkey-vault.ts` |
+| パスキーの PRF で包んだ履歴の保存用の鍵（2026-10-30 まで包んでいたのは復旧コード） | client `passkey-vault.ts` |
 
 正直な端末は、自分が承認済みかどうかにかかわらず承認や復旧の設定を署名でき、復元する端末はディレクトリの復旧鍵を引きません。どちらも正直な側にできることを増やすだけなので HOLDS の証明は弱くならず、Tamarin が承認の連鎖を際限なくさかのぼるのを防ぎます（復元側が開ける暗号文は、その復旧鍵を付加データで結び付けている）。
 
@@ -21,23 +21,26 @@ M4・M4s は「署名・確認コードの照合・復旧データの暗号化�
 
 | 検査 | 期待 | 内容 |
 | --- | --- | --- |
-| DA | HOLDS | 利用者の端末が承認済みとして受け入れる識別鍵は、端末の鍵・復旧コード・パスキーのどれかが漏れない限り、その利用者自身の端末のもの |
+| DA | HOLDS | 利用者の端末が承認済みとして受け入れる識別鍵は、端末の鍵か復旧コードが漏れない限り、その利用者自身の端末のもの。パスキーが漏れても成り立つ |
 | DA-compared | HOLDS | 確認コードを比べたうえでの承認は、サーバーがどの端末を示しても、利用者が見たコードの端末を指す |
 | HS | HOLDS | すべてのアーカイブと、送られてきた取り出しトークンを持つサーバーでも、コードかパスキーなしには履歴の鍵を読めない |
-| DA-passkey | LIMIT | 復旧の計画を包んだパスキーを使える者（認証器、または同期先のアカウント）は、コードなしで新しい端末を承認できる |
+| HS-passkey | LIMIT | 履歴の鍵を包んだパスキーを使える者（認証器、または同期先のアカウント）は、保存された記録を手に入れれば履歴を読める（サーバーは記録を承認済みの端末にだけ渡す） |
 | DA-tricked | LIMIT | コードを比べずに承認すると、サーバーの端末を承認する（M4 D4、`-D=TRICKED`） |
 | DA-tofu | LIMIT | 初めてそのアカウントを見る端末は、サーバーが見せる最初の端末を受け入れる（`-D=TOFU`） |
 | DA-identity-ctl | CONTROL | 決定が端末 ID だけを指すと、別の見え方で同じ ID に攻撃者の鍵を登録して承認を使い回せる（`-D=CTL_NO_IDENTITY`） |
 | DA-proof-ctl | CONTROL | セッションの証明がチャレンジだけに署名すると、承認済みの端末にログインのチャレンジとして承認を署名させられる（`-D=CTL_UNTAGGED_PROOF`） |
 | HS-token-ctl | CONTROL | 取り出しトークンがコードそのものだと、最初の復元でサーバーがコードを知る（`-D=CTL_RAW_TOKEN`） |
+| DA-passkey-ctl | CONTROL | 2026-10-30 より前の設計（パスキーで復旧コードそのものを包む）では、パスキーだけで新しい端末を承認できる（`-D=CTL_PASSKEY_WRAPS_CODE`） |
 
 `exec_approval`・`exec_restore_code`・`exec_restore_passkey` は、正直な手順が漏えいなしに実行できることの確認です。成り立たなければモデルが強すぎるため MODEL-GAP になります。
+
+DA は3つの版から `-D` で1つを選びます。`REUSE_DA` は他の補題が DA を前提にしてよい版で、DA も同時に証明する既定の実行だけで使います（Tamarin は reuse の補題を、その実行で証明していなくても前提にするため）。`PLAIN_DA` は前提にしない版で、DA が偽になる変種で使います。`CTL_PASSKEY_WRAPS_CODE` では、旧設計でも成り立つパスキーを例外に含めた DA を前提にして、攻撃の探索を絞ります。直接実行するときは `-D=REUSE_DA` などを付けます。
 
 ## 実行
 
 ```bash
 python3 formal-model/run.py M4T
-tamarin-prover --prove -D=TRICKED formal-model/tamarin/device_approval.spthy   # 1つの変種を直接
+tamarin-prover --prove=DA -D=TRICKED -D=PLAIN_DA formal-model/tamarin/device_approval.spthy   # 1つの変種を直接
 ```
 
 Tamarin 1.10 以降と Maude（3.2 以降）が PATH に必要です。全変種で約4分かかります。Tamarin はリリースのバイナリ、Homebrew（`brew install tamarin-prover/tap/tamarin-prover`）、Nix（`nix-env -iA nixpkgs.tamarin-prover`）のいずれかで入れます。環境変数 `TAMARIN` で実行ファイルを指定できます。ツールがない、整形式の警告が出る、解析が終わらない場合は MODEL-GAP です。

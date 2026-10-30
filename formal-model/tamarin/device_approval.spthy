@@ -32,9 +32,13 @@ begin
  *                 signing key); the retrieval token sent to the server is
  *                 HKDF(code, user/generation, 'retrieval'); history keys are
  *                 sealed under HKDF(code, user/generation, 'archive').
- *   passkey       client passkey-vault wrapMasterSeed / unwrapMasterSeed: the
- *                 code is sealed under HKDF(PRF(credential, salt)); the PRF
- *                 output never leaves the client.
+ *   passkey       client passkey-vault wrapArchiveKey / unwrapArchiveKey: the
+ *                 history archive key (not the code) is sealed under
+ *                 HKDF(PRF(credential, salt)); the PRF output never leaves the
+ *                 client. An approved device restores history with it; it
+ *                 cannot open the recovery signing key, so it approves nothing.
+ *                 Before 2026-10-30 the code itself was sealed
+ *                 (-D=CTL_PASSKEY_WRAPS_CODE).
  *
  * Abstractions: the hash chain and heads of the directory are left out (they
  * order entries and detect rollback, which M10 and the client tests cover).
@@ -58,6 +62,7 @@ begin
  *   CTL_NO_IDENTITY         CONTROL: the decision does not name the identity key
  *   CTL_UNTAGGED_PROOF      CONTROL: the session proof signs the bare challenge
  *   CTL_RAW_TOKEN           CONTROL: the retrieval token is the code itself
+ *   CTL_PASSKEY_WRAPS_CODE  CONTROL: the passkey wraps the code (before 2026-10-30)
  */
 
 builtins: signing, hashing, symmetric-encryption
@@ -187,12 +192,23 @@ rule Passkey_Register:
   -->
     [ !Passkey($U, ~cred) ]
 
-// createRecoveryPlan wraps the code with the passkey's PRF output.
+#ifdef CTL_PASSKEY_WRAPS_CODE
+// Before 2026-10-30: createRecoveryPlan wrapped the code with the passkey's PRF output.
 rule Recovery_PasskeyWrap:
     [ !Code(U, gen, raw), !Passkey(U, cred), Fr(~salt) ]
   -->
     [ Out(<'wrap', U, gen, ~salt,
            senc(<'passkey-master', U, gen, ~salt, raw>, hkdf(prf(cred, ~salt), <U, gen, ~salt>, 'wrap'))>) ]
+#else
+// createRecoveryPlan (or a device that holds the archive key) wraps the
+// archive key with the passkey's PRF output.
+rule Recovery_PasskeyWrap:
+    [ !Code(U, gen, raw), !Passkey(U, cred), Fr(~salt) ]
+  -->
+    [ Out(<'wrap', U, gen, ~salt,
+           senc(<'passkey-archive', U, gen, ~salt, hkdf(raw, <U, gen>, 'archive')>,
+                hkdf(prf(cred, ~salt), <U, gen, ~salt>, 'wrap'))>) ]
+#endif
 
 // Devices that hold the code back up history keys under the archive key.
 rule History_Backup:
@@ -208,7 +224,8 @@ rule Restore_WithCode:
     [ Out(TOKEN(raw, U, gen)),
       Out(<'recovery', U, did, pk(sk), gen, sign(<'alparts-device-decision', U, 'recovery', did, pk(sk), gen>, kr)>) ]
 
-// A new device of the user restores with the passkey instead of the code.
+#ifdef CTL_PASSKEY_WRAPS_CODE
+// Before 2026-10-30: a new device restored with the passkey instead of the code.
 rule Restore_WithPasskey:
     [ !Dev(U, did, sk), !Passkey(U, cred),
       In(<'wrap', U, gen, salt, senc(<'passkey-master', U, gen, salt, raw>, hkdf(prf(cred, salt), <U, gen, salt>, 'wrap'))>),
@@ -216,6 +233,17 @@ rule Restore_WithPasskey:
   --[ RestoredWithPasskey(U, pk(sk)) ]->
     [ Out(TOKEN(raw, U, gen)),
       Out(<'recovery', U, did, pk(sk), gen, sign(<'alparts-device-decision', U, 'recovery', did, pk(sk), gen>, kr)>) ]
+#else
+// A device of the user opens history records with the passkey. The client
+// does this only on an approved device; it signs nothing, so the model need
+// not require the approval.
+rule Restore_WithPasskey:
+    [ !Dev(U, did, sk), !Passkey(U, cred),
+      In(<'wrap', U, gen, salt, senc(<'passkey-archive', U, gen, salt, ak>, hkdf(prf(cred, salt), <U, gen, salt>, 'wrap'))>),
+      In(senc(<'history', U, gen, hk>, ak)) ]
+  --[ RestoredHistoryWithPasskey(U, hk) ]->
+    [ ]
+#endif
 
 /* ---------------------------------------------------------- compromise */
 
@@ -233,13 +261,38 @@ rule Reveal_Passkey:
 /* ------------------------------------------------------------- lemmas */
 
 // DA: a device key the user's devices accept as approved belongs to one of the
-// user's own devices, unless a device key, the code or the passkey leaked.
+// user's own devices, unless a device key or the code leaked. The passkey is
+// not an exception: it opens history, not the recovery signing key.
+// Exactly one of the three versions below is selected (m4_tamarin.py passes
+// the flag). Other lemmas may assume DA only in a run that proves it as well:
+// in the variants DA is false, and assuming it would hide the attacks they
+// must find.
+#ifdef REUSE_DA
+lemma DA [use_induction, reuse]:
+  "All U pk #i. Accepted(U, pk) @ #i ==>
+       (Ex did #j. HonestDevice(U, did, pk) @ #j)
+     | (Ex #j. RevealDevice(U) @ #j)
+     | (Ex #j. RevealCode(U) @ #j)"
+#endif
+
+#ifdef PLAIN_DA
+lemma DA [use_induction]:
+  "All U pk #i. Accepted(U, pk) @ #i ==>
+       (Ex did #j. HonestDevice(U, did, pk) @ #j)
+     | (Ex #j. RevealDevice(U) @ #j)
+     | (Ex #j. RevealCode(U) @ #j)"
+#endif
+
+#ifdef CTL_PASSKEY_WRAPS_CODE
+// Before 2026-10-30 the passkey was an exception too; this weaker DA holds
+// there and guides the search for the passkey attack.
 lemma DA [use_induction, reuse]:
   "All U pk #i. Accepted(U, pk) @ #i ==>
        (Ex did #j. HonestDevice(U, did, pk) @ #j)
      | (Ex #j. RevealDevice(U) @ #j)
      | (Ex #j. RevealCode(U) @ #j)
      | (Ex #j. RevealPasskey(U) @ #j)"
+#endif
 
 // DA-code: without the user's comparison, the device the user approved is the
 // one whose code they saw.
@@ -252,12 +305,20 @@ lemma HS:
   "All U gen hk #i #k. HistoryKey(U, gen, hk) @ #i & K(hk) @ #k ==>
        (Ex #j. RevealCode(U) @ #j) | (Ex #j. RevealPasskey(U) @ #j)"
 
-// The passkey alone (the authenticator, or the cloud account that syncs it)
-// approves a new device when the recovery plan is wrapped with it.
+// Whoever can use the passkey (the authenticator, or the cloud account that
+// syncs it) and gets the archive records reads the saved history.
+lemma passkey_reads_history:
+  exists-trace
+  "Ex U gen hk #i #r #k. HistoryKey(U, gen, hk) @ #i & RevealPasskey(U) @ #r & K(hk) @ #k
+     & not (Ex #j. RevealDevice(U) @ #j) & not (Ex #j. RevealCode(U) @ #j)"
+
+#ifdef CTL_PASSKEY_WRAPS_CODE
+// Before 2026-10-30 the passkey alone approved a new device.
 lemma passkey_alone_approves:
   exists-trace
   "Ex U k #i #r #s. AcceptedByRecovery(U, pk(k)) @ #i & RevealPasskey(U) @ #r & K(k) @ #s
      & not (Ex #j. RevealDevice(U) @ #j) & not (Ex #j. RevealCode(U) @ #j)"
+#endif
 
 // Non-vacuity: every honest path is reachable without any compromise.
 lemma exec_approval:
@@ -272,7 +333,7 @@ lemma exec_restore_code:
 
 lemma exec_restore_passkey:
   exists-trace
-  "Ex U pk #i #j. Accepted(U, pk) @ #i & RestoredWithPasskey(U, pk) @ #j
+  "Ex U hk #j. RestoredHistoryWithPasskey(U, hk) @ #j
      & not (Ex #k. RevealDevice(U) @ #k) & not (Ex #k. RevealCode(U) @ #k) & not (Ex #k. RevealPasskey(U) @ #k)"
 
 end

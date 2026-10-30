@@ -51,7 +51,7 @@ Invite members with invitation codes that expire or can be used only once. Creat
 
 Approve new devices, compare verification codes, remove devices you no longer use, and end sign-ins. The web version supports signing in with a passkey and confirming important actions with one.
 
-Once history restore is set up, you can carry saved history over to another device with a supported passkey or a recovery code you have stored. The desktop and Android apps also store keys with the device's own protection and can lock the app.
+Once history restore is set up, you can carry saved history over to another device with a recovery code you have stored. On a device that is already approved, a supported passkey restores it too. The desktop and Android apps also store keys with the device's own protection and can lock the app.
 
 ### Available in English and Japanese
 
@@ -163,7 +163,7 @@ Message text, attachment contents and file names are encrypted on the device. Th
 
 Device approval and key updates when participants or devices change are implemented. A device that is offline does not hold up sending. The one exception is right after upgrading to this version: a conversation that existed before can wait up to 24 hours for the devices that could read it to come online before anyone can send in it. A newly added device can read and send messages once another device in the conversation comes online. It cannot read messages sent before that, although messages your other devices could read may be restored from your saved history. Keys for reading past messages are kept on your devices, so anyone who obtains a device's data may also be able to read past messages. Remove devices you have lost or no longer use.
 
-History restore must be set up and saved in advance. If you lose every usable device, your restore passkey and your recovery code, not even the server administrator can recover the message text. The design and migration steps are described in [Protecting accounts, devices and history](docs/security/ACCOUNT_AND_GROUP_SECURITY.md) and [Setting up passkeys and recovery codes](docs/security/AUDIT_ALPARTS_REMEDIATION.md#パスキーと復旧コード) (Japanese).
+History restore must be set up and saved in advance. If you lose every usable device and your recovery code, not even the server administrator can recover the message text; a passkey restores history only on a device that is already approved. The design and migration steps are described in [Protecting accounts, devices and history](docs/security/ACCOUNT_AND_GROUP_SECURITY.md) and [Setting up passkeys and recovery codes](docs/security/AUDIT_ALPARTS_REMEDIATION.md#パスキーと復旧コード) (Japanese).
 
 Only single-server deployments are supported for now. Redundancy across several application processes, automatic failover, an iOS app, video calls and screen sharing, bots and webhooks, and single sign-on with OIDC are not supported yet. Background sync and push notifications on Android, passkeys in the native apps, and built-in automatic updates also remain to be done.
 

@@ -74,13 +74,16 @@ def _trace(out: str, lemma: str) -> list[str]:
 
 RUNS = {
     # (flags, lemmas)
-    'default': ((), ['DA', 'DA_compared', 'HS', 'passkey_alone_approves',
-                     'exec_approval', 'exec_restore_code', 'exec_restore_passkey']),
-    'tricked': (('TRICKED',), ['DA']),
-    'tofu': (('TOFU',), ['DA']),
-    'no-identity': (('CTL_NO_IDENTITY',), ['DA']),
-    'untagged-proof': (('CTL_UNTAGGED_PROOF',), ['DA']),
-    'raw-token': (('CTL_RAW_TOKEN',), ['HS']),
+    # Only this run may let the other lemmas assume DA, since it proves DA too.
+    'default': (('REUSE_DA',), ['DA', 'DA_compared', 'HS', 'passkey_reads_history',
+                                'exec_approval', 'exec_restore_code', 'exec_restore_passkey']),
+    'tricked': (('TRICKED', 'PLAIN_DA'), ['DA']),
+    'tofu': (('TOFU', 'PLAIN_DA'), ['DA']),
+    'no-identity': (('CTL_NO_IDENTITY', 'PLAIN_DA'), ['DA']),
+    'untagged-proof': (('CTL_UNTAGGED_PROOF', 'PLAIN_DA'), ['DA']),
+    'raw-token': (('CTL_RAW_TOKEN', 'PLAIN_DA'), ['HS']),
+    # The weaker DA of the old design is proved alongside, since the search assumes it.
+    'passkey-wraps-code': (('CTL_PASSKEY_WRAPS_CODE',), ['DA', 'passkey_alone_approves']),
 }
 
 
@@ -111,15 +114,16 @@ def run() -> None:
             record('M4T', f'exec-{lemma}', f'{title} is reachable without compromise', 'HOLDS', False,
                    'the honest path is unreachable: the model is too strong', incomplete=True)
     check('DA', 'a device key the user\'s devices accept as approved belongs to one of the user\'s devices unless a '
-                'device key, the recovery code or the passkey leaked (malicious server)', 'HOLDS', 'default', 'DA')
+                'device key or the recovery code leaked; the passkey alone is not enough (malicious server)', 'HOLDS',
+          'default', 'DA')
     check('DA-compared', 'an approval given after comparing the confirmation codes names the device whose code the '
                          'user saw, whatever device the server presents', 'HOLDS', 'default', 'DA_compared')
     check('HS', 'the server, holding every archive record and every retrieval token sent to it, cannot read history '
                 'keys without the code or the passkey', 'HOLDS', 'default', 'HS')
-    check('DA-passkey', 'whoever can use the passkey the recovery plan was wrapped with (the authenticator, or the '
-                        'account that syncs it) can approve a new device without the code', 'LIMIT', 'default',
-          'passkey_alone_approves', 'restoreHistory unwraps the code with the passkey; that is the designed shortcut',
-          exists=True)
+    check('HS-passkey', 'whoever can use the passkey the history was wrapped with (the authenticator, or the account '
+                        'that syncs it) and gets the archive records reads the saved history', 'LIMIT', 'default',
+          'passkey_reads_history', 'the passkey opens the archive key by design; the server hands records only to '
+                                   'approved devices', exists=True)
     check('DA-tricked', 'a user who approves without comparing the codes approves the server\'s device (M4 D4)',
           'LIMIT', 'tricked', 'DA')
     check('DA-tofu', 'a device that meets an account for the first time accepts whatever first device the server '
@@ -128,6 +132,9 @@ def run() -> None:
                              'that ID in another view and reuse the approval', 'CONTROL', 'no-identity', 'DA')
     check('DA-proof-ctl', 'if the session proof signed the bare challenge, the server could have an approved device '
                           'sign an approval of its own device as a login challenge', 'CONTROL', 'untagged-proof', 'DA')
+    check('DA-passkey-ctl', 'before 2026-10-30 the passkey wrapped the recovery code, so whoever could use it approved '
+                            'a new device without the code', 'CONTROL', 'passkey-wraps-code', 'passkey_alone_approves',
+          exists=True)
     check('HS-token-ctl', 'if the retrieval token were the code itself, the server would learn the code at the first '
                           'restore, read the history and approve its own device', 'CONTROL', 'raw-token', 'HS')
 

@@ -1,8 +1,13 @@
 import { aad, open, seal } from './recovery-crypto';
 import { fromBase64, toBase64 } from './security-storage';
 
+/**
+ * Version 2 seals the history archive key. Version 1 sealed the recovery code
+ * itself, which also opens the key that approves new devices; it is only
+ * recognised, never opened.
+ */
 export interface PasskeyWrap {
-  version: 1;
+  version: 1 | 2;
   credentialId: string;
   rpId: string;
   salt: string;
@@ -11,7 +16,7 @@ export interface PasskeyWrap {
 
 export function parsePasskeyWrap(value: unknown): PasskeyWrap {
   const v = value as PasskeyWrap | null;
-  if (!v || v.version !== 1 || typeof v.credentialId !== 'string'
+  if (!v || (v.version !== 1 && v.version !== 2) || typeof v.credentialId !== 'string'
     || !/^[A-Za-z0-9_-]{1,2048}$/.test(v.credentialId)
     || typeof v.rpId !== 'string' || !v.rpId || v.rpId.length > 253
     || typeof v.salt !== 'string' || !/^[A-Za-z0-9+/]{43}=$/.test(v.salt)
@@ -46,7 +51,7 @@ async function evaluate(credentialIds: string[], salt: Uint8Array<ArrayBuffer>, 
 }
 
 function context(userId: string, generation: string, wrap: Pick<PasskeyWrap, 'rpId' | 'credentialId' | 'salt'>) {
-  return aad(userId, JSON.stringify(['passkey-master', 1, generation, wrap.rpId, wrap.credentialId, wrap.salt]));
+  return aad(userId, JSON.stringify(['passkey-archive', 2, generation, wrap.rpId, wrap.credentialId, wrap.salt]));
 }
 
 async function wrappingKey(secret: Uint8Array, binding: Uint8Array<ArrayBuffer>) {
@@ -56,21 +61,26 @@ async function wrappingKey(secret: Uint8Array, binding: Uint8Array<ArrayBuffer>)
   { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
 }
 
-/** onPrompt runs just before the browser asks for the passkey, and not at all if it cannot. */
-export async function wrapMasterSeed(raw: Uint8Array, userId: string, generation: string, credentialIds: string[], rpId: string, onPrompt?: () => void): Promise<PasskeyWrap> {
-  if (raw.length !== 32 || !credentialIds.length || credentialIds.length > 32) throw new Error('PASSKEY_VAULT_UNAVAILABLE');
+/**
+ * Seals the history archive key (never the recovery code: that would let the
+ * passkey approve devices). onPrompt runs just before the browser asks for
+ * the passkey, and not at all if it cannot.
+ */
+export async function wrapArchiveKey(archive: Uint8Array, userId: string, generation: string, credentialIds: string[], rpId: string, onPrompt?: () => void): Promise<PasskeyWrap> {
+  if (archive.length !== 32 || !credentialIds.length || credentialIds.length > 32) throw new Error('PASSKEY_VAULT_UNAVAILABLE');
   const salt = crypto.getRandomValues(new Uint8Array(32));
   const result = await evaluate(credentialIds, salt, rpId, onPrompt);
   try {
     const binding = { credentialId: result.credentialId, rpId, salt: toBase64(salt) };
     const associated = context(userId, generation, binding);
-    const ciphertext = await seal(await wrappingKey(result.secret, associated), raw, associated);
-    return { version: 1, ...binding, ciphertext };
+    const ciphertext = await seal(await wrappingKey(result.secret, associated), archive, associated);
+    return { version: 2, ...binding, ciphertext };
   } finally { result.secret.fill(0); }
 }
 
-export async function unwrapMasterSeed(value: unknown, userId: string, generation: string): Promise<Uint8Array> {
+export async function unwrapArchiveKey(value: unknown, userId: string, generation: string): Promise<Uint8Array> {
   const wrap = parsePasskeyWrap(value);
+  if (wrap.version !== 2) throw new Error('INVALID_PASSKEY_WRAP');
   const result = await evaluate([wrap.credentialId], fromBase64(wrap.salt), wrap.rpId);
   try {
     const associated = context(userId, generation, wrap);

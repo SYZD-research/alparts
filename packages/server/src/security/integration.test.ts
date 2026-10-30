@@ -110,7 +110,7 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
     const auditModule = await import('../middleware/audit.js');
     const dbModule = await import('../db/index.js');
     closeDb = dbModule.closeDb;
-    assert.equal(await dbModule.checkDatabaseSchema(), 28);
+    assert.equal(await dbModule.checkDatabaseSchema(), 29);
     verifyAuditChain = auditModule.verifyAuditChain;
     await auditModule.provisionAuditCheckpoint();
     const startupAudit = await verifyAuditChain();
@@ -5885,7 +5885,7 @@ describe('security boundaries (PostgreSQL + object storage)', { skip: !enabled }
       await client.end();
     }
     const { checkDatabaseSchema } = await import('../db/index.js');
-    assert.equal(await checkDatabaseSchema(), 28);
+    assert.equal(await checkDatabaseSchema(), 29);
   });
 
   it('never re-signs a shortened audit chain after the external checkpoint anchor is deleted', async () => {

@@ -934,7 +934,7 @@ process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
     process.env.AUDIT_HEAD_OBJECT_KEY = `test-${randomUUID()}`;
     const database = await import('../db/index.js');
     closeDb = database.closeDb;
-    assert.equal(await database.checkDatabaseSchema(), 28);
+    assert.equal(await database.checkDatabaseSchema(), 29);
     const audit = await import('../middleware/audit.js');
     await audit.provisionAuditCheckpoint();
     const app = await import('../app.js');
@@ -2182,7 +2182,7 @@ process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
     const generation = randomUUID();
     const signingKey = JSON.stringify(recoveryPair.publicKey.export({ format: 'jwk' }));
     const currentHead = await head();
-    const wrap = { version: 1, credentialId: passkey.id, rpId: 'localhost',
+    const wrap = { version: 2, credentialId: passkey.id, rpId: 'localhost',
       salt: randomBytes(32).toString('base64'), ciphertext: randomBytes(60).toString('base64') };
     // The server stores opaque client ciphertext; PRF encryption/decryption is
     // exercised separately with the browser client and real Web Crypto.
@@ -2204,6 +2204,10 @@ process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
     assert.equal((await sensitive('/api/recovery/configure', {
       ...body, encryptedSecret: '{' + 'invalid'.repeat(20),
     })).status, 403, 'malformed client data must not become an internal server error');
+    // A client from before 2026-10-30 wraps the recovery code itself; it must update.
+    assert.equal((await sensitive('/api/recovery/configure', {
+      ...body, encryptedSecret: JSON.stringify({ ...secret, passkeyWrap: { ...wrap, version: 1 } }),
+    })).status, 410);
     await json(await sensitive('/api/recovery/configure', body));
     const metadata = await json(await request('/api/recovery/metadata'));
     assert.deepEqual(metadata.passkeyWrap, wrap);
@@ -2234,6 +2238,43 @@ process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
     const metadata = await json(await request('/api/recovery/metadata'));
     assert.equal(metadata.generation, generation);
     assert.equal(metadata.passkeyWrap, undefined);
+    const disableHead = await head();
+    await json(await sensitive('/api/recovery', {
+      head: disableHead,
+      signature: signature(firstKeys.privateKey, serializeDeviceDecision(disableHead, {
+        kind: 'recovery-disable', deviceId: generation, identityKey: signingKey, actorDeviceId: first.id,
+      })),
+    }, 'DELETE'));
+  });
+  it('wraps the history key of a plan with a passkey later, and never hands out a wrap of the code', async () => {
+    const generation = randomUUID();
+    const signingKey = JSON.stringify(recoveryPair.publicKey.export({ format: 'jwk' }));
+    const currentHead = await head();
+    await json(await sensitive('/api/recovery/configure', {
+      generation, signingKey,
+      encryptedSecret: JSON.stringify({ version: 2, codeSecret: randomBytes(256).toString('base64') }),
+      accessTokenHash: randomBytes(32).toString('hex'), head: currentHead,
+      signature: signature(firstKeys.privateKey, serializeDeviceDecision(currentHead, {
+        kind: 'recovery-config', deviceId: generation, identityKey: signingKey, actorDeviceId: first.id,
+      })),
+    }));
+    const wrap = { version: 2, credentialId: passkey.id, rpId: 'localhost',
+      salt: randomBytes(32).toString('base64'), ciphertext: randomBytes(60).toString('base64') };
+    for (const passkeyWrap of [{ ...wrap, version: 1 }, { ...wrap, credentialId: randomBytes(32).toString('base64url') },
+      { ...wrap, rpId: 'unrelated.example.test' }]) {
+      assert.equal((await sensitive('/api/recovery/passkey', { generation, passkeyWrap })).status, 403);
+    }
+    assert.equal((await sensitive('/api/recovery/passkey', { generation: randomUUID(), passkeyWrap: wrap })).status, 403);
+    await json(await sensitive('/api/recovery/passkey', { generation, passkeyWrap: wrap }));
+    assert.deepEqual((await json(await request('/api/recovery/metadata'))).passkeyWrap, wrap);
+    // A wrap of the code stored before 2026-10-30 is removed by migration 0028
+    // and, should one remain, is never handed out.
+    const { db } = await import('../db/index.js');
+    const { sql } = await import('drizzle-orm');
+    const legacy = JSON.stringify({ version: 2, codeSecret: randomBytes(256).toString('base64'),
+      passkeyWrap: { ...wrap, version: 1 } });
+    await db.execute(sql`UPDATE history_recovery SET encrypted_secret = ${legacy} WHERE generation = ${generation}`);
+    assert.equal((await json(await request('/api/recovery/metadata'))).passkeyWrap, undefined);
     const disableHead = await head();
     await json(await sensitive('/api/recovery', {
       head: disableHead,

@@ -29,6 +29,15 @@ const cursor = z
     version: z.coerce.number().int().min(1).max(1_000_000),
   })
   .strict();
+/** A plan from a client that still wraps the recovery code itself with a passkey (before 2026-10-30). */
+function sealsRecoveryCode(encryptedSecret: string) {
+  if (!encryptedSecret.startsWith('{')) return false;
+  try {
+    return JSON.parse(encryptedSecret)?.passkeyWrap?.version === 1;
+  } catch {
+    return false;
+  }
+}
 const handler =
   (fn: (req: AuthRequest, res: any) => Promise<void>) =>
   async (req: AuthRequest, res: any, next: NextFunction) => {
@@ -111,7 +120,32 @@ router.post(
       })
       .strict()
       .parse(req.body);
+    if (sealsRecoveryCode(body.encryptedSecret)) {
+      res.status(410).json({ error: 'UPDATE_REQUIRED', message: 'Update the application and try again', statusCode: 410 });
+      return;
+    }
     await service.configureRecovery(req.userId!, req.sessionId!, body, stepUpRevalidation(req));
+    req.app.get('io')?.to(`user:${req.userId}`).emit('account:security-changed');
+    res.json({ success: true });
+  }),
+);
+router.post(
+  '/passkey',
+  handler(async (req, res) => {
+    const body = z
+      .object({
+        generation: canonicalUuid,
+        passkeyWrap: z.record(z.string(), z.unknown()),
+      })
+      .strict()
+      .parse(req.body);
+    await service.setRecoveryPasskeyWrap(
+      req.userId!,
+      req.sessionId!,
+      body.generation,
+      body.passkeyWrap,
+      stepUpRevalidation(req),
+    );
     req.app.get('io')?.to(`user:${req.userId}`).emit('account:security-changed');
     res.json({ success: true });
   }),
