@@ -666,6 +666,17 @@ export function attachVoiceSfuEvents(
 		coordinator.leaveParticipant(session.participantId);
 	};
 
+	// The worker of these participants died: they have already left the media
+	// server, and join it again on a fresh worker.
+	coordinator.onSessionLost((channelId, participantId) => {
+		for (const [socketId, session] of sessions) {
+			if (session.channelId === channelId && session.participantId === participantId) {
+				sessions.delete(socketId);
+				io.to(socketId).emit('voice:sfu:reset', { channelId });
+			}
+		}
+	});
+
 	io.of('/').adapter.on('leave-room', (room, socketId) => {
 		const session = sessions.get(socketId);
 

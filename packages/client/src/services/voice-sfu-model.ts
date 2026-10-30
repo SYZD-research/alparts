@@ -113,6 +113,11 @@ export function parseSfuProducerNotice(value: unknown, channelId: string): SfuPr
   return parseProducer({ participantId: value.participantId, producerId: value.producerId });
 }
 
+/** The media server lost this call and asks to be joined again. */
+export function isSfuResetNotice(value: unknown, channelId: string): boolean {
+  return isExactObject(value, ['channelId']) && value.channelId === channelId;
+}
+
 /** A frame key relayed by the server (checked further by VoiceFrameKeys). */
 export function parseVoiceKeyMessage(value: unknown): { envelope: SignedVoiceKeyEnvelope; signature: string } | null {
   if (!isExactObject(value, ['envelope', 'signature'])) return null;

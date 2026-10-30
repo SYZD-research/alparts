@@ -27,7 +27,7 @@ import {
 } from '../services/voice-signal-model';
 import { VoiceFrameKeys, type VoiceKeyIdentity } from '../services/voice-frame-keys';
 import { VoiceSfuSession, supportsFrameEncryption } from '../services/voice-sfu';
-import { parseSfuProducerNotice, parseVoiceKeyMessage } from '../services/voice-sfu-model';
+import { isSfuResetNotice, parseSfuProducerNotice, parseVoiceKeyMessage } from '../services/voice-sfu-model';
 import { t } from '../i18n';
 
 export type VoiceCallStatus = 'idle' | 'joining' | 'connected' | 'error';
@@ -84,6 +84,7 @@ interface VoiceSocketListeners {
   joined: (value: unknown) => void;
   updated: (value: unknown) => void;
   left: (value: unknown) => void;
+  reset: (value: unknown) => void;
   disconnected: () => void;
 }
 
@@ -429,6 +430,44 @@ async function requestSfu(event: string, payload: unknown, generation: number): 
   return emitAcknowledged(listeners.socket, event, payload);
 }
 
+/** Waits between attempts to connect again: the server may still be replacing its media worker. */
+const SFU_RESTART_DELAYS_MS = [1_000, 2_000, 4_000, 8_000];
+
+/** Connect the current call to the media server again, with the same frame keys; the call ends if that keeps failing. */
+async function restartSfuCall(generation: number): Promise<void> {
+  const session = sfu;
+  if (!session) return;
+  useVoiceStore.setState({ quality: 'connecting' });
+  for (let attempt = 0; ; attempt++) {
+    const track = localStream?.getAudioTracks()[0];
+    try {
+      if (!track) throw new Error('SFU_NO_TRACK');
+      await session.restart(track);
+      return;
+    } catch (error) {
+      // A newer restart, or the end of the call, took over.
+      if (generation !== callGeneration || sfu !== session) return;
+      if (error instanceof Error && error.message === 'SFU_SESSION_RESTARTED') return;
+      const delay = SFU_RESTART_DELAYS_MS[attempt];
+      if (track && delay !== undefined) {
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        if (generation !== callGeneration || sfu !== session) return;
+        continue;
+      }
+    }
+    const channelId = useVoiceStore.getState().channelId;
+    teardownVoiceRuntime(true);
+    useVoiceStore.setState({
+      ...idleProjection,
+      status: 'error',
+      channelId,
+      participantsByChannel: {},
+      error: t('接続が切れたため、通話を終了しました'),
+    });
+    return;
+  }
+}
+
 /**
  * A call through the media server: our frame key goes to everyone in the
  * call before any audio is sent, then media flows through the SFU, every
@@ -571,6 +610,11 @@ function attachVoiceListeners(socket: Socket, generation: number, channelId: str
     const notice = parseSfuProducerNotice(value, channelId);
     if (notice) void sfu.announce(notice);
   };
+  // The media server lost our part of the call: connect to it again.
+  const reset = (value: unknown) => {
+    if (generation !== callGeneration || !sfu || !isSfuResetNotice(value, channelId)) return;
+    void restartSfuCall(generation);
+  };
   const joined = (value: unknown) => {
     if (generation !== callGeneration) return;
     const participant = parseVoiceParticipant(value);
@@ -634,11 +678,12 @@ function attachVoiceListeners(socket: Socket, generation: number, channelId: str
   socket.on('voice:signal', signal);
   socket.on('voice:key', key);
   socket.on('voice:sfu:producer', producer);
+  socket.on('voice:sfu:reset', reset);
   socket.on('voice:participant-joined', joined);
   socket.on('voice:participant-updated', updated);
   socket.on('voice:participant-left', left);
   socket.on('disconnect', disconnected);
-  listeners = { socket, signal, key, producer, joined, updated, left, disconnected };
+  listeners = { socket, signal, key, producer, joined, updated, left, reset, disconnected };
   navigator.mediaDevices.addEventListener?.('devicechange', refreshMediaDevices);
 }
 
@@ -647,6 +692,7 @@ function detachVoiceListeners(): void {
     listeners.socket.off('voice:signal', listeners.signal);
     listeners.socket.off('voice:key', listeners.key);
     listeners.socket.off('voice:sfu:producer', listeners.producer);
+    listeners.socket.off('voice:sfu:reset', listeners.reset);
     listeners.socket.off('voice:participant-joined', listeners.joined);
     listeners.socket.off('voice:participant-updated', listeners.updated);
     listeners.socket.off('voice:participant-left', listeners.left);
