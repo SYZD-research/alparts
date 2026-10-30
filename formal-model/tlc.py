@@ -17,6 +17,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
@@ -56,7 +57,12 @@ def compile_tla(spec: str, main: str, properties: list[str]) -> str:
     key = (str(path), path.stat().st_mtime_ns, main, tuple(properties))
     if key in _COMPILED:
         return _COMPILED[key]
-    command = [quint_path(), 'compile', '--target', 'tlaplus', '--main', main, str(path)]
+    # A port of its own: quint otherwise shares (and may stop) the Apalache server of a compile running in parallel.
+    with socket.socket() as probe:
+        probe.bind(('localhost', 0))
+        port = probe.getsockname()[1]
+    command = [quint_path(), 'compile', '--target', 'tlaplus', '--main', main, '--server-endpoint', f'localhost:{port}',
+               str(path)]
     if properties:
         command += ['--invariant', ','.join(properties)]
     apalache_jar()
