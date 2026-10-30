@@ -25,6 +25,7 @@ MODELS = {
     'M3rQ': ('m3r_quint', 'M3r in Quint, checked by TLC against the Python explorer'),
     'M4': ('m4_devices', 'devices and sessions'),
     'M4s': ('m4s_sessions', 'credentials, sessions and sockets under concurrent requests'),
+    'M4T': ('m4_tamarin', 'device approval, recovery and passkeys against a malicious server (Tamarin)'),
     'M5': ('m5_audit', 'audit chain'),
     'M5v': ('m5v_audit_view', 'the workspace audit view'),
     'M6': ('m6_profiles', 'profiles, avatars and profile warnings'),

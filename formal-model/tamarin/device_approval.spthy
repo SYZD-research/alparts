@@ -1,0 +1,272 @@
+theory AlpartsDeviceApproval
+begin
+
+/*
+ * M4T: device approval, the recovery code and the passkey-wrapped code
+ * against a malicious server (Dolev-Yao: the adversary is the network and
+ * the server, and knows everything the server stores).
+ *
+ * Written from the implementation; only Alparts' own steps are modelled,
+ * not MLS:
+ *
+ *   identity      client crypto.service: a device is a P-256 identity key;
+ *                 the confirmation code is the first 96 bits of SHA-256 of
+ *                 the identity key (DeviceApprovalPage, AccountSecurityDialog),
+ *                 modelled as the full hash.
+ *   session proof shared serializeDeviceChallengeProof: a device signs
+ *                 [1, 'device-session-proof', userId, challenge] for any
+ *                 challenge the server sends (registration and every login),
+ *                 so the adversary has this signing oracle.
+ *   decision      shared serializeDeviceDecision: ['alparts-device-decision',
+ *                 1, userId, head, kind, deviceId, identityKey, actorDeviceId];
+ *                 client directory.service deviceDecision signs it after the
+ *                 user compared the codes.
+ *   directory     client directory-verifier verifyDirectoryEntries: register
+ *                 (self-signed proof), approve (signed by an approved actor,
+ *                 never the target itself, identity key equal to the
+ *                 registered one), recovery-config (signed by an approved
+ *                 actor), recovery (signed by the configured recovery key).
+ *   recovery      client recovery.service createRecoveryPlan / restoreHistory
+ *                 and recovery-crypto: the 256-bit code is the AES-GCM key of
+ *                 the recovery signing key (associated data: user, generation,
+ *                 signing key); the retrieval token sent to the server is
+ *                 HKDF(code, user/generation, 'retrieval'); history keys are
+ *                 sealed under HKDF(code, user/generation, 'archive').
+ *   passkey       client passkey-vault wrapMasterSeed / unwrapMasterSeed: the
+ *                 code is sealed under HKDF(PRF(credential, salt)); the PRF
+ *                 output never leaves the client.
+ *
+ * Abstractions: the hash chain and heads of the directory are left out (they
+ * order entries and detect rollback, which M10 and the client tests cover).
+ * All honest clients share one view of each account's directory, made of
+ * every entry any of them could accept; a split view is a subset of it, so
+ * a property proved here holds for every view. Every honest device starts
+ * from a pinned anchor of the account (the first device): first contact is
+ * TOFU, modelled separately (-D=TOFU). Revocation and `expire` are not
+ * modelled: they only remove approvals.
+ *
+ * Variants (tamarin-prover -D=FLAG):
+ *   TRICKED                 the user approves without comparing the codes (M4 D4)
+ *   TOFU                    a verifier meets the account for the first time
+ *   CTL_NO_IDENTITY         CONTROL: the decision does not name the identity key
+ *   CTL_UNTAGGED_PROOF      CONTROL: the session proof signs the bare challenge
+ *   CTL_RAW_TOKEN           CONTROL: the retrieval token is the code itself
+ */
+
+builtins: signing, hashing, symmetric-encryption
+functions: hkdf/3, prf/2
+
+restriction Inequality:
+  "All x #i. Neq(x, x) @ #i ==> F"
+
+/* ---------------------------------------------------------------- devices */
+
+// A device of user $U: identity key pair; it shows its confirmation code.
+rule Device_New:
+    [ Fr(~did), Fr(~sk) ]
+  --[ HonestDevice($U, ~did, pk(~sk)) ]->
+    [ !Dev($U, ~did, ~sk), !Shows($U, h(pk(~sk))), Out(<~did, pk(~sk)>) ]
+
+// The device signs a session proof for any challenge the server sends.
+#ifdef CTL_UNTAGGED_PROOF
+rule Device_SessionProof:
+    [ !Dev(U, did, sk), In(chal) ] --> [ Out(sign(chal, sk)) ]
+#else
+rule Device_SessionProof:
+    [ !Dev(U, did, sk), In(chal) ] --> [ Out(sign(<'device-session-proof', U, chal>, sk)) ]
+#endif
+
+// The first device of the account is the anchor every honest verifier pinned.
+rule Account_Anchor:
+    [ !Dev(U, did, sk) ]
+  --[ Anchor(U), Accepted(U, pk(sk)) ]->
+    [ !VAcc(U, pk(sk)), !VReg(U, did, pk(sk)) ]
+
+restriction OneAnchor:
+  "All U #i #j. Anchor(U) @ #i & Anchor(U) @ #j ==> #i = #j"
+
+/* ------------------------------------------------- the directory verifier */
+
+#ifdef CTL_UNTAGGED_PROOF
+rule Verify_Register:
+    [ In(<'register', U, did, pk(k), chal, sign(chal, k)>) ] --> [ !VReg(U, did, pk(k)) ]
+#else
+rule Verify_Register:
+    [ In(<'register', U, did, pk(k), chal, sign(<'device-session-proof', U, chal>, k)>) ] --> [ !VReg(U, did, pk(k)) ]
+#endif
+
+#ifdef CTL_NO_IDENTITY
+rule Verify_Approve:
+    [ In(<'approve', U, did, pkT, pk(ka), sign(<'alparts-device-decision', U, 'approve', did, pk(ka)>, ka)>),
+      !VAcc(U, pk(ka)), !VReg(U, did, pkT) ]
+  --[ Neq(pkT, pk(ka)), Accepted(U, pkT) ]->
+    [ !VAcc(U, pkT) ]
+#else
+rule Verify_Approve:
+    [ In(<'approve', U, did, pkT, pk(ka), sign(<'alparts-device-decision', U, 'approve', did, pkT, pk(ka)>, ka)>),
+      !VAcc(U, pk(ka)), !VReg(U, did, pkT) ]
+  --[ Neq(pkT, pk(ka)), Accepted(U, pkT) ]->
+    [ !VAcc(U, pkT) ]
+#endif
+
+rule Verify_RecoveryConfig:
+    [ In(<'recovery-config', U, gen, pkR, pk(ka),
+          sign(<'alparts-device-decision', U, 'recovery-config', gen, pkR, pk(ka)>, ka)>),
+      !VAcc(U, pk(ka)) ]
+  -->
+    [ !VRec(U, gen, pkR) ]
+
+rule Verify_Recovery:
+    [ In(<'recovery', U, did, pkT, gen, sign(<'alparts-device-decision', U, 'recovery', did, pkT, gen>, kr)>),
+      !VRec(U, gen, pk(kr)), !VReg(U, did, pkT) ]
+  --[ Accepted(U, pkT) ]->
+    [ !VAcc(U, pkT) ]
+
+#ifdef TOFU
+// A verifier that never met the account accepts the first device it is shown.
+rule Verify_FirstContact:
+    [ In(<'bootstrap', U, did, pk(k), chal, sign(<'device-session-proof', U, chal>, k)>) ]
+  --[ Accepted(U, pk(k)) ]->
+    [ !VAcc(U, pk(k)), !VReg(U, did, pk(k)) ]
+#endif
+
+/* ------------------------------------------------------- honest approval */
+
+// An approved device approves the pending device the server names, after the
+// user saw the same confirmation code on one of their own devices.
+#ifdef CTL_NO_IDENTITY
+rule Approve_ComparedCode:
+    [ !Dev(U, didA, ka), !VAcc(U, pk(ka)), In(<did, pkT>), !Shows(U, h(pkT)) ]
+  --[ Neq(pkT, pk(ka)), UserApproved(U, pkT) ]->
+    [ Out(<'approve', U, did, pkT, pk(ka), sign(<'alparts-device-decision', U, 'approve', did, pk(ka)>, ka)>) ]
+#else
+rule Approve_ComparedCode:
+    [ !Dev(U, didA, ka), !VAcc(U, pk(ka)), In(<did, pkT>), !Shows(U, h(pkT)) ]
+  --[ Neq(pkT, pk(ka)), UserApproved(U, pkT) ]->
+    [ Out(<'approve', U, did, pkT, pk(ka), sign(<'alparts-device-decision', U, 'approve', did, pkT, pk(ka)>, ka)>) ]
+#endif
+
+#ifdef TRICKED
+// The user approves without comparing the codes.
+rule Approve_Unchecked:
+    [ !Dev(U, didA, ka), !VAcc(U, pk(ka)), In(<did, pkT>) ]
+  --[ Neq(pkT, pk(ka)), Tricked(U) ]->
+    [ Out(<'approve', U, did, pkT, pk(ka), sign(<'alparts-device-decision', U, 'approve', did, pkT, pk(ka)>, ka)>) ]
+#endif
+
+/* -------------------------------------------------------------- recovery */
+
+// The token a device sends to the server to unlock the encrypted secret.
+#ifdef CTL_RAW_TOKEN
+macros: TOKEN(raw, U, gen) = raw
+#else
+macros: TOKEN(raw, U, gen) = hkdf(raw, <U, gen>, 'retrieval')
+#endif
+
+// An approved device sets up recovery: a fresh code, a recovery signing key
+// sealed under the code, and the signed recovery-config entry.
+rule Recovery_Configure:
+    [ !Dev(U, didA, ka), !VAcc(U, pk(ka)), Fr(~raw), Fr(~kr), Fr(~gen) ]
+  --[ RecoveryConfigured(U, ~gen) ]->
+    [ !Code(U, ~gen, ~raw),
+      Out(<'recovery-config', U, ~gen, pk(~kr), pk(ka),
+           sign(<'alparts-device-decision', U, 'recovery-config', ~gen, pk(~kr), pk(ka)>, ka)>),
+      Out(senc(<'secret', U, ~gen, pk(~kr), ~kr>, ~raw)),
+      Out(h(TOKEN(~raw, U, ~gen))) ]
+
+// The user's passkey; its secret stays in the authenticator.
+rule Passkey_Register:
+    [ Fr(~cred) ]
+  -->
+    [ !Passkey($U, ~cred) ]
+
+// createRecoveryPlan wraps the code with the passkey's PRF output.
+rule Recovery_PasskeyWrap:
+    [ !Code(U, gen, raw), !Passkey(U, cred), Fr(~salt) ]
+  -->
+    [ Out(<'wrap', U, gen, ~salt,
+           senc(<'passkey-master', U, gen, ~salt, raw>, hkdf(prf(cred, ~salt), <U, gen, ~salt>, 'wrap'))>) ]
+
+// Devices that hold the code back up history keys under the archive key.
+rule History_Backup:
+    [ !Code(U, gen, raw), Fr(~hk) ]
+  --[ HistoryKey(U, gen, ~hk) ]->
+    [ Out(senc(<'history', U, gen, ~hk>, hkdf(raw, <U, gen>, 'archive'))) ]
+
+// A new device of the user restores with the code the user types in.
+rule Restore_WithCode:
+    [ !Dev(U, did, sk), !Code(U, gen, raw), !VRec(U, gen, pk(kr)),
+      In(senc(<'secret', U, gen, pk(kr), kr>, raw)) ]
+  --[ RestoredWithCode(U, pk(sk)) ]->
+    [ Out(TOKEN(raw, U, gen)),
+      Out(<'recovery', U, did, pk(sk), gen, sign(<'alparts-device-decision', U, 'recovery', did, pk(sk), gen>, kr)>) ]
+
+// A new device of the user restores with the passkey instead of the code.
+rule Restore_WithPasskey:
+    [ !Dev(U, did, sk), !Passkey(U, cred), !VRec(U, gen, pk(kr)),
+      In(<'wrap', U, gen, salt, senc(<'passkey-master', U, gen, salt, raw>, hkdf(prf(cred, salt), <U, gen, salt>, 'wrap'))>),
+      In(senc(<'secret', U, gen, pk(kr), kr>, raw)) ]
+  --[ RestoredWithPasskey(U, pk(sk)) ]->
+    [ Out(TOKEN(raw, U, gen)),
+      Out(<'recovery', U, did, pk(sk), gen, sign(<'alparts-device-decision', U, 'recovery', did, pk(sk), gen>, kr)>) ]
+
+/* ---------------------------------------------------------- compromise */
+
+rule Reveal_Device:
+    [ !Dev(U, did, sk) ] --[ RevealDevice(U) ]-> [ Out(sk) ]
+
+rule Reveal_Code:
+    [ !Code(U, gen, raw) ] --[ RevealCode(U) ]-> [ Out(raw) ]
+
+// The authenticator (or the account a synced passkey lives in) is in the
+// adversary's hands and passes user verification.
+rule Reveal_Passkey:
+    [ !Passkey(U, cred) ] --[ RevealPasskey(U) ]-> [ Out(cred) ]
+
+/* ------------------------------------------------------------- lemmas */
+
+// DA: a device key the user's devices accept as approved belongs to one of the
+// user's own devices, unless a device key, the code or the passkey leaked.
+lemma DA [use_induction, reuse]:
+  "All U pk #i. Accepted(U, pk) @ #i ==>
+       (Ex did #j. HonestDevice(U, did, pk) @ #j)
+     | (Ex #j. RevealDevice(U) @ #j)
+     | (Ex #j. RevealCode(U) @ #j)
+     | (Ex #j. RevealPasskey(U) @ #j)"
+
+// DA-code: without the user's comparison, the device the user approved is the
+// one whose code they saw.
+lemma DA_compared:
+  "All U pk #i. UserApproved(U, pk) @ #i ==> (Ex did #j. HonestDevice(U, did, pk) @ #j)"
+
+// HS: the server, holding every archive record and every retrieval token it
+// was sent, cannot read history keys without the code or the passkey.
+lemma HS:
+  "All U gen hk #i #k. HistoryKey(U, gen, hk) @ #i & K(hk) @ #k ==>
+       (Ex #j. RevealCode(U) @ #j) | (Ex #j. RevealPasskey(U) @ #j)"
+
+// The passkey alone (the authenticator, or the cloud account that syncs it)
+// approves a new device when the recovery plan is wrapped with it.
+lemma passkey_alone_approves:
+  exists-trace
+  "Ex U pk #i #r. Accepted(U, pk) @ #i & RevealPasskey(U) @ #r
+     & not (Ex did #j. HonestDevice(U, did, pk) @ #j)
+     & not (Ex #j. RevealDevice(U) @ #j) & not (Ex #j. RevealCode(U) @ #j)"
+
+// Non-vacuity: every honest path is reachable without any compromise.
+lemma exec_approval:
+  exists-trace
+  "Ex U pk #i #j. Accepted(U, pk) @ #i & UserApproved(U, pk) @ #j
+     & not (Ex #k. RevealDevice(U) @ #k) & not (Ex #k. RevealCode(U) @ #k) & not (Ex #k. RevealPasskey(U) @ #k)"
+
+lemma exec_restore_code:
+  exists-trace
+  "Ex U pk #i #j. Accepted(U, pk) @ #i & RestoredWithCode(U, pk) @ #j
+     & not (Ex #k. RevealDevice(U) @ #k) & not (Ex #k. RevealCode(U) @ #k) & not (Ex #k. RevealPasskey(U) @ #k)"
+
+lemma exec_restore_passkey:
+  exists-trace
+  "Ex U pk #i #j. Accepted(U, pk) @ #i & RestoredWithPasskey(U, pk) @ #j
+     & not (Ex #k. RevealDevice(U) @ #k) & not (Ex #k. RevealCode(U) @ #k) & not (Ex #k. RevealPasskey(U) @ #k)"
+
+end
