@@ -277,6 +277,7 @@ describe('calls through the media server', () => {
         return producerId;
       },
       async createTransport() { return { id: 'transport', iceParameters: {}, iceCandidates: [], dtlsParameters: {} }; },
+      onSessionLost() { return () => undefined; },
     };
     attachVoiceSfuEvents(io as never, coordinator as never, hub, async () => true);
     connect(a);
@@ -301,5 +302,27 @@ describe('calls through the media server', () => {
     leaveRoom(a, room);
     assert.deepEqual(coordinator.left, ['participant_a']);
     assert.deepEqual(await a.call('voice:sfu:transport', { channelId: channelA, direction: 'send' }), { ok: false });
+  });
+
+  it('tells a participant whose media worker died to join the media server again', async () => {
+    const { a, b, io, connect, hub } = call({ sfu: true });
+    let lost: (channelId: string, participantId: string) => void = () => undefined;
+    const coordinator = {
+      joined: [] as string[],
+      async joinParticipant(_channelId: string, participantId: string) { this.joined.push(participantId); return { codecs: [] }; },
+      leaveParticipant() {},
+      getProducers() { return []; },
+      onSessionLost(listener: typeof lost) { lost = listener; return () => undefined; },
+    };
+    attachVoiceSfuEvents(io as never, coordinator as never, hub, async () => true);
+    connect(a);
+    connect(b);
+    assert.equal((await a.call('voice:sfu:join', { channelId: channelA })).ok, true);
+    assert.equal((await b.call('voice:sfu:join', { channelId: channelA })).ok, true);
+    lost(channelA, 'participant_a');
+    assert.deepEqual(a.sent.filter((entry) => entry.event === 'voice:sfu:reset').map((entry) => entry.payload), [{ channelId: channelA }]);
+    assert.deepEqual(b.sent.filter((entry) => entry.event === 'voice:sfu:reset'), []);
+    assert.equal((await a.call('voice:sfu:join', { channelId: channelA })).ok, true);
+    assert.deepEqual(coordinator.joined, ['participant_a', 'participant_b', 'participant_a']);
   });
 });

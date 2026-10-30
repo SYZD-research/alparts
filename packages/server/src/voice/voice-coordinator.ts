@@ -52,6 +52,8 @@ export class VoiceCoordinator {
 	private readonly sessions = new Map<string, VoiceSession>();
 	private readonly channels = new Map<string, Set<string>>();
 	private readonly pendingJoins = new Set<Promise<types.Router>>();
+	private readonly watchedRouters = new WeakSet<types.Router>();
+	private readonly lostListeners = new Set<(channelId: string, participantId: string) => void>();
 	private readonly workerCount: number | undefined;
 	private startPromise: Promise<void> | null = null;
 	private closePromise: Promise<void> | null = null;
@@ -128,6 +130,7 @@ export class VoiceCoordinator {
 			}
 
 			session.router = router;
+			this.watchRouter(router);
 			return router.rtpCapabilities;
 		} catch (error) {
 			if (this.sessions.get(participantId) === session) {
@@ -288,6 +291,15 @@ export class VoiceCoordinator {
 		this.producers.closeProducer(channelId, participantId);
 	}
 
+	/**
+	 * Called for each participant whose media ended because its worker died.
+	 * The participant has left the media server and may join it again.
+	 */
+	onSessionLost(listener: (channelId: string, participantId: string) => void): () => void {
+		this.lostListeners.add(listener);
+		return () => this.lostListeners.delete(listener);
+	}
+
 	getParticipantCount(channelId: string): number {
 		return this.channels.get(channelId)?.size ?? 0;
 	}
@@ -343,6 +355,34 @@ export class VoiceCoordinator {
 		})();
 
 		return this.closePromise;
+	}
+
+	/** A router closes on its own only when its worker dies; everyone still on it has lost their media. */
+	private watchRouter(router: types.Router): void {
+		if (this.watchedRouters.has(router)) {
+			return;
+		}
+
+		this.watchedRouters.add(router);
+		router.observer.on('close', () => {
+			if (this.closed) {
+				return;
+			}
+
+			const lost = [...this.sessions].filter(([, session]) => session.router === router);
+
+			for (const [participantId, session] of lost) {
+				this.leaveParticipant(participantId);
+
+				for (const listener of this.lostListeners) {
+					try {
+						listener(session.channelId, participantId);
+					} catch (error) {
+						console.error('Voice session lost listener failed', error);
+					}
+				}
+			}
+		});
 	}
 
 	private assertReady(): void {

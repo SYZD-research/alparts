@@ -43,6 +43,8 @@ export class VoiceSfuSession {
   private readonly consuming = new Set<string>();
   private ready = false;
   private closed = false;
+  /** Bumped by each restart: work begun for an earlier connection stops at its next step. */
+  private epoch = 0;
 
   constructor(
     private readonly channelId: string,
@@ -76,20 +78,21 @@ export class VoiceSfuSession {
 
   /** Join the SFU, open both transports, send this track and receive everyone already sending. */
   async start(track: MediaStreamTrack): Promise<void> {
+    const epoch = this.epoch;
     const joined = parseSfuJoin(
       await this.request('voice:sfu:join', { channelId: this.channelId }),
       this.participantId,
       MAX_VOICE_PARTICIPANTS - 1,
     );
     if (!joined) throw new Error('SFU_JOIN_FAILED');
-    this.assertOpen();
+    this.assertOpen(epoch);
     const device = new Device();
     await device.load({ routerRtpCapabilities: joined.rtpCapabilities as unknown as mediasoupTypes.RtpCapabilities });
     if (!device.canProduce('audio')) throw new Error('SFU_AUDIO_UNSUPPORTED');
-    this.assertOpen();
+    this.assertOpen(epoch);
     this.device = device;
-    this.sendTransport = await this.openTransport('send');
-    this.recvTransport = await this.openTransport('recv');
+    this.sendTransport = await this.openTransport('send', epoch);
+    this.recvTransport = await this.openTransport('recv', epoch);
     this.producer = await this.sendTransport.produce({
       track,
       stopTracks: false,
@@ -97,10 +100,24 @@ export class VoiceSfuSession {
       // Set before the sender carries any media: nothing leaves unencrypted.
       onRtpSender: (sender) => this.encrypt(sender),
     });
-    this.assertOpen();
+    this.assertOpen(epoch);
     this.ready = true;
     for (const producer of joined.producers) this.announced.set(producer.participantId, producer.producerId);
     await this.consumeAnnounced();
+  }
+
+  /**
+   * The media server lost this call: connect again from the start, sending
+   * the same track. The frame keys stay, so audio stays encrypted throughout.
+   */
+  async restart(track: MediaStreamTrack): Promise<void> {
+    this.assertOpen();
+    const epoch = ++this.epoch;
+    this.resetMedia();
+    // An earlier attempt may have joined before failing; the server forgets that one first.
+    await this.request('voice:sfu:leave', { channelId: this.channelId }).catch(() => undefined);
+    this.assertOpen(epoch);
+    await this.start(track);
   }
 
   /** Someone in the call started sending. */
@@ -139,6 +156,13 @@ export class VoiceSfuSession {
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    this.resetMedia();
+    this.post({ type: 'clear' });
+    this.worker.terminate();
+  }
+
+  /** Close everything of the current connection to the media server; the frame worker and its keys stay. */
+  private resetMedia(): void {
     this.ready = false;
     for (const [participantId, consumer] of this.consumers) {
       consumer.close();
@@ -146,11 +170,14 @@ export class VoiceSfuSession {
     }
     this.consumers.clear();
     this.announced.clear();
+    this.consuming.clear();
     this.producer?.close();
     this.sendTransport?.close();
     this.recvTransport?.close();
-    this.post({ type: 'clear' });
-    this.worker.terminate();
+    this.producer = null;
+    this.sendTransport = null;
+    this.recvTransport = null;
+    this.device = null;
   }
 
   private post(message: VoiceFrameMessage): void {
@@ -165,14 +192,16 @@ export class VoiceSfuSession {
     (receiver as RTCRtpReceiver & { transform: unknown }).transform = new RTCRtpScriptTransform(this.worker, { direction: 'recv', participantId });
   }
 
-  private assertOpen(): void {
+  /** Throws once the session is closed, or (given the epoch work began in) restarted since. */
+  private assertOpen(epoch = this.epoch): void {
     if (this.closed) throw new Error('SFU_SESSION_CLOSED');
+    if (epoch !== this.epoch) throw new Error('SFU_SESSION_RESTARTED');
   }
 
-  private async openTransport(direction: 'send' | 'recv'): Promise<mediasoupTypes.Transport> {
+  private async openTransport(direction: 'send' | 'recv', epoch: number): Promise<mediasoupTypes.Transport> {
     const parameters = parseSfuTransport(await this.request('voice:sfu:transport', { channelId: this.channelId, direction }));
     if (!parameters) throw new Error('SFU_TRANSPORT_FAILED');
-    this.assertOpen();
+    this.assertOpen(epoch);
     const options = {
       id: parameters.id,
       iceParameters: parameters.iceParameters as unknown as mediasoupTypes.IceParameters,
@@ -200,8 +229,10 @@ export class VoiceSfuSession {
 
   /** Receive each announced stream once, one request at a time per participant. */
   private async consumeAnnounced(): Promise<void> {
+    const epoch = this.epoch;
     // A snapshot: entries change while a stream is being received.
     for (const [participantId, producerId] of Array.from(this.announced)) {
+      if (epoch !== this.epoch) return;
       if (this.consuming.has(participantId)) continue;
       if (this.consumers.get(participantId)?.producerId === producerId) {
         this.announced.delete(participantId);
@@ -209,13 +240,14 @@ export class VoiceSfuSession {
       }
       this.consuming.add(participantId);
       try {
-        await this.consume(participantId, producerId);
+        await this.consume(participantId, producerId, epoch);
       } catch {
         // The participant may have left meanwhile; its next stream is announced again.
-      } finally {
-        this.consuming.delete(participantId);
-        if (this.announced.get(participantId) === producerId) this.announced.delete(participantId);
       }
+      // After a restart these entries belong to the new connection.
+      if (epoch !== this.epoch) return;
+      this.consuming.delete(participantId);
+      if (this.announced.get(participantId) === producerId) this.announced.delete(participantId);
     }
     // A stream announced while another was being received.
     if ([...this.announced.keys()].some((participantId) => !this.consuming.has(participantId)) && this.ready) {
@@ -223,7 +255,7 @@ export class VoiceSfuSession {
     }
   }
 
-  private async consume(participantId: string, producerId: string): Promise<void> {
+  private async consume(participantId: string, producerId: string, epoch: number): Promise<void> {
     if (!this.callbacks.isParticipant(participantId) || !this.device || !this.recvTransport) return;
     const parameters = parseSfuConsumer(await this.request('voice:sfu:consume', {
       channelId: this.channelId,
@@ -231,7 +263,7 @@ export class VoiceSfuSession {
       rtpCapabilities: this.device.rtpCapabilities,
     }), producerId);
     if (!parameters) throw new Error('SFU_CONSUME_FAILED');
-    this.assertOpen();
+    this.assertOpen(epoch);
     const consumer = await this.recvTransport.consume({
       id: parameters.id,
       producerId: parameters.producerId,
@@ -240,7 +272,7 @@ export class VoiceSfuSession {
       // Set before the receiver hands any frame to the decoder.
       onRtpReceiver: (receiver) => this.decrypt(receiver, participantId),
     });
-    if (this.closed || !this.callbacks.isParticipant(participantId)) {
+    if (this.closed || epoch !== this.epoch || !this.callbacks.isParticipant(participantId)) {
       consumer.close();
       return;
     }
