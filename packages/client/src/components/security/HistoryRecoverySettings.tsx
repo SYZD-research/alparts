@@ -49,9 +49,10 @@ export function HistoryRecoverySettings({
   const [code, setCode] = useState('');
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
-  const refreshRestoredHistory = () => {
+  /** accessUpdated: the restore also set up the code's access for new devices (a passkey cannot). */
+  const refreshRestoredHistory = (accessUpdated = true) => {
     setConfigured(true);
-    setNeedsUpdate(false);
+    if (accessUpdated) setNeedsUpdate(false);
     if (onRestored) onRestored();
     else {
       const messages = useMessageStore.getState();
@@ -98,7 +99,7 @@ export function HistoryRecoverySettings({
         <button disabled={busy} className="rounded-lg bg-accent px-3 py-2 text-on-accent"
           onClick={() => { void run(async () => {
             const result = await restoreHistoryWithPasskey();
-            refreshRestoredHistory();
+            refreshRestoredHistory(false);
             return restoreResultMessage(t, result);
           }); }}>
           {t('パスキーで履歴を復元')}

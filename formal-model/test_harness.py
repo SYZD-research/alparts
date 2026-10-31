@@ -319,6 +319,15 @@ class EvidenceTests(unittest.TestCase):
             with self.assertRaises(m4_tamarin.TamarinError):
                 m4_tamarin.prove(['DA'])
 
+    def test_tamarin_wellformedness_warning_is_not_a_proof(self):
+        for warning in ('WARNING: the following wellformedness checks failed!', 'WARNING: 2 wellformedness check failed!'):
+            out = f'{warning}\nsummary of summaries:\n\n  DA (all-traces): verified (9 steps)\n'
+            with patch.object(m4_tamarin.shutil, 'which', return_value='/bin/true'), \
+                    patch.object(m4_tamarin.subprocess, 'run',
+                                 return_value=subprocess.CompletedProcess([], 0, stdout=out, stderr='')):
+                with self.assertRaises(m4_tamarin.TamarinError):
+                    m4_tamarin.prove(['DA'])
+
     def test_tamarin_falsified_holds_lemma_is_a_finding(self):
         out = ('summary of summaries:\n\n  DA (all-traces): falsified - found trace (9 steps)\n'
                '  DA_compared (all-traces): verified (4 steps)\n')

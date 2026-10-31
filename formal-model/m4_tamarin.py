@@ -44,7 +44,8 @@ def prove(lemmas: list[str], flags: tuple[str, ...] = (), timeout: int = 1800) -
     out = result.stdout + result.stderr
     if result.returncode:
         raise TamarinError(f'tamarin-prover {" ".join(flags)} failed: {out.strip()[-800:]}')
-    if re.search(r'wellformedness check failed', out):
+    # The summary says "N wellformedness check failed!", the details "... wellformedness checks failed!".
+    if re.search(r'wellformedness checks? failed', out):
         raise TamarinError(f'tamarin-prover {" ".join(flags)}: the theory is not wellformed: {out.strip()[-800:]}')
     summary = out.rsplit('summary of summaries:', 1)[-1]
     verdicts = {}
