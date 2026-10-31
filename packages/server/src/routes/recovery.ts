@@ -135,7 +135,16 @@ router.post(
     const body = z
       .object({
         generation: canonicalUuid,
-        passkeyWrap: z.record(z.string(), z.unknown()),
+        // Only a wrap of the history key, in the exact form the client writes.
+        passkeyWrap: z
+          .object({
+            version: z.literal(2),
+            credentialId: z.string().regex(/^[A-Za-z0-9_-]{1,2048}$/),
+            rpId: z.string().min(1).max(253),
+            salt: z.string().regex(/^[A-Za-z0-9+/]{43}=$/),
+            ciphertext: z.string().regex(/^[A-Za-z0-9+/]{80}$/),
+          })
+          .strict(),
       })
       .strict()
       .parse(req.body);

@@ -222,6 +222,15 @@ describe('account security end to end', { skip: !enabled }, () => {
   let generation: string;
   let encryptedHistory: string;
   const legacyUser = randomUUID();
+  // Recovery plans stored before migration 0028, one of each shape.
+  const legacyWrap = (version: number) => ({ version, credentialId: 'bGVnYWN5LWNyZWRlbnRpYWw', rpId: 'localhost',
+    salt: 'A'.repeat(43) + '=', ciphertext: 'B'.repeat(80) });
+  const legacyPlans = {
+    codeWrap: { userId: randomUUID(), secret: JSON.stringify({ version: 2, codeSecret: 'c2VjcmV0', passkeyWrap: legacyWrap(1) }) },
+    archiveWrap: { userId: randomUUID(), secret: JSON.stringify({ version: 2, codeSecret: 'c2VjcmV0', passkeyWrap: legacyWrap(2) }) },
+    codeOnly: { userId: randomUUID(), secret: JSON.stringify({ version: 2, codeSecret: 'c2VjcmV0' }) },
+    base64: { userId: randomUUID(), secret: 'bGVnYWN5LXNlY3JldA==' },
+  };
   const legacyDevice = randomUUID();
   const legacyRevokedDevice = randomUUID();
   const legacyWorkspace = randomUUID();
@@ -915,6 +924,13 @@ describe('account security end to end', { skip: !enabled }, () => {
           'INSERT INTO message_bookmarks (user_id,message_id) VALUES ($1,$2), ($1,$3)',
           [legacyUser, deletedLegacyMessage, keptLegacyMessage],
         );
+        for (const [name, plan] of Object.entries(legacyPlans)) {
+          await migrationClient.query('INSERT INTO users (id,email,password_hash,display_name) VALUES ($1,$2,$3,$4)',
+            [plan.userId, `recovery-${name}@example.test`, 'disabled-test-fixture', name]);
+          await migrationClient.query(
+            'INSERT INTO history_recovery (user_id,generation,signing_key,encrypted_secret) VALUES ($1,$2,$3,$4)',
+            [plan.userId, randomUUID(), '{}', plan.secret]);
+        }
       } finally {
         await rm(oldBundle, { recursive: true, force: true });
       }
@@ -1012,6 +1028,17 @@ process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
       db.execute(sql`TRUNCATE device_directory_events CASCADE`),
       (error: any) => /append-only/.test(error.cause?.message),
     );
+  });
+  it('removes on upgrade the passkey wraps of the recovery code and keeps every other recovery secret', async () => {
+    const { db } = await import('../db/index.js');
+    const { sql } = await import('drizzle-orm');
+    const secretOf = async (userId: string) => (await db.execute(
+      sql`SELECT encrypted_secret FROM history_recovery WHERE user_id = ${userId}`)).rows[0]?.encrypted_secret as string;
+    // Migration 0028: the plan keeps its code secret and loses only the wrap of the code.
+    assert.deepEqual(JSON.parse(await secretOf(legacyPlans.codeWrap.userId)), { version: 2, codeSecret: 'c2VjcmV0' });
+    for (const plan of [legacyPlans.archiveWrap, legacyPlans.codeOnly, legacyPlans.base64]) {
+      assert.equal(await secretOf(plan.userId), plan.secret);
+    }
   });
   it('drops what earlier deletes left behind and keeps its stored bytes counted until removed', async () => {
     const { db } = await import('../db/index.js');
