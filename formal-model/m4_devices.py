@@ -51,6 +51,8 @@ from itertools import product
 from common import record
 
 CAPABILITIES = ('password', 'recovery_code', 'stale_cookie', 'fresh_cookie', 'passkey')
+# Capabilities that let the attacker register a device on their own.
+REGISTERING = frozenset({'password', 'fresh_cookie', 'passkey'})
 
 
 @dataclass(frozen=True)
@@ -205,8 +207,12 @@ def compare(rules: Rules):
             if bool(wins) != spec(caps, fresh_account, password_off):
                 witness = trace(parent, wins[0]) if wins else []
                 mismatches.append((sorted(caps), fresh_account, password_off, bool(wins), witness))
-            if wins and fresh_account and 'recovery_code' not in caps:
-                tofu_hits.append((sorted(caps), trace(parent, wins[0])))
+            # D3 is about the stolen fresh cookie: count only attackers whose one way to
+            # register is that cookie, and only a win that went through stealing it.
+            if wins and fresh_account and 'recovery_code' not in caps and caps & REGISTERING == {'fresh_cookie'}:
+                steps = trace(parent, wins[0])
+                if any(step.startswith('Att: steals fresh passkey cookie') for step in steps):
+                    tofu_hits.append((sorted(caps), steps))
             for state in parent:
                 live = {d for d, _, s in state.devices if s != 'revoked'}
                 if any(b is not None and b not in live for _, _, _, b in state.sessions):

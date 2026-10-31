@@ -13,6 +13,7 @@ import conformance
 import harness
 import m1_authorization
 import m3r_quint
+import m4_devices
 import m4_tamarin
 import m5v_audit_view
 import m6_profiles
@@ -304,6 +305,19 @@ class EvidenceTests(unittest.TestCase):
             m3r_quint.run()
         agree = next(r for r in common.RESULTS if r.check_id == 'agree')
         self.assertEqual(agree.verdict, 'MODEL-GAP')
+
+    def test_tofu_limit_needs_the_stolen_cookie_path(self):
+        # Without the cookie theft, a direct passkey or password login must not stand in for D3.
+        real = m4_devices.transitions
+
+        def without_theft(state, caps, rules):
+            return ((label, nxt) for label, nxt in real(state, caps, rules) if 'steals fresh' not in label)
+        with patch.object(m4_devices, 'transitions', side_effect=without_theft):
+            _, tofu_hits, _ = m4_devices.compare(m4_devices.Rules())
+        self.assertEqual(tofu_hits, [])
+        _, tofu_hits, _ = m4_devices.compare(m4_devices.Rules())
+        self.assertTrue(tofu_hits)
+        self.assertIn('Att: steals fresh passkey cookie', tofu_hits[0][1])
 
     def test_missing_tamarin_is_a_model_gap(self):
         with patch.object(m4_tamarin.shutil, 'which', return_value=None), patch.dict(m4_tamarin.os.environ, {}, clear=True):
