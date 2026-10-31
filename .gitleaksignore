@@ -1,3 +1,6 @@
-# Owner-accepted historical findings: throwaway development values only.
-f1a726b0133b8de75bb2326c16e7bf89944d0579:.commandcode/settings.json:jwt:24
-f1a726b0133b8de75bb2326c16e7bf89944d0579:.commandcode/settings.json:jwt:25
+# Findings gitleaks reports in history that are not secrets. Each line names
+# one finding exactly (commit:file:rule:line), so nothing else is waived.
+#
+# A synthetic base64 fixture ("legacy-secret") for the migration 0028 test,
+# under a property named `secret`; the fixture was renamed in the next commit.
+3dd3ed8be8f1ae83d4449003002c9f4285674f7a:packages/server/src/security/account-security.integration.test.ts:generic-api-key:232

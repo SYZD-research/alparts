@@ -226,10 +226,10 @@ describe('account security end to end', { skip: !enabled }, () => {
   const legacyWrap = (version: number) => ({ version, credentialId: 'bGVnYWN5LWNyZWRlbnRpYWw', rpId: 'localhost',
     salt: 'A'.repeat(43) + '=', ciphertext: 'B'.repeat(80) });
   const legacyPlans = {
-    codeWrap: { userId: randomUUID(), secret: JSON.stringify({ version: 2, codeSecret: 'c2VjcmV0', passkeyWrap: legacyWrap(1) }) },
-    archiveWrap: { userId: randomUUID(), secret: JSON.stringify({ version: 2, codeSecret: 'c2VjcmV0', passkeyWrap: legacyWrap(2) }) },
-    codeOnly: { userId: randomUUID(), secret: JSON.stringify({ version: 2, codeSecret: 'c2VjcmV0' }) },
-    base64: { userId: randomUUID(), secret: 'bGVnYWN5LXNlY3JldA==' },
+    codeWrap: { userId: randomUUID(), stored: JSON.stringify({ version: 2, codeSecret: 'c2VjcmV0', passkeyWrap: legacyWrap(1) }) },
+    archiveWrap: { userId: randomUUID(), stored: JSON.stringify({ version: 2, codeSecret: 'c2VjcmV0', passkeyWrap: legacyWrap(2) }) },
+    codeOnly: { userId: randomUUID(), stored: JSON.stringify({ version: 2, codeSecret: 'c2VjcmV0' }) },
+    base64: { userId: randomUUID(), stored: 'b2xkLWZvcm0=' },
   };
   const legacyDevice = randomUUID();
   const legacyRevokedDevice = randomUUID();
@@ -929,7 +929,7 @@ describe('account security end to end', { skip: !enabled }, () => {
             [plan.userId, `recovery-${name}@example.test`, 'disabled-test-fixture', name]);
           await migrationClient.query(
             'INSERT INTO history_recovery (user_id,generation,signing_key,encrypted_secret) VALUES ($1,$2,$3,$4)',
-            [plan.userId, randomUUID(), '{}', plan.secret]);
+            [plan.userId, randomUUID(), '{}', plan.stored]);
         }
       } finally {
         await rm(oldBundle, { recursive: true, force: true });
@@ -1037,7 +1037,7 @@ process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
     // Migration 0028: the plan keeps its code secret and loses only the wrap of the code.
     assert.deepEqual(JSON.parse(await secretOf(legacyPlans.codeWrap.userId)), { version: 2, codeSecret: 'c2VjcmV0' });
     for (const plan of [legacyPlans.archiveWrap, legacyPlans.codeOnly, legacyPlans.base64]) {
-      assert.equal(await secretOf(plan.userId), plan.secret);
+      assert.equal(await secretOf(plan.userId), plan.stored);
     }
   });
   it('drops what earlier deletes left behind and keeps its stored bytes counted until removed', async () => {
