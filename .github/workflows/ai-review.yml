@@ -40,10 +40,11 @@ jobs:
       && contains(github.event.comment.body, vars.AI_REVIEW_MENTION || '@ai-review')
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    # Reacting to a comment on a pull request needs pull-requests: write;
+    # issues: write is not enough.
     permissions:
       contents: read
-      pull-requests: read
-      issues: write
+      pull-requests: write
     outputs:
       work: ${{ steps.collect.outputs.work }}
       number: ${{ steps.collect.outputs.number }}
