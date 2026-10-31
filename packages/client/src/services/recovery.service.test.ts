@@ -415,6 +415,34 @@ describe('restoring history from a plan', () => {
     expect(mocks.restored).toEqual([[channelId, 1, Array.from(key)]]);
   });
 
+  it('replaces an earlier wrap, for example one made with a passkey since deleted', async () => {
+    mocks.server.passkeys = [{ id: credentialId }];
+    const plan = await createRecoveryPlan();
+    await enableHistoryRecovery(plan);
+    const before = JSON.parse(mocks.server.config!.encryptedSecret).passkeyWrap;
+    await protectHistoryWithPasskey();
+    const after = JSON.parse(mocks.server.config!.encryptedSecret).passkeyWrap;
+    expect(after.version).toBe(2);
+    expect(after.salt).not.toBe(before.salt);
+  });
+
+  it('says a passkey must be registered first when the account has none', async () => {
+    const plan = await createRecoveryPlan();
+    await enableHistoryRecovery(plan);
+    await expect(protectHistoryWithPasskey()).rejects.toThrow('PASSKEY_REQUIRED');
+    expect(mocks.credentialGet).not.toHaveBeenCalled();
+  });
+
+  it('does not wrap a plan whose archive is sealed with the code itself', async () => {
+    const plan = await createRecoveryPlan();
+    await enableHistoryRecovery(plan);
+    mocks.server.passkeys = [{ id: credentialId }];
+    // The form before the archive key existed: the secret is the bare sealed code secret.
+    mocks.server.config!.encryptedSecret = JSON.parse(mocks.server.config!.encryptedSecret).codeSecret;
+    await expect(protectHistoryWithPasskey()).rejects.toThrow('RECOVERY_PLAN_OUTDATED');
+    expect(mocks.credentialGet).not.toHaveBeenCalled();
+  });
+
   it('does not wrap a history key this device does not keep', async () => {
     const plan = await createRecoveryPlan();
     await enableHistoryRecovery(plan);

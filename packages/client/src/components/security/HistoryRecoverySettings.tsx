@@ -15,6 +15,13 @@ import { msg, useT, type MessageKey, type MessageParams } from '../../i18n';
 type RecoveryPlan = Awaited<ReturnType<typeof createRecoveryPlan>>;
 const CODE_ONLY_WARNING = msg('保存済みの履歴は、復旧コードでのみ復元できます。コードを失うと、管理者に依頼しても復元できません。');
 const CODE_NEEDED_WARNING = msg('端末をすべて失ったときは、このコードがないと履歴を復元できません。');
+/** What the user is told when an operation cannot go ahead for a reason they can act on. */
+const OPERATION_MESSAGES = new Map<string, MessageKey>([
+  ['PASSKEY_VAULT_UNAVAILABLE', msg('この環境ではパスキーを利用できません。対応するブラウザーとパスキーでWeb版を開くか、保管済みの復旧コードで復元してください。')],
+  ['RECOVERY_CODE_REQUIRED', msg('この端末では、先に復旧コードで履歴を復元してください。')],
+  ['RECOVERY_PLAN_OUTDATED', msg('この復旧コードは、パスキーでの復元に使えません。復旧コードを無効にして作り直すと使えるようになります。')],
+  ['PASSKEY_REQUIRED', msg('パスキーが登録されていません。先にパスキーを登録してください。')],
+]);
 /** What the user is told once a restore has finished. */
 export function restoreResultMessage(
   t: (key: MessageKey, params?: MessageParams) => string,
@@ -68,11 +75,8 @@ export function HistoryRecoverySettings({
     try {
       setMessage(await operation());
     } catch (error) {
-      setMessage(error instanceof Error && error.message === 'PASSKEY_VAULT_UNAVAILABLE'
-        ? t('この環境ではパスキーを利用できません。対応するブラウザーとパスキーでWeb版を開くか、保管済みの復旧コードで復元してください。')
-        : error instanceof Error && error.message === 'RECOVERY_CODE_REQUIRED'
-          ? t('この端末では設定できません。復旧コードで履歴を復元してから、もう一度お試しください。')
-          : t('操作を完了できませんでした。入力内容を確認して、もう一度お試しください。'));
+      const known = error instanceof Error ? OPERATION_MESSAGES.get(error.message) : undefined;
+      setMessage(known ? t(known) : t('操作を完了できませんでした。入力内容を確認して、もう一度お試しください。'));
     } finally {
       setBusy(false);
     }
@@ -142,7 +146,7 @@ export function HistoryRecoverySettings({
               {t('履歴を保存')}
             </button>
           )}
-          {configured && !passkeyAvailable && (
+          {configured && (
             <button
               disabled={busy}
               className="rounded-lg border border-line-strong px-3 py-2 text-ink transition-colors hover:bg-hover"
@@ -154,7 +158,7 @@ export function HistoryRecoverySettings({
                 });
               }}
             >
-              {t('パスキーでも復元できるようにする')}
+              {passkeyAvailable ? t('別のパスキーで復元できるようにする') : t('パスキーでも復元できるようにする')}
             </button>
           )}
           {configured && (

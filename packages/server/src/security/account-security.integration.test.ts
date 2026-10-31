@@ -2305,6 +2305,11 @@ process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
     }
     await json(await sensitive('/api/recovery/passkey', { generation, passkeyWrap: wrap }));
     assert.deepEqual((await recovery.recoveryMetadata(userId, session.id))?.passkeyWrap, wrap);
+    // The wrap goes out through the metadata only: restoring with the code does not need it, and
+    // clients that know only version 1 wraps would refuse the whole secret.
+    const sealed = JSON.parse((await recovery.recoveryConfiguration(userId, session.id))!.encryptedSecret);
+    assert.equal(sealed.passkeyWrap, undefined);
+    assert.equal(typeof sealed.codeSecret, 'string');
     // A wrap of the code stored before 2026-10-30 is removed by migration 0028
     // and, should one remain, is never handed out.
     const legacy = JSON.stringify({ version: 2, codeSecret: randomBytes(256).toString('base64'),

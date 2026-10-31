@@ -44,7 +44,22 @@ export async function recoveryConfiguration(userId: string, sessionId: string) {
 function publicConfiguration(config: Awaited<ReturnType<typeof readRecoveryConfiguration>>) {
   if (!config) return null;
   const { accessTokenHash, ...result } = config;
-  return { ...result, accessConfigured: !!accessTokenHash };
+  return { ...result, encryptedSecret: withoutPasskeyWrap(result.encryptedSecret), accessConfigured: !!accessTokenHash };
+}
+/**
+ * Restoring with the code needs only the sealed code secret. The passkey wrap
+ * goes out through recoveryMetadata alone, so a client that knows only the
+ * version 1 wraps still restores with its code.
+ */
+function withoutPasskeyWrap(encryptedSecret: string) {
+  if (!encryptedSecret.startsWith('{')) return encryptedSecret;
+  try {
+    const envelope = JSON.parse(encryptedSecret);
+    delete envelope.passkeyWrap;
+    return JSON.stringify(envelope);
+  } catch {
+    return encryptedSecret;
+  }
 }
 function passkeyWrap(config: { encryptedSecret: string }) {
   if (!config.encryptedSecret.startsWith('{')) return undefined;

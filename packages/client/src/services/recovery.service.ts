@@ -392,7 +392,6 @@ async function openHistoryRecord(
   plain?.fill(0);
   return null;
 }
-/** How many keys were restored, and how many records could not be. */
 /** Restores every record of the archive with its key, then keeps the key for later backups. */
 async function restoreRecords(
   owner: { userId: string; deviceId: string },
@@ -442,16 +441,8 @@ async function restoreRecords(
 export async function restoreHistoryWithPasskey(): Promise<{ restored: number; failed: number }> {
   const owner = getActiveDevice();
   if (!owner.approved) throw new Error('RECOVERY_CODE_REQUIRED');
-  const metadata = await api.securityRequest<Pick<RecoveryConfig, 'generation' | 'signingKey' | 'passkeyWrap'> | null>(
-    '/recovery/metadata',
-  );
+  const metadata = await getHistoryRecoveryConfiguration();
   if (!metadata) throw new Error('RECOVERY_NOT_CONFIGURED');
-  const directory = await verifiedDirectory(owner.userId);
-  if (
-    directory.recovery?.generation !== metadata.generation ||
-    directory.recovery.signingKey !== metadata.signingKey
-  )
-    throw new Error('DIRECTORY_INVALID');
   const archiveBytes = await unwrapArchiveKey(metadata.passkeyWrap, owner.userId, metadata.generation);
   try {
     return await restoreRecords(owner, metadata.generation, archiveBytes);
@@ -461,25 +452,29 @@ export async function restoreHistoryWithPasskey(): Promise<{ restored: number; f
 }
 /**
  * Wraps the history key this device keeps for the current plan with a
- * passkey, so that approved devices can restore history with it.
+ * passkey, so that approved devices can restore history with it. A wrap made
+ * earlier, possibly with a passkey since deleted, is replaced.
  */
 export async function protectHistoryWithPasskey(onPasskeyPrompt?: () => void) {
   const owner = getActiveDevice();
-  const local = await readSecurityState<LocalRecovery>(owner, 'recovery');
-  const config = await api.securityRequest<RecoveryConfig | null>('/recovery');
-  const directory = await verifiedDirectory(owner.userId);
+  const [local, config, directory, passkeys, options] = await Promise.all([
+    readSecurityState<LocalRecovery>(owner, 'recovery'),
+    api.securityRequest<RecoveryConfig | null>('/recovery'),
+    verifiedDirectory(owner.userId),
+    api.securityRequest<Array<{ id: string }>>('/auth/passkeys'),
+    api.securityRequest<{ rpId: string }>('/auth/passkeys/vault'),
+  ]);
   if (
     !config ||
     directory.recovery?.generation !== config.generation ||
     directory.recovery.signingKey !== config.signingKey
   )
     throw new Error('DIRECTORY_INVALID');
-  // Before the archive key existed, the archive was sealed with the code itself.
-  if (!local || local.generation !== config.generation || !config.encryptedSecret.startsWith('{'))
-    throw new Error('RECOVERY_CODE_REQUIRED');
-  const passkeys = await api.securityRequest<Array<{ id: string }>>('/auth/passkeys');
-  const options = await api.securityRequest<{ rpId: string }>('/auth/passkeys/vault');
-  if (!passkeys.length) throw new Error('PASSKEY_VAULT_UNAVAILABLE');
+  // Before the archive key existed, the archive was sealed with the code itself:
+  // only a new code can be wrapped.
+  if (!config.encryptedSecret.startsWith('{')) throw new Error('RECOVERY_PLAN_OUTDATED');
+  if (!local || local.generation !== config.generation) throw new Error('RECOVERY_CODE_REQUIRED');
+  if (!passkeys.length) throw new Error('PASSKEY_REQUIRED');
   const archive = fromBase64(local.key);
   try {
     const passkeyWrap = await wrapArchiveKey(archive, owner.userId, config.generation, passkeys.map((key) => key.id), options.rpId, onPasskeyPrompt);
@@ -489,7 +484,11 @@ export async function protectHistoryWithPasskey(onPasskeyPrompt?: () => void) {
     archive.fill(0);
   }
 }
-/** Restores history with the recovery code, approving this device first if it is not yet approved. */
+/**
+ * Restores history with the recovery code, approving this device first if it
+ * is not yet approved. Returns how many keys were restored, and how many
+ * records could not be.
+ */
 export async function restoreHistory(code: string): Promise<{ restored: number; failed: number }> {
   const owner = getActiveDevice();
   const metadata = await api.securityRequest<Pick<
