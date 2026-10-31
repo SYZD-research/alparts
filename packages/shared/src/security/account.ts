@@ -133,7 +133,7 @@ export function isSensitiveAction(method: string, path: string): boolean {
     ((path === '/api/auth/password' || path === '/api/auth/password-login') && method === 'PUT') ||
     path === '/api/auth/passkeys/register/options' ||
     (path.startsWith('/api/auth/passkeys/') && method === 'DELETE') ||
-    (path === '/api/recovery/configure' || path === '/api/recovery/access') ||
+    (path === '/api/recovery/configure' || path === '/api/recovery/access' || path === '/api/recovery/passkey') ||
     (path === '/api/recovery' && method === 'DELETE') ||
     path.endsWith('/mls/epochs/fresh-start') ||
     path.endsWith('/mls/group/fresh-start') ||

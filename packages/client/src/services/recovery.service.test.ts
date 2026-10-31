@@ -32,6 +32,7 @@ const mocks = vi.hoisted(() => {
       unanswered: new Set<string>(),
       // Refuses every upload, as a server does for a record it cannot accept.
       refuseUploads: false,
+      restoreRequests: 0,
     },
     restored: [] as Array<[string, number, number[]]>,
     credentialGet: vi.fn(),
@@ -49,6 +50,15 @@ vi.mock('./api', async (importOriginal) => {
         if (path === '/auth/passkeys/vault') return { rpId: 'example.test' };
         if (path === '/recovery/configure') {
           server.config = body as typeof server.config;
+          return { success: true };
+        }
+        if (path === '/recovery/passkey' && server.config) {
+          const { passkeyWrap } = body as { passkeyWrap: unknown };
+          server.config.encryptedSecret = JSON.stringify({ ...JSON.parse(server.config.encryptedSecret), passkeyWrap });
+          return { success: true };
+        }
+        if (path === '/recovery/restore-device') {
+          server.restoreRequests++;
           return { success: true };
         }
         if (path === '/recovery/metadata' && server.config) {
@@ -140,7 +150,16 @@ vi.mock('./security-storage', async (importOriginal) => ({
   },
 }));
 
-import { backupAvailableHistory, backupRawHistoryKey, createRecoveryPlan, enableHistoryRecovery, restoreHistory } from './recovery.service';
+import {
+  backupAvailableHistory,
+  backupRawHistoryKey,
+  createRecoveryPlan,
+  enableHistoryRecovery,
+  protectHistoryWithPasskey,
+  restoreHistory,
+  restoreHistoryWithPasskey,
+} from './recovery.service';
+import { deriveArchiveKey, unwrapArchiveKey } from './passkey-vault';
 import { exportHistoryKey } from './crypto.service';
 import { aad, aes, seal } from './recovery-crypto';
 import { fromBase64 } from './security-storage';
@@ -168,6 +187,8 @@ beforeEach(() => {
   mocks.server.candidates = [];
   mocks.server.unanswered = new Set();
   mocks.server.refuseUploads = false;
+  mocks.server.restoreRequests = 0;
+  mocks.owner.approved = true;
   mocks.restored = [];
   vi.mocked(exportHistoryKey).mockReset();
   vi.stubGlobal('window', { isSecureContext: true, location: { protocol: 'https:', hostname: 'chat.example.test' } });
@@ -341,17 +362,94 @@ describe('restoring history from a plan', () => {
   it('restores a code-only plan with the recovery code, but not with a passkey', async () => {
     const plan = await createRecoveryPlan();
     const key = await turnOnWithOneKey(plan);
-    await expect(restoreHistory()).rejects.toThrow('INVALID_PASSKEY_WRAP');
+    await expect(restoreHistoryWithPasskey()).rejects.toThrow('INVALID_PASSKEY_WRAP');
     expect(await restoreHistory(plan.code)).toEqual({ restored: 1, failed: 0 });
     expect(mocks.restored).toEqual([[channelId, 1, key]]);
   });
 
-  it('restores a plan that includes a passkey with the passkey alone', async () => {
+  it('restores a plan that includes a passkey with the passkey on an approved device', async () => {
     mocks.server.passkeys = [{ id: credentialId }];
     const plan = await createRecoveryPlan();
     const key = await turnOnWithOneKey(plan);
-    expect(await restoreHistory()).toEqual({ restored: 1, failed: 0 });
+    expect(await restoreHistoryWithPasskey()).toEqual({ restored: 1, failed: 0 });
     expect(mocks.restored).toEqual([[channelId, 1, key]]);
+  });
+
+  it('does not let the passkey approve a device: it keeps the history key, not the recovery code', async () => {
+    mocks.server.passkeys = [{ id: credentialId }];
+    const plan = await createRecoveryPlan();
+    await turnOnWithOneKey(plan);
+    const { generation } = plan;
+    const opened = await unwrapArchiveKey(envelope(plan).passkeyWrap, mocks.owner.userId, generation);
+    const code = Uint8Array.from(plan.code.replace(/-/g, '').match(/../g)!, (b) => parseInt(b, 16));
+    expect(opened).toEqual(await deriveArchiveKey(code, mocks.owner.userId, generation));
+    expect(opened).not.toEqual(code);
+    // A device waiting for approval is told to use the code or another device.
+    mocks.owner.approved = false;
+    mocks.signed = [];
+    await expect(restoreHistoryWithPasskey()).rejects.toThrow('RECOVERY_CODE_REQUIRED');
+    expect(mocks.server.restoreRequests).toBe(0);
+    expect(mocks.restored).toEqual([]);
+  });
+
+  it('never opens a wrap of the recovery code made before 2026-10-30', async () => {
+    mocks.server.passkeys = [{ id: credentialId }];
+    const plan = await createRecoveryPlan();
+    await turnOnWithOneKey(plan);
+    const secret = JSON.parse(mocks.server.config!.encryptedSecret);
+    mocks.server.config!.encryptedSecret = JSON.stringify({ ...secret, passkeyWrap: { ...secret.passkeyWrap, version: 1 } });
+    await expect(restoreHistoryWithPasskey()).rejects.toThrow('INVALID_PASSKEY_WRAP');
+    expect(mocks.restored).toEqual([]);
+  });
+
+  it('lets an approved device that keeps the history key wrap it with a passkey later', async () => {
+    const plan = await createRecoveryPlan();
+    await enableHistoryRecovery(plan);
+    const key = crypto.getRandomValues(new Uint8Array(32));
+    await backupRawHistoryKey(channelId, 1, key.slice());
+    mocks.server.passkeys = [{ id: credentialId }];
+    await protectHistoryWithPasskey();
+    expect(JSON.parse(mocks.server.config!.encryptedSecret).passkeyWrap.version).toBe(2);
+    mocks.storage.clear();
+    expect(await restoreHistoryWithPasskey()).toEqual({ restored: 1, failed: 0 });
+    expect(mocks.restored).toEqual([[channelId, 1, Array.from(key)]]);
+  });
+
+  it('replaces an earlier wrap, for example one made with a passkey since deleted', async () => {
+    mocks.server.passkeys = [{ id: credentialId }];
+    const plan = await createRecoveryPlan();
+    await enableHistoryRecovery(plan);
+    const before = JSON.parse(mocks.server.config!.encryptedSecret).passkeyWrap;
+    await protectHistoryWithPasskey();
+    const after = JSON.parse(mocks.server.config!.encryptedSecret).passkeyWrap;
+    expect(after.version).toBe(2);
+    expect(after.salt).not.toBe(before.salt);
+  });
+
+  it('says a passkey must be registered first when the account has none', async () => {
+    const plan = await createRecoveryPlan();
+    await enableHistoryRecovery(plan);
+    await expect(protectHistoryWithPasskey()).rejects.toThrow('PASSKEY_REQUIRED');
+    expect(mocks.credentialGet).not.toHaveBeenCalled();
+  });
+
+  it('does not wrap a plan whose archive is sealed with the code itself', async () => {
+    const plan = await createRecoveryPlan();
+    await enableHistoryRecovery(plan);
+    mocks.server.passkeys = [{ id: credentialId }];
+    // The form before the archive key existed: the secret is the bare sealed code secret.
+    mocks.server.config!.encryptedSecret = JSON.parse(mocks.server.config!.encryptedSecret).codeSecret;
+    await expect(protectHistoryWithPasskey()).rejects.toThrow('RECOVERY_PLAN_OUTDATED');
+    expect(mocks.credentialGet).not.toHaveBeenCalled();
+  });
+
+  it('does not wrap a history key this device does not keep', async () => {
+    const plan = await createRecoveryPlan();
+    await enableHistoryRecovery(plan);
+    mocks.storage.clear();
+    mocks.server.passkeys = [{ id: credentialId }];
+    await expect(protectHistoryWithPasskey()).rejects.toThrow('RECOVERY_CODE_REQUIRED');
+    expect(JSON.parse(mocks.server.config!.encryptedSecret)).not.toHaveProperty('passkeyWrap');
   });
 
   it('skips records that are not genuine backups and restores the ones after them', async () => {

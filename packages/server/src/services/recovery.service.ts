@@ -44,7 +44,22 @@ export async function recoveryConfiguration(userId: string, sessionId: string) {
 function publicConfiguration(config: Awaited<ReturnType<typeof readRecoveryConfiguration>>) {
   if (!config) return null;
   const { accessTokenHash, ...result } = config;
-  return { ...result, accessConfigured: !!accessTokenHash };
+  return { ...result, encryptedSecret: withoutPasskeyWrap(result.encryptedSecret), accessConfigured: !!accessTokenHash };
+}
+/**
+ * Restoring with the code needs only the sealed code secret. The passkey wrap
+ * goes out through recoveryMetadata alone, so a client that knows only the
+ * version 1 wraps still restores with its code.
+ */
+function withoutPasskeyWrap(encryptedSecret: string) {
+  if (!encryptedSecret.startsWith('{')) return encryptedSecret;
+  try {
+    const envelope = JSON.parse(encryptedSecret);
+    delete envelope.passkeyWrap;
+    return JSON.stringify(envelope);
+  } catch {
+    return encryptedSecret;
+  }
 }
 function passkeyWrap(config: { encryptedSecret: string }) {
   if (!config.encryptedSecret.startsWith('{')) return undefined;
@@ -55,12 +70,23 @@ function passkeyWrap(config: { encryptedSecret: string }) {
   if (envelope.version !== 2 || typeof envelope.codeSecret !== 'string' || !/^[A-Za-z0-9+/]+={0,2}$/.test(envelope.codeSecret))
     throw new Error('INVALID_RECOVERY');
   if (wrap === undefined) return undefined;
-  if (!wrap || wrap.version !== 1
+  // Version 1 sealed the recovery code; version 2 seals only the history archive key.
+  if (!wrap || (wrap.version !== 1 && wrap.version !== 2)
     || typeof wrap.credentialId !== 'string' || !/^[A-Za-z0-9_-]{1,2048}$/.test(wrap.credentialId)
     || typeof wrap.rpId !== 'string' || !wrap.rpId || wrap.rpId.length > 253
     || typeof wrap.salt !== 'string' || !/^[A-Za-z0-9+/]{43}=$/.test(wrap.salt)
     || typeof wrap.ciphertext !== 'string' || !/^[A-Za-z0-9+/]{80}$/.test(wrap.ciphertext)) throw new Error('INVALID_RECOVERY');
-  return { version: 1, credentialId: wrap.credentialId, rpId: wrap.rpId, salt: wrap.salt, ciphertext: wrap.ciphertext };
+  return { version: wrap.version as 1 | 2, credentialId: wrap.credentialId, rpId: wrap.rpId, salt: wrap.salt, ciphertext: wrap.ciphertext };
+}
+/** A version 2 wrap for this account's relying party and one of its passkeys, or INVALID_RECOVERY. */
+async function assertArchiveWrap(tx: any, userId: string, wrap: ReturnType<typeof passkeyWrap>) {
+  if (!wrap || wrap.version !== 2 || wrap.rpId !== serverConfig.webauthn.rpId || !await tx.query.passkeys.findFirst({
+    where: and(eq(passkeys.id, wrap.credentialId), eq(passkeys.userId, userId)),
+  })) throw new Error('INVALID_RECOVERY');
+}
+function archiveWrap(config: { encryptedSecret: string }) {
+  const wrap = passkeyWrap(config);
+  return wrap?.version === 2 ? wrap : undefined;
 }
 export async function recoveryMetadata(userId: string, sessionId: string) {
   const live = await db.execute(sql`select d.id from sessions s join devices d on d.id = s.device_id and d.user_id = s.user_id
@@ -72,7 +98,8 @@ export async function recoveryMetadata(userId: string, sessionId: string) {
         generation: config.generation,
         signingKey: config.signingKey,
         accessConfigured: !!config.accessTokenHash,
-        passkeyWrap: passkeyWrap(config),
+        // A version 1 wrap would open the recovery signing key; none is handed out.
+        passkeyWrap: archiveWrap(config),
       }
     : null;
 }
@@ -173,9 +200,7 @@ export async function configureRecovery(
       if (revalidateStepUp) await revalidateStepUp(tx);
       const actor = await requireApprovedDevice(tx, userId, sessionId);
       const wrap = passkeyWrap(input);
-      if (wrap && (wrap.rpId !== serverConfig.webauthn.rpId || !await tx.query.passkeys.findFirst({
-        where: and(eq(passkeys.id, wrap.credentialId), eq(passkeys.userId, userId)),
-      }))) throw new Error('INVALID_RECOVERY');
+      if (wrap) await assertArchiveWrap(tx, userId, wrap);
       const event: DirectoryEvent = {
         kind: 'recovery-config',
         deviceId: input.generation,
@@ -204,6 +229,45 @@ export async function configureRecovery(
     () => ({
       actorId: userId,
       action: 'recovery.configure',
+      targetType: 'user',
+      targetId: userId,
+    }),
+  );
+}
+
+/**
+ * Wraps the history archive key of the current plan with a passkey (an
+ * approved device that holds the key). Plans whose secret predates the
+ * archive key cannot be wrapped: their archive key is the code itself.
+ */
+export async function setRecoveryPasskeyWrap(
+  userId: string,
+  sessionId: string,
+  generation: string,
+  wrap: unknown,
+  revalidateStepUp?: (tx: any) => Promise<void>,
+) {
+  await auditedTransaction(
+    async (tx) => {
+      await lockKeyProtocol(tx);
+      if (revalidateStepUp) await revalidateStepUp(tx);
+      await requireApprovedDevice(tx, userId, sessionId);
+      const config = await tx.query.historyRecovery.findFirst({ where: eq(historyRecovery.userId, userId) });
+      if (!config || config.generation !== generation || !config.encryptedSecret.startsWith('{'))
+        throw new Error('INVALID_RECOVERY');
+      let codeSecret: unknown;
+      try { codeSecret = JSON.parse(config.encryptedSecret).codeSecret; }
+      catch { throw new Error('INVALID_RECOVERY'); }
+      const encryptedSecret = JSON.stringify({ version: 2, codeSecret, passkeyWrap: wrap });
+      await assertArchiveWrap(tx, userId, passkeyWrap({ encryptedSecret }));
+      await tx
+        .update(historyRecovery)
+        .set({ encryptedSecret })
+        .where(and(eq(historyRecovery.userId, userId), eq(historyRecovery.generation, generation)));
+    },
+    () => ({
+      actorId: userId,
+      action: 'recovery.passkey',
       targetType: 'user',
       targetId: userId,
     }),

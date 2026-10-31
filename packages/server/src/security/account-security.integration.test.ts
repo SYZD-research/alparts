@@ -222,6 +222,15 @@ describe('account security end to end', { skip: !enabled }, () => {
   let generation: string;
   let encryptedHistory: string;
   const legacyUser = randomUUID();
+  // Recovery plans stored before migration 0028, one of each shape.
+  const legacyWrap = (version: number) => ({ version, credentialId: 'bGVnYWN5LWNyZWRlbnRpYWw', rpId: 'localhost',
+    salt: 'A'.repeat(43) + '=', ciphertext: 'B'.repeat(80) });
+  const legacyPlans = {
+    codeWrap: { userId: randomUUID(), stored: JSON.stringify({ version: 2, codeSecret: 'c2VjcmV0', passkeyWrap: legacyWrap(1) }) },
+    archiveWrap: { userId: randomUUID(), stored: JSON.stringify({ version: 2, codeSecret: 'c2VjcmV0', passkeyWrap: legacyWrap(2) }) },
+    codeOnly: { userId: randomUUID(), stored: JSON.stringify({ version: 2, codeSecret: 'c2VjcmV0' }) },
+    base64: { userId: randomUUID(), stored: 'b2xkLWZvcm0=' },
+  };
   const legacyDevice = randomUUID();
   const legacyRevokedDevice = randomUUID();
   const legacyWorkspace = randomUUID();
@@ -915,6 +924,13 @@ describe('account security end to end', { skip: !enabled }, () => {
           'INSERT INTO message_bookmarks (user_id,message_id) VALUES ($1,$2), ($1,$3)',
           [legacyUser, deletedLegacyMessage, keptLegacyMessage],
         );
+        for (const [name, plan] of Object.entries(legacyPlans)) {
+          await migrationClient.query('INSERT INTO users (id,email,password_hash,display_name) VALUES ($1,$2,$3,$4)',
+            [plan.userId, `recovery-${name}@example.test`, 'disabled-test-fixture', name]);
+          await migrationClient.query(
+            'INSERT INTO history_recovery (user_id,generation,signing_key,encrypted_secret) VALUES ($1,$2,$3,$4)',
+            [plan.userId, randomUUID(), '{}', plan.stored]);
+        }
       } finally {
         await rm(oldBundle, { recursive: true, force: true });
       }
@@ -934,7 +950,7 @@ process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
     process.env.AUDIT_HEAD_OBJECT_KEY = `test-${randomUUID()}`;
     const database = await import('../db/index.js');
     closeDb = database.closeDb;
-    assert.equal(await database.checkDatabaseSchema(), 28);
+    assert.equal(await database.checkDatabaseSchema(), 29);
     const audit = await import('../middleware/audit.js');
     await audit.provisionAuditCheckpoint();
     const app = await import('../app.js');
@@ -1012,6 +1028,17 @@ process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
       db.execute(sql`TRUNCATE device_directory_events CASCADE`),
       (error: any) => /append-only/.test(error.cause?.message),
     );
+  });
+  it('removes on upgrade the passkey wraps of the recovery code and keeps every other recovery secret', async () => {
+    const { db } = await import('../db/index.js');
+    const { sql } = await import('drizzle-orm');
+    const secretOf = async (userId: string) => (await db.execute(
+      sql`SELECT encrypted_secret FROM history_recovery WHERE user_id = ${userId}`)).rows[0]?.encrypted_secret as string;
+    // Migration 0028: the plan keeps its code secret and loses only the wrap of the code.
+    assert.deepEqual(JSON.parse(await secretOf(legacyPlans.codeWrap.userId)), { version: 2, codeSecret: 'c2VjcmV0' });
+    for (const plan of [legacyPlans.archiveWrap, legacyPlans.codeOnly, legacyPlans.base64]) {
+      assert.equal(await secretOf(plan.userId), plan.stored);
+    }
   });
   it('drops what earlier deletes left behind and keeps its stored bytes counted until removed', async () => {
     const { db } = await import('../db/index.js');
@@ -2182,7 +2209,7 @@ process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
     const generation = randomUUID();
     const signingKey = JSON.stringify(recoveryPair.publicKey.export({ format: 'jwk' }));
     const currentHead = await head();
-    const wrap = { version: 1, credentialId: passkey.id, rpId: 'localhost',
+    const wrap = { version: 2, credentialId: passkey.id, rpId: 'localhost',
       salt: randomBytes(32).toString('base64'), ciphertext: randomBytes(60).toString('base64') };
     // The server stores opaque client ciphertext; PRF encryption/decryption is
     // exercised separately with the browser client and real Web Crypto.
@@ -2204,6 +2231,10 @@ process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
     assert.equal((await sensitive('/api/recovery/configure', {
       ...body, encryptedSecret: '{' + 'invalid'.repeat(20),
     })).status, 403, 'malformed client data must not become an internal server error');
+    // A client from before 2026-10-30 wraps the recovery code itself; it must update.
+    assert.equal((await sensitive('/api/recovery/configure', {
+      ...body, encryptedSecret: JSON.stringify({ ...secret, passkeyWrap: { ...wrap, version: 1 } }),
+    })).status, 410);
     await json(await sensitive('/api/recovery/configure', body));
     const metadata = await json(await request('/api/recovery/metadata'));
     assert.deepEqual(metadata.passkeyWrap, wrap);
@@ -2241,6 +2272,57 @@ process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
         kind: 'recovery-disable', deviceId: generation, identityKey: signingKey, actorDeviceId: first.id,
       })),
     }, 'DELETE'));
+  });
+  it('wraps the history key of a plan with a passkey later, and never hands out a wrap of the code', async () => {
+    // The suite's requests share one per-minute budget, so only the route itself goes over HTTP.
+    const { db } = await import('../db/index.js');
+    const { and, desc, eq, sql } = await import('drizzle-orm');
+    const { sessions } = await import('../db/schema.js');
+    const recovery = await import('../services/recovery.service.js');
+    const { directoryHead } = await import('../services/directory.service.js');
+    const session = await db.query.sessions.findFirst({
+      where: and(eq(sessions.userId, userId), eq(sessions.deviceId, first.id)), orderBy: desc(sessions.createdAt),
+    });
+    assert.ok(session);
+    const generation = randomUUID();
+    const signingKey = JSON.stringify(recoveryPair.publicKey.export({ format: 'jwk' }));
+    const currentHead = await directoryHead(db, userId);
+    await recovery.configureRecovery(userId, session.id, {
+      generation, signingKey,
+      encryptedSecret: JSON.stringify({ version: 2, codeSecret: randomBytes(256).toString('base64') }),
+      accessTokenHash: randomBytes(32).toString('hex'), head: currentHead,
+      signature: signature(firstKeys.privateKey, serializeDeviceDecision(currentHead, {
+        kind: 'recovery-config', deviceId: generation, identityKey: signingKey, actorDeviceId: first.id,
+      })),
+    });
+    const wrap = { version: 2, credentialId: passkey.id, rpId: 'localhost',
+      salt: randomBytes(32).toString('base64'), ciphertext: randomBytes(60).toString('base64') };
+    // A wrap of the code, someone else's passkey, another relying party, another plan.
+    for (const [plan, passkeyWrap] of [[generation, { ...wrap, version: 1 }],
+      [generation, { ...wrap, credentialId: randomBytes(32).toString('base64url') }],
+      [generation, { ...wrap, rpId: 'unrelated.example.test' }], [randomUUID(), wrap]] as const) {
+      await assert.rejects(recovery.setRecoveryPasskeyWrap(userId, session.id, plan, passkeyWrap), /INVALID_RECOVERY/);
+    }
+    await json(await sensitive('/api/recovery/passkey', { generation, passkeyWrap: wrap }));
+    assert.deepEqual((await recovery.recoveryMetadata(userId, session.id))?.passkeyWrap, wrap);
+    // The wrap goes out through the metadata only: restoring with the code does not need it, and
+    // clients that know only version 1 wraps would refuse the whole secret.
+    const sealed = JSON.parse((await recovery.recoveryConfiguration(userId, session.id))!.encryptedSecret);
+    assert.equal(sealed.passkeyWrap, undefined);
+    assert.equal(typeof sealed.codeSecret, 'string');
+    // A wrap of the code stored before 2026-10-30 is removed by migration 0028
+    // and, should one remain, is never handed out.
+    const legacy = JSON.stringify({ version: 2, codeSecret: randomBytes(256).toString('base64'),
+      passkeyWrap: { ...wrap, version: 1 } });
+    await db.execute(sql`UPDATE history_recovery SET encrypted_secret = ${legacy} WHERE generation = ${generation}`);
+    assert.equal((await recovery.recoveryMetadata(userId, session.id))?.passkeyWrap, undefined);
+    const disableHead = await directoryHead(db, userId);
+    await recovery.disableRecovery(userId, session.id, {
+      head: disableHead,
+      signature: signature(firstKeys.privateKey, serializeDeviceDecision(disableHead, {
+        kind: 'recovery-disable', deviceId: generation, identityKey: signingKey, actorDeviceId: first.id,
+      })),
+    });
   });
   it('takes a recovery generation only in lowercase and keeps a directory that recorded another letter case valid', async () => {
     const recoveryService = await import('../services/recovery.service.js');

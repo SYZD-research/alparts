@@ -1,6 +1,6 @@
 # Threat model
 
-Last reviewed: 2026-09-16; the single-host setup boundary added on 2026-10-28
+Last reviewed: 2026-09-16; the single-host setup boundary added on 2026-10-28; the passkey recovery boundary changed on 2026-10-30.
 
 ## Scope
 
@@ -87,6 +87,7 @@ See [account/group security](ACCOUNT_AND_GROUP_SECURITY.md) for the updated devi
 
 ## Abuse cases considered
 
+- Someone who can use the user's passkey (the authenticator with its user verification, or the cloud account that syncs it) tries to add a device of their own. Until 2026-10-30 the passkey wrapped the recovery code, which opens the recovery signing key that approves devices, so a passkey alone approved a new device and read history (formal model M4T DA-passkey-ctl, RISK_REGISTER R-063). The passkey now wraps only the history archive key derived from the code and restores history only on a device that is already approved; a new device needs approval by an approved device or the code itself. The server hands out and accepts only wraps of the archive key, and migration 0028 removed the earlier wraps. M4T proves that a device the user's devices accept as approved belongs to the user unless a device key or the code leaked, against a malicious server and with the passkey revealed. A passkey still opens the archive for whoever also obtains its records (M4T HS-passkey).
 - A member creates unlimited workspaces/roles/invites/bookmarks/DMs to grow shared state or multiply authorization queries. Runtime quotas, common advisory locks, migration preflight, bounded lists and bulk snapshots now contain this; historical over-cap data blocks migration instead of truncating.
 - Many public login/registration requests force password work. A fixed two-Worker pool keeps bcrypt off the event loop, the shared gate sheds work before unbounded queueing, malformed/excess-cost stored hashes fail before bcrypt, a 30-second watchdog terminates stuck work, public invite rejection happens before hashing, and current-password KDF is completed before transactional locks.
 - A workspace manager creates 65 or more legitimate pending public-channel epochs containing an ordinary member, then that member needs a replacement device. Cleanup is partitioned by the member's bounded workspace set and each workspace's durable channel ceiling, so no account-global 64-row cap can permanently deny enrollment. Since group protocol 4 no pending epochs are created at all (migration 0023 aborted the remaining ones); the bounded cleanup remains.
@@ -119,7 +120,7 @@ Important account/session/device, workspace/member/role/invite, channel/key, mes
 ## Residual risks / release blockers
 
 - Channel keys come from one continuing MLS group per channel (group protocol 4). Retained archive keys rule out per-message forward secrecy. Post-compromise security reaches only devices that commit with an UpdatePath (writers at least weekly) or are removed; a member that never makes such a commit is healed only by removal. An eligible malicious member can deny service inside a group. The device directory has no independent witness.
-- Losing every member device that held a version and the user recovery code permanently loses that history. Only keys already uploaded to the encrypted archive can be recovered. No organization escrow or threshold recovery exists.
+- Losing every member device that held a version and the user recovery code permanently loses that history; a passkey restores history only on a device that is already approved. Only keys already uploaded to the encrypted archive can be recovered. No organization escrow or threshold recovery exists.
 - Web passkeys and exact-action step-up are implemented. Native WebAuthn, OIDC, organization authenticator policies and threshold recovery remain open.
 - Same-origin Web, extension, modified desktop package, OS-account, or endpoint compromise defeats confidentiality for data available to that endpoint. OS-wrapped desktop keys primarily protect at-rest material.
 - One process/region remains an availability and coordination boundary; process-local gates/rooms/locks/audit admission prevent safe replicas.

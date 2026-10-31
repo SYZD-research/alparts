@@ -2,6 +2,7 @@
 import contextlib
 import copy
 import io
+import subprocess
 import unittest
 from unittest.mock import patch
 
@@ -11,11 +12,15 @@ import common
 import conformance
 import harness
 import m1_authorization
+import m3r_quint
+import m4_devices
+import m4_tamarin
 import m5v_audit_view
 import m6_profiles
 import m8_voice
 import m9_messages
 import run
+import tlc
 from authz import Channel, Role, Workspace
 
 
@@ -269,6 +274,82 @@ class EvidenceTests(unittest.TestCase):
                 labels = [m3s_stall.s_label(s, v, action) for action, _ in m3s_stall.s_transitions(s, rules, v)]
                 self.assertEqual(fresh_start in labels, permitted)
                 self.assertFalse(m3s_stall.truly_stalled(s, v))
+
+    def test_missing_quint_is_a_model_gap(self):
+        with patch.object(tlc, 'quint_path', side_effect=harness.HarnessError('quint is not installed')):
+            m3r_quint.run()
+        self.assertEqual([r.verdict for r in common.RESULTS], ['MODEL-GAP'])
+
+    def test_tlc_output_without_a_verdict_is_an_error(self):
+        finished = subprocess.CompletedProcess([], 0, stdout='311 distinct states found, 0 states left on queue.\n',
+                                               stderr='')
+        with patch.object(tlc, 'compile_tla', return_value='VARIABLE s\n'), \
+                patch.object(tlc, 'apalache_jar', return_value='apalache.jar'), \
+                patch.object(tlc.subprocess, 'run', return_value=finished):
+            with self.assertRaises(harness.HarnessError):
+                tlc.check('m3r_own_commit.qnt', 'implementation')
+
+    def test_tlc_violation_of_an_unrequested_property_is_an_error(self):
+        out = 'Error: Invariant implementation_m3r_K2 is violated.\n9 distinct states found\n'
+        violated = subprocess.CompletedProcess([], 12, stdout=out, stderr='')
+        with patch.object(tlc, 'compile_tla', return_value='implementation_m3r_K1 == TRUE\n'), \
+                patch.object(tlc, 'apalache_jar', return_value='apalache.jar'), \
+                patch.object(tlc.subprocess, 'run', return_value=violated):
+            with self.assertRaises(harness.HarnessError):
+                tlc.check('m3r_own_commit.qnt', 'implementation', ['K1'])
+
+    def test_quint_and_python_disagreeing_is_a_model_gap(self):
+        def fake(spec, main, invariants=(), **_):
+            return tlc.Run(states=1, complete=True)
+        with patch.object(tlc, 'check', side_effect=fake):
+            m3r_quint.run()
+        agree = next(r for r in common.RESULTS if r.check_id == 'agree')
+        self.assertEqual(agree.verdict, 'MODEL-GAP')
+
+    def test_tofu_limit_needs_the_stolen_cookie_path(self):
+        # Without the cookie theft, a direct passkey or password login must not stand in for D3.
+        real = m4_devices.transitions
+
+        def without_theft(state, caps, rules):
+            return ((label, nxt) for label, nxt in real(state, caps, rules) if 'steals fresh' not in label)
+        with patch.object(m4_devices, 'transitions', side_effect=without_theft):
+            _, tofu_hits, _ = m4_devices.compare(m4_devices.Rules())
+        self.assertEqual(tofu_hits, [])
+        _, tofu_hits, _ = m4_devices.compare(m4_devices.Rules())
+        self.assertTrue(tofu_hits)
+        self.assertIn('Att: steals fresh passkey cookie', tofu_hits[0][1])
+
+    def test_missing_tamarin_is_a_model_gap(self):
+        with patch.object(m4_tamarin.shutil, 'which', return_value=None), patch.dict(m4_tamarin.os.environ, {}, clear=True):
+            m4_tamarin.run()
+        self.assertTrue(common.RESULTS)
+        self.assertTrue(all(r.verdict == 'MODEL-GAP' for r in common.RESULTS))
+
+    def test_incomplete_tamarin_analysis_is_a_model_gap(self):
+        out = 'summary of summaries:\n\n  DA (all-traces): analysis incomplete (3 steps)\n'
+        with patch.object(m4_tamarin.shutil, 'which', return_value='/bin/true'), \
+                patch.object(m4_tamarin.subprocess, 'run',
+                             return_value=subprocess.CompletedProcess([], 0, stdout=out, stderr='')):
+            with self.assertRaises(m4_tamarin.TamarinError):
+                m4_tamarin.prove(['DA'])
+
+    def test_tamarin_wellformedness_warning_is_not_a_proof(self):
+        for warning in ('WARNING: the following wellformedness checks failed!', 'WARNING: 2 wellformedness check failed!'):
+            out = f'{warning}\nsummary of summaries:\n\n  DA (all-traces): verified (9 steps)\n'
+            with patch.object(m4_tamarin.shutil, 'which', return_value='/bin/true'), \
+                    patch.object(m4_tamarin.subprocess, 'run',
+                                 return_value=subprocess.CompletedProcess([], 0, stdout=out, stderr='')):
+                with self.assertRaises(m4_tamarin.TamarinError):
+                    m4_tamarin.prove(['DA'])
+
+    def test_tamarin_falsified_holds_lemma_is_a_finding(self):
+        out = ('summary of summaries:\n\n  DA (all-traces): falsified - found trace (9 steps)\n'
+               '  DA_compared (all-traces): verified (4 steps)\n')
+        with patch.object(m4_tamarin.shutil, 'which', return_value='/bin/true'), \
+                patch.object(m4_tamarin.subprocess, 'run',
+                             return_value=subprocess.CompletedProcess([], 0, stdout=out, stderr='')):
+            verdicts = m4_tamarin.prove(['DA', 'DA_compared'])
+        self.assertEqual({k: v[0] for k, v in verdicts.items()}, {'DA': 'falsified', 'DA_compared': 'verified'})
 
     def test_incomplete_result_sets_runner_exit_failure(self):
         with patch.object(conformance, 'run_harness', side_effect=harness.HarnessError('missing')):
