@@ -2247,41 +2247,50 @@ process.env.PASSWORD_PEPPER ||= 'test-only-password-pepper-at-least-32-bytes';
     }, 'DELETE'));
   });
   it('wraps the history key of a plan with a passkey later, and never hands out a wrap of the code', async () => {
+    // The suite's requests share one per-minute budget, so only the route itself goes over HTTP.
+    const { db } = await import('../db/index.js');
+    const { and, desc, eq, sql } = await import('drizzle-orm');
+    const { sessions } = await import('../db/schema.js');
+    const recovery = await import('../services/recovery.service.js');
+    const { directoryHead } = await import('../services/directory.service.js');
+    const session = await db.query.sessions.findFirst({
+      where: and(eq(sessions.userId, userId), eq(sessions.deviceId, first.id)), orderBy: desc(sessions.createdAt),
+    });
+    assert.ok(session);
     const generation = randomUUID();
     const signingKey = JSON.stringify(recoveryPair.publicKey.export({ format: 'jwk' }));
-    const currentHead = await head();
-    await json(await sensitive('/api/recovery/configure', {
+    const currentHead = await directoryHead(db, userId);
+    await recovery.configureRecovery(userId, session.id, {
       generation, signingKey,
       encryptedSecret: JSON.stringify({ version: 2, codeSecret: randomBytes(256).toString('base64') }),
       accessTokenHash: randomBytes(32).toString('hex'), head: currentHead,
       signature: signature(firstKeys.privateKey, serializeDeviceDecision(currentHead, {
         kind: 'recovery-config', deviceId: generation, identityKey: signingKey, actorDeviceId: first.id,
       })),
-    }));
+    });
     const wrap = { version: 2, credentialId: passkey.id, rpId: 'localhost',
       salt: randomBytes(32).toString('base64'), ciphertext: randomBytes(60).toString('base64') };
-    for (const passkeyWrap of [{ ...wrap, version: 1 }, { ...wrap, credentialId: randomBytes(32).toString('base64url') },
-      { ...wrap, rpId: 'unrelated.example.test' }]) {
-      assert.equal((await sensitive('/api/recovery/passkey', { generation, passkeyWrap })).status, 403);
+    // A wrap of the code, someone else's passkey, another relying party, another plan.
+    for (const [plan, passkeyWrap] of [[generation, { ...wrap, version: 1 }],
+      [generation, { ...wrap, credentialId: randomBytes(32).toString('base64url') }],
+      [generation, { ...wrap, rpId: 'unrelated.example.test' }], [randomUUID(), wrap]] as const) {
+      await assert.rejects(recovery.setRecoveryPasskeyWrap(userId, session.id, plan, passkeyWrap), /INVALID_RECOVERY/);
     }
-    assert.equal((await sensitive('/api/recovery/passkey', { generation: randomUUID(), passkeyWrap: wrap })).status, 403);
     await json(await sensitive('/api/recovery/passkey', { generation, passkeyWrap: wrap }));
-    assert.deepEqual((await json(await request('/api/recovery/metadata'))).passkeyWrap, wrap);
+    assert.deepEqual((await recovery.recoveryMetadata(userId, session.id))?.passkeyWrap, wrap);
     // A wrap of the code stored before 2026-10-30 is removed by migration 0028
     // and, should one remain, is never handed out.
-    const { db } = await import('../db/index.js');
-    const { sql } = await import('drizzle-orm');
     const legacy = JSON.stringify({ version: 2, codeSecret: randomBytes(256).toString('base64'),
       passkeyWrap: { ...wrap, version: 1 } });
     await db.execute(sql`UPDATE history_recovery SET encrypted_secret = ${legacy} WHERE generation = ${generation}`);
-    assert.equal((await json(await request('/api/recovery/metadata'))).passkeyWrap, undefined);
-    const disableHead = await head();
-    await json(await sensitive('/api/recovery', {
+    assert.equal((await recovery.recoveryMetadata(userId, session.id))?.passkeyWrap, undefined);
+    const disableHead = await directoryHead(db, userId);
+    await recovery.disableRecovery(userId, session.id, {
       head: disableHead,
       signature: signature(firstKeys.privateKey, serializeDeviceDecision(disableHead, {
         kind: 'recovery-disable', deviceId: generation, identityKey: signingKey, actorDeviceId: first.id,
       })),
-    }, 'DELETE'));
+    });
   });
   it('takes a recovery generation only in lowercase and keeps a directory that recorded another letter case valid', async () => {
     const recoveryService = await import('../services/recovery.service.js');
