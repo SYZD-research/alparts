@@ -45,7 +45,7 @@
 | F-COORD-003 | readiness の同時検査を共有し、成功・失敗とも 2 秒キャッシュ。draining はキャッシュを使用せず拒否。 |
 | F-COORD-004 | PostgreSQL のランタイム占有・処理完了待ちのロックが実装済み。複数プロセスを許す変更はしていない。CLI の監査書き込みも処理完了待ちのロックで保護。 |
 | F-INPUT-001 | 各名称の入力で制御文字・双方向表示制御・不可視文字を拒否し、NFC に正規化。日本語等の通常の名称は許可。 |
-| F-SUPPLY-001 | CI は moderate 以上の脆弱性も失敗条件にする。依存更新に設けていた 7 日の minimumReleaseAge は、2026-10-11 に所有者の判断で外した（公開直後に差し替えられた版を取り込む危険が残る）。 |
+| F-SUPPLY-001 | CI は moderate 以上の脆弱性も失敗条件にする。依存更新に設けていた 7 日の minimumReleaseAge は、2026-10-11 に所有者の判断で外した（公開直後に差し替えられた版を取り込む危険が残る）。`pnpm audit` は npm registry の勧告だけを引き、mediasoup の worker に対する 3 件（GHSA-6p5q-wg3x-j8x5、GHSA-j93j-ccgc-x8q5、GHSA-prx9-f2m2-6236）は GitHub のリポジトリ勧告にしかなく、OSV にも登録されていないため、この検査では見つからない。2026-11-01 に mediasoup を 3.32.1 へ上げて対処した（R-063）。 |
 | F-MOBILE-001 | Android の被覆タッチ拒否、対応 OS の他アプリ重ね合わせ防止を追加。警告ダイアログにも適用。 |
 | resolved Promise の保持 | coalesced-value-loader は完了した要求を Map から削除。 |
 
