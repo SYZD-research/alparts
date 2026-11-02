@@ -20,10 +20,12 @@ describe('new recovery code', () => {
     expect(html).toContain('保存済みの履歴は、復旧コードでのみ復元できます。コードを失うと、管理者に依頼しても復元できません。');
   });
 
-  it('shows no such warning when a passkey can restore history too', () => {
+  it('warns that the code is still needed when a passkey can restore history too', () => {
     const html = render(true);
     expect(html).toContain(code);
     expect(html).not.toContain('復旧コードでのみ復元できます');
+    // The passkey restores history on an approved device only, never a new one.
+    expect(html).toContain('端末をすべて失ったときは、このコードがないと履歴を復元できません。');
   });
 });
 

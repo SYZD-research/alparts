@@ -40,8 +40,13 @@
 // device A signed a second event A2x under number 2. Each member is served
 // one of the two (a split view); a member served both must notice.
 //
-// Input (stdin): { mutation?: 'no-sequence' | 'split' | 'single-head' | 'memory' }
-// Output: { histories, results: { [property]: { violations, example } } }
+// Input (stdin): { mutation?: 'no-sequence' | 'split' | 'single-head' | 'memory', verdicts?: true }
+// Output: { histories, results: { [property]: { violations, example } }, verdicts? }
+// With `verdicts`, also what the client showed of each served history (for
+// the Quint model M10Q to be compared with, history by history): per window
+// (suffixed '+remembered' when the member received events before), whether
+// anything was noticed and which version of A1 showed; and for the unsigned
+// claims of MO-forged-number, how many were tried and which went unnoticed.
 import { readFileSync } from 'node:fs';
 
 const projector = await import('../../packages/client/src/stores/message-projector.ts');
@@ -63,7 +68,7 @@ interface Genuine {
   content: string;
 }
 
-const input = JSON.parse(readFileSync(0, 'utf8')) as { mutation?: 'no-sequence' | 'split' | 'single-head' | 'memory' };
+const input = JSON.parse(readFileSync(0, 'utf8')) as { mutation?: 'no-sequence' | 'split' | 'single-head' | 'memory'; verdicts?: boolean };
 if (input.mutation !== undefined && !['no-sequence', 'split', 'single-head', 'memory'].includes(input.mutation)) {
   throw new Error(`unknown mutation ${input.mutation}`);
 }
@@ -227,6 +232,20 @@ function forgedClaim(device: 'A' | 'B' | 'C', deviceSeq: number, time: number): 
   } as unknown as Message, false);
 }
 
+interface Verdict {
+  order: string[];
+  views: Record<string, { noticed: boolean; a1: string }>;
+  forgedTrials: number;
+  forgedMissed: Array<{ device: string; claimed: number; slot: number }>;
+}
+const verdicts = new Map<string, Verdict>();
+const verdictOf = (order: Genuine[]) => {
+  const key = order.map((g) => g.name).join();
+  if (!verdicts.has(key)) verdicts.set(key, { order: order.map((g) => g.name), views: {}, forgedTrials: 0, forgedMissed: [] });
+  return verdicts.get(key)!;
+};
+const versionOf = new Map(all.map((g) => [g.content, g.name]));
+
 /** What the client shows of a served history in a window. */
 function show(order: Genuine[], window: Window, extra: Message[] = [], remembered?: ReadonlyMap<string, { deviceSeq: number; keyPrefix: string }>) {
   const events = [...order.map((g, i) => served(g, i + 1)), ...extra];
@@ -235,6 +254,12 @@ function show(order: Genuine[], window: Window, extra: Message[] = [], remembere
   // channel's notice that no shown message carries.
   const { messages: shown, channelNotice } = projector.projectMessageWindow(merged, WINDOWS[window], remembered);
   const noticed = channelNotice !== null || shown.some((m) => m.sequenceNotice || m.editUncertain);
+  if (input.verdicts && extra.length === 0) {
+    const a1 = shown.find((m) => m.id === honestId.get('A1'));
+    verdictOf(order).views[window + (remembered ? '+remembered' : '')] = {
+      noticed, a1: a1 ? (a1.content === '' ? '' : versionOf.get(a1.content) ?? a1.content) : 'none',
+    };
+  }
   return { shown, noticed, channelNotice };
 }
 const describe = (order: Genuine[], window: Window, view: { shown: ReturnType<typeof show>['shown']; channelNotice: string | null }) => [
@@ -350,6 +375,11 @@ if (input.mutation === 'split') {
                   histories++;
                   // Placed between the served events by time.
                   const forged = show(order, window, [forgedClaim(x.device, claimed, slot + 0.5)]);
+                  if (input.verdicts) {
+                    const verdict = verdictOf(order);
+                    verdict.forgedTrials++;
+                    if (!forged.noticed) verdict.forgedMissed.push({ device: x.device, claimed, slot });
+                  }
                   if (!forged.noticed) {
                     note('MO-forged-number', [...describe(order, window, forged),
                       `=> an unsigned event claiming ${x.device} #${claimed} at slot ${slot} hides that ${x.name} was withheld`]);
@@ -400,4 +430,4 @@ if (input.mutation === 'split') {
   }
 }
 
-process.stdout.write(JSON.stringify({ histories, results }));
+process.stdout.write(JSON.stringify({ histories, results, ...(input.verdicts ? { verdicts: [...verdicts.values()] } : {}) }));

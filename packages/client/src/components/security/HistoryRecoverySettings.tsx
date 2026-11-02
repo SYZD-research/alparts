@@ -5,6 +5,8 @@ import {
   createRecoveryPlan,
   enableHistoryRecovery,
   restoreHistory,
+  restoreHistoryWithPasskey,
+  protectHistoryWithPasskey,
   backupAvailableHistory,
   getHistoryRecoveryConfiguration,
   disableHistoryRecovery,
@@ -12,6 +14,14 @@ import {
 import { msg, useT, type MessageKey, type MessageParams } from '../../i18n';
 type RecoveryPlan = Awaited<ReturnType<typeof createRecoveryPlan>>;
 const CODE_ONLY_WARNING = msg('保存済みの履歴は、復旧コードでのみ復元できます。コードを失うと、管理者に依頼しても復元できません。');
+const CODE_NEEDED_WARNING = msg('端末をすべて失ったときは、このコードがないと履歴を復元できません。');
+/** What the user is told when an operation cannot go ahead for a reason they can act on. */
+const OPERATION_MESSAGES = new Map<string, MessageKey>([
+  ['PASSKEY_VAULT_UNAVAILABLE', msg('この環境ではパスキーを利用できません。対応するブラウザーとパスキーでWeb版を開くか、保管済みの復旧コードで復元してください。')],
+  ['RECOVERY_CODE_REQUIRED', msg('この端末では、先に復旧コードで履歴を復元してください。')],
+  ['RECOVERY_PLAN_OUTDATED', msg('この復旧コードは、パスキーでの復元に使えません。復旧コードを無効にして作り直すと使えるようになります。')],
+  ['PASSKEY_REQUIRED', msg('パスキーが登録されていません。先にパスキーを登録してください。')],
+]);
 /** What the user is told once a restore has finished. */
 export function restoreResultMessage(
   t: (key: MessageKey, params?: MessageParams) => string,
@@ -46,9 +56,10 @@ export function HistoryRecoverySettings({
   const [code, setCode] = useState('');
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
-  const refreshRestoredHistory = () => {
+  /** accessUpdated: the restore also set up the code's access for new devices (a passkey cannot). */
+  const refreshRestoredHistory = (accessUpdated = true) => {
     setConfigured(true);
-    setNeedsUpdate(false);
+    if (accessUpdated) setNeedsUpdate(false);
     if (onRestored) onRestored();
     else {
       const messages = useMessageStore.getState();
@@ -64,9 +75,8 @@ export function HistoryRecoverySettings({
     try {
       setMessage(await operation());
     } catch (error) {
-      setMessage(error instanceof Error && error.message === 'PASSKEY_VAULT_UNAVAILABLE'
-        ? t('この環境ではパスキーを利用できません。対応するブラウザーとパスキーでWeb版を開くか、保管済みの復旧コードで復元してください。')
-        : t('操作を完了できませんでした。入力内容を確認して、もう一度お試しください。'));
+      const known = error instanceof Error ? OPERATION_MESSAGES.get(error.message) : undefined;
+      setMessage(known ? t(known) : t('操作を完了できませんでした。入力内容を確認して、もう一度お試しください。'));
     } finally {
       setBusy(false);
     }
@@ -75,7 +85,7 @@ export function HistoryRecoverySettings({
     <section className="space-y-3" aria-label={t('履歴の復元')}>
       <h3 className="font-semibold text-ink-strong">{t('履歴の復元')}</h3>
       <p className="text-sm text-muted">
-        {t('対応するパスキーで設定すると、パスキーまたは復旧コードで保存済みの履歴を復元できます。両方を失うと、管理者に依頼しても復元できません。')}
+        {t('対応するパスキーで設定すると、承認済みの端末ではパスキーでも保存済みの履歴を復元できます。新しい端末を使えるようにするには、承認済みの端末での承認か復旧コードが必要です。')}
       </p>
       {needsUpdate && (
         <p role="alert" className="text-sm text-ink">
@@ -89,15 +99,20 @@ export function HistoryRecoverySettings({
           {message}
         </p>
       )}
-      {passkeyAvailable && (
+      {passkeyAvailable && !pending && (
         <button disabled={busy} className="rounded-lg bg-accent px-3 py-2 text-on-accent"
           onClick={() => { void run(async () => {
-            const result = await restoreHistory();
-            refreshRestoredHistory();
+            const result = await restoreHistoryWithPasskey();
+            refreshRestoredHistory(false);
             return restoreResultMessage(t, result);
           }); }}>
           {t('パスキーで履歴を復元')}
         </button>
+      )}
+      {passkeyAvailable && pending && (
+        <p className="text-sm text-ink">
+          {t('パスキーでの復元は、この端末が承認された後に使えます。以前から使っている端末で承認するか、復旧コードを入力してください。')}
+        </p>
       )}
       {configured && !passkeyAvailable && (
         <p className="text-sm text-ink">{t(CODE_ONLY_WARNING)}</p>
@@ -129,6 +144,21 @@ export function HistoryRecoverySettings({
               }}
             >
               {t('履歴を保存')}
+            </button>
+          )}
+          {configured && (
+            <button
+              disabled={busy}
+              className="rounded-lg border border-line-strong px-3 py-2 text-ink transition-colors hover:bg-hover"
+              onClick={() => {
+                void run(async () => {
+                  await protectHistoryWithPasskey(() => setMessage(t('パスキーで本人確認してください。')));
+                  setPasskeyAvailable(true);
+                  return t('承認済みの端末で、パスキーでも履歴を復元できるようにしました。');
+                });
+              }}
+            >
+              {passkeyAvailable ? t('別のパスキーで復元できるようにする') : t('パスキーでも復元できるようにする')}
             </button>
           )}
           {configured && (
@@ -232,9 +262,7 @@ export function NewRecoveryCode({ plan, busy, onEnable, onCancel }: {
       <p className="text-sm text-ink">
         {t('このコードを知っている人は履歴を復元できます。他の人に渡さず、この端末とは別の安全な場所に保管してください。')}
       </p>
-      {!plan.passkeyProtected && (
-        <p className="text-sm text-ink">{t(CODE_ONLY_WARNING)}</p>
-      )}
+      <p className="text-sm text-ink">{t(plan.passkeyProtected ? CODE_NEEDED_WARNING : CODE_ONLY_WARNING)}</p>
       <code className="block break-all select-all rounded-lg bg-canvas p-3 text-ink-strong">
         {plan.code}
       </code>

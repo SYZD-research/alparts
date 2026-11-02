@@ -29,6 +29,10 @@ password login on and off, the model computes whether the attacker can end up
 controlling an approved device, and compares that with the specification:
     reachable  <=>  can_register and (recovery_code or account_has_no_device)
     can_register = (knows_password and password_login_on) or fresh_passkey_cookie
+                   or users_passkey
+The user's passkey (the authenticator, or the account that syncs it) signs
+in, but since 2026-10-30 it opens only the history key, not the recovery code
+(passkey-vault wrapArchiveKey), so it does not restore a device.
 With password login on, L may turn it off (with a passkey); that ends every
 session opened with the password (auth.service setPasswordLogin).
 
@@ -46,7 +50,9 @@ from itertools import product
 
 from common import record
 
-CAPABILITIES = ('password', 'recovery_code', 'stale_cookie', 'fresh_cookie')
+CAPABILITIES = ('password', 'recovery_code', 'stale_cookie', 'fresh_cookie', 'passkey')
+# Capabilities that let the attacker register a device on their own.
+REGISTERING = frozenset({'password', 'fresh_cookie', 'passkey'})
 
 
 @dataclass(frozen=True)
@@ -81,6 +87,7 @@ class Rules:
     tofu: bool = True
     user_can_be_tricked: bool = False  # L approves a device it does not control
     password_off_checked: bool = True  # the password no longer counts once password login is off (6b3c01d)
+    passkey_wraps_code: bool = False   # CONTROL: before 2026-10-30 the passkey unwrapped the recovery code
 
 
 def transitions(state: State, caps: frozenset, rules: Rules):
@@ -89,7 +96,8 @@ def transitions(state: State, caps: frozenset, rules: Rules):
     status = {d: s for d, _, s in state.devices}
     controller = {d: c for d, c, _ in state.devices}
     knows_password = {'L': True, 'Att': 'password' in caps}
-    has_recovery = {'L': True, 'Att': 'recovery_code' in caps}
+    # The user's passkey opens the history key only; before 2026-10-30 it opened the code itself.
+    has_recovery = {'L': True, 'Att': 'recovery_code' in caps or (rules.passkey_wraps_code and 'passkey' in caps)}
     # verifyCurrentPasswordSnapshot answers a correct password like a wrong one once login is off
     password_counts = {h: knows and (not state.password_off or not rules.password_off_checked)
                        for h, knows in knows_password.items()}
@@ -100,9 +108,10 @@ def transitions(state: State, caps: frozenset, rules: Rules):
             nxt = _add(state, (holder, 'password', False, None))
             if nxt:
                 yield f'{holder}: password login', nxt
-    nxt = _add(state, ('L', 'passkey', True, None))
-    if nxt:
-        yield 'L: passkey login', nxt
+    for holder in ('L', 'Att') if 'passkey' in caps else ('L',):
+        nxt = _add(state, (holder, 'passkey', True, None))
+        if nxt:
+            yield f'{holder}: passkey login', nxt
 
     # stolen cookies (copies of one of L's sessions)
     for holder, method, fresh, bound in state.sessions:
@@ -184,7 +193,7 @@ def attacker_wins(state):
 
 
 def spec(caps, fresh_account, password_off=False):
-    can_register = ('password' in caps and not password_off) or 'fresh_cookie' in caps
+    can_register = ('password' in caps and not password_off) or 'fresh_cookie' in caps or 'passkey' in caps
     return can_register and ('recovery_code' in caps or fresh_account)
 
 
@@ -198,8 +207,12 @@ def compare(rules: Rules):
             if bool(wins) != spec(caps, fresh_account, password_off):
                 witness = trace(parent, wins[0]) if wins else []
                 mismatches.append((sorted(caps), fresh_account, password_off, bool(wins), witness))
-            if wins and fresh_account and 'recovery_code' not in caps:
-                tofu_hits.append((sorted(caps), trace(parent, wins[0])))
+            # D3 is about the stolen fresh cookie: count only attackers whose one way to
+            # register is that cookie, and only a win that went through stealing it.
+            if wins and fresh_account and 'recovery_code' not in caps and caps & REGISTERING == {'fresh_cookie'}:
+                steps = trace(parent, wins[0])
+                if any(step.startswith('Att: steals fresh passkey cookie') for step in steps):
+                    tofu_hits.append((sorted(caps), steps))
             for state in parent:
                 live = {d for d, _, s in state.devices if s != 'revoked'}
                 if any(b is not None and b not in live for _, _, _, b in state.sessions):
@@ -394,6 +407,11 @@ def run() -> None:
             if password_off and wins and 'fresh_cookie' not in caps]
     record('M4', 'D1-pw-ctl', 'before the 2026-10-22 fix: with password login off, a stolen cookie and the password '
            'still registered a device', 'CONTROL', bool(hits), witness=hits[0][1] if hits else [])
+    control, _, _ = compare(Rules(passkey_wraps_code=True))
+    hits = [(caps, steps) for caps, _, _, wins, steps in control if wins and 'recovery_code' not in caps]
+    record('M4', 'D1-passkey-ctl', 'before 2026-10-30: the user\'s passkey alone (the authenticator, or the account '
+           'that syncs it) registered a device and restored it without the recovery code', 'CONTROL', bool(hits),
+           witness=hits[0][1] if hits else [])
     lockout_run()
 
 
