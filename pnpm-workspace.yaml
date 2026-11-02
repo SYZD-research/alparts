@@ -2,7 +2,6 @@ packages:
   - 'packages/*'
   - 'setup'
 allowBuilds:
-  electron-winstaller: false
   esbuild: true
   mediasoup: true
 # Taken within a day of its release, by decision for the frozen release: it
@@ -21,6 +20,20 @@ overrides:
   brace-expansion@^2: 2.1.7
   brace-expansion@^5: 5.0.12
   http-cache-semantics@^4: 4.3.0
+  # electron-builder's packaging tools. Its pinned @electron/asar 3 and
+  # @electron/universal 2 reach minimatch below 11.0.1 (GHSA-g3hv-75wg-m249)
+  # and glob 9.0.0-14.0.1 (GHSA-3g3m-2fjr-6pw4), which no release of those
+  # two majors fixes: asar 3's glob 7 reads minimatch internals that 11 no
+  # longer has. Take the releases that dropped those chains instead. The
+  # Windows target is nsis, so the Squirrel chain (electron-winstaller, whose
+  # asar 3 needs glob 7) is never built; dropping electron-builder-squirrel-
+  # windows removes electron-winstaller with it.
+  '@electron/asar': 4.3.1
+  '@electron/universal': 3.0.6
+  glob@^13: 14.0.3
+  minimatch@^5: 11.0.3
+  minimatch@^10: 11.0.3
+  electron-builder-squirrel-windows: '-'
   # Only used by @electron/get 3 (through electron-builder) for proxy support
   # behind ELECTRON_GET_USE_PROXY. It pulls in sprintf-js, which has an
   # unfixed denial-of-service advisory (GHSA-hp3w-g68c-fv3c).
