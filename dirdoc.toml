@@ -1,8 +1,8 @@
 # dirdoc project settings. This file also marks the project root.
 
 [storage]
-compression = "zstd"   # "zstd" | "none"
-level = "best"         # "fastest" | "default" | "better" | "best"
+format = "json"        # "zstd" (compressed JSON) | "json" | "toml"; run "dirdoc convert" after changing it
+level = "best"         # zstd level: "fastest" | "default" | "better" | "best"
 
 [walk]
 gitignore = true       # follow .gitignore files
@@ -13,3 +13,10 @@ summary_max = { dsd = 200, pfd = 400, entry = 120 }   # warn when a summary is l
 
 [show]
 format = "md"          # default output format: "md" | "json"
+
+[template]
+# Headings every document of a kind must have, e.g. function = ["Errors"]. export puts them in its
+# templates; compile and check warn about a document (that is not empty) without one.
+dsd = []
+type = []
+function = []
