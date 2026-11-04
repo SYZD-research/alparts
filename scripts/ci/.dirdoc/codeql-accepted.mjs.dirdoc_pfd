@@ -1,0 +1,106 @@
+{
+  "format": "dirdoc/pfd",
+  "version": 1,
+  "target": "codeql-accepted.mjs",
+  "target_hash": "sha256:cbf113024847b9e6f205d96f96d38f6c6b116906b44460923b569f46e2caf7da",
+  "summary": "CodeQL の analyze が書いた SARIF から、レビューで受け入れた経路の指摘だけを取り除き、取り除いたものをログに出す。引数は SARIF のあるディレクトリ。受け入れた指摘はリスク登録簿の R-065 に記録している",
+  "overview": {
+    "types": [],
+    "functions": [
+      {
+        "id": "acceptedEntry",
+        "name": "acceptedEntry(result, readLine, accepted)",
+        "summary": "結果を受け入れる項目を返す。ルールとファイルが一致し、すべての経路の先頭がその項目の発生元の行（チェックアウトのコードで照合）であるときだけで、それ以外は null",
+        "line": 54,
+        "signature": "export function acceptedEntry(result, readLine, accepted = ACCEPTED)"
+      },
+      {
+        "id": "takeOutAccepted",
+        "name": "takeOutAccepted(sarif, readLine, accepted)",
+        "summary": "SARIF の各 run から受け入れた結果をその場で取り除き、結果と項目の組を返す。results のない run はそのまま",
+        "line": 65,
+        "signature": "export function takeOutAccepted(sarif, readLine, accepted = ACCEPTED)"
+      },
+      {
+        "id": "checkoutReader",
+        "name": "checkoutReader(root)",
+        "summary": "チェックアウトのファイルの 1 始まりの行を前後の空白を除いて返す関数を作る。ファイルがなければ undefined",
+        "line": 78,
+        "signature": "export function checkoutReader(root = repoRoot)"
+      },
+      {
+        "id": "main",
+        "name": "main()",
+        "summary": "ディレクトリ内の .sarif を読み、受け入れた結果を除いて書き戻し、除いた指摘を 1 件ずつログに出す",
+        "line": 94,
+        "signature": "async function main()"
+      }
+    ],
+    "variables": [
+      {
+        "id": "ACCEPTED",
+        "name": "ACCEPTED",
+        "summary": "受け入れた指摘の一覧。ルール、指摘の場所のファイル、経路の発生元（ファイルとその行のコード）と理由",
+        "line": 21,
+        "signature": "export const ACCEPTED = [...]"
+      }
+    ],
+    "undocumented": [
+      {
+        "id": "repoRoot",
+        "kind": "variable",
+        "line": 19,
+        "signature": "const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')"
+      },
+      {
+        "id": "uriOf",
+        "kind": "function",
+        "line": 42,
+        "signature": "const uriOf = (location) => ..."
+      },
+      {
+        "id": "lineOf",
+        "kind": "function",
+        "line": 43,
+        "signature": "const lineOf = (location) => ..."
+      },
+      {
+        "id": "pathSources",
+        "kind": "function",
+        "line": 46,
+        "signature": "function pathSources(result)"
+      }
+    ]
+  },
+  "functions": [
+    {
+      "id": "acceptedEntry",
+      "name": "acceptedEntry(result, readLine, accepted)",
+      "summary": "結果を受け入れる項目を返す。ルールとファイルが一致し、すべての経路の先頭がその項目の発生元の行（チェックアウトのコードで照合）であるときだけで、それ以外は null",
+      "document": "行番号ではなくその行のコードで照合するので、行が移動しても一致し、行が変わるか別の箇所から同じ場所への経路ができると一致しない。経路のない結果は受け入れない。"
+    },
+    {
+      "id": "takeOutAccepted",
+      "name": "takeOutAccepted(sarif, readLine, accepted)",
+      "summary": "SARIF の各 run から受け入れた結果をその場で取り除き、結果と項目の組を返す。results のない run はそのまま"
+    },
+    {
+      "id": "checkoutReader",
+      "name": "checkoutReader(root)",
+      "summary": "チェックアウトのファイルの 1 始まりの行を前後の空白を除いて返す関数を作る。ファイルがなければ undefined"
+    },
+    {
+      "id": "main",
+      "name": "main()",
+      "summary": "ディレクトリ内の .sarif を読み、受け入れた結果を除いて書き戻し、除いた指摘を 1 件ずつログに出す",
+      "document": "[[/.github/workflows/codeql.yml#analyze]] がアップロードと件数の判定の前に実行する。受け入れた指摘はいま AI レビューの 2 件で、[[/scripts/maintenance/review.mjs]] が GitHub のイベントファイルから読んだ投稿者と PR、およびモデルが書いたレビューを、[[/scripts/maintenance/collect.mjs#api]] で自リポジトリの GitHub API に送る js/file-access-to-http。"
+    }
+  ],
+  "variables": [
+    {
+      "id": "ACCEPTED",
+      "name": "ACCEPTED",
+      "summary": "受け入れた指摘の一覧。ルール、指摘の場所のファイル、経路の発生元（ファイルとその行のコード）と理由"
+    }
+  ]
+}

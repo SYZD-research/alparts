@@ -1,0 +1,50 @@
+{
+  "format": "dirdoc/pfd",
+  "version": 1,
+  "target": "codeql-accepted.test.mjs",
+  "target_hash": "sha256:57e0c476d0687212d811910b6c8212d451ac8db41207136bd7b1ed94b178c1dc",
+  "summary": "codeql-accepted.mjs のテスト。受け入れた 2 経路だけが消えること、行の移動では一致し、新しい経路・一部だけ一致する結果・別ファイルや別ルール・経路のない結果は残ること、受け入れた発生元の行がチェックアウトに 1 か所だけあることを確かめる",
+  "overview": {
+    "types": [],
+    "functions": [],
+    "variables": [],
+    "undocumented": [
+      {
+        "id": "REVIEW",
+        "kind": "variable",
+        "line": 5,
+        "signature": "const REVIEW = 'scripts/maintenance/review.mjs'"
+      },
+      {
+        "id": "COLLECT",
+        "kind": "variable",
+        "line": 6,
+        "signature": "const COLLECT = 'scripts/maintenance/collect.mjs'"
+      },
+      {
+        "id": "location",
+        "kind": "function",
+        "line": 8,
+        "signature": "const location = (uri, line) => ..."
+      },
+      {
+        "id": "result",
+        "kind": "function",
+        "line": 11,
+        "signature": "function result({ rule = 'js/file-access-to-http', file = COLLECT, line = 62, sources = [[REVIEW, 181]] } = {})"
+      },
+      {
+        "id": "LINES",
+        "kind": "variable",
+        "line": 23,
+        "signature": "const LINES = {...}"
+      },
+      {
+        "id": "readLine",
+        "kind": "function",
+        "line": 26,
+        "signature": "const readLine = (file, line) => ..."
+      }
+    ]
+  }
+}

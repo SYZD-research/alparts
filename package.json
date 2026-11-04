@@ -35,6 +35,7 @@
     "test:release": "node --test scripts/release/*.test.mjs",
     "test:deps": "node --test scripts/deps/*.test.mjs",
     "test:maintenance": "node --test scripts/maintenance/*.test.mjs",
+    "test:ci": "node --test scripts/ci/*.test.mjs",
     "release:prepare": "node scripts/release/create-release.mjs",
     "notices": "node scripts/release/third-party-notices.mjs",
     "notices:check": "node scripts/release/third-party-notices.mjs --check",

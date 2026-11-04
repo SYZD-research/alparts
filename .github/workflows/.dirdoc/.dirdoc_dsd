@@ -66,7 +66,7 @@
     {
       "id": "checks",
       "name": "検査",
-      "document": "[[/.github/workflows/ci.yml]] は PR と master で、品質検査、履歴の秘密検査、結合テスト、イメージのサプライチェーン検査を並行して行う。補助スクリプトは [[/scripts/]] にある。[[/.github/workflows/codeql.yml]] は CodeQL の指摘が 1 件でもあれば失敗する。ワークフローの権限は既定で読み取りのみで、アクションはコミット SHA で固定している。"
+      "document": "[[/.github/workflows/ci.yml]] は PR と master で、品質検査、履歴の秘密検査、結合テスト、イメージのサプライチェーン検査を並行して行う。補助スクリプトは [[/scripts/]] にある。[[/.github/workflows/codeql.yml]] は CodeQL の指摘が 1 件でもあれば失敗する。例外は、レビューで受け入れて [[/scripts/ci/codeql-accepted.mjs]] に理由とともに挙げた経路だけ。ワークフローの権限は既定で読み取りのみで、アクションはコミット SHA で固定している。"
     },
     {
       "id": "build",

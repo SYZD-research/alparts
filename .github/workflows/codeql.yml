@@ -32,22 +32,16 @@ jobs:
           # the accepted findings are taken out.
           upload: never
           output: codeql-results
-      # js/file-access-to-http stays on everywhere else (the desktop app sends
-      # requests too), but sending what a file holds to the repository's own
-      # GitHub API is what the maintenance scripts are for: review.mjs reads
-      # the commenter and pull request from GitHub's event file and posts the
-      # review the model wrote, all through api() in collect.mjs. Only that
-      # rule in that file is taken out; any other finding there still counts.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24.8.0"
+      # Findings accepted after review are listed with their reasons in
+      # scripts/ci/codeql-accepted.mjs (risk register R-065). Only those exact
+      # paths are taken out, matched by rule, file and the code of each path's
+      # source; any other finding, including a new path to the same place,
+      # still fails the job below.
       - name: Take out accepted findings
-        run: |
-          set -euo pipefail
-          for sarif in codeql-results/*.sarif; do
-            jq '.runs |= map(if .results then .results |= map(select(
-                  (.ruleId == "js/file-access-to-http"
-                    and .locations[0].physicalLocation.artifactLocation.uri == "scripts/maintenance/collect.mjs")
-                  | not)) else . end)' "$sarif" >"$sarif.tmp"
-            mv "$sarif.tmp" "$sarif"
-          done
+        run: node scripts/ci/codeql-accepted.mjs codeql-results
       - uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4
         with:
           sarif_file: codeql-results

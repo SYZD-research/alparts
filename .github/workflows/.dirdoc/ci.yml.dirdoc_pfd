@@ -2,6 +2,7 @@
   "format": "dirdoc/pfd",
   "version": 1,
   "target": "ci.yml",
+  "target_hash": "sha256:29334ff5502499769e10d6f017eba47b93f2bf32bc41a38c1a2381eeef48937d",
   "summary": "CI。PR と master への push、手動実行で品質検査、履歴の秘密検査、DB・オブジェクトストアを使う結合テスト、イメージのサプライチェーン検査を行う",
   "overview": {
     "types": [],
@@ -9,7 +10,7 @@
       {
         "id": "quality",
         "name": "quality",
-        "summary": "lint、型検査、テスト、バックアップ/リリース/依存/メンテナンスのテスト、ライセンス表示の最新確認、ビルド、秘密検査、pnpm audit、シェル構文検査"
+        "summary": "lint、型検査、テスト、バックアップ/リリース/依存/メンテナンス/CI 補助のテスト、ライセンス表示の最新確認、ビルド、秘密検査、pnpm audit、シェル構文検査"
       },
       {
         "id": "secret-history",
@@ -33,7 +34,7 @@
     {
       "id": "quality",
       "name": "quality",
-      "summary": "lint、型検査、テスト、バックアップ/リリース/依存/メンテナンスのテスト、ライセンス表示の最新確認、ビルド、秘密検査、pnpm audit、シェル構文検査"
+      "summary": "lint、型検査、テスト、バックアップ/リリース/依存/メンテナンス/CI 補助のテスト、ライセンス表示の最新確認、ビルド、秘密検査、pnpm audit、シェル構文検査"
     },
     {
       "id": "secret-history",

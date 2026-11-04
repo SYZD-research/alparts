@@ -80,7 +80,7 @@
 | F-P2F-034 | `.dockerignore` に監査資料・エージェント状態・文書・スクリプト・ネイティブ版を追加。 |
 | F-P2F-035 | 開発用 postgres に `no-new-privileges`。 |
 | F-P2F-036 | Android CI で Gradle wrapper を公式チェックサムと照合。dependabot に gradle を追加。 |
-| F-P2F-037 | CodeQL の SARIF を成果物として保存し、検出があればジョブを失敗させる。 |
+| F-P2F-037 | CodeQL の SARIF を成果物として保存し、検出があればジョブを失敗させる。2026-11-04 以降、`scripts/ci/codeql-accepted.mjs` に理由とともに挙げた経路の指摘だけは除く（RISK_REGISTER R-065）。 |
 | F-P2F-038 | バックアップ unit に `ProtectClock`・`ProtectHostname`・`ProtectKernelLogs`・`ProtectProc`・`ProcSubset`・`RestrictNamespaces`・`RestrictRealtime`・`SystemCallArchitectures` を追加。 |
 | F-P2F-039 | デスクトップ/Android の CSP で同梱 worker を許可（`worker-src 'self'` / アセットのみ）。 |
 | F-P2F-040 | ロールの解除は、対象メンバーの順位が操作者より低い場合に限る（オーナーは不可、自分自身は可）。プレビューも同じ。 |
