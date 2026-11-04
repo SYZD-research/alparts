@@ -22,6 +22,7 @@ overrides:
   minimatch@^10: 11.0.3
   electron-builder-squirrel-windows: '-'
   global-agent: '-'
+  '@esbuild-kit/esm-loader': '-'
 
 importers:
 
@@ -375,14 +376,6 @@ packages:
   '@electron/universal@3.0.6':
     resolution: {integrity: sha512-MonS1kfkZdSEkLZI0pdR/TCx8ecxwRSFm7sORfwIkDI9UaIbHnk4Mgeqq+Ob9qDQRV8LZ9+hHCmimpA9BRcNxw==}
     engines: {node: '>=22.12.0'}
-
-  '@esbuild-kit/core-utils@3.3.2':
-    resolution: {integrity: sha512-sPRAnw9CdSsRmEtnsl2WXWdyquogVpB3yZ3dgwJfe8zrOzTsV7cJvmwrKVa+0ma5BoiGJ+BoqkMvawbayKUsqQ==}
-    deprecated: 'Merged into tsx: https://tsx.hirok.io'
-
-  '@esbuild-kit/esm-loader@2.6.5':
-    resolution: {integrity: sha512-FxEMIkJKnodyA1OaCUoEvbYRkoZlLZ4d/eXFu9Fh8CbBBgP5EmZxrfTRyN0qpXZ4vOvqnE5YdRdcrmUUXuU+dA==}
-    deprecated: 'Merged into tsx: https://tsx.hirok.io'
 
   '@esbuild/aix-ppc64@0.28.2':
     resolution: {integrity: sha512-XExcO+dvLKvVtNTibSTBej1NCAbaGhWn9Ww1ZPx80qsahhPFe/8jgWP0IchNe0F3HwkU7n8ejhH8bjonqht8mQ==}
@@ -1992,9 +1985,6 @@ packages:
     resolution: {integrity: sha512-nBF+F1rAZVCu/p7rjzgA+Yb4lfYXrpl7a6VmJrU8wF9I1CKvP/QwPNZHnOlwbTkY6dvtFIzFMSyQXbLoTQPRpA==}
     engines: {node: '>=8'}
 
-  get-tsconfig@4.14.2:
-    resolution: {integrity: sha512-XpwZALwwl/BaKTAyC6+c5T8y6kCg2jk+XGqOVrKIQmW49pNypYLMRjCUXqa28tQgJlhS2RlzP7sc+Rx7W6qsfw==}
-
   glob@14.0.3:
     resolution: {integrity: sha512-A1vjIwC3qpdCso45Iw127gnp7sPhqgY8lUQhDrArIs+GbmfaaVPFuoyy7WyLT9EPZCRZ7j7aLdwUhQmHWesEow==}
     engines: {node: 18 || 20 || >=22}
@@ -2918,9 +2908,6 @@ packages:
   resolve-alpn@1.2.1:
     resolution: {integrity: sha512-0a1F4l73/ZFZOakJnQ3FvkJ2+gSTQWz/r2KE5OdDY0TxPm5h4GkqkWWfM47T7HsbnOtcJVEF4epCVy6u7Q3K+g==}
 
-  resolve-pkg-maps@1.0.0:
-    resolution: {integrity: sha512-seS2Tj26TBVOC2NIc2rOe2y2ZO7efxITtLZcGSOnHHNOQ7CkiUBfw0Iw2ck6xkIhPwLhKNLS8BO+hEpngQlqzw==}
-
   responselike@2.0.1:
     resolution: {integrity: sha512-4gl03wn3hj1HP3yzgdI7d3lCkF95F21Pz4BPGvKHinyQzALR5CapwC8yIi0Rh58DEMQ/SguC03wFj2k0M/mHhw==}
 
@@ -3785,16 +3772,6 @@ snapshots:
       plist: 3.1.0
     transitivePeerDependencies:
       - supports-color
-
-  '@esbuild-kit/core-utils@3.3.2':
-    dependencies:
-      esbuild: 0.28.2
-      source-map-support: 0.5.21
-
-  '@esbuild-kit/esm-loader@2.6.5':
-    dependencies:
-      '@esbuild-kit/core-utils': 3.3.2
-      get-tsconfig: 4.14.2
 
   '@esbuild/aix-ppc64@0.28.2':
     optional: true
@@ -4935,7 +4912,6 @@ snapshots:
   drizzle-kit@0.31.11:
     dependencies:
       '@drizzle-team/brocli': 0.10.2
-      '@esbuild-kit/esm-loader': 2.6.5
       esbuild: 0.28.2
       tsx: 4.23.12
 
@@ -5260,10 +5236,6 @@ snapshots:
   get-stream@5.2.0:
     dependencies:
       pump: 3.0.4
-
-  get-tsconfig@4.14.2:
-    dependencies:
-      resolve-pkg-maps: 1.0.0
 
   glob@14.0.3:
     dependencies:
@@ -6389,8 +6361,6 @@ snapshots:
       pe-library: 0.4.1
 
   resolve-alpn@1.2.1: {}
-
-  resolve-pkg-maps@1.0.0: {}
 
   responselike@2.0.1:
     dependencies:

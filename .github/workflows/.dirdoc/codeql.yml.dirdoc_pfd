@@ -2,14 +2,15 @@
   "format": "dirdoc/pfd",
   "version": 1,
   "target": "codeql.yml",
-  "summary": "CodeQL (javascript-typescript、security-extended)。PR・master・毎週月曜に実行し、指摘が 1 件でもあればジョブを失敗させる",
+  "target_hash": "sha256:b10266b1829909ea28bb9398c826f4a24842e3e99a9ef54b3e7b536bb6534db0",
+  "summary": "CodeQL (javascript-typescript、security-extended)。PR・master・毎週月曜に実行し、受け入れた経路を除いて指摘が 1 件でもあればジョブを失敗させる",
   "overview": {
     "types": [],
     "functions": [
       {
         "id": "analyze",
         "name": "analyze",
-        "summary": "解析結果を code scanning へ送りつつ SARIF をディスクに残し、件数を数えて失敗を判定する"
+        "summary": "解析して SARIF をディスクに残し、受け入れた指摘を除いてから code scanning へ送り、残りの件数で失敗を判定する"
       }
     ],
     "variables": []
@@ -18,8 +19,8 @@
     {
       "id": "analyze",
       "name": "analyze",
-      "summary": "解析結果を code scanning へ送りつつ SARIF をディスクに残し、件数を数えて失敗を判定する",
-      "document": "アップロード用のアーティファクトは参照用で、保存に失敗しても判定には影響しない。除外するクエリは [[/.github/codeql/codeql-config.yml]] にある。"
+      "summary": "解析して SARIF をディスクに残し、受け入れた指摘を除いてから code scanning へ送り、残りの件数で失敗を判定する",
+      "document": "analyze はアップロードせず SARIF を `codeql-results/` に書き出す。次に [[/scripts/ci/codeql-accepted.mjs]] が、レビューで受け入れた経路の指摘だけを取り除いてログに出す（いまは AI レビューのスクリプトが GitHub API に送る 2 件の js/file-access-to-http、リスク登録簿 R-065）。ルール・ファイル・経路の発生元の行のコードがすべて一致したものだけで、同じ場所への新しい経路やほかのクエリの指摘は残る。そのあと upload-sarif で送り、残った件数が 1 件以上なら失敗する。取り除いた指摘は code scanning には載らない。\n\nアップロード用のアーティファクトは参照用で、保存に失敗しても判定には影響しない。リポジトリ全体で除外するクエリは [[/.github/codeql/codeql-config.yml]] にある。"
     }
   ]
 }

@@ -38,3 +38,7 @@ overrides:
   # behind ELECTRON_GET_USE_PROXY. It pulls in sprintf-js, which has an
   # unfixed denial-of-service advisory (GHSA-hp3w-g68c-fv3c).
   global-agent: '-'
+  # drizzle-kit 0.31 still lists @esbuild-kit/esm-loader, deprecated since it
+  # was merged into tsx, but never loads it: drizzle-kit bundles tsx to read
+  # drizzle.config.ts. Dropping it also drops @esbuild-kit/core-utils.
+  '@esbuild-kit/esm-loader': '-'

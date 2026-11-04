@@ -27,10 +27,24 @@ jobs:
           config-file: ./.github/codeql/codeql-config.yml
       - uses: github/codeql-action/analyze@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4
         with:
-          # Upload results to code scanning and keep the SARIF on disk so the
-          # job can still fail on findings instead of leaving them in the log.
-          upload: always
+          # Keep the SARIF on disk so the job can still fail on findings
+          # instead of leaving them in the log. It is uploaded below, after
+          # the accepted findings are taken out.
+          upload: never
           output: codeql-results
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24.8.0"
+      # Findings accepted after review are listed with their reasons in
+      # scripts/ci/codeql-accepted.mjs (risk register R-065). Only those exact
+      # paths are taken out, matched by rule, file and the code of each path's
+      # source; any other finding, including a new path to the same place,
+      # still fails the job below.
+      - name: Take out accepted findings
+        run: node scripts/ci/codeql-accepted.mjs codeql-results
+      - uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4
+        with:
+          sarif_file: codeql-results
       - name: Fail on CodeQL findings
         run: |
           set -euo pipefail

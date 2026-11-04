@@ -1,5 +1,6 @@
 # Queries excluded because their findings do not apply to this codebase.
-# Every other security-extended query still fails the job.
+# Every other security-extended query still fails the job. Single findings
+# accepted after review are listed in scripts/ci/codeql-accepted.mjs.
 query-filters:
   # Every HTTP request passes the in-process limiter that packages/server/src/app.ts
   # mounts before any route (middleware/rate-limit.ts); sensitive routes add

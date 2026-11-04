@@ -7,6 +7,16 @@
     "type": "dir",
     "children": [
       {
+        "name": "codeql-accepted.mjs",
+        "type": "file",
+        "note": "CodeQL の SARIF から受け入れた経路の指摘を除く"
+      },
+      {
+        "name": "codeql-accepted.test.mjs",
+        "type": "file",
+        "note": "その照合のテスト"
+      },
+      {
         "name": "start-object-storage.sh",
         "type": "file",
         "note": "使い捨ての S3 互換ストア (SeaweedFS) を起動して待つ"

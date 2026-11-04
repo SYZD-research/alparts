@@ -39,6 +39,7 @@ jobs:
       - run: pnpm test:release
       - run: pnpm test:deps
       - run: pnpm test:maintenance
+      - run: pnpm test:ci
       - run: pnpm notices:check
       - run: pnpm build
       - run: pnpm security:secrets
