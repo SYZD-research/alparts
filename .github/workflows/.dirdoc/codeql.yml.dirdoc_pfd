@@ -2,6 +2,7 @@
   "format": "dirdoc/pfd",
   "version": 1,
   "target": "codeql.yml",
+  "target_hash": "sha256:52b1ea9d299cda3a9d31928c013aa2f180116230439d635da12bd6b0a2963e2a",
   "summary": "CodeQL (javascript-typescript、security-extended)。PR・master・毎週月曜に実行し、指摘が 1 件でもあればジョブを失敗させる",
   "overview": {
     "types": [],
@@ -9,7 +10,7 @@
       {
         "id": "analyze",
         "name": "analyze",
-        "summary": "解析結果を code scanning へ送りつつ SARIF をディスクに残し、件数を数えて失敗を判定する"
+        "summary": "解析して SARIF をディスクに残し、受け入れた指摘を除いてから code scanning へ送り、残りの件数で失敗を判定する"
       }
     ],
     "variables": []
@@ -18,8 +19,8 @@
     {
       "id": "analyze",
       "name": "analyze",
-      "summary": "解析結果を code scanning へ送りつつ SARIF をディスクに残し、件数を数えて失敗を判定する",
-      "document": "アップロード用のアーティファクトは参照用で、保存に失敗しても判定には影響しない。除外するクエリは [[/.github/codeql/codeql-config.yml]] にある。"
+      "summary": "解析して SARIF をディスクに残し、受け入れた指摘を除いてから code scanning へ送り、残りの件数で失敗を判定する",
+      "document": "analyze はアップロードせず SARIF を `codeql-results/` に書き出す。次のステップで、[[/scripts/maintenance/collect.mjs#api]] に届く js/file-access-to-http だけを取り除く。保守スクリプトは GitHub のイベントファイルやモデルが書いたレビューを自リポジトリの GitHub API に送るのが目的のためで、ほかのファイルやほかのクエリの指摘は残る。そのあと upload-sarif で送り、残った件数が 1 件以上なら失敗する。\n\nアップロード用のアーティファクトは参照用で、保存に失敗しても判定には影響しない。リポジトリ全体で除外するクエリは [[/.github/codeql/codeql-config.yml]] にある。"
     }
   ]
 }

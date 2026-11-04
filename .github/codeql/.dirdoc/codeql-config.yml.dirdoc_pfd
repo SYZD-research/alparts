@@ -2,7 +2,8 @@
   "format": "dirdoc/pfd",
   "version": 1,
   "target": "codeql-config.yml",
-  "summary": "CodeQL から除外するクエリ（js/missing-rate-limiting と js/missing-origin-check）。理由は設定内のコメントにある。他の security-extended は有効",
+  "target_hash": "sha256:41aeef8a881fa1ce94f1983b589ea1cac94e46aeb9d96969a6a9bf495f116bf0",
+  "summary": "CodeQL から除外するクエリ（js/missing-rate-limiting と js/missing-origin-check）。理由は設定内のコメントにある。他の security-extended は有効で、1 ファイルだけで受け入れる指摘は codeql.yml で除く",
   "overview": {
     "types": [],
     "functions": [],
