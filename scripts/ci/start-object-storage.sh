@@ -12,8 +12,8 @@ bucket=$3
 : "${OBJECT_STORAGE_ACCESS_KEY:?}"
 : "${OBJECT_STORAGE_SECRET_KEY:?}"
 
-# SeaweedFS 4.51 (Apache-2.0).
-image='chrislusf/seaweedfs:4.51@sha256:f7a49e3f3972ebed5be2ed4befa4a0c68eb7bdddba6e692d42729ceb545134b8'
+# SeaweedFS 4.52 (Apache-2.0).
+image='chrislusf/seaweedfs:4.52@sha256:57877e32bb90073b37dc109b438ba66e84fd5ed9ced5f5c04f56444ef243ce59'
 
 config=$(mktemp)
 chmod 644 "$config"
