@@ -2,6 +2,7 @@
   "format": "dirdoc/pfd",
   "version": 1,
   "target": "render.ts",
+  "target_hash": "sha256:c72f7f9b017e4dda905690f50ab913ba49a63d7f321cd2646a0fcf3d478a3885",
   "summary": "生成ファイルの内容。compose.env、compose.production.yml に重ねる compose.json、Caddyfile、pg_hba.conf、バックアップの systemd ユニット",
   "overview": {
     "types": [],
@@ -9,40 +10,104 @@
       {
         "id": "renderComposeOverride",
         "name": "renderComposeOverride()",
-        "summary": "PostgreSQL・SeaweedFS・proxy（Caddy）・バックアップの道具を加え、アプリと移行処理に内部の認証局、ネットワーク、通話の中継の設定を足す"
+        "summary": "PostgreSQL・SeaweedFS・proxy（Caddy）・バックアップの道具を加え、アプリと移行処理に内部の認証局、ネットワーク、通話の中継の設定を足す",
+        "line": 125,
+        "signature": "export function renderComposeOverride(settings: Settings, paths: Paths, options: OverrideOptions): string"
       },
       {
         "id": "appStartCommand",
         "name": "appStartCommand()",
-        "summary": "イメージの起動コマンドから Node.js のパーミッションモデルの指定（--permission と --allow-*）だけを除く"
+        "summary": "イメージの起動コマンドから Node.js のパーミッションモデルの指定（--permission と --allow-*）だけを除く",
+        "line": 89,
+        "signature": "export function appStartCommand(imageCommand: string[]): string[]"
       },
       {
         "id": "composeEnvironment",
         "name": "composeEnvironment()",
-        "summary": "compose.production.yml の変数。TLS 必須の接続先、CORS、信頼するプロキシ、メール、認証情報のファイル"
+        "summary": "compose.production.yml の変数。TLS 必須の接続先、CORS、信頼するプロキシ、メール、認証情報のファイル",
+        "line": 32,
+        "signature": "export function composeEnvironment(settings: Settings, paths: Paths, imageTag: string): Record<string, string>"
       },
       {
         "id": "renderCaddyfile",
         "name": "renderCaddyfile()",
-        "summary": "ドメインの HTTPS、証明書の鍵の再利用（p256）、ヘルスチェックの非公開、4 MiB までの本文の受け取り、両ポートでの HTTP/2 の停止"
+        "summary": "ドメインの HTTPS、証明書の鍵の再利用（p256）、ヘルスチェックの非公開、4 MiB までの本文の受け取り",
+        "line": 293,
+        "signature": "export function renderCaddyfile(settings: Settings): string"
       },
       {
         "id": "renderPgHba",
         "name": "renderPgHba()",
-        "summary": "スーパーユーザーはローカルソケットの peer だけ、3 つのロールは TLS と SCRAM だけを受け付ける"
+        "summary": "スーパーユーザーはローカルソケットの peer だけ、3 つのロールは TLS と SCRAM だけを受け付ける",
+        "line": 322,
+        "signature": "export function renderPgHba(): string"
       },
       {
         "id": "renderBackupUnits",
         "name": "renderBackupUnits()",
-        "summary": "毎日決まった時刻に `backup --scheduled` を実行するサービスとタイマー。止めるときは、バックアップを止めてアプリを再開するまで最大 5 分待つ"
+        "summary": "毎日決まった時刻に `backup --scheduled` を実行するサービスとタイマー。止めるときは、バックアップを止めてアプリを再開するまで最大 5 分待つ",
+        "line": 339,
+        "signature": "export function renderBackupUnits(settings: Settings, paths: Paths, nodePath: string): { service: string; timer: string }"
       },
       {
         "id": "renderEnvFile",
         "name": "renderEnvFile()",
-        "summary": "compose.env を書く。値は一重引用符で囲み（Compose が $ を展開しない）、一重引用符を含む値（o'brien@example.com など）だけは二重引用符で囲んで \\、\"、$ をエスケープする。改行を含む値は拒否する"
+        "summary": "compose.env を書く。値は一重引用符で囲み（Compose が $ を展開しない）、一重引用符を含む値（o'brien@example.com など）だけは二重引用符で囲んで \\、\"、$ をエスケープする。改行を含む値は拒否する",
+        "line": 23,
+        "signature": "export function renderEnvFile(values: Record<string, string>): string"
       }
     ],
-    "variables": []
+    "variables": [],
+    "undocumented": [
+      {
+        "id": "GENERATED_HEADER",
+        "kind": "variable",
+        "line": 14,
+        "signature": "export const GENERATED_HEADER = ..."
+      },
+      {
+        "id": "LOGGING",
+        "kind": "variable",
+        "line": 16,
+        "signature": "const LOGGING = {...}"
+      },
+      {
+        "id": "voicePortRange",
+        "kind": "function",
+        "line": 75,
+        "signature": "export function voicePortRange(settings: Settings): string"
+      },
+      {
+        "id": "POSTGRES_START",
+        "kind": "variable",
+        "line": 93,
+        "signature": "const POSTGRES_START = [...]"
+      },
+      {
+        "id": "OBJECT_STORAGE_START",
+        "kind": "variable",
+        "line": 106,
+        "signature": "const OBJECT_STORAGE_START = [...]"
+      },
+      {
+        "id": "OverrideOptions",
+        "kind": "type",
+        "line": 119,
+        "signature": "export interface OverrideOptions { ... }"
+      },
+      {
+        "id": "systemdArgument",
+        "kind": "function",
+        "line": 333,
+        "signature": "function systemdArgument(value: string): string"
+      },
+      {
+        "id": "BACKUP_UNIT",
+        "kind": "variable",
+        "line": 337,
+        "signature": "export const BACKUP_UNIT = `${PROJECT_NAME}-backup`"
+      }
+    ]
   },
   "functions": [
     {
@@ -65,8 +130,8 @@
     {
       "id": "renderCaddyfile",
       "name": "renderCaddyfile()",
-      "summary": "ドメインの HTTPS、証明書の鍵の再利用（p256）、ヘルスチェックの非公開、4 MiB までの本文の受け取り、両ポートでの HTTP/2 の停止",
-      "document": "- 証明書の鍵は p256 で、更新しても同じ鍵を使う（reuse_private_keys）。\n- ヘルスチェックとメトリクスは外部に出さず、4 MiB までの本文を受け取り終えてからアプリへ送る。\n- ACME の連絡先は引用する。\n- HTTP/2 は 80 番・443 番とも切る（protocols h1 h3、リスク登録簿 R-062）。80 番は HTTPS へリダイレクトするだけのサイトとして書く。Caddy が自分で作る 80 番のサーバーには、この設定が届かないため。"
+      "summary": "ドメインの HTTPS、証明書の鍵の再利用（p256）、ヘルスチェックの非公開、4 MiB までの本文の受け取り",
+      "document": "- 証明書の鍵は p256 で、更新しても同じ鍵を使う（reuse_private_keys）。\n- ヘルスチェックとメトリクスは外部に出さず、4 MiB までの本文を受け取り終えてからアプリへ送る。\n- ACME の連絡先は引用する。\n- プロトコルは Caddy の既定のまま（HTTP/1.1・HTTP/2・HTTP/3）。80 番は Caddy が自分で作るサーバーが HTTPS へリダイレクトする。"
     },
     {
       "id": "renderPgHba",

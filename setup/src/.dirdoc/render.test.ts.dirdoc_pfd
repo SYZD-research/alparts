@@ -2,10 +2,31 @@
   "format": "dirdoc/pfd",
   "version": 1,
   "target": "render.test.ts",
-  "summary": "render.ts の検証。env ファイルの引用、Compose 変数、権限モデルのフラグを外した起動コマンド、音声中継のポート、ネットワーク分離、root 以外で動くバックアップ、Caddyfile（ACME の連絡先の引用、両ポートで HTTP/2 を切ること）、pg_hba.conf、タイマー、開発環境と同じイメージ",
+  "target_hash": "sha256:74a7cacdc0beed6e4635a4c95fbba37289db7dda5294058d6cf6322981b53dab",
+  "summary": "render.ts の検証。env ファイルの引用、Compose 変数、権限モデルのフラグを外した起動コマンド、音声中継のポート、ネットワーク分離、root 以外で動くバックアップ、Caddyfile（証明書の鍵の再利用、本文の受け取り、ヘルスチェックの非公開、ACME の連絡先の引用）、pg_hba.conf、タイマー、開発環境と同じイメージ",
   "overview": {
     "types": [],
     "functions": [],
-    "variables": []
+    "variables": [],
+    "undocumented": [
+      {
+        "id": "paths",
+        "kind": "variable",
+        "line": 12,
+        "signature": "const paths = systemPaths('/', '/opt/alparts')"
+      },
+      {
+        "id": "imageCommand",
+        "kind": "variable",
+        "line": 13,
+        "signature": "const imageCommand = [...]"
+      },
+      {
+        "id": "settings",
+        "kind": "function",
+        "line": 15,
+        "signature": "function settings(overrides: Partial<Settings> = {}): Settings"
+      }
+    ]
   }
 }

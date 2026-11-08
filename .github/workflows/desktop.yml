@@ -37,7 +37,7 @@ jobs:
             os: windows-2022
             target: windows
           - platform: macOS
-            os: macos-14
+            os: macos-15
             target: macos
     runs-on: ${{ matrix.os }}
     # A failed hdiutil attempt can take about eight minutes before it errors.

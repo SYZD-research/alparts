@@ -2,7 +2,7 @@
   "format": "dirdoc/pfd",
   "version": 1,
   "target": "RISK_REGISTER.md",
-  "target_hash": "sha256:226931ab784bd103e66e7d89e2188ff49d0bb7cca1db8fec3126f79e1b00c171",
+  "target_hash": "sha256:f9f85d5053ff60b525851f30379a6f90cd305a1375a7e100746312391f4df0b7",
   "summary": "リスク登録簿。R-001〜R-065 の各項目に優先度・深刻度・影響・対策・状態を表で示し、Deep Security Scan の指摘との対応とレビュー周期も記す。未対応項目を暗黙に受容しない。",
   "overview": {
     "types": [],
