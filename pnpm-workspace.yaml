@@ -4,13 +4,20 @@ packages:
 allowBuilds:
   esbuild: true
   mediasoup: true
+# Taken within a day of its release: it fixes two advisories on how a
+# recipient's domain is read (GHSA-3q53-mvfw-q9v8, GHSA-2g53-87p2-4qq8), and
+# its published files were compared with 10.2.1 line by line. Remove once it
+# is older than the minimum release age.
+minimumReleaseAgeExclude:
+  - nodemailer@10.4.1
 overrides:
   esbuild: ^0.28.2
-  qs: 6.16.1
+  qs: 6.16.2
   engine.io: 6.6.11
   fast-uri: 3.1.9
+  set-cookie-parser: 2.7.3
   undici@^6: 6.29.1
-  undici@^7: 7.30.1
+  undici@^7: 7.30.2
   brace-expansion@^1: 1.1.21
   brace-expansion@^2: 2.1.7
   brace-expansion@^5: 5.0.12
@@ -33,6 +40,13 @@ overrides:
   # behind ELECTRON_GET_USE_PROXY. It pulls in sprintf-js, which has an
   # unfixed denial-of-service advisory (GHSA-hp3w-g68c-fv3c).
   global-agent: '-'
+  # got 11, which @electron/get 3 (through electron-builder) downloads with,
+  # asks for http2-wrapper 1. Every release below 2.2.2 reuses an HTTP/2
+  # session for hosts its certificate does not cover (GHSA-vf8w-mh23-8cqj).
+  # got loads the package but calls it only when asked for HTTP/2, which
+  # @electron/get never does, and the one function it would call, auto(), is
+  # still there in 2.
+  http2-wrapper: 2.2.4
   # drizzle-kit 0.31 still lists @esbuild-kit/esm-loader, deprecated since it
   # was merged into tsx, but never loads it: drizzle-kit bundles tsx to read
   # drizzle.config.ts. Dropping it also drops @esbuild-kit/core-utils.

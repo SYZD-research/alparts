@@ -2,6 +2,7 @@
   "format": "dirdoc/pfd",
   "version": 1,
   "target": "Dockerfile",
+  "target_hash": "sha256:3d3f3d20c51f1babaa0b5b4b5b20b4778e04116f0886ece95771d5afb3161863",
   "summary": "バックアップ用の道具のイメージ。データベースと同じ PostgreSQL 16 の公式イメージに、bash・GNU coreutils/tar などと、チェックサムで固定した rclone と age の公式配布物を加える",
   "overview": {
     "types": [],
@@ -24,7 +25,7 @@
       "id": "downloads",
       "name": "RUN（rclone と age）",
       "summary": "Alpine の版は backup.sh の要件より古いため、公式の配布物を amd64・arm64 ごとの SHA-256 で検証して入れる",
-      "document": "rclone 1.75.2 と age 1.3.2 を入れる（backup.sh は rclone 1.75.1 以上、ハイブリッド受信者のため age 1.3.0 以上を求める）。rclone 1.75.2 は rclone 自体と Go の脆弱性を直した版で、チェックサムは公式の署名付きの SHA256SUMS と一致する。最後に `USER postgres`（uid 70）にして root 以外で動かす。セットアップはこのユーザーにバックアップの認証情報とディレクトリを渡す（[[/setup/src/files.ts#BACKUP_USER]]）。`ENTRYPOINT` は空にし、Compose の `backup` サービスがスクリプトを直接実行する。イメージのタグは Dockerfile の内容のハッシュから決まる（[[/setup/src/images.ts#backupToolsImage]]）。"
+      "document": "rclone 1.76.0 と age 1.3.2 を入れる（backup.sh は rclone 1.75.1 以上、ハイブリッド受信者のため age 1.3.0 以上を求める）。rclone 1.76.0 は rclone 自体と Go の脆弱性を直した版で、チェックサムは公式の署名付きの SHA256SUMS と一致する。最後に `USER postgres`（uid 70）にして root 以外で動かす。セットアップはこのユーザーにバックアップの認証情報とディレクトリを渡す（[[/setup/src/files.ts#BACKUP_USER]]）。`ENTRYPOINT` は空にし、Compose の `backup` サービスがスクリプトを直接実行する。イメージのタグは Dockerfile の内容のハッシュから決まる（[[/setup/src/images.ts#backupToolsImage]]）。"
     },
     {
       "id": "packages",

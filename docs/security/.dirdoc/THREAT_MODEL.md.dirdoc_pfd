@@ -2,7 +2,7 @@
   "format": "dirdoc/pfd",
   "version": 1,
   "target": "THREAT_MODEL.md",
-  "target_hash": "sha256:610f647426879954ddeb8921a519c0a664eeb1b859cb0ac30bb0711dcf904f94",
+  "target_hash": "sha256:9ed976b7c910b1ed9733b96a2353c2a8a2e8fd449afa3caf9cedea7a31a14a29",
   "summary": "現行の正規の脅威モデル。範囲、目標、資産、アクター（攻撃者を含む）、信頼境界（単一ホストのセットアップとパスキー復旧の境界を含む）、攻撃面と対策、濫用ケース（音声 SFU を含む）、監査イベント、残存リスク、見直しの契機を定める。",
   "overview": {
     "types": [],

@@ -9,7 +9,7 @@
       {
         "name": "Dockerfile",
         "type": "file",
-        "note": "PostgreSQL 16 の公式イメージに GNU の道具、rclone 1.75.2、age 1.3.2 を加える"
+        "note": "PostgreSQL 16 の公式イメージに GNU の道具、rclone 1.76.0、age 1.3.2 を加える"
       }
     ]
   }

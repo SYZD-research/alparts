@@ -2,7 +2,7 @@
   "format": "dirdoc/pfd",
   "version": 1,
   "target": "ai-review.yml",
-  "target_hash": "sha256:796e35f88a61c147ec9909c21deb0a76a73994ca31ff8fccef3241530a74cbf0",
+  "target_hash": "sha256:7c257bc32b918d2df9bea83ea523da21d17ecc8aaf9457c19f840fb8f8690dbc",
   "summary": "PR コメントでの @ai-review / @ai-review-deep のメンションで AI レビューを依頼する。レビューは PR に投稿され、承認も差し戻しもしない",
   "overview": {
     "types": [],

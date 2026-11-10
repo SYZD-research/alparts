@@ -10290,9 +10290,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 --------------------------------------------------------------------------------
 
-nodemailer 10.2.1
+nodemailer 10.4.1
 License: MIT-0
-Package: pkg:npm/nodemailer@10.2.1
+Package: pkg:npm/nodemailer@10.4.1
 
 Copyright (c) 2011-2023 Andris Reinman
 
@@ -10917,9 +10917,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 --------------------------------------------------------------------------------
 
-qs 6.16.1
+qs 6.16.2
 License: BSD-3-Clause
-Package: pkg:npm/qs@6.16.1
+Package: pkg:npm/qs@6.16.2
 
 BSD 3-Clause License
 
@@ -11544,9 +11544,9 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 --------------------------------------------------------------------------------
 
-set-cookie-parser 2.7.2
+set-cookie-parser 2.7.3
 License: MIT
-Package: pkg:npm/set-cookie-parser@2.7.2
+Package: pkg:npm/set-cookie-parser@2.7.3
 
 The MIT License (MIT)
 
