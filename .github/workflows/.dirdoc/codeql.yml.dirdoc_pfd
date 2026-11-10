@@ -2,7 +2,7 @@
   "format": "dirdoc/pfd",
   "version": 1,
   "target": "codeql.yml",
-  "target_hash": "sha256:b10266b1829909ea28bb9398c826f4a24842e3e99a9ef54b3e7b536bb6534db0",
+  "target_hash": "sha256:17ebf177b4f74041111462534b6f436146ce7c931d37fd609c3c187a7b720ea3",
   "summary": "CodeQL (javascript-typescript、security-extended)。PR・master・毎週月曜に実行し、受け入れた経路を除いて指摘が 1 件でもあればジョブを失敗させる",
   "overview": {
     "types": [],

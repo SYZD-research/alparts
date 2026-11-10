@@ -33,7 +33,7 @@ jobs:
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
-          node-version: '24.8.0'
+          node-version: '24.22.1'
           cache: pnpm
       # The committed gradle-wrapper.jar is executed below; verify it against
       # the published Gradle checksums first.

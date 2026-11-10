@@ -34,7 +34,7 @@ jobs:
           output: codeql-results
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "24.8.0"
+          node-version: "24.22.1"
       # Findings accepted after review are listed with their reasons in
       # scripts/ci/codeql-accepted.mjs (risk register R-065). Only those exact
       # paths are taken out, matched by rule, file and the code of each path's

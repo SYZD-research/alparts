@@ -2,7 +2,7 @@
   "format": "dirdoc/pfd",
   "version": 1,
   "target": "ci.yml",
-  "target_hash": "sha256:29334ff5502499769e10d6f017eba47b93f2bf32bc41a38c1a2381eeef48937d",
+  "target_hash": "sha256:40f2aa9c40f890c6f5a56213165f92bb67acc4fa8c9973a3ecf0367f77c7d4fd",
   "summary": "CI。PR と master への push、手動実行で品質検査、履歴の秘密検査、DB・オブジェクトストアを使う結合テスト、イメージのサプライチェーン検査を行う",
   "overview": {
     "types": [],
