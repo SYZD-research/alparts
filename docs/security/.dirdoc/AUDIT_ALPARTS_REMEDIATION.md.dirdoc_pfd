@@ -2,7 +2,7 @@
   "format": "dirdoc/pfd",
   "version": 1,
   "target": "AUDIT_ALPARTS_REMEDIATION.md",
-  "target_hash": "sha256:3a2b1752ba4e3b416ce00d6fd72a76d1285e313bfa9f75bc57192eb27017ff6a",
+  "target_hash": "sha256:d749d834dad4662e640890cb2a9ec089b71adf0314a84b1ec76917963552e043",
   "summary": "audit-alparts の指摘と Phase 2 追跡監査（F-P2F）への対応記録（日本語）。オーナー決定、不具合の修正、形式モデル検証による追加対応、チャンネルごとに継続するグループへの移行後の扱い、暗号・配布・運用の状態、導入手順、検証を記す。",
   "overview": {
     "types": [],

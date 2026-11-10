@@ -128,7 +128,9 @@ Important account/session/device, workspace/member/role/invite, channel/key, mes
 - No DM archive/reclaim, organization-wide retention/export, account/workspace deletion lifecycle, or legal hold.
 - Backup lacks PITR, automatic off-host/off-region copy, object versions/policy, scheduled restore and measured full-service RPO/RTO.
 - The single-host setup starts the server without Node.js's permission model, because current Node.js refuses `fsync` under it and the audit checkpoint needs it (R-059). Its backups stay on the server until the operator copies them elsewhere (R-003).
-- Third-party code with known advisories and no fixed release: the media worker's own OpenSSL 3.0.10, which image scanners do not see (R-061), and Go advisories left in the setup's proxy and backup tools, in code the setup does not use or that only talks to its internal store (R-062).
+- Third-party code with known advisories and no fixed release: the media worker's own OpenSSL 3.0.10, which image scanners do not see (R-061), and what is left in the images the setup runs: Go code its proxy and backup tools do not use, and Alpine packages no rebuilt image carries yet (R-062).
+- Advisories that a dependency publishes only on its own repository, which `pnpm audit`, OSV and the image scan learn of after GitHub's review or not at all; they are read by hand at each dependency review (R-066).
+- In the single-host setup, a party that can make requests from the database, migration or backup container reaches the object store's own ports, which ask for no credentials, and can rewrite any stored object, the audit head included (R-067).
 - No malware scanner/sandbox; encrypted active files cannot be inspected server-side. Desktop adds quarantine/non-executable saves, while Web download defenses remain browser-dependent.
 - No signed release/update or generated provenance attestation; an SBOM workflow alone does not establish artifact authenticity.
 - External credential rotation for the removed tracked development account cannot be proven from this repository.
