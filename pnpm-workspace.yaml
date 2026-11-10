@@ -4,6 +4,12 @@ packages:
 allowBuilds:
   esbuild: true
   mediasoup: true
+# Taken within a day of its release: it fixes two advisories on how a
+# recipient's domain is read (GHSA-3q53-mvfw-q9v8, GHSA-2g53-87p2-4qq8), and
+# its published files were compared with 10.2.1 line by line. Remove once it
+# is older than the minimum release age.
+minimumReleaseAgeExclude:
+  - nodemailer@10.4.1
 overrides:
   esbuild: ^0.28.2
   qs: 6.16.2
